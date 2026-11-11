@@ -164,6 +164,23 @@ export function StudioShell({ children, user }: StudioShellProps) {
         height: isMobile ? "100dvh" : "100vh",
       }}
     >
+      {/*
+        The first thing Tab reaches. Without it a keyboard user presses Tab
+        about fifteen times, through the whole sidebar, before the page itself,
+        and again after every navigation. It is hidden until it has focus
+        (.skip-link in globals.css); pressing it puts focus on <main>.
+      */}
+      <a
+        href="#main-content"
+        className="skip-link no-print"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        Skip to content
+      </a>
+
       {/* Desktop: sidebar is the first grid column. Mobile: it lives in the drawer. */}
       {!isMobile && sidebar}
 
@@ -186,7 +203,13 @@ export function StudioShell({ children, user }: StudioShellProps) {
           onMenuClick={() => setMobileNavOpen(true)}
           action={<SchemaChatButton />}
         />
-        <main className="relative flex-1 min-h-0 overflow-y-auto" style={{ background: "var(--bg)" }}>
+        {/* tabIndex -1: the skip link can put focus here, Tab never stops on it. */}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative flex-1 min-h-0 overflow-y-auto"
+          style={{ background: "var(--bg)" }}
+        >
           {children}
         </main>
       </div>

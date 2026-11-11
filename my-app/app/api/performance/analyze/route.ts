@@ -436,6 +436,8 @@ export async function POST(request: NextRequest) {
       describeQueryError(err, schema, QUERY_TIMEOUT_SECONDS, {
         sql,
         prefixLength: explainPrefix(measuring).length,
+        // An error of the measured run can quote row values; see describeQueryError.
+        ran: measuring,
       }),
       400
     );

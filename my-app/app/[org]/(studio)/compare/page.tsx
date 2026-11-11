@@ -10,6 +10,7 @@ import {
   swapSourceWithTarget,
 } from "@/lib/compare-selection";
 import { buildDiffDocument } from "@/lib/compare-export";
+import { renameMatchingSkipped } from "@/lib/compare";
 import type {
   CompareScreen,
   ConnectionView,
@@ -1044,6 +1045,23 @@ function CompareScreenView({ query }: { query: string }) {
                     {/* Same switch the two widgets below get — without it the
                         board said "dropped" over a script that has every drop
                         commented out. */}
+                    {/* Two big schemas with little in common are not searched
+                        for renamed tables (lib/compare has a limit, or the
+                        search takes minutes). Said here, or a reader who knows
+                        a table was renamed sees a create and a drop for it and
+                        takes the report to be wrong. */}
+                    {renameMatchingSkipped(outcome.report) && (
+                      <div className="role-note" role="note">
+                        <span>
+                          <b>Renamed tables were not looked for.</b> Too many
+                          tables are in one schema only ({outcome.report.tablesOnlyInA.length}{" "}
+                          in the source, {outcome.report.tablesOnlyInB.length} in
+                          the target) to match them up in a reasonable time. A
+                          table that was only renamed shows as one table to
+                          create and one to drop.
+                        </span>
+                      </div>
+                    )}
                     <SummaryMatrix
                       report={outcome.report}
                       allowDataLoss={allowDataLoss}

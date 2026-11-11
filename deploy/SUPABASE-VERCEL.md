@@ -173,7 +173,7 @@ Then run `docker compose up -d`. No rebuild is needed. Sign in on the server cop
 **Good to know**
 
 - The desktop app needs nothing new. It links to this site, as section 9 explains, and gets the cloud connections from here. It never gets this database's address.
-- `deploy/backup.sh` still saves the server's own `db`: the old data and the local passwords. This database is backed up by Supabase (its dashboard, **Database**, **Backups**).
+- **The server's nightly backup no longer holds the organizations' data.** `deploy/backup.sh` saves only the server's own `db`. After step 2 that is the data from before the change and the passwords of the server's local connections. Everything the organizations save from then on (members, roles, cloud connections, tracked schemas, history) is written to this Supabase database, and the nightly backup does not read it. Use Supabase's own backups for it: in its dashboard, **Database**, **Backups**. Open that page once and check what your plan keeps. Daily backups come with Supabase's paid plans. If the page lists none, take your own copy now and then with `pg_dump`, using the direct connection string from **Connect** in the Supabase dashboard. Keep running `deploy/backup.sh` as well: it is still the only copy of the local passwords.
 - To go back, remove the four lines from `.env` (put the old `APP_ENCRYPTION_KEY` back) and run `docker compose up -d`. The server copy is then exactly as it was before step 2.
 - A copy without `LOCAL_DATABASE_URL` keeps every password in `DATABASE_URL_A`, as before. The client's container image works that way.
 
@@ -230,7 +230,7 @@ To link one:
 
 1. In the desktop app, open **Settings**. Under **Phone**, in **Connections phones may see**, choose which connections to share. A connection is not shared until someone says so.
 2. Under **Web site**, type the site's address, for example `https://your-project.vercel.app`, and press **Link**.
-3. The computer's web browser opens the site. Sign in there as usual, check that the site shows the same code as the desktop app, and approve it. The code lasts 10 minutes.
+3. The computer's web browser opens the site. Sign in there as usual, type the code the desktop app is showing, and approve it. The page does not fill the code in for you, so only type a code from a computer you are sitting at. The code lasts 10 minutes.
 
 There is nothing to set up on Vercel or Supabase for this.
 

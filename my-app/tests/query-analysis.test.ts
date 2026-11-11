@@ -283,6 +283,21 @@ describe("checkAnalysable — calls that act on the server", () => {
     expect(checkAnalysable(sql, true)).toContain("Untick Run it and measure");
   });
 
+  it("refuses a function that reads the server's files only when measuring", () => {
+    // READ ONLY does not stop these: a measured run would read the file, and a
+    // failed cast of the result would put the file's text in the error message.
+    const read = "SELECT pg_read_file('/etc/hosts')::int";
+    expect(checkAnalysable(read, false)).toBe(null);
+    expect(checkAnalysable(read, true)).toContain("pg_read_file()");
+    expect(checkAnalysable(read, true)).toContain("reads files on the database server");
+
+    expect(checkAnalysable("SELECT * FROM pg_ls_dir('.')", true)).toContain("pg_ls_dir()");
+    expect(checkAnalysable("SELECT pg_read_binary_file('x')", true)).toContain(
+      "pg_read_binary_file()"
+    );
+    expect(checkAnalysable("SELECT (pg_stat_file('x')).size", true)).toContain("pg_stat_file()");
+  });
+
   it("refuses pg_advisory_lock only when measuring, because its lock outlives the rollback", () => {
     // A session-level advisory lock is not undone by ROLLBACK: the pooled
     // connection would go back to the pool still holding it. A plain EXPLAIN
@@ -656,6 +671,88 @@ describe("describeQueryError", () => {
     });
     expect(message).toContain("nextval()");
     expect(message).toContain("Untick Run it and measure");
+  });
+
+  describe("an error of the measured run", () => {
+    /** The source the route sends once EXPLAIN ANALYZE has started. */
+    const RAN = { sql: "SELECT 1", prefixLength: explainPrefix(true).length, ran: true };
+
+    it("does not repeat a row value PostgreSQL quotes in a cast error", () => {
+      // What a real server answers to (SELECT string_agg(c::text, '|') FROM customers)::int.
+      const message = describeQueryError(
+        {
+          code: "22P02",
+          message: 'invalid input syntax for type integer: "(2,ben@example.com,"Ben Ho")"',
+        },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(message).not.toContain("ben@example.com");
+      expect(message).not.toContain("Ben Ho");
+      expect(message).toContain("PostgreSQL error code 22P02");
+      expect(message).toContain("text cast to a number");
+      expect(message).toContain("Untick Run it and measure");
+    });
+
+    it("does not repeat a row value smuggled out as a missing table's name", () => {
+      // (SELECT email FROM customers LIMIT 1)::regclass fails only when it runs.
+      const message = describeQueryError(
+        { code: "42P01", message: 'relation "ben@example.com" does not exist' },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(message).not.toContain("ben@example.com");
+      expect(message).toContain("PostgreSQL error code 42P01");
+    });
+
+    it("says what went wrong for the common value errors without the value", () => {
+      const message = describeQueryError(
+        { code: "22012", message: "division by zero" },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(message).toContain("it divided by zero");
+    });
+
+    it("still explains a timeout, a refused write and a missing permission", () => {
+      const timeout = describeQueryError(
+        { code: "57014", message: "canceling statement due to statement timeout" },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(timeout).toContain(`${QUERY_TIMEOUT_SECONDS} seconds`);
+
+      const write = describeQueryError(
+        { code: "25006", message: "cannot execute nextval() in a read-only transaction" },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(write).toContain("nextval()");
+
+      const denied = describeQueryError(
+        { code: "42501", message: "permission denied for table orders" },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        RAN
+      );
+      expect(denied).toContain("orders");
+    });
+
+    it("keeps PostgreSQL's own words for an error of the plain estimate", () => {
+      // Planning reads no rows, so the name in the message is the user's own text.
+      const message = describeQueryError(
+        { code: "42P01", message: 'relation "orderz" does not exist' },
+        SCHEMA,
+        QUERY_TIMEOUT_SECONDS,
+        { sql: "SELECT * FROM orderz", prefixLength: explainPrefix(false).length, ran: false }
+      );
+      expect(message).toContain("orderz");
+    });
   });
 
   it("tells a timeout apart from a cancel", () => {

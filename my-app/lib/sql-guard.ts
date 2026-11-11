@@ -78,7 +78,7 @@ export function maskNonCode(
   const number = /[0-9]+(?:\.[0-9]*)?(?:[Ee][+-]?[0-9]+)?/y;
   // quotecontinue, from scan.l: horizontal space and -- comments, then a
   // newline, then any run of space or --comment-lines, then the next quote.
-  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]+|--[^\n\r]*[\n\r])*'/y;
+  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]|--[^\n\r]*[\n\r])*'/y;
 
   function blank(from: number, to: number): void {
     for (let k = from; k < to && k < len; k += 1) {
@@ -329,12 +329,50 @@ export function dropsColumnWithoutKeyword(statement: string): boolean {
  * same thing for its own rules, and keeps the quoted names alongside.)
  */
 function tidyStatements(code: string, doBodies: string): string[] {
-  return [
-    ...splitStatements(code),
-    ...doBodies.replace(/\b(begin|then|else|loop)\b/gi, ";").split(";"),
-  ]
-    .map((piece) => piece.toLowerCase().replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+  return [...tidyPieces(splitStatements(code)), ...doBlockPieces(doBodies)];
+}
+
+/** The statements inside DO blocks only, in the same shape. */
+function doBlockPieces(doBodies: string): string[] {
+  return tidyPieces(doBodies.replace(/\b(begin|then|else|loop)\b/gi, ";").split(";"));
+}
+
+function tidyPieces(pieces: string[]): string[] {
+  return pieces.map((piece) => piece.toLowerCase().replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+/**
+ * Whether one statement inside a DO block runs SQL that is built as a string:
+ * EXECUTE 'DROP TABLE orders', EXECUTE format(...), FOR r IN EXECUTE '...'.
+ * The mask blanks the string, so no reader here can tell what it does.
+ *
+ * Takes one piece already masked, lower-cased and single-spaced. The EXECUTE
+ * in CREATE TRIGGER ... EXECUTE FUNCTION f() names a function, not a string,
+ * and does not count. lib/change-type asks the same question for its grade.
+ */
+export function runsSqlFromString(piece: string): boolean {
+  if (/\bexecute (function|procedure)\b/.test(piece)) return false;
+  return /^execute\b|\b(in|for|query) execute\b/.test(piece);
+}
+
+/** The label findRowDestroyingStatements gives a DO block statement it cannot read. */
+export const EXECUTE_CANNOT_BE_READ = "EXECUTE (cannot be read)";
+
+// DROP ... CASCADE of one of these never takes a column with it: it is either
+// named in the list on its own (TABLE, SCHEMA, DATABASE, OWNED), or its CASCADE
+// only reaches views, constraints and defaults.
+const CASCADE_KEEPS_COLUMNS =
+  /^drop (table|schema|database|owned|view|materialized view|foreign table|index|sequence|trigger|policy|rule)\b/;
+
+/**
+ * DROP TYPE order_status CASCADE also drops every column of that type, and the
+ * values in it. The same goes for a domain, a collation, an extension's types
+ * and a function a generated column uses. Any DROP with CASCADE counts unless
+ * it is one of the kinds above. Takes one tidy statement.
+ */
+function dropCascadeCanTakeColumns(statement: string): boolean {
+  if (!/^drop\b/.test(statement) || !/\bcascade\b/.test(statement)) return false;
+  return !CASCADE_KEEPS_COLUMNS.test(statement);
 }
 
 /**
@@ -359,6 +397,12 @@ function tidyStatements(code: string, doBodies: string): string[] {
  * bodies are read as well (masked in the same way), or that DELETE would reach
  * the target with no warning and no data-loss tick.
  *
+ * What it cannot read is named too. EXECUTE inside a DO block runs SQL from a
+ * string, and the string could be a TRUNCATE, so it comes back as "EXECUTE
+ * (cannot be read)" and the screen asks for the same tick. Two things are still
+ * not seen: a function the script creates and then calls, and an UPDATE with
+ * no WHERE (it overwrites values but deletes no row).
+ *
  * Returns the keywords it found, in a fixed order, so the screen can name them.
  */
 export function findRowDestroyingStatements(sql: string): string[] {
@@ -373,16 +417,21 @@ export function findRowDestroyingStatements(sql: string): string[] {
   // The keyword is optional in PostgreSQL, and "ALTER TABLE t DROP legacy"
   // matches no pattern here, so the statements are asked one by one with the
   // same rule the version grade uses.
-  const dropsColumn =
-    found(/\bDROP\s+COLUMN\b/i) || tidyStatements(code, doBodies).some(dropsColumnWithoutKeyword);
+  const statements = tidyStatements(code, doBodies);
+  const dropsColumn = found(/\bDROP\s+COLUMN\b/i) || statements.some(dropsColumnWithoutKeyword);
 
   const checks: [boolean, string][] = [
     [found(/\bTRUNCATE\b/i), "TRUNCATE"],
-    [found(/\bDELETE\s+FROM\b/i), "DELETE"],
+    // MERGE ... WHEN MATCHED THEN DELETE deletes rows without the word FROM.
+    [found(/\bDELETE\s+FROM\b/i) || found(/\bTHEN\s+DELETE\b/i), "DELETE"],
     [found(/\bDROP\s+TABLE\b/i), "DROP TABLE"],
     [dropsColumn, "DROP COLUMN"],
     [found(/\bDROP\s+SCHEMA\b/i), "DROP SCHEMA"],
     [found(/\bDROP\s+DATABASE\b/i), "DROP DATABASE"],
+    // DROP OWNED BY role drops every table that role owns.
+    [found(/\bDROP\s+OWNED\b/i), "DROP OWNED"],
+    [statements.some(dropCascadeCanTakeColumns), "DROP … CASCADE"],
+    [doBlockPieces(doBodies).some(runsSqlFromString), EXECUTE_CANNOT_BE_READ],
   ];
   return checks.filter(([hit]) => hit).map(([, label]) => label);
 }
@@ -392,6 +441,8 @@ export function findRowDestroyingStatements(sql: string): string[] {
  * never catches. TRUNCATE and DELETE move no structure, so changeTypeOf grades
  * them patch and Deploy shows no breaking pill for them. Every DROP in that
  * list is always breaking as well, so the reader already has one warning for it.
+ * "EXECUTE (cannot be read)" is in neither group: it is graded "breaking
+ * unless", and nobody knows whether the SQL it runs changes structure.
  *
  * Deploy uses this to say when its deletes-rows gate is the only warning a
  * statement gets. tests/sql-guard.test.ts checks it against gradeSql, so the
@@ -480,17 +531,19 @@ export function doBlockBodies(sql: string): string {
 }
 
 /**
- * The inside of a DO block, masked the same way as the rest of the script: the
- * text from its first dollar tag up to the next copy of that same tag. The tag
- * may carry a name ($guard$ as well as $$), and only the same tag closes it.
- * Empty when the statement has no dollar-quoted body.
+ * The inside of a DO block, masked the same way as the rest of the script.
+ * Takes one statement that starts with DO.
+ *
+ * The body is read in whatever quotes it was written: $$ … $$ (the tag may
+ * carry a name, $guard$), '…' or E'…'. It used to be read only between dollar
+ * tags, so DO 'BEGIN DROP TABLE orders; END' reached every reader as an empty
+ * body: graded patch, with no deletes-rows warning. Empty when the statement
+ * has no body this can decode.
  */
 function doBlockBody(statement: string): string {
-  const tag = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(statement);
-  if (!tag) return "";
-  const start = tag.index + tag[0].length;
-  const end = statement.indexOf(tag[0], start);
-  return maskNonCode(end === -1 ? statement.slice(start) : statement.slice(start, end));
+  // The statement starts with DO, so the first DO body found is its own.
+  const body = codeBodiesIn(statement).bodies.find((found) => found.kind === "do");
+  return body ? maskNonCode(body.text) : "";
 }
 
 // ─── Code bodies in any quoting ─────────────────────────────────────────────
@@ -506,10 +559,10 @@ const MAX_BODY_DEPTH = 4;
  * whatever quotes it was written: $$ … $$, '…' with '' for a quote, or E'…'
  * with backslash escapes. Bodies inside bodies are read too.
  *
- * maskNonCode blanks a '' string whole, and doBlockBodies only reads $$
- * bodies, so `DO 'BEGIN PERFORM pg_sleep(100); END'` used to pass every scan
- * that reads bodies. This is for scans that must see what really runs; the
- * existing callers of maskNonCode and doBlockBodies are unchanged.
+ * maskNonCode blanks a '' string whole, so `DO 'BEGIN PERFORM pg_sleep(100);
+ * END'` used to pass every scan that reads bodies. This is for scans that must
+ * see what really runs. doBlockBodies reads a DO body through it; no reader
+ * outside the AI checks reads a function or procedure body.
  *
  * A body is the literal that follows DO (around an optional LANGUAGE name) or
  * the first literal after AS (CREATE FUNCTION … AS '…'). `unreadable` is true
@@ -623,7 +676,7 @@ function readLiteral(sql: string, at: number): { text: string | null; end: numbe
  * newline ('a'<newline>'b' is 'ab') is followed, like maskNonCode does.
  */
 function readQuoted(sql: string, open: number, escapes: boolean): { text: string; end: number } {
-  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]+|--[^\n\r]*[\n\r])*'/y;
+  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]|--[^\n\r]*[\n\r])*'/y;
   let text = "";
   let j = open + 1;
   for (;;) {

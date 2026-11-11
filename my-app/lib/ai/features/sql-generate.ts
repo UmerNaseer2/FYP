@@ -113,6 +113,36 @@ export function requestAsksForDataLoss(request: string): boolean {
 const REFUSED_FUNCTIONS =
   /\b(pg_read_file|pg_read_binary_file|pg_ls_[a-z_]+|pg_stat_file|pg_sleep(?:_for|_until)?|set_config|lo_[a-z_]+|pg_file_[a-z_]+)\s*\(/i;
 
+/** A call that moves a sequence. See sequenceCallIn. */
+const SEQUENCE_CALL = /\b(setval|nextval)\s*\(/i;
+/** A column default that only stores the call, such as DEFAULT nextval('orders_id_seq'). */
+const DEFAULT_NEXTVAL = /\bDEFAULT\s+(?:pg_catalog\s*\.\s*)?nextval\s*\(/gi;
+
+/**
+ * The sequence function a script calls when it runs: "setval", "nextval" or null.
+ *
+ * PostgreSQL does not undo a sequence change on ROLLBACK, so the trial (which
+ * always rolls back) would still leave the new number behind. Such a script is
+ * shown without being tried.
+ *
+ * `DEFAULT nextval(...)` in CREATE TABLE or SET DEFAULT only stores the call,
+ * so it does not count. In a statement with ADD it does count: adding a column
+ * with that default calls nextval once for every row already in the table.
+ */
+export function sequenceCallIn(sql: string): string | null {
+  const { bodies } = codeBodiesIn(sql);
+  for (const text of [sql, ...bodies.map((body) => body.text)]) {
+    for (const statement of splitStatements(text)) {
+      // Quotes come off so "setval"(...) and pg_catalog.setval(...) read the same.
+      const names = maskNonCode(statement, { keepQuotedNames: true, readDollarBodies: true }).replace(/"/g, "");
+      const direct = /\bADD\b/i.test(names) ? names : names.replace(DEFAULT_NEXTVAL, " ");
+      const call = direct.match(SEQUENCE_CALL);
+      if (call) return call[1].toLowerCase();
+    }
+  }
+  return null;
+}
+
 /** EXECUTE as a command; GRANT EXECUTE ON and EXECUTE FUNCTION in a trigger are fine. */
 const DYNAMIC_EXECUTE = /\bEXECUTE\b(?!\s*(?:,|FUNCTION\b|PROCEDURE\b|ON\b))/i;
 
@@ -477,8 +507,14 @@ export async function checkSqlGenerate(
   // Only a script with no static problem is tried: the database is never
   // asked to run something the app would refuse anyway.
   let trial: SqlTrial;
+  const sequenceCall = sequenceCallIn(value.sql) ?? sequenceCallIn(value.rollbackSql);
   if ("notTried" in facts.trial) {
     trial = notTried(facts.trial.notTried);
+  } else if (sequenceCall) {
+    trial = notTried(
+      `The script calls ${sequenceCall}. PostgreSQL does not undo a sequence change when the ` +
+        `try is rolled back, so the app did not try this script on the database.`
+    );
   } else {
     const outcome = await facts.trial(value.sql, value.rollbackSql);
     if (outcome.status === "failed") {

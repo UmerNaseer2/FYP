@@ -319,9 +319,9 @@ describe("who is allowed to run anything here", () => {
         name: "I understand, and I mean to run 2 migrations against production.",
       })
     );
-    // A rehearsal needs no approval, so it is free once production is confirmed.
-    const dryRun = await dryRunButton();
-    await waitFor(() => expect(dryRun).toBeEnabled());
+    // A rehearsal on production needs the approval too, so it stays shut as well.
+    await flushAsync();
+    expect(await dryRunButton()).toBeDisabled();
     expect(await deployButton(" to production")).toBeDisabled();
   });
 
@@ -442,11 +442,11 @@ describe("the boxes in front of a run", () => {
     await flushAsync();
   });
 
-  it("holds the rehearsal too until production is confirmed, then frees only the rehearsal", async () => {
-    // Two separate rules land on the same screen and it is worth pinning down
-    // which is which: the production tick covers a rehearsal as well, because
-    // a rehearsal really executes the SQL and can take the same heavy lock —
-    // while the approval covers only the run that commits.
+  it("holds the rehearsal too, first for the production tick and then for the approval", async () => {
+    // Two separate rules land on the same screen, and both cover a rehearsal
+    // as well as the real run: a rehearsal really executes the SQL on
+    // production, can take the same heavy lock, and uses up sequence numbers
+    // that a rollback does not give back.
     setRoutes(baseRoutes());
     render(<DeployPage />);
     await selectBothVersions(/Prod box/);
@@ -460,11 +460,76 @@ describe("the boxes in front of a run", () => {
       })
     );
 
-    const dryRun = await dryRunButton();
-    await waitFor(() => expect(dryRun).toBeEnabled());
-    expect(await deployButton(" to production")).toBeDisabled();
     expect(
-      screen.getByText("Deploy on production needs an approval — a dry run does not")
+      await screen.findByText("Deploy on production needs an approval, and so does a dry run")
+    ).toBeInTheDocument();
+    expect(await dryRunButton()).toBeDisabled();
+    expect(await deployButton(" to production")).toBeDisabled();
+  });
+});
+
+describe("what the page says about deleting rows", () => {
+  /** The usual two scripts, with the second one's SQL swapped. */
+  function routesWithSecondScript(sql: string): FetchRoute[] {
+    const scripts = [SCRIPTS[0], { ...SCRIPTS[1], sql_content: sql }];
+    return [{ match: "/api/github/pull", body: { ok: true, scripts, warnings: [] } }, ...baseRoutes()];
+  }
+
+  it("says what was checked when it found nothing, not that nothing deletes rows", async () => {
+    // The reader looks for statements. A function the script calls can still
+    // delete rows, so "nothing deletes rows" was more than the page knew.
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(await screen.findByText("No statement found that deletes rows")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing in this run deletes rows")).not.toBeInTheDocument();
+  });
+
+  it("says a TRUNCATE deletes rows", async () => {
+    setRoutes(routesWithSecondScript("TRUNCATE invoices;"));
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
+    expect(screen.getByText(/This run contains TRUNCATE\. Those take rows out of a live table/)).toBeInTheDocument();
+    expect(screen.getByText(/Deletes rows · TRUNCATE in 1 script/)).toBeInTheDocument();
+    expect(screen.getByText("I have read these statements and know which rows they delete.")).toBeInTheDocument();
+  });
+
+  it("says SQL it could not read may delete rows, not that it does", async () => {
+    // EXECUTE in a DO block runs SQL from a string. The reader cannot see what
+    // the string will be, so it may be a TRUNCATE and it may be nothing of the kind.
+    setRoutes(
+      routesWithSecondScript("DO $$\nBEGIN\n  EXECUTE 'ALTER TABLE ' || 'invoices' || ' ADD COLUMN notes text';\nEND\n$$;")
+    );
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(await screen.findByText("1 migration may delete rows")).toBeInTheDocument();
+    expect(screen.getByText(/Part of the SQL could not be read: an EXECUTE inside a DO block/)).toBeInTheDocument();
+    expect(screen.getByText(/May delete rows · part of the SQL could not be read in 1 script/)).toBeInTheDocument();
+    expect(screen.getByText("I have read this SQL and know whether it deletes rows.")).toBeInTheDocument();
+
+    // None of the words that say rows are deleted for certain.
+    expect(screen.queryByText(/Those take rows out of a live table/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/migration deletes rows/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/know which rows they delete/)).not.toBeInTheDocument();
+  });
+
+  it("says both when a run has a TRUNCATE and SQL it could not read", async () => {
+    setRoutes(
+      routesWithSecondScript("TRUNCATE invoices;\nDO $$\nBEGIN\n  EXECUTE 'ANALYZE ' || 'invoices';\nEND\n$$;")
+    );
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
+    expect(
+      screen.getByText(/This run contains TRUNCATE\. Those take rows out of a live table.*Part of the SQL could not be read/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Deletes rows · TRUNCATE, and part of the SQL could not be read in 1 script/)
     ).toBeInTheDocument();
   });
 });
@@ -491,8 +556,8 @@ describe("the two-person rule", () => {
         name: "I understand, and I mean to run 2 migrations against production.",
       })
     );
-    const dryRun = await dryRunButton();
-    await waitFor(() => expect(dryRun).toBeEnabled());
+    await flushAsync();
+    expect(await dryRunButton()).toBeDisabled();
     expect(await deployButton(" to production")).toBeDisabled();
   });
 

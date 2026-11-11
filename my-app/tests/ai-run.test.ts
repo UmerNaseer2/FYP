@@ -189,7 +189,7 @@ describe("runAiTask: asking the model", () => {
         actor: "ada@example.com",
         feature: "compare-summary",
         provider: "Google Gemini",
-        promptVersion: 2,
+        promptVersion: 3,
         model: "smart-model",
         outputTokens: 10,
         estimated: true,

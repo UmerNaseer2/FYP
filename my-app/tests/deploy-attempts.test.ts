@@ -28,8 +28,18 @@ import {
   attemptDetail,
   attemptOutcome,
   describeAttempt,
+  rollbackDetail,
   type AttemptResponseBody,
 } from "@/lib/deploy-attempts";
+import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
+
+// The metadata database, for the one test of the writer at the bottom.
+const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
+jest.mock("../lib/version-db", () => ({
+  __esModule: true,
+  default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
+  syncMetadataTables: async () => undefined,
+}));
 
 describe("attemptOutcome", () => {
   it("records a committed run as applied", () => {
@@ -136,5 +146,41 @@ describe("describeAttempt", () => {
 
   it("says a rehearsal wrote nothing, so it is not read as a deploy", () => {
     expect(describeAttempt("applied", true)).toContain("nothing written");
+  });
+});
+
+describe("a rollback in the trail", () => {
+  // The rollback route used to record nothing, so a rollback that was
+  // refused, failed or ended with an unknown commit left no trace anywhere.
+  it("starts the detail with the word Rollback, with or without a reason", () => {
+    expect(rollbackDetail(null)).toBe("Rollback.");
+    expect(rollbackDetail("v2.0.0 is not applied.")).toBe("Rollback: v2.0.0 is not applied.");
+  });
+
+  it("still fits the column when the reason is as long as it may be", () => {
+    const long = rollbackDetail("x".repeat(MAX_ATTEMPT_DETAIL_LENGTH));
+    expect(long.length).toBe(MAX_ATTEMPT_DETAIL_LENGTH);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  // The detail is the seventh value of the INSERT.
+  const storedDetail = () => (mockPoolQuery.mock.calls[0] as [string, unknown[]])[1][6];
+
+  it("is written with that detail, whatever came of it", async () => {
+    const rollback = { orgId: 1, connectionId: 7, schemaName: "sales", action: "revert" as const };
+
+    mockPoolQuery.mockClear();
+    await recordDeployAttempt(rollback, 200, { success: true });
+    expect(storedDetail()).toBe("Rollback.");
+
+    mockPoolQuery.mockClear();
+    await recordDeployAttempt(rollback, 500, { error: "The rollback of v2.0.0 failed." });
+    expect(storedDetail()).toBe("Rollback: The rollback of v2.0.0 failed.");
+  });
+
+  it("leaves a deploy's detail as it was", async () => {
+    mockPoolQuery.mockClear();
+    await recordDeployAttempt({ orgId: 1, connectionId: 7, schemaName: "sales" }, 200, { success: true });
+    expect(storedDetail()).toBeNull();
   });
 });

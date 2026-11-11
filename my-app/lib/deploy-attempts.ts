@@ -155,7 +155,28 @@ export type AttemptContext = {
   scripts?: AttemptScript[];
   dryRun?: boolean;
   actor?: string | null;
+  /**
+   * Which route was asked: a deploy (the default) or a rollback. A rollback
+   * is stored in the same table, with its detail line starting "Rollback",
+   * so the trail shows who tried to undo what. See rollbackDetail.
+   */
+  action?: "deploy" | "revert";
 };
+
+/**
+ * The detail line of a rollback attempt.
+ *
+ * The table has no column that tells a rollback from a deploy, so the word
+ * goes at the front of the detail. A rollback that worked has no detail of
+ * its own (see attemptDetail) and reads just "Rollback."
+ */
+export function rollbackDetail(detail: string | null): string {
+  if (detail === null) return "Rollback.";
+  const text = `Rollback: ${detail}`;
+  return text.length > MAX_ATTEMPT_DETAIL_LENGTH
+    ? `${text.slice(0, MAX_ATTEMPT_DETAIL_LENGTH - 1)}…`
+    : text;
+}
 
 /**
  * A short sentence describing an attempt, for a screen that lists them.

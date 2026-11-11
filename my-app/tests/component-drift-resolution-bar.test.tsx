@@ -184,6 +184,79 @@ describe("drift resolution bar", () => {
   });
 });
 
+describe("re-baselining the differences that were on screen", () => {
+  // The person agrees to the diff they read. The bar says which one that was,
+  // so the route can refuse when the live schema has moved on since.
+  const shown = (onDone: () => void) => (
+    <DriftResolutionBar
+      trackedSchemaId={7}
+      state="drifted"
+      compareHref="/compare?schema=7"
+      shownFingerprint="abc123"
+      onDone={onDone}
+    />
+  );
+
+  it("sends the fingerprint of the differences with a re-baseline", async () => {
+    setRoutes(OK_ROUTES);
+    const onDone = jest.fn();
+    render(shown(onDone));
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-baseline to live" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-baseline" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(fetchCalls.at(-1)).toMatchObject({
+      url: expect.stringContaining("/api/lineage/rebaseline"),
+      body: JSON.stringify({ trackedSchemaId: 7, shownFingerprint: "abc123" }),
+    });
+  });
+
+  it("does not send it with an acknowledgement", async () => {
+    setRoutes(OK_ROUTES);
+    const onDone = jest.fn();
+    render(shown(onDone));
+
+    fireEvent.click(screen.getByRole("button", { name: /Acknowledge/ }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(fetchCalls.at(-1)).toMatchObject({ body: JSON.stringify({ trackedSchemaId: 7 }) });
+  });
+
+  it("shows the refusal and reloads the screen when the live schema has changed since", async () => {
+    const refusal = "The live schema has changed since this page read it. Nothing was saved.";
+    setRoutes([
+      { match: "/api/lineage/rebaseline", status: 409, body: { error: refusal, code: "stale_view" } },
+      ...OK_ROUTES,
+    ]);
+    const onDone = jest.fn();
+    render(shown(onDone));
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-baseline to live" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-baseline" }));
+
+    expect(await screen.findByText(refusal)).toBeInTheDocument();
+    // Nothing was saved, but the differences on screen are out of date, so
+    // the screen is told to read them again.
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reload the screen after any other refusal", async () => {
+    setRoutes([
+      { match: "/api/lineage/rebaseline", status: 502, body: { error: "Could not read live schema." } },
+      ...OK_ROUTES,
+    ]);
+    const onDone = jest.fn();
+    render(shown(onDone));
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-baseline to live" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-baseline" }));
+
+    expect(await screen.findByText("Could not read live schema.")).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
 describe("for a role that may not resolve or re-check", () => {
   it("leaves every button on screen but off, and says each reason once", () => {
     setUser("viewer");

@@ -61,7 +61,9 @@ import {
 import type { ArchivedVersion } from "@/lib/registry-report";
 import {
   describeGitHubFailure,
+  familyPathProblem,
   findVersionFiles,
+  normalizePushVersion,
   pushCommitMessage,
   rollbackCommitMessage,
   type RegistryEntry,
@@ -84,6 +86,19 @@ export type AppliedVersion = {
 // carries a GitHub token. Re-exported because the apply route wants both
 // halves and should not have to know there are two files.
 export type { ArchivedVersion } from "@/lib/registry-report";
+
+/**
+ * Which part of a version's registry path cannot be a folder or file name, in
+ * the words a person would use, or null when all four are fine. The names
+ * themselves are left out of the answer on purpose: one that fails here may be
+ * very long or hold characters that cannot be read.
+ */
+function unusablePart(database: string, schema: string, scriptName: string, version: string): string | null {
+  if (familyPathProblem(database, schema, "ok")) return "database or schema name";
+  if (familyPathProblem(database, schema, scriptName)) return "script name";
+  if ("error" in normalizePushVersion(version)) return "version";
+  return null;
+}
 
 function pathOf(root: string, database: string, schema: string, scriptName: string, fileName: string): string {
   return `${familyFolderPath(root, database, schema, scriptName)}/${fileName}`;
@@ -259,6 +274,26 @@ export async function archiveAppliedVersions(input: {
 
   for (const applied of input.versions) {
     const { scriptName, version } = applied;
+
+    // The same rules the Script Editor's push route applies before it writes
+    // (lib/registry-push.ts). A deploy can reach here with names that never
+    // went through that route, and a database named ".." or a script name
+    // with a "/" in it would point the write outside this organization's
+    // folder. Checked before anything is asked of GitHub.
+    const unusable = unusablePart(database, schema, scriptName, version);
+    if (unusable) {
+      results.push({
+        script_name: scriptName,
+        version,
+        status: "not-saved",
+        path: null,
+        reason:
+          `This version was not recorded in the registry: its ${unusable} cannot be used as ` +
+          `a folder or file name there. The migration itself is applied and safe.`,
+        rollback_saved: false,
+      });
+      continue;
+    }
 
     if (!listings.has(scriptName)) {
       const listing = await listFamilyFiles(config, root, database, schema, scriptName);

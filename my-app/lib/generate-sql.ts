@@ -46,6 +46,7 @@ import {
   extensionUpdateIsForward,
   sequenceBoundsComparable,
   sequenceOptionsChangeSeverity,
+  serialSides,
   typeChangeSeverity,
   typeSizeParams,
   viewOptionsClause,
@@ -55,7 +56,7 @@ import { changeTypeHeaderLine } from "./change-type";
 import type { ChangeLevel } from "./version-detection";
 // The compare engine asks this same question when it decides whether to tell
 // the reader a range type has to be created by hand.
-import { rangeTypeIsCreatable } from "./postgres";
+import { rangeTypeIsCreatable, stripSchemaFromExpr } from "./postgres";
 import { sequenceOwnerTable } from "./snapshot-facts";
 
 // ---------------------------------------------------------------------------
@@ -472,6 +473,99 @@ function nonFkConstraints(
 }
 
 /**
+ * The matched columns of a table that the script changes with ALTER COLUMN ...
+ * TYPE: a different type, or the same type with a different collation. Same
+ * test as the retypedTables walk in objectPhases and the branch that writes the
+ * statement.
+ *
+ * PostgreSQL refuses that statement while a policy, a trigger or a generated
+ * column still names the column, so each of those has to be out of the way
+ * first. The callers below are what moves them.
+ */
+function retypedColumns(match: TableMatch): TableMatch["columnMatches"] {
+  return match.columnMatches.filter(
+    (col) =>
+      normalizeType(col.left.typeDisplay) !== normalizeType(col.right.typeDisplay) ||
+      (col.left.collation !== undefined &&
+        col.right.collation !== undefined &&
+        col.left.collation !== col.right.collation)
+  );
+}
+
+/**
+ * Does `text` name one of the columns whose type changes? `side` says whose
+ * name for the column to look for: text taken from the target uses the
+ * target's names, text taken from the source uses the source's.
+ *
+ * A text search, like expressionCallsRoutine. Matching too much only moves or
+ * rebuilds something that could have stayed where it was.
+ */
+function namesRetypedColumn(match: TableMatch, text: string, side: "left" | "right"): boolean {
+  return retypedColumns(match).some((col) => mentionsName(text, col[side].name));
+}
+
+/**
+ * A computed column that is the same on both sides, and reads a column whose
+ * type changes. PostgreSQL answers "cannot alter type of a column used by a
+ * generated column", so the computed column comes off before the type change
+ * and goes back on after it. It fills its own rows again from the expression,
+ * so nothing is lost.
+ */
+function rebuiltForTypeChange(match: TableMatch, col: TableMatch["columnMatches"][number]): boolean {
+  const before = describeComputed(col.right);
+  return (
+    before !== null &&
+    before === describeComputed(col.left) &&
+    !!col.right.generated &&
+    namesRetypedColumn(match, col.right.generated.expression, "right")
+  );
+}
+
+/**
+ * Does `text`, taken from a trigger or a policy in the target, name a column
+ * the script retypes or rebuilds? PostgreSQL refuses the type change while the
+ * trigger or policy is there ("cannot alter type of a column used in a policy
+ * definition"), and the DROP COLUMN ... CASCADE of a rebuild removes it without
+ * a word. Either way it has to come off first and go back on afterwards.
+ */
+function namesChangingColumn(match: TableMatch, text: string): boolean {
+  if (namesRetypedColumn(match, text, "right")) return true;
+  const rebuilt = rebuiltComputedColumns(match);
+  return match.columnMatches.some(
+    (col) => rebuilt.has(col.left.name) && mentionsName(text, col.right.name)
+  );
+}
+
+/**
+ * Type changes that safe mode has to hold back, because a computed column that
+ * reads the column is staying where it is. Two computed columns stay in safe
+ * mode: one only the target has (its drop is destructive), and a VIRTUAL one
+ * that becomes ordinary (its rebuild is destructive, see losesComputedValues).
+ *
+ * Returns the retyped column, by the source's name for it, and the computed
+ * columns in its way.
+ */
+function retypesBehindKeptComputedColumns(match: TableMatch): Map<string, string[]> {
+  const kept: ColumnSnapshot[] = [
+    ...match.columnsOnlyInB,
+    ...match.columnMatches
+      .filter((col) => col.left.generated === null && !stopsComputingInPlace(col))
+      .map((col) => col.right),
+  ];
+  // A column that is itself rebuilt gets no ALTER COLUMN ... TYPE to hold back.
+  const rebuilt = rebuiltComputedColumns(match);
+  const held = new Map<string, string[]>();
+  for (const col of retypedColumns(match)) {
+    if (rebuilt.has(col.left.name)) continue;
+    const inTheWay = kept
+      .filter((k) => k.generated && mentionsName(k.generated.expression, col.right.name))
+      .map((k) => k.name);
+    if (inTheWay.length > 0) held.set(col.left.name, inTheWay);
+  }
+  return held;
+}
+
+/**
  * The columns a match rebuilds because their GENERATED ALWAYS AS (…) clause
  * appears, goes, or changes. Named by the SOURCE's name for the column, which
  * is what the table carries once the rename step has run.
@@ -487,6 +581,8 @@ function rebuiltComputedColumns(match: TableMatch): Set<string> {
     const before = describeComputed(col.right);
     const after = describeComputed(col.left);
     if (before !== null && after !== null && before !== after) names.add(col.left.name);
+    // The same on both sides, but in the way of another column's type change.
+    if (rebuiltForTypeChange(match, col)) names.add(col.left.name);
   }
   return names;
 }
@@ -646,9 +742,31 @@ function orderTablesForCreate(tables: TableSnapshot[]): TableSnapshot[] {
   return ordered;
 }
 
-// Build a FK definition from structured snapshot fields instead of using the
-// raw pg_get_constraintdef string.
-function buildFkDef(fk: ForeignKeySnapshot, sourceSchema: string): string {
+// Write a foreign key the way PostgreSQL itself describes it.
+//
+// `fk.definition` is the pg_get_constraintdef text with the own schema already
+// taken off. It is used as it stands, because it is the only place that holds
+// the whole key: the column list of ON DELETE SET NULL (author_id), PERIOD on a
+// temporal key, NOT ENFORCED, and the columns in the key's own order. Building
+// the key from the snapshot's separate fields lost those, so the script made a
+// different key and the next compare asked for the same change again.
+//
+// `renamed` is for the one caller whose tables or columns carry new names by
+// the time the key goes back. The text still has the old names, so that key is
+// built from the fields, which the caller has already renamed. A snapshot with
+// no text for the key is built from the fields too.
+function buildFkDef(fk: ForeignKeySnapshot, sourceSchema: string, renamed = false): string {
+  const text = (fk.definition ?? "").trim();
+  if (!renamed && /^FOREIGN KEY\b/i.test(text)) {
+    return stripSchemaFromExpr(text, sourceSchema) ?? text;
+  }
+  return buildFkDefFromFields(fk, sourceSchema);
+}
+
+// The same key put together from the snapshot's separate fields. It cannot
+// write a column list after SET NULL or SET DEFAULT, PERIOD or NOT ENFORCED:
+// the snapshot has no field for them.
+function buildFkDefFromFields(fk: ForeignKeySnapshot, sourceSchema: string): string {
   const localCols = fk.columns.map(q).join(", ");
   const refTable = fk.referencedTable ?? "";
   const refCols = fk.referencedColumns.map(q).join(", ");
@@ -892,6 +1010,34 @@ function createIndexStatement(
   });
 }
 
+/**
+ * The names of the PRIMARY KEY, UNIQUE and EXCLUDE constraints this script
+ * adds, on changed tables and on new ones.
+ *
+ * PostgreSQL backs each of them with an index of the same name, and an index
+ * name is used once per schema. So when the target has a plain index called
+ * "users_email_key" and the source has a UNIQUE constraint of that name, the
+ * ADD CONSTRAINT fails with "relation already exists" unless the plain index
+ * is dropped first. Index drops normally come after the table changes, so the
+ * ones in this set are moved to the front.
+ */
+function keyNamesTheScriptAdds(report: CompareReport): Set<string> {
+  const names = new Set<string>();
+  for (const match of report.matchedTables) {
+    for (const diff of match.constraintDiffs) {
+      if (diff.status === "onlyB" || !diff.leftName) continue;
+      if (diff.kind === "FOREIGN KEY" || diff.kind === "CHECK") continue;
+      names.add(diff.leftName);
+    }
+  }
+  for (const table of report.tablesOnlyInA) {
+    for (const { kind, constraint } of nonFkConstraints(table)) {
+      if (kind !== "CHECK") names.add(constraint.name);
+    }
+  }
+  return names;
+}
+
 function dropIndexStatement(index: IndexSnapshot, tableName: string): SqlStatement {
   return objectStatement({
     sql: `DROP INDEX IF EXISTS ${q(index.name)};`,
@@ -995,6 +1141,22 @@ function dropTriggerStatement(triggerName: string, tableName: string): SqlStatem
   });
 }
 
+/**
+ * Take a trigger off for the length of the script, so a column it names can be
+ * retyped or rebuilt. Its CREATE is queued in the trigger phase, which runs
+ * after the alters.
+ */
+function dropTriggerForColumnChange(triggerName: string, tableName: string): SqlStatement {
+  return objectStatement({
+    sql: `DROP TRIGGER IF EXISTS ${q(triggerName)} ON ${q(tableName)};`,
+    description:
+      `Drop trigger "${triggerName}" from "${tableName}" so a column it names can be ` +
+      "changed (it is created again further down)",
+    kind: "DROP_TRIGGER",
+    tableName,
+  });
+}
+
 // ── Row-level security ─────────────────────────────────────────────────────
 
 /**
@@ -1045,6 +1207,11 @@ function rowSecurityStatements(
   }
 
   return stmts;
+}
+
+/** A policy reads columns in two places: its USING and its WITH CHECK. */
+function policyNamesChangingColumn(match: TableMatch, policy: PolicySnapshot): boolean {
+  return namesChangingColumn(match, `${policy.using ?? ""} ${policy.withCheck ?? ""}`);
 }
 
 function createPolicyStatement(policy: PolicySnapshot, tableName: string): SqlStatement {
@@ -2249,6 +2416,12 @@ type ObjectPhases = {
   routines: SqlStatement[];
   /** Indexes — after every ADD COLUMN has run. */
   indexes: SqlStatement[];
+  /**
+   * Index drops that cannot wait for `indexes`: the index's name is one a new
+   * key constraint in this script takes. Emitted before any table is created
+   * or altered. See keyNamesTheScriptAdds.
+   */
+  indexDropsFirst: SqlStatement[];
   /** Triggers — after their functions and after the columns they read. */
   triggers: SqlStatement[];
   /**
@@ -2272,6 +2445,13 @@ type ObjectPhases = {
   afterViews: SqlStatement[];
   /** View drops — before DROP TABLE, so CASCADE has less to reach. */
   viewDrops: SqlStatement[];
+  /**
+   * Trigger and policy drops that have to run before the ALTER TABLE
+   * statements: PostgreSQL refuses to change the type of a column that a
+   * trigger or a policy on the table names. The matching creates stay in
+   * `triggers` and `policies`, which run after the alters.
+   */
+  beforeAlters: SqlStatement[];
   /**
    * Routine drops — after the tables, before the type drops below.
    *
@@ -2427,6 +2607,55 @@ function routinesNeededByNewTables(report: CompareReport): Set<string> {
 }
 
 /**
+ * What a table or a type in the TARGET still does with the function `name`,
+ * as a list of phrases for a note: column defaults, generated columns, CHECK
+ * and EXCLUDE constraints, indexes, policies, triggers and domain checks.
+ *
+ * PostgreSQL records each of these as depending on the function, and refuses
+ * DROP FUNCTION while one of them is there. Every table of the target counts,
+ * also one the script drops, because DROP TABLE and every ALTER TABLE come
+ * after the functions in the script. Same text search as
+ * routinesNeededByNewTables, so it matches on the name and covers every
+ * overload.
+ */
+function tableUsesOfRoutine(report: CompareReport, name: string): string[] {
+  const uses: string[] = [];
+  const tables = [...report.matchedTables.map((match) => match.right), ...report.tablesOnlyInB];
+  for (const table of tables) {
+    for (const column of table.columns) {
+      if (column.columnDefault !== null && expressionCallsRoutine(column.columnDefault, name)) {
+        uses.push(`the default of "${table.name}"."${column.name}"`);
+      }
+      if (column.generated && expressionCallsRoutine(column.generated.expression, name)) {
+        uses.push(`the generated column "${table.name}"."${column.name}"`);
+      }
+    }
+    for (const check of [...table.checkConstraints, ...table.excludeConstraints]) {
+      if (expressionCallsRoutine(check.definition, name)) {
+        uses.push(`the constraint "${check.name}" on "${table.name}"`);
+      }
+    }
+    for (const index of table.indexes ?? []) {
+      if (expressionCallsRoutine(index.definition, name)) uses.push(`the index "${index.name}"`);
+    }
+    for (const policy of table.rowSecurity?.policies ?? []) {
+      if (expressionCallsRoutine(`${policy.using ?? ""} ${policy.withCheck ?? ""}`, name)) {
+        uses.push(`the policy "${policy.name}" on "${table.name}"`);
+      }
+    }
+    for (const trigger of table.triggers ?? []) {
+      if (expressionCallsRoutine(trigger.definition, name)) {
+        uses.push(`the trigger "${trigger.name}" on "${table.name}"`);
+      }
+    }
+  }
+  for (const type of report.right.types ?? []) {
+    if (expressionCallsRoutine(type.definition, name)) uses.push(`the type "${type.name}"`);
+  }
+  return uses;
+}
+
+/**
  * Build every object statement the migration needs, in dependency order.
  *
  * Reads the object differences the comparator produced, plus the objects that
@@ -2434,7 +2663,31 @@ function routinesNeededByNewTables(report: CompareReport): Set<string> {
  * its indexes and triggers appear in no diff and would otherwise be dropped on
  * the floor exactly the way its foreign keys once were.
  */
+/**
+ * The sequences the table step ties to a column with ALTER SEQUENCE … OWNED BY.
+ *
+ * That happens where the source column is a serial and the target column is
+ * not. When the target already has a standalone sequence under the same name,
+ * the script keeps it and hands it to the column. The compare lists that
+ * sequence as "only in target" (it skips the source's, which is owned), and
+ * dropping it would stop the script: the column's default reads it.
+ */
+function sequencesTiedToColumns(report: CompareReport): Set<string> {
+  const tied = new Set<string>();
+  for (const match of report.matchedTables) {
+    for (const col of match.columnMatches) {
+      if (col.left.identity || col.right.identity) continue;
+      const serial = serialSides(col.left, col.right);
+      if (!serial.left || serial.right) continue;
+      const name = nextvalSequenceName(col.left.columnDefault);
+      if (name !== null) tied.add(name);
+    }
+  }
+  return tied;
+}
+
 function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPhases {
+  const tiedSequences = sequencesTiedToColumns(report);
   const phases: ObjectPhases = {
     extensions: [],
     collations: [],
@@ -2442,11 +2695,13 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
     hoistedRoutines: [],
     routines: [],
     indexes: [],
+    indexDropsFirst: [],
     triggers: [],
     policies: [],
     views: [],
     afterViews: [],
     viewDrops: [],
+    beforeAlters: [],
     routineDrops: [],
     afterTables: [],
     collationDrops: [],
@@ -2462,6 +2717,7 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
   // Worked out once, up here: the question is about the whole set of new
   // tables, and the routine branch below sees one routine at a time.
   const hoistedSignatures = routinesNeededByNewTables(report);
+  const newKeyNames = keyNamesTheScriptAdds(report);
 
   // ── Table-scoped objects on MATCHED tables ────────────────────────────────
   for (const match of report.matchedTables) {
@@ -2473,16 +2729,25 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
       if (diff.kind === "INDEX") {
         if (diff.status !== "onlyA") {
           const target = findByName(match.right.indexes, diff.name);
-          if (target) phases.indexes.push(dropIndexStatement(target, tableName));
+          // An index whose name a new key is about to take goes first of all.
+          const out = newKeyNames.has(diff.name) ? phases.indexDropsFirst : phases.indexes;
+          if (target) out.push(dropIndexStatement(target, tableName));
         }
         if (diff.status !== "onlyB") {
           const source = findByName(match.left.indexes, diff.name);
           if (source) phases.indexes.push(createIndexStatement(source, tableName));
         }
       } else if (diff.kind === "TRIGGER") {
+        // A trigger that names a column the alters below retype or rebuild has
+        // to be gone before them, not after: see ObjectPhases.beforeAlters.
+        const target = findByName(match.right.triggers, diff.name);
+        const inTheWay = target !== null && namesChangingColumn(match, target.definition);
         if (diff.status === "onlyB") {
-          phases.triggers.push(dropTriggerStatement(diff.name, tableName));
+          (inTheWay ? phases.beforeAlters : phases.triggers).push(
+            dropTriggerStatement(diff.name, tableName)
+          );
         } else {
+          if (inTheWay) phases.beforeAlters.push(dropTriggerForColumnChange(diff.name, tableName));
           const source = findByName(match.left.triggers, diff.name);
           if (source) phases.triggers.push(...createTriggerStatements(source, tableName));
         }
@@ -2512,7 +2777,10 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
         // the roles and the expressions but not the command it applies to, so
         // one rewrite would apply and another would fail on the same shape.
         if (diff.status !== "onlyA") {
-          phases.policies.push(
+          // Same as a trigger: early when it reads a column the alters change.
+          const target = findByName(match.right.rowSecurity?.policies, diff.name);
+          const inTheWay = target !== null && policyNamesChangingColumn(match, target);
+          (inTheWay ? phases.beforeAlters : phases.policies).push(
             dropPolicyStatement(
               diff.name,
               tableName,
@@ -2527,6 +2795,42 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
           if (source) phases.policies.push(createPolicyStatement(source, tableName));
         }
       }
+    }
+
+    // ── Triggers and policies in the way of a column change ─────────────────
+    // The ones that differ were handled in the loop above. One that is the same
+    // on both sides is in no diff, and still stops the script: PostgreSQL will
+    // not change the type of a column that a trigger (UPDATE OF, WHEN) or a
+    // policy (USING, WITH CHECK) names, and a column rebuild's CASCADE removes
+    // it without saying so. So it is dropped before the alters and the source's
+    // copy, which is the same thing, is created again after them.
+    const differingTriggers = new Set(
+      match.objectDiffs.filter((diff) => diff.kind === "TRIGGER").map((diff) => diff.name)
+    );
+    for (const trigger of match.right.triggers ?? []) {
+      if (differingTriggers.has(trigger.name)) continue;
+      if (!namesChangingColumn(match, trigger.definition)) continue;
+      const source = findByName(match.left.triggers, trigger.name);
+      if (!source) continue;
+      phases.beforeAlters.push(dropTriggerForColumnChange(trigger.name, tableName));
+      phases.triggers.push(...createTriggerStatements(source, tableName));
+    }
+    const differingPolicies = new Set(
+      match.objectDiffs.filter((diff) => diff.kind === "POLICY").map((diff) => diff.name)
+    );
+    for (const policy of match.right.rowSecurity?.policies ?? []) {
+      if (differingPolicies.has(policy.name)) continue;
+      if (!policyNamesChangingColumn(match, policy)) continue;
+      const source = findByName(match.left.rowSecurity?.policies, policy.name);
+      if (!source) continue;
+      phases.beforeAlters.push(
+        dropPolicyStatement(
+          policy.name,
+          tableName,
+          " so a column it reads can be changed (it is created again further down)"
+        )
+      );
+      phases.policies.push(createPolicyStatement(source, tableName));
     }
 
     // ── Indexes a column rebuild takes with it ──────────────────────────────
@@ -2599,6 +2903,20 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
   /** Ownership and grant diffs, held aside for the same reason. */
   const privilegeDiffs: ObjectDiff[] = [];
 
+  /**
+   * Functions the script drops and creates again because CREATE OR REPLACE is
+   * refused (see replaceNeedsDrop below), each with its two statements and the
+   * bucket they went into. The pass "Things still using a function that is
+   * replaced" further down reads this.
+   */
+  const replacedFunctions: {
+    target: RoutineSnapshot;
+    drop: SqlStatement;
+    create: SqlStatement;
+    bucket: SqlStatement[];
+    hoisted: boolean;
+  }[] = [];
+
   /** Queue a drop and record it in both sets — the only place that does. */
   function queueViewDrop(view: ViewSnapshot, reason: string) {
     const statement = dropViewStatement(view, reason);
@@ -2652,6 +2970,9 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
         const source = findByName(report.left.sequences, diff.name);
         if (source) phases.beforeTables.push(createSequenceStatement(source));
       } else if (diff.status === "onlyB") {
+        // The table step ties this very sequence to a serial column, so it is
+        // not going anywhere: see sequencesTiedToColumns.
+        if (tiedSequences.has(diff.name)) continue;
         phases.afterTables.push(
           objectStatement({
             sql: `DROP SEQUENCE IF EXISTS ${q(diff.name)};`,
@@ -2770,12 +3091,26 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
         const bucket = hoistedSignatures.has(source.signature)
           ? phases.hoistedRoutines
           : phases.routines;
+        const create = createRoutineStatement(source);
         if (target && diff.replaceNeedsDrop === true) {
-          bucket.push(
-            dropRoutineStatement(target, " so it can be recreated with its new signature")
+          const drop = dropRoutineStatement(
+            target,
+            " so it can be recreated with its new signature"
           );
+          bucket.push(drop);
+          // Remembered for the pass further down that looks at what still uses
+          // the function. A procedure is left out: nothing can depend on one.
+          if (target.kind === "FUNCTION") {
+            replacedFunctions.push({
+              target,
+              drop,
+              create,
+              bucket,
+              hoisted: bucket === phases.hoistedRoutines,
+            });
+          }
         }
-        bucket.push(createRoutineStatement(source));
+        bucket.push(create);
       }
       continue;
     }
@@ -2898,6 +3233,96 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
         phases.retypeBlockedBy.set(sourceName, blocked);
       }
     }
+  }
+
+  // ── Things still using a function that is replaced ───────────────────────
+  // A changed return type or argument name is written as DROP FUNCTION plus
+  // CREATE, and PostgreSQL refuses the drop while anything in the target still
+  // uses the function: "cannot drop function g(integer) because other objects
+  // depend on it". A view, default, check or index that is identical on both
+  // sides is in no diff, so nothing moved it out of the way and the whole
+  // script stopped there.
+  //
+  // Two answers, depending on what uses it:
+  //  - only plain views: drop them up front, the same way the block above does
+  //    for a column type change, and let the CASCADE walk below rebuild them
+  //    from the source once the new function exists;
+  //  - anything else: leave the function alone and say so in a MANUAL note.
+  //    Taking a default, a check, an index or a generated column off a table
+  //    and putting it back is a rebuild of that table's rules, which is too
+  //    much to do silently for the sake of a function, and a statement that is
+  //    certain to fail takes every other change in the script down with it.
+  for (const replaced of replacedFunctions) {
+    const name = replaced.target.name;
+    const uses = tableUsesOfRoutine(report, name);
+    const viewsInTheWay: ViewSnapshot[] = [];
+    for (const view of rightViews) {
+      if (!expressionCallsRoutine(view.definition, name)) continue;
+      // Already dropped by name, and the view drops run before the functions
+      // (but after the hoisted ones, which is why those are not let through).
+      if (viewsBeingDropped.has(view.name) && !replaced.hoisted) continue;
+      // DROP VIEW ... CASCADE reaches the views built on this one. If one of
+      // them is a materialized view its rows would go too, and safe mode must
+      // never do that, so such a view counts as still in use.
+      const takesRows = viewsCascadedBy(rightViews, new Set([view.name])).some(
+        (victim) => victim.materialized
+      );
+      // Only drop what can be put back, as in the block above.
+      if (replaced.hoisted || takesRows || !findByName(leftViews, view.name)) {
+        uses.push(
+          view.materialized
+            ? `the materialized view "${view.name}"`
+            : takesRows
+              ? `the view "${view.name}" (a materialized view is built on it)`
+              : `the view "${view.name}"`
+        );
+      } else {
+        viewsInTheWay.push(view);
+      }
+    }
+
+    if (uses.length === 0) {
+      for (const view of viewsInTheWay) {
+        // A view that calls two replaced functions is only queued once.
+        if (viewsBeingDropped.has(view.name)) continue;
+        queueViewDrop(view, " so a function it calls can be replaced");
+        cascadingRelations.add(view.name);
+      }
+      continue;
+    }
+
+    // Still in use: take the DROP and the CREATE out together (the CREATE alone
+    // would be refused, that is why the pair exists) and leave a note where
+    // they stood. The function keeps its old definition, the rest of the
+    // script runs, and the next comparison still reports the difference.
+    for (const view of viewsInTheWay) uses.push(`the view "${view.name}"`);
+    const signature = replaced.target.signature;
+    const at = replaced.bucket.indexOf(replaced.drop);
+    const kept = replaced.bucket.filter(
+      (statement) => statement !== replaced.drop && statement !== replaced.create
+    );
+    kept.splice(
+      at,
+      0,
+      manualNote(
+        `function "${signature}" has to be dropped before it can be created again, because ` +
+          `its return type or an argument name changed, and PostgreSQL refuses to drop a ` +
+          `function that is still in use. Still using it: ${uses.join(", ")}. Take those out ` +
+          `of the way, drop the function, create it from the source, then put them back. ` +
+          `If this script removes them itself further down, compare again after running it ` +
+          `and the function is replaced then. Until then it keeps its old definition.`,
+        `Function "${signature}" needs replacing by hand, something still uses it`,
+        name
+      )
+    );
+    replaced.bucket.length = 0;
+    replaced.bucket.push(...kept);
+    phases.warnings.push(
+      `Function "${signature}" is not replaced: its return type or an argument name ` +
+        `changed, so it has to be dropped first, and PostgreSQL refuses to drop a function ` +
+        `that is still in use (${uses.join(", ")}). It keeps its old definition; see the ` +
+        `MANUAL note in the script.`
+    );
   }
 
   const cascaded = viewsCascadedBy(rightViews, cascadingRelations);
@@ -3267,21 +3692,29 @@ function inboundForeignKeysByTable(
       if (!referenced || !renamedTo.has(referenced)) continue;
       if (owner.handled.has(fk.name)) continue;
       const referencedColumnsAfterRename = afterRename(referenced, fk.referencedColumns);
+      const columnsAfterRename = afterRename(owner.table.name, fk.columns);
+      const referencedAfterRename = renamedTo.get(referenced) ?? referenced;
+      // True when the key's own text names something by a name it no longer has.
+      const renamed =
+        referencedAfterRename !== referenced ||
+        columnsAfterRename.some((name, at) => name !== fk.columns[at]) ||
+        referencedColumnsAfterRename.some((name, at) => name !== fk.referencedColumns[at]);
       const entry: InboundForeignKey = {
         tableName: renamedTo.get(owner.table.name) ?? owner.table.name,
         fk,
         survives: owner.survives,
         referencedColumnsAfterRename,
-        // The tables and columns may be mid-rename, so the key cannot go back
-        // verbatim: it would name a table or column that no longer exists.
+        // The tables and columns may be mid-rename, and then the key cannot go
+        // back verbatim: it would name a table or column that no longer exists.
         definition: buildFkDef(
           {
             ...fk,
-            columns: afterRename(owner.table.name, fk.columns),
-            referencedTable: renamedTo.get(referenced) ?? referenced,
+            columns: columnsAfterRename,
+            referencedTable: referencedAfterRename,
             referencedColumns: referencedColumnsAfterRename,
           },
-          targetSchema
+          targetSchema,
+          renamed
         ),
       };
       const list = byTable.get(referenced);
@@ -3431,6 +3864,55 @@ function constraintsAfterColumnRebuild(
   return { stmts, fkStmts };
 }
 
+/**
+ * The note written beside an ADD COLUMN when the comparison thinks the new
+ * column may be an old one under a new name, but was not sure enough to write
+ * a RENAME itself.
+ *
+ * Without it the script only shows an ADD and a DROP. Run as they are, the new
+ * column starts empty and the values stay behind in the old one (or go with it
+ * when data loss is allowed). The note says so and gives the ready RENAME, so
+ * the reader who knows it is a rename has the statement to use.
+ */
+function possibleColumnRenameNote(
+  match: TableMatch,
+  newColumn: string,
+  tName: string
+): SqlStatement | null {
+  const guess = match.possibleColumnMatches.find((candidate) => candidate.leftName === newColumn);
+  if (!guess) return null;
+  // Only a pair this script really adds and drops.
+  if (!match.columnsOnlyInB.some((col) => col.name === guess.rightName)) return null;
+  const rename =
+    `ALTER TABLE ${q(tName)} RENAME COLUMN ${q(guess.rightName)} TO ${q(guess.leftName)};`;
+  return manualNote(
+    `"${guess.rightName}" and "${guess.leftName}" in "${tName}" may be one column that was ` +
+      `renamed (${columnMatchPercent(guess.score)}% match). This script adds ` +
+      `"${guess.leftName}" as a new, empty column and drops "${guess.rightName}" (the drop ` +
+      `is held back in safe mode), so the values are not carried over. If it is a rename, run this in place of that ADD COLUMN ` +
+      `and DROP COLUMN pair, then compare again: ${rename}`,
+    `Possible rename of column "${guess.rightName}" to "${guess.leftName}" in "${tName}"`,
+    tName
+  );
+}
+
+/** The same note for a table: see possibleColumnRenameNote. */
+function possibleTableRenameNote(report: CompareReport, newTable: string): SqlStatement | null {
+  const guess = report.possibleTableMatches.find((candidate) => candidate.leftName === newTable);
+  if (!guess) return null;
+  if (!report.tablesOnlyInB.some((table) => table.name === guess.rightName)) return null;
+  const rename = `ALTER TABLE ${q(guess.rightName)} RENAME TO ${q(guess.leftName)};`;
+  return manualNote(
+    `"${guess.rightName}" and "${guess.leftName}" may be one table that was renamed ` +
+      `(${guess.score}% match). This script creates "${guess.leftName}" as a new, empty ` +
+      `table and drops "${guess.rightName}" (the drop is held back in safe mode), so the ` +
+      `rows are not carried over. If it is a ` +
+      `rename, run this on the target first, then compare again: ${rename}`,
+    `Possible rename of table "${guess.rightName}" to "${guess.leftName}"`,
+    newTable
+  );
+}
+
 function alterStatementsForMatch(
   match: TableMatch,
   sourceSchema: string,
@@ -3478,8 +3960,25 @@ function alterStatementsForMatch(
     }
   }
 
+  // PostgreSQL refuses ALTER COLUMN ... TYPE on a column that a computed column
+  // reads. So a computed column that reads a column retyped in section c is
+  // added after that section, not before or in the middle of it: its statements
+  // are collected here and appended once the type changes are written.
+  const afterTypeChanges: SqlStatement[] = [];
+
+  // PostgreSQL refuses DROP NOT NULL on a column that is still in a primary
+  // key ("column is in a primary key"). So for a column in the TARGET's key the
+  // statement waits here and is written in section d, after the constraint
+  // drops, where the old key is already gone.
+  const afterKeyDrops: SqlStatement[] = [];
+  const targetKeyColumns = new Set(match.right.primaryKey?.columns ?? []);
+
   // ── b. Add columns that exist in A but are absent from B ─────────────────
   for (const col of match.columnsOnlyInA) {
+    const out =
+      col.generated && namesRetypedColumn(match, col.generated.expression, "left")
+        ? afterTypeChanges
+        : stmts;
     // NOT NULL with no default is the one shape PostgreSQL cannot add to a
     // table that already has rows: there is no value to put in them. Writing it
     // as one ALTER TABLE ADD COLUMN … NOT NULL makes the whole script abort,
@@ -3494,8 +3993,10 @@ function alterStatementsForMatch(
     // the `serial` shorthand cannot describe — see columnSequenceStatements.
     const serialOk = usesSerialShorthand(plan, tName, col.name);
     const tunedSerial = columnSequenceStatements(col, tName, serialOk);
-    stmts.push(...tunedSerial.before);
-    stmts.push({
+    const renameNote = possibleColumnRenameNote(match, col.name, tName);
+    if (renameNote) out.push(renameNote);
+    out.push(...tunedSerial.before);
+    out.push({
       sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky, serialOk)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
@@ -3505,8 +4006,8 @@ function alterStatementsForMatch(
       tableName: tName,
       destructive: false,
     });
-    if (risky) stmts.push(restoreNotNullStatement(col, tName));
-    stmts.push(...tunedSerial.after);
+    if (risky) out.push(restoreNotNullStatement(col, tName));
+    out.push(...tunedSerial.after);
   }
 
   // A key on another table may be holding a column or a key of this one in
@@ -3514,8 +4015,35 @@ function alterStatementsForMatch(
   // once, whether a column rebuild below or a key drop further down finds it.
   const clearedInbound = new Set<string>();
 
+  // ── Computed columns in the way of a type change ─────────────────────────
+  // The other half of the rule above afterTypeChanges: a computed column the
+  // TARGET has, which reads a column retyped below, must be out of the way
+  // before that statement runs.
+  //
+  // One that only the target has is dropped in section e, at the very end. That
+  // is too late here, so its drop is written now and section e skips it.
+  const droppedBeforeTypeChanges = new Set<string>();
+  for (const col of match.columnsOnlyInB) {
+    if (!col.generated || !namesRetypedColumn(match, col.generated.expression, "right")) continue;
+    stmts.push(dropColumnOnlyInTarget(col, tName));
+    droppedBeforeTypeChanges.add(col.name);
+  }
+  // One that both sides have is handled inside the loop below, where it stops
+  // computing or is rebuilt. Those columns only need to be visited first, so
+  // that their DROP EXPRESSION or DROP COLUMN is written before the type change
+  // of the column they read. Every other column keeps its place.
+  const readsRetypedColumn = (col: TableMatch["columnMatches"][number]) =>
+    !!col.right.generated && namesRetypedColumn(match, col.right.generated.expression, "right");
+  const columnMatchesInOrder = [
+    ...match.columnMatches.filter(readsRetypedColumn),
+    ...match.columnMatches.filter((col) => !readsRetypedColumn(col)),
+  ];
+  // In safe mode some of those computed columns stay, and the type change
+  // behind each has to stay with it.
+  const heldForComputed = retypesBehindKeptComputedColumns(match);
+
   // ── c. Type, nullability and default changes on matched columns ──────────
-  for (const colMatch of match.columnMatches) {
+  for (const colMatch of columnMatchesInOrder) {
     // After the rename step above, this column is now called colMatch.left.name in B.
     const colName = colMatch.left.name;
     const leftNorm = normalizeType(colMatch.left.typeDisplay);
@@ -3547,7 +4075,22 @@ function alterStatementsForMatch(
         tableName: tName,
         destructive: false,
       });
-    } else if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
+    } else if (
+      leftComputed !== null &&
+      rightComputed !== null &&
+      (leftComputed !== rightComputed || rebuiltForTypeChange(match, colMatch))
+    ) {
+      // The second half of that test is a computed column that is the same on
+      // both sides and reads a column whose type changes: see
+      // rebuiltForTypeChange. It takes the same DROP/ADD route.
+      const forTypeChange = leftComputed === rightComputed;
+      // The ADD half waits for the type changes when the column it brings back
+      // reads one of the retyped columns (see afterTypeChanges).
+      const addTo =
+        colMatch.left.generated &&
+        namesRetypedColumn(match, colMatch.left.generated.expression, "left")
+          ? afterTypeChanges
+          : stmts;
       // Name them. "CASCADE takes any view built on it" tells the reader a rule;
       // this tells them which of their views it is about to remove, and the
       // caller has already queued the source's copy of each for rebuild.
@@ -3595,7 +4138,10 @@ function alterStatementsForMatch(
         sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
         description:
           `Drop column "${colName}" from "${tName}" so it can be rebuilt — ` +
-          "WARNING: PostgreSQL cannot change a generated column in place, and " +
+          (forTypeChange
+            ? "WARNING: PostgreSQL cannot change the type of a column that a generated " +
+              "column reads, so the generated column is rebuilt around the change, and "
+            : "WARNING: PostgreSQL cannot change a generated column in place, and ") +
           `CASCADE takes any index or view built on it${cascadeNote}` +
           (dropsStoredValues
             ? `; the values in "${colName}" are stored data and the new expression does not bring them back`
@@ -3622,8 +4168,8 @@ function alterStatementsForMatch(
       // it asks the same question the add-column section does.
       const rebuiltSerialOk = usesSerialShorthand(plan, tName, colMatch.left.name);
       const rebuiltSequence = columnSequenceStatements(colMatch.left, tName, rebuiltSerialOk);
-      stmts.push(...rebuiltSequence.before);
-      stmts.push({
+      addTo.push(...rebuiltSequence.before);
+      addTo.push({
         sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left, risky, rebuiltSerialOk)};`,
         description:
           (colMatch.left.generated
@@ -3635,13 +4181,13 @@ function alterStatementsForMatch(
         tableName: tName,
         destructive: false,
       });
-      if (risky) stmts.push(restoreNotNullStatement(colMatch.left, tName));
-      stmts.push(...rebuiltSequence.after);
+      if (risky) addTo.push(restoreNotNullStatement(colMatch.left, tName));
+      addTo.push(...rebuiltSequence.after);
       // CASCADE took the column's constraints as well as its indexes. The
       // indexes are put back in objectPhases, where the create lands after every
       // ADD COLUMN; the constraints are put back here.
       const backAfterRebuild = constraintsAfterColumnRebuild(match, colName, tName, sourceSchema);
-      stmts.push(...backAfterRebuild.stmts);
+      addTo.push(...backAfterRebuild.stmts);
       fkStmts.push(...backAfterRebuild.fkStmts);
       continue;
     }
@@ -3657,8 +4203,13 @@ function alterStatementsForMatch(
       colMatch.left.identity !== undefined && colMatch.right.identity !== undefined;
     const leftIdentity = identityRecorded ? (colMatch.left.identity ?? null) : null;
     const rightIdentity = identityRecorded ? (colMatch.right.identity ?? null) : null;
-    const leftSerial = isNextvalDefault(colMatch.left.columnDefault);
-    const rightSerial = isNextvalDefault(colMatch.right.columnDefault);
+    // A serial is a nextval default on a sequence the column OWNS. A nextval
+    // default on a standalone sequence is a plain default, set and dropped like
+    // any other: the script must not tie that sequence to this column or move
+    // its value. serialSides is the compare engine's rule, used here unchanged.
+    const serial = serialSides(colMatch.left, colMatch.right);
+    const leftSerial = serial.left;
+    const rightSerial = serial.right;
     const leftDefault = colMatch.left.columnDefault?.trim() || null;
     const rightDefault = colMatch.right.columnDefault?.trim() || null;
     // Set when the type change takes the target's default off first. The
@@ -3744,6 +4295,9 @@ function alterStatementsForMatch(
         severity,
         tableName: tName,
         destructive: false,
+        // Held back with the computed column that reads it, when safe mode
+        // keeps that column: see retypesBehindKeptComputedColumns.
+        ...(heldForComputed.has(colName) ? { needsArmedDrop: true } : {}),
       });
     } else if (
       // Same type, different collation. There is no SET COLLATE in PostgreSQL:
@@ -3775,6 +4329,7 @@ function alterStatementsForMatch(
         severity: collationChangeSeverity(),
         tableName: tName,
         destructive: false,
+        ...(heldForComputed.has(colName) ? { needsArmedDrop: true } : {}),
       });
     }
 
@@ -3789,7 +4344,9 @@ function alterStatementsForMatch(
           destructive: false,
         });
       } else {
-        stmts.push({
+        // See afterKeyDrops: a column in the target's primary key has to wait.
+        const out = targetKeyColumns.has(colMatch.right.name) ? afterKeyDrops : stmts;
+        out.push({
           sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP NOT NULL;`,
           description: `Allow nulls on "${colName}" in "${tName}"`,
           kind: "ALTER_COLUMN_NULLABILITY",
@@ -4071,7 +4628,55 @@ function alterStatementsForMatch(
         });
       }
     }
+
+    // The target column is a serial and the source column reads a sequence it
+    // does not own. The default above now reads the source's sequence, but the
+    // target column still owns its old one, and a column that owns a sequence
+    // and has a nextval default is a serial again on the next compare. So the
+    // old sequence is let go: dropped when the source has no sequence by that
+    // name, and only untied from the column when it does.
+    const oldSequence = nextvalSequenceName(rightDefault);
+    if (
+      rightSerial &&
+      !leftSerial &&
+      leftIdentity === null &&
+      rightIdentity === null &&
+      isNextvalDefault(leftDefault) &&
+      colMatch.left.sequenceOptions === null &&
+      oldSequence !== null
+    ) {
+      const sourceHasIt =
+        sourceSequences === undefined ||
+        sourceSequences.some((seq) => seq.name === oldSequence);
+      if (sourceHasIt) {
+        stmts.push({
+          sql: `ALTER SEQUENCE IF EXISTS ${q(oldSequence)} OWNED BY NONE;`,
+          description:
+            `Untie sequence "${oldSequence}" from "${colName}" in "${tName}": ` +
+            "in the source this column reads a sequence it does not own",
+          kind: "ALTER_SEQUENCE",
+          severity: "safe",
+          tableName: tName,
+          destructive: false,
+        });
+      } else {
+        stmts.push({
+          sql: `DROP SEQUENCE IF EXISTS ${q(oldSequence)};`,
+          description:
+            `Drop sequence "${oldSequence}": "${colName}" in "${tName}" no longer ` +
+            "reads it and the source does not have it",
+          kind: "DROP_SEQUENCE",
+          severity: "breaking",
+          tableName: tName,
+          destructive: false,
+        });
+      }
+    }
   }
+
+  // Every type change is written. The computed columns that were waiting for
+  // them go in now, ahead of the constraints in section d that may name them.
+  stmts.push(...afterTypeChanges);
 
   // ── d. Constraint diffs ──────────────────────────────────────────────────
   // Drop order: FKs first so we remove the dependency before anything else.
@@ -4112,6 +4717,9 @@ function alterStatementsForMatch(
       destructive: false,
     });
   }
+
+  // The old primary key is gone now, so its columns may be made nullable.
+  stmts.push(...afterKeyDrops);
 
   // Add order: non-FKs here; FK ADDs are deferred into fkStmts so they
   // run after every table's ADD COLUMN across ALL matched/created tables.
@@ -4161,17 +4769,196 @@ function alterStatementsForMatch(
   // constraint drops above) and with CASCADE + IF EXISTS so it never trips over
   // a dependent index/constraint and stays idempotent on re-run.
   for (const col of match.columnsOnlyInB) {
-    stmts.push({
-      sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(col.name)} CASCADE;`,
-      description: `Drop column "${col.name}" from "${tName}" — WARNING: removes the column and all its data`,
-      kind: "DROP_COLUMN",
-      severity: "breaking",
-      tableName: tName,
-      destructive: true,
-    });
+    // Already written, ahead of the type change it stood in the way of.
+    if (droppedBeforeTypeChanges.has(col.name)) continue;
+    stmts.push(dropColumnOnlyInTarget(col, tName));
   }
 
   return { stmts, fkStmts };
+}
+
+/** The drop of a column that only the target has. Section e above explains it. */
+function dropColumnOnlyInTarget(col: ColumnSnapshot, tName: string): SqlStatement {
+  return {
+    sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(col.name)} CASCADE;`,
+    description: `Drop column "${col.name}" from "${tName}" — WARNING: removes the column and all its data`,
+    kind: "DROP_COLUMN",
+    severity: "breaking",
+    tableName: tName,
+    destructive: true,
+  };
+}
+
+/**
+ * Renames for the sequences behind serial and identity columns, where the two
+ * sides call the same column's sequence by different names.
+ *
+ * It happens when the source was built fresh under a new table name and the
+ * target was not: the source has "customers" with "customers_id_seq", the
+ * target has "customer" with "customer_id_seq". Renaming the table (or having
+ * renamed it by hand earlier) leaves the target's sequence under its old name,
+ * while the owner and grant statements at the end of the script name it the
+ * way the source does. PostgreSQL then stops on "relation customers_id_seq
+ * does not exist" and the whole run rolls back.
+ *
+ * So the sequence is renamed too, which is also what makes the two schemas
+ * level afterwards. The column's default follows the sequence itself, not its
+ * name, so nothing else has to change. IF EXISTS so a second run, when the old
+ * name is already gone, skips it.
+ */
+function ownedSequenceRenames(report: CompareReport): SqlStatement[] {
+  const sourceSequences = report.left.sequences ?? [];
+  const targetSequences = report.right.sequences ?? [];
+  // Tables, views and sequences share one set of names in a schema, so a new
+  // name that something in the target already has cannot be taken.
+  const taken = new Set<string>([
+    ...report.right.tables.map((table) => table.name),
+    ...(report.right.views ?? []).map((view) => view.name),
+    ...targetSequences.map((sequence) => sequence.name),
+  ]);
+
+  const statements: SqlStatement[] = [];
+  for (const match of report.matchedTables) {
+    for (const col of match.columnMatches) {
+      // Read the owner as a name: it comes back quoted when it needs quotes.
+      const source = sourceSequences.filter(
+        (seq) =>
+          sequenceOwnerTable(seq, report.left.schema) === match.left.name &&
+          seq.ownedByColumn === col.left.name
+      );
+      const target = targetSequences.filter(
+        (seq) =>
+          sequenceOwnerTable(seq, report.right.schema) === match.right.name &&
+          seq.ownedByColumn === col.right.name
+      );
+      // A column owns one sequence in practice. With none or several on either
+      // side there is no pair to rename, so leave it alone.
+      if (source.length !== 1 || target.length !== 1) continue;
+      const from = target[0].name;
+      const to = source[0].name;
+      if (from === to || taken.has(to)) continue;
+      taken.add(to);
+      statements.push({
+        sql: `ALTER SEQUENCE IF EXISTS ${q(from)} RENAME TO ${q(to)};`,
+        description:
+          `Rename sequence "${from}" → "${to}" (the sequence behind ` +
+          `"${match.left.name}"."${col.left.name}", to match the source)`,
+        kind: "ALTER_SEQUENCE",
+        severity: "info",
+        tableName: match.left.name,
+        destructive: false,
+      });
+    }
+  }
+  return statements;
+}
+
+/**
+ * Does `text` name `name` as a whole identifier?
+ *
+ * The same kind of text search as expressionCallsRoutine, and wrong in the same
+ * safe direction: a string literal holding the word counts as a use, which only
+ * ever holds one more drop back.
+ */
+function mentionsName(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}($|[^A-Za-z0-9_$])`, "i").test(text);
+}
+
+/** Where a column can name a type, a sequence, a function or a collation. */
+function columnUses(column: ColumnSnapshot): string[] {
+  return [
+    column.typeDisplay,
+    column.columnDefault ?? "",
+    column.generated?.expression ?? "",
+    column.collation ?? "",
+  ];
+}
+
+/**
+ * The text of everything safe mode leaves standing in the target because the
+ * statement that removes it is commented out: a table that is not dropped, a
+ * materialized view that is not dropped, and the columns of a table whose
+ * column drop or type change is held back.
+ */
+function usesKeptBySafeMode(report: CompareReport, statements: SqlStatement[]): string[] {
+  const kept: string[] = [];
+  for (const statement of statements) {
+    if (!statement.destructive && statement.needsArmedDrop !== true) continue;
+    if (statement.kind === "DROP_TABLE") {
+      const table = report.tablesOnlyInB.find((t) => t.name === statement.tableName);
+      if (!table) continue;
+      kept.push(...table.columns.flatMap(columnUses));
+      // A table that stays keeps its constraints, indexes, triggers and
+      // policies as well, and each of them can call a function.
+      for (const check of table.checkConstraints) kept.push(check.definition);
+      for (const exclude of table.excludeConstraints) kept.push(exclude.definition);
+      for (const index of table.indexes ?? []) kept.push(index.definition);
+      for (const trigger of table.triggers ?? []) kept.push(trigger.definition);
+      for (const policy of table.rowSecurity?.policies ?? []) {
+        kept.push(policy.using ?? "", policy.withCheck ?? "");
+      }
+    } else if (statement.kind === "DROP_VIEW") {
+      const view = findByName(report.right.views, statement.tableName);
+      if (view) kept.push(view.definition);
+    } else if (statement.kind === "DROP_COLUMN" || statement.kind === "ALTER_COLUMN_TYPE") {
+      // The statement does not say which column it is, so every column of the
+      // table counts. That can only hold back a drop that would have worked.
+      const match = report.matchedTables.find((m) => m.left.name === statement.tableName);
+      if (match) kept.push(...match.right.columns.flatMap(columnUses));
+    }
+  }
+  return kept;
+}
+
+/**
+ * Safe mode: hold back the drop of a type, sequence, function or collation
+ * that something safe mode leaves in place still uses. Returns how many drops
+ * were held back.
+ *
+ * The target had an extra column `orders.status` of the enum `order_status`.
+ * Safe mode commented the column drop out and then ran `DROP TYPE order_status`
+ * live. PostgreSQL refuses to drop a type a column still has, and inside the
+ * one transaction the apply route uses that took every other change in the
+ * script down with it. The same happened with a sequence in a held-back
+ * column's default and a function in a held-back table's CHECK.
+ *
+ * `drops` are the candidate statements, in the order the script runs them.
+ * A drop that is held back keeps its own object in the target, and that object
+ * can use another one (a function takes an enum, a domain sits on a type), so
+ * the search repeats until a pass holds nothing new.
+ */
+function holdBackDropsStillInUse(
+  report: CompareReport,
+  statements: SqlStatement[],
+  drops: SqlStatement[]
+): number {
+  const kept = usesKeptBySafeMode(report, statements);
+  if (kept.length === 0) return 0;
+
+  let heldBack = 0;
+  let foundOne = true;
+  while (foundOne) {
+    foundOne = false;
+    for (const drop of drops) {
+      if (drop.needsArmedDrop === true) continue;
+      const name = drop.tableName;
+      if (!kept.some((text) => mentionsName(text, name))) continue;
+      drop.needsArmedDrop = true;
+      heldBack++;
+      foundOne = true;
+      // What the object that now stays uses in its turn.
+      if (drop.kind === "DROP_TYPE") {
+        const type = findByName(report.right.types, name);
+        if (type) kept.push(type.definition);
+      } else if (drop.kind === "DROP_ROUTINE") {
+        for (const routine of report.right.routines ?? []) {
+          if (routine.name === name) kept.push(routine.definition);
+        }
+      }
+    }
+  }
+  return heldBack;
 }
 
 // ---------------------------------------------------------------------------
@@ -4289,6 +5076,16 @@ export function generateMigration(
     }
   }
 
+  // ── Rename owned sequences ────────────────────────────────────────────────
+  // Straight after the table renames, so everything below (the sequence
+  // settings in the alters, the owner and grant statements at the end) can use
+  // the source's name for a serial or identity column's sequence.
+  statements.push(...ownedSequenceRenames(report));
+
+  // ── Drop indexes whose name a new key takes ───────────────────────────────
+  // Before the tables are created or altered: see keyNamesTheScriptAdds.
+  statements.push(...objects.indexDropsFirst);
+
   // ── CREATE TABLE for tables only in A ─────────────────────────────────────
   // FK constraints are queued separately (fkStatements) and appended later
   // so the ordering of CREATE TABLE statements doesn't matter.
@@ -4301,6 +5098,8 @@ export function generateMigration(
     const tunedSerials = table.columns.map((col) =>
       columnSequenceStatements(col, table.name, usesSerialShorthand(plan, table.name, col.name))
     );
+    const renameNote = possibleTableRenameNote(report, table.name);
+    if (renameNote) statements.push(renameNote);
     for (const pair of tunedSerials) statements.push(...pair.before);
 
     statements.push({
@@ -4335,9 +5134,17 @@ export function generateMigration(
   // reads a new table finds it.
   statements.push(...objects.routines);
 
+  // ── Triggers and policies in the way of the alters ────────────────────────
+  // Dropped here, after the table renames (they name the table the way the
+  // source does) and before the first ALTER COLUMN ... TYPE. Each one the source
+  // keeps is created again in the trigger and policy phases below.
+  statements.push(...objects.beforeAlters);
+
   // ── Alter matched tables ──────────────────────────────────────────────────
   // Each match yields immediate ALTERs plus any new-FK ADDs, which are deferred
   // into the FK bucket so they run after every table's columns exist.
+  // Counted for the safe-mode warnings at the end of this function.
+  let retypesHeldForComputed = 0;
   for (const match of report.matchedTables) {
     const { stmts, fkStmts } = alterStatementsForMatch(
       match,
@@ -4351,6 +5158,22 @@ export function generateMigration(
     // dropped for has to be held back with it — see ObjectPhases.retypeBlockedBy.
     // Marked rather than skipped, so the reader still sees the statement and the
     // "N held back" count still includes it.
+    // A type change that a computed column safe mode leaves in place would stop
+    // arrives already marked: see retypesBehindKeptComputedColumns. Said here,
+    // by column, because the count at the end cannot say which or why.
+    if (!allowDataLoss) {
+      for (const [column, computed] of retypesBehindKeptComputedColumns(match)) {
+        retypesHeldForComputed++;
+        warnings.push(
+          `The type change of "${column}" in "${match.left.name}" is held back: the computed ` +
+            `column${computed.length === 1 ? "" : "s"} ${computed.map((c) => `"${c}"`).join(", ")} ` +
+            `${computed.length === 1 ? "reads" : "read"} it, safe mode leaves ` +
+            `${computed.length === 1 ? "that column" : "those columns"} in place, and PostgreSQL ` +
+            `refuses to change the type of a column that a computed column uses. Enable ` +
+            `"allow data loss" to run it.`,
+        );
+      }
+    }
     const blockers = objects.retypeBlockedBy.get(match.left.name);
     if (blockers && blockers.length > 0 && !allowDataLoss) {
       for (const stmt of stmts) {
@@ -4503,6 +5326,18 @@ export function generateMigration(
     );
   }
 
+  // ── Safe mode: drops that something held back still needs ─────────────────
+  // Only the drops of objects the target alone has. The drop half of a function
+  // that is dropped and recreated is not in these lists, and must not be: its
+  // CREATE would then run without it.
+  const dropsStillInUse = allowDataLoss
+    ? 0
+    : holdBackDropsStillInUse(report, statements, [
+        ...objects.routineDrops,
+        ...objects.afterTables,
+        ...objects.collationDrops,
+      ]);
+
   const destructiveCount = statements.filter((s) => s.destructive).length;
   const heldBackCount = statements.filter(
     (s) => s.destructive || s.needsArmedDrop === true,
@@ -4513,10 +5348,21 @@ export function generateMigration(
         `commented out. Enable "allow data loss" to include ${destructiveCount === 1 ? "it" : "them"}.`,
     );
   }
+  if (dropsStillInUse > 0) {
+    warnings.push(
+      `${dropsStillInUse} drop${dropsStillInUse === 1 ? "" : "s"} of a type, sequence, ` +
+        `function or collation ${dropsStillInUse === 1 ? "is" : "are"} also commented out: ` +
+        `a table or column that safe mode leaves in place still uses ` +
+        `${dropsStillInUse === 1 ? "it" : "them"}, and PostgreSQL refuses to drop ` +
+        `something that is in use. Enable "allow data loss" to run ` +
+        `${dropsStillInUse === 1 ? "it" : "them"}.`,
+    );
+  }
   // A rebuild that is inert without its drop is held back too, and silently
   // skipping it is what let a safe-mode run report success over a materialized
   // view that still had the old definition and the old rows.
-  const inertCount = heldBackCount - destructiveCount;
+  const inertCount =
+    heldBackCount - destructiveCount - dropsStillInUse - retypesHeldForComputed;
   if (inertCount > 0 && !allowDataLoss) {
     warnings.push(
       `${inertCount} view rebuild${inertCount === 1 ? " is" : "s are"} also commented ` +

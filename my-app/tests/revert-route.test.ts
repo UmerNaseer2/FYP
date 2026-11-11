@@ -77,6 +77,13 @@ jest.mock("../lib/approvals-db", () => ({
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
 
+// The audit trail. The route hands every answer to recordDeployAttempt; the
+// writer itself is tested in tests/deploy-attempts.test.ts.
+const mockRecordAttempt = jest.fn<Promise<void>, unknown[]>(async () => undefined);
+jest.mock("../lib/deploy-attempts-db", () => ({
+  recordDeployAttempt: (...args: unknown[]) => mockRecordAttempt(...args),
+}));
+
 type RouteModule = typeof import("../app/api/scripts/revert/route");
 let POST: RouteModule["POST"];
 
@@ -129,6 +136,10 @@ function ledger(options: {
 } = {}): FakeStep[] {
   return [
     ...(options.first ?? []),
+    // No extension lives in a schema of its own, so the search_path is the
+    // target schema alone (lib/run-settings). Before the schema check below,
+    // because both read pg_namespace.
+    { match: /extnamespace/, rows: [] },
     { match: /FROM pg_namespace/, rows: [{ exists: 1 }] },
     { match: /to_regclass/, rows: [{ reg: "script_patch" }] },
     {
@@ -175,6 +186,7 @@ beforeEach(() => {
   mockClaim.mockResolvedValue(null);
   mockRelease.mockReset();
   mockRelease.mockResolvedValue(undefined);
+  mockRecordAttempt.mockClear();
   mockRecordLineage.mockReset();
   mockRecordLineage.mockResolvedValue({ advanced: false });
   mockFindTracked.mockReset();
@@ -358,8 +370,22 @@ describe("production", () => {
 });
 
 describe("dry run", () => {
-  it("runs the rollback, reports its NOTICEs, then rolls back without claiming", async () => {
+  it("needs the production approval too, and runs nothing without one", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true, acknowledgeProduction: true });
+    expect(res.status).toBe(403);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(
+      "A rollback dry run on production needs a second person's approval. Ask for it in the " +
+        "Approvals panel, then start the dry run again."
+    );
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+  });
+
+  it("runs the rollback, reports its NOTICEs, then rolls back and hands the approval back", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
       ledger({
         first: [
@@ -378,7 +404,9 @@ describe("dry run", () => {
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(count(mockClient, "COMMIT")).toBe(0);
-    expect(mockClaim).not.toHaveBeenCalled();
+    // Claimed for the rehearsal, then given back so it still covers the real rollback.
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(mockRelease).toHaveBeenCalledWith(TEST_ORG.id, 42);
     expect(mockClient.listenersAtRelease).toBe(0);
   });
 });
@@ -904,5 +932,135 @@ describe("a dev connection that reaches a production database", () => {
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(503);
     expect(queryTexts(mockClient)).toEqual([]);
+  });
+});
+
+describe("the settings each down script runs under", () => {
+  it("puts them back before every down script, so one script's SET cannot reach the next", async () => {
+    // A plain SET search_path inside a transaction replaces the route's
+    // SET LOCAL for everything after it (checked on PostgreSQL 18), so v2's
+    // down script would have run in whatever schema v3's left behind.
+    await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
+    const texts = queryTexts(mockClient);
+    const between = texts.slice(texts.indexOf("DROP TABLE t3;"), texts.indexOf("DROP TABLE t2;"));
+    expect(between).toEqual(
+      expect.arrayContaining([
+        "RESET ROLE",
+        "SET LOCAL lock_timeout = 15000",
+        'SET LOCAL search_path TO "sales"',
+        "SET LOCAL check_function_bodies = off",
+      ])
+    );
+    // A rollback has no time limit on a statement, like a real deploy.
+    expect(texts.filter((text) => /statement_timeout/.test(text))).toEqual([]);
+  });
+
+  it("adds a schema that holds only extensions after the target schema", async () => {
+    mockClient = createFakeClient(
+      ledger({ first: [{ match: /extnamespace/, rows: [{ nspname: "extensions" }] }] })
+    );
+    await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(ran(mockClient, 'SET LOCAL search_path TO "sales", "extensions"')).toBe(true);
+  });
+});
+
+describe("dryRun has to be true or false", () => {
+  it("refuses any other value instead of running for real", async () => {
+    for (const dryRun of ["true", 1, "yes", null]) {
+      const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("dryRun must be true or false. Nothing was run.");
+    }
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+    expect(mockClient.queries).toEqual([]);
+  });
+});
+
+describe("a statement that cannot run in a transaction", () => {
+  it("says so in plain words, and rolls back", async () => {
+    mockClient = createFakeClient(
+      ledger({
+        first: [
+          {
+            match: /^DROP TABLE t3;$/,
+            error: {
+              code: "25001",
+              message: "DROP INDEX CONCURRENTLY cannot run inside a transaction block",
+            },
+          },
+        ],
+      })
+    );
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(500);
+    const error = String(res.body.error);
+    expect(error).toContain("The down script for v3.0.0 has a statement that PostgreSQL will not run inside a transaction");
+    expect(error).toContain("Take the word CONCURRENTLY out of the down script");
+    expect(error).toContain("PostgreSQL said: DROP INDEX CONCURRENTLY cannot run inside a transaction block");
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+    expect(count(mockClient, "COMMIT")).toBe(0);
+  });
+});
+
+describe("the audit trail", () => {
+  // What the route hands to recordDeployAttempt: [context, status, body].
+  const recorded = () => mockRecordAttempt.mock.calls[0] as [Record<string, unknown>, number, Record<string, unknown>];
+
+  it("records a rollback that worked, as a rollback", async () => {
+    await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
+    expect(mockRecordAttempt).toHaveBeenCalledTimes(1);
+    const [context, status, body] = recorded();
+    expect(context).toEqual({
+      action: "revert",
+      orgId: TEST_ORG.id,
+      actor: "a@test",
+      connectionId: 7,
+      schemaName: "sales",
+      dryRun: false,
+      scripts: [
+        { script_name: "orders_fix", version: "3.0.0" },
+        { script_name: "orders_fix", version: "2.0.0" },
+      ],
+    });
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+  });
+
+  it("records one that was refused, which used to leave no trace at all", async () => {
+    const res = await revert({ ...BASE, versions: ["9.9.9"] });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const [context, status, body] = recorded();
+    expect(context).toMatchObject({ action: "revert", connectionId: 7, schemaName: "sales" });
+    expect(status).toBe(res.status);
+    expect(body.error).toBe(res.body.error);
+  });
+
+  it("records one that failed and was rolled back", async () => {
+    mockClient = createFakeClient(
+      ledger({ first: [{ match: /^DROP TABLE t3;$/, error: { message: 'table "t3" does not exist' } }] })
+    );
+    await revert({ ...BASE, versions: ["3.0.0"] });
+    const [context, status, body] = recorded();
+    expect(context).toMatchObject({ action: "revert", scripts: [{ script_name: "orders_fix", version: "3.0.0" }] });
+    expect(status).toBe(500);
+    expect(String(body.error)).toContain("The rollback of v3.0.0 failed");
+  });
+
+  it("records an unknown outcome as unknown", async () => {
+    mockClient = createFakeClient(
+      ledger({ first: [{ match: /^COMMIT$/, error: { message: "Connection terminated unexpectedly" } }] })
+    );
+    await revert({ ...BASE, versions: ["3.0.0"] });
+    const [, status, body] = recorded();
+    expect(status).toBe(500);
+    expect(body.outcomeUnknown).toBe(true);
+  });
+
+  it("marks a 503 given before the target was touched, so it is not read as a failed run", async () => {
+    mockFindTracked.mockRejectedValue(new Error("metadata database is unreachable"));
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(503);
+    expect(res.body.nothingRan).toBe(true);
+    expect(recorded()[2].nothingRan).toBe(true);
   });
 });

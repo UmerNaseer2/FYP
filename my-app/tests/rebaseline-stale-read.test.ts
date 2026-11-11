@@ -19,6 +19,8 @@ import { NextRequest } from "next/server";
 import type { SchemaSnapshot } from "../lib/postgres";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { column, schema, table } from "./helpers/snapshots";
+import { compareSchemas } from "../lib/compare";
+import { driftFingerprint } from "../lib/drift-fingerprint";
 
 /** The lineage head each of the two reads reports, and the order they ran in. */
 let headBeforeRead: number | null = null;
@@ -123,14 +125,19 @@ beforeEach(() => {
   mockShapes.head = null;
 });
 
-/** Re-baseline tracked schema 7, with the two head reads answering as set. */
-async function rebaseline(before: number | null, underLock: number | null) {
+/**
+ * Re-baseline tracked schema 7, with the two head reads answering as set.
+ * shownFingerprint is what the drift screen sends: which differences it showed.
+ */
+async function rebaseline(before: number | null, underLock: number | null, shownFingerprint?: string) {
   headBeforeRead = before;
   headUnderLock = underLock;
   const res = await POST(
     new NextRequest("http://localhost/api/lineage/rebaseline", {
       method: "POST",
-      body: JSON.stringify({ trackedSchemaId: 7 }),
+      body: JSON.stringify(
+        shownFingerprint === undefined ? { trackedSchemaId: 7 } : { trackedSchemaId: 7, shownFingerprint }
+      ),
     })
   );
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
@@ -263,5 +270,65 @@ describe("the version a re-baseline gets", () => {
 
     expect(body.changeLevel).toBe("additive");
     expect(body.version).toBe("1.4.0");
+  });
+});
+
+describe("a live schema that changed after the person read the differences", () => {
+  // The reviewer opened the drift screen and saw one added column. The screen
+  // sends the fingerprint of that diff with the re-baseline.
+  const orders = (cols: string[]) => table("orders", cols.map((name) => column(name)));
+  const baseline = schema([orders(["id", "total"])]);
+  const asShown = schema([orders(["id", "total", "note"])]);
+  const shown = driftFingerprint(compareSchemas(baseline, asShown));
+
+  it("saves the new baseline when the live schema still shows those differences", async () => {
+    mockShapes.head = baseline;
+    mockShapes.live = asShown;
+    const { status, body } = await rebaseline(3, 3, shown);
+
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(queryTexts(client)).toContain("COMMIT");
+  });
+
+  it("refuses when somebody dropped a column in the meantime", async () => {
+    // Between the page load and the click, "total" was dropped by hand.
+    mockShapes.head = baseline;
+    mockShapes.live = schema([orders(["id", "note"])]);
+    const { status, body } = await rebaseline(3, 3, shown);
+
+    expect(status).toBe(409);
+    expect(body.code).toBe("stale_view");
+    expect(String(body.error)).toMatch(/changed since this page read it/);
+    expect(String(body.error)).toMatch(/Nothing was saved/);
+  });
+
+  it("writes nothing when it refuses", async () => {
+    mockShapes.head = baseline;
+    mockShapes.live = schema([orders(["id", "note"])]);
+    await rebaseline(3, 3, shown);
+    const sent = queryTexts(client);
+
+    expect(sent.some((q) => /INSERT INTO/.test(q))).toBe(false);
+    expect(sent).toContain("ROLLBACK");
+    expect(sent).not.toContain("COMMIT");
+  });
+
+  it("refuses when the drift was put right in the meantime", async () => {
+    // The live schema is back at the baseline: nothing left of what was shown.
+    mockShapes.head = baseline;
+    mockShapes.live = baseline;
+    const { status, body } = await rebaseline(3, 3, shown);
+
+    expect(status).toBe(409);
+    expect(body.code).toBe("stale_view");
+  });
+
+  it("does not check a caller that sent no fingerprint", async () => {
+    mockShapes.head = baseline;
+    mockShapes.live = schema([orders(["id", "note"])]);
+    const { status } = await rebaseline(3, 3);
+
+    expect(status).toBe(200);
   });
 });

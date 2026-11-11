@@ -1299,7 +1299,10 @@ export type ConnectionDependents = {
   trackedSchemas: number;
   /** Their schema names, for showing in the confirm dialog. */
   schemaNames: string[];
-  /** Snapshots hanging off those tracked schemas (cascade-deleted with them). */
+  /**
+   * Snapshots hanging off those tracked schemas. They go only when their
+   * tracked schema is deleted; deleting the connection keeps them.
+   */
   snapshots: number;
   /** Saved comparison sets that use this connection as their source or a target. */
   comparisonSets: number;

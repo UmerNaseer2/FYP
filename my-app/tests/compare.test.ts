@@ -315,6 +315,30 @@ describe("type analysis", () => {
     expect(extractBaseType("character varying(255)")).toBe("character varying");
     expect(extractBaseType("numeric(10,2)")).toBe("numeric");
     expect(extractBaseType("integer")).toBe("integer");
+    // Only the bracketed size goes. What follows it is part of the type.
+    expect(extractBaseType("timestamp(3) with time zone")).toBe("timestamp with time zone");
+    expect(extractBaseType("character varying(10)[]")).toBe("character varying[]");
+  });
+
+  it("tells a type change from a size change when words follow the size", () => {
+    const kinds = (source: string, target: string) =>
+      compareSchemas(
+        schema([table("t", [column("c", { typeDisplay: source })])]),
+        schema([table("t", [column("c", { typeDisplay: target })])])
+      ).matchedTables[0].columnMatches[0].changes.map((c) => `${c.kind}:${c.severity}`);
+
+    // With and without a time zone are two types: the stored values are read differently.
+    expect(kinds("timestamp(3) with time zone", "timestamp(3) without time zone")).toEqual([
+      "type:breaking",
+    ]);
+    // A list of strings is not a string.
+    expect(kinds("character varying(10)[]", "character varying(10)")).toEqual(["type:breaking"]);
+    // The same type with and without a precision is a size change only.
+    expect(
+      kinds("timestamp(3) without time zone", "timestamp without time zone").map(
+        (k) => k.split(":")[0]
+      )
+    ).toEqual(["size"]);
   });
 
   it("reads the size parameters", () => {

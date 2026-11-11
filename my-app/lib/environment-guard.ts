@@ -17,6 +17,7 @@
 import pool from "@/lib/version-db";
 import { buildPgConfig, type ConnectionInput } from "@/lib/connection-config";
 import { isProduction, type Environment } from "@/lib/environments";
+import { databaseIdentity as sameDatabaseKey } from "@/lib/compare-selection";
 
 /** The permission that may take the Production label off a target. */
 export const UNLABEL_PRODUCTION_PERMISSION = "approvals:approve" as const;
@@ -55,19 +56,21 @@ export type ConnectionTargetRow = {
  * Which database a saved connection reaches, as "host:port/database", or null
  * when it cannot be told (a saved secret this server cannot read).
  *
- * The host is compared as written, in lower case. Two names for one server
- * (an IP address and a DNS name, say) are not recognised as the same; that is
- * a limit of this check, not a promise.
+ * The key itself comes from the helper the Compare screen uses, so the two
+ * "same database?" rules cannot drift apart. Two names for one server (an IP
+ * address and a DNS name, say) are not recognised as the same; that is a
+ * limit of this check, not a promise.
  */
 export function configIdentity(config: {
   host?: string | null;
   port?: number | string | null;
   database?: string | null;
+  user?: string | null;
 }): string | null {
-  const host = String(config.host ?? "").trim().toLowerCase();
+  const host = String(config.host ?? "").trim();
   const database = String(config.database ?? "").trim();
   if (!host || !database) return null;
-  return `${host}:${Number(config.port) || 5432}/${database}`;
+  return sameDatabaseKey({ host, port: config.port, database, user: config.user });
 }
 
 /** databaseIdentity for a stored row: builds its config first. */

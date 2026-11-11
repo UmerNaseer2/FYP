@@ -20,7 +20,7 @@ export type AppFiles = {
   packageJson: string;
   /** splash.html, settings.html and app.css. */
   renderer: string;
-  /** splash.js, settings.js, settings-phone.js and settings-backup.js, compiled from src/renderer. */
+  /** The page scripts (splash.js and the four settings ones), compiled from src/renderer. */
   rendererScripts: string;
   assets: string;
   appPreload: string;

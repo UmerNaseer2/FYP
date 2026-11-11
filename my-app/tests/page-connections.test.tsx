@@ -334,12 +334,15 @@ describe("deleting a connection other things are using", () => {
     fireEvent.click(screen.getByRole("button", { name: /Delete connection/ }));
 
     expect(await screen.findByText("Still in use")).toBeInTheDocument();
-    // The counts are the whole point: a drift history is not recoverable, so
-    // "2 tracked schemas" and "9 snapshots" have to be read before the second
-    // press, not after it.
+    // The counts have to be read before the second press, not after it. The
+    // sentence must also say what really happens: the delete removes only the
+    // connection, so the snapshots and drift history are kept.
     expect(
-      screen.getByText(/2 tracked schemas — deleting it also removes 9 snapshots/)
+      screen.getByText(
+        "2 tracked schemas. The 9 snapshots and the drift history are kept, but the tracked schemas can no longer be checked for drift."
+      )
     ).toBeInTheDocument();
+    expect(screen.queryByText(/also removes/)).not.toBeInTheDocument();
     expect(screen.getByText("shop_dev, shop_staging")).toBeInTheDocument();
     // A saved set survives, so it is described differently from a snapshot.
     expect(screen.getByText(/1 saved comparison set — the set is kept/)).toBeInTheDocument();
@@ -420,6 +423,37 @@ describe("the add drawer", () => {
     expect(within(drawer as HTMLElement).getByText("Paste a connection string first."))
       .toBeInTheDocument();
     expect(fetchCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+  });
+
+  it("names its fields by their labels and takes a failed save to the first wrong field", async () => {
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+    const drawer = within(document.querySelector(".drawer") as HTMLElement);
+
+    // Named by the label, not by the example in the placeholder.
+    const name = drawer.getByLabelText(/^Friendly name/);
+    const uri = drawer.getByLabelText("Connection string");
+    expect(name).toHaveAttribute("aria-required", "true");
+    expect(uri).toHaveAttribute("aria-required", "true");
+    expect(name).not.toHaveAttribute("aria-invalid");
+
+    fireEvent.click(drawer.getByRole("button", { name: "Save connection" }));
+
+    // Both problems are reported at once, each tied to its own field.
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(name).toHaveAccessibleDescription("Give this connection a name.");
+    expect(uri).toHaveAttribute("aria-invalid", "true");
+    expect(uri).toHaveAccessibleDescription("Paste a connection string first.");
+    // Focus lands on the first of them, not on the Save button.
+    expect(name).toHaveFocus();
+
+    // The separate fields carry their labels too.
+    fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
+    for (const label of ["Host", "Port", "Database", "User", /^Password/]) {
+      expect(drawer.getByLabelText(label)).toBeInTheDocument();
+    }
   });
 
   /** Opens the add drawer and returns queries kept inside it. */
@@ -1412,6 +1446,8 @@ describe("the organization's linked computers, on the website", () => {
   };
 
   it("lists what each linked computer keeps, by name only, with whose it is", async () => {
+    // Not an Admin, who is shown every computer (see below).
+    setUser("editor");
     setRoutes([
       { match: "/api/connections/computers", body: COMPUTERS },
       { match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] },
@@ -1442,5 +1478,62 @@ describe("the organization's linked computers, on the website", () => {
     expect(await screen.findByRole("heading", { name: "On linked computers" })).toBeInTheDocument();
     // The person's own computers list (for comparing) is not asked for.
     expect(fetchCalls.some((c) => c.url.startsWith("/api/computers"))).toBe(false);
+    // Reading the list is not being allowed to unlink, even one's own.
+    expect(screen.queryByRole("button", { name: /^Unlink / })).toBeNull();
+  });
+
+  it("lets an Admin unlink anyone's computer, one that keeps no connections included", async () => {
+    setUser("admin");
+    setRoutes([
+      { match: "/api/computers/3", method: "DELETE", body: { ok: true } },
+      { match: "/api/connections/computers", body: COMPUTERS },
+      { match: "/api/connections", body: [] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    // Every linked computer is listed for them, so each can be cut off.
+    expect(await screen.findByText("Spare")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unlink Work laptop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unlink Spare" })).toBeInTheDocument();
+
+    // Nothing is sent on the first press: it asks first, and says whose it is.
+    fireEvent.click(screen.getByRole("button", { name: "Unlink Bea's Mac" }));
+    expect(screen.getByText(/Unlink Bea's Mac, Bea's computer\?/)).toBeInTheDocument();
+    expect(fetchCalls.some((c) => c.method === "DELETE")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Unlink this computer" }));
+    await waitFor(() => expect(screen.queryByText("Bea's Mac")).toBeNull());
+    expect(fetchCalls.some((c) => c.method === "DELETE" && c.url === "/api/computers/3")).toBe(true);
+    expect(screen.getByText("Work laptop")).toBeInTheDocument();
+  });
+
+  it("offers everyone else only their own computer to unlink", async () => {
+    setUser("editor");
+    setRoutes([
+      { match: "/api/connections/computers", body: COMPUTERS },
+      { match: "/api/connections", body: [] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    expect(await screen.findByRole("button", { name: "Unlink Work laptop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Unlink Bea's Mac" })).toBeNull();
+    expect(screen.queryByText("Spare")).toBeNull();
+  });
+
+  it("keeps the computer listed and says why when unlinking is refused", async () => {
+    setUser("admin");
+    const sentence = "That computer is not linked to this organization.";
+    setRoutes([
+      { match: "/api/computers/3", method: "DELETE", status: 404, body: { error: sentence } },
+      { match: "/api/connections/computers", body: COMPUTERS },
+      { match: "/api/connections", body: [] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(await screen.findByRole("button", { name: "Unlink Bea's Mac" }));
+    fireEvent.click(screen.getByRole("button", { name: "Unlink this computer" }));
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByText("Bea's Mac")).toBeInTheDocument();
   });
 });

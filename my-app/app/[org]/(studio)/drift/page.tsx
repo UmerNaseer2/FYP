@@ -43,6 +43,8 @@ import type {
   DriftEventFeedItem,
   TrackedSchemaListItem,
 } from "@/lib/lineage-db";
+// The detail read adds a fingerprint of the differences it found.
+import type { DriftDetailAnswer } from "@/app/api/lineage/drift/route";
 import { apiFetch } from "@/lib/api-fetch";
 
 /**
@@ -446,7 +448,7 @@ function DetailTab({
   const orgPath = useOrgHref();
   // A desktop's copy of one of the website's connections: the website checks it now.
   const onWebsite = tracked.find((t) => t.id === selectedId)?.connectionOnWebsite === true;
-  const [view, setView] = useState<DriftDetailView | null>(null);
+  const [view, setView] = useState<DriftDetailAnswer | null>(null);
   const [history, setHistory] = useState<DriftEventFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -465,7 +467,7 @@ function DetailTab({
       const events = await historyRes.json().catch(() => null);
 
       if (detailRes.ok && detail) {
-        setView(detail as DriftDetailView);
+        setView(detail as DriftDetailAnswer);
         setError(null);
       } else {
         setView(null);
@@ -760,7 +762,7 @@ function DriftHero({
   compareHref,
   onResolved,
 }: {
-  view: DriftDetailView;
+  view: DriftDetailAnswer;
   compareHref: string | null;
   onResolved: () => void;
 }) {
@@ -769,6 +771,9 @@ function DriftHero({
       trackedSchemaId={view.trackedSchemaId}
       state={view.state}
       compareHref={compareHref}
+      // What this page is showing, so a re-baseline accepts these differences
+      // and not whatever the live database holds by the time of the click.
+      shownFingerprint={view.fingerprint ?? null}
       onDone={onResolved}
     />
   );

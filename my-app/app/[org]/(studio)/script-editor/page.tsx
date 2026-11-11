@@ -290,6 +290,8 @@ export default function ScriptEditorPage() {
   // quick presses (or an edit to the box while a save runs) can let a second
   // press through before React re-renders; a ref is read and set at once.
   const attachInFlight = useRef(false);
+  // The box that holds the result of Save. handleSave moves focus to it.
+  const saveOutcomeRef = useRef<HTMLDivElement>(null);
   // The "Add a missing rollback" card: which saved version, and its rollback.
   const [fix, setFix] = useState<{ key: string; version: string; text: string }>({
     key: "",
@@ -955,6 +957,9 @@ export default function ScriptEditorPage() {
       }
     } finally {
       setSaving(false);
+      // The Save button is switched off while saving, which drops keyboard
+      // focus to the top of the page. Put it on the result instead.
+      saveOutcomeRef.current?.focus();
     }
   }
 
@@ -1571,64 +1576,74 @@ export default function ScriptEditorPage() {
               </p>
             )}
 
-            {saveResult && (
-              <div
-                className="mt-3 banner"
-                style={
-                  saveResult.kind === "ok"
-                    ? { background: "var(--sync-soft)", borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)" }
-                    : saveResult.kind === "partial"
-                      ? { background: "var(--drift-soft)", borderColor: "color-mix(in oklab, var(--drift) 30%, transparent)" }
-                      : undefined
-                }
-              >
-                {saveResult.kind === "ok" ? (
-                  <CheckIcon size={16} className="ico" />
-                ) : (
-                  <AlertTriangleIcon size={16} className="ico" />
-                )}
-                <div className="body">
-                  <div
-                    className="title"
-                    style={
-                      saveResult.kind === "ok"
-                        ? { color: "var(--sync)" }
-                        : saveResult.kind === "partial"
-                          ? { color: "var(--text)" }
-                          : undefined
-                    }
-                  >
-                    {saveResult.message}
-                  </div>
-                  {saveResult.kind === "ok" && saveResult.note && (
-                    <div style={{ color: "var(--text-2)" }}>{saveResult.note}</div>
+            {/* What Save did. This box is always on the page, even when empty,
+                so a screen reader says the result out loud when it arrives:
+                politely for a save, at once for a failure. */}
+            <div
+              ref={saveOutcomeRef}
+              tabIndex={-1}
+              role={saveResult?.kind === "err" ? "alert" : "status"}
+              style={{ outline: "none" }}
+            >
+              {saveResult && (
+                <div
+                  className="mt-3 banner"
+                  style={
+                    saveResult.kind === "ok"
+                      ? { background: "var(--sync-soft)", borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)" }
+                      : saveResult.kind === "partial"
+                        ? { background: "var(--drift-soft)", borderColor: "color-mix(in oklab, var(--drift) 30%, transparent)" }
+                        : undefined
+                  }
+                >
+                  {saveResult.kind === "ok" ? (
+                    <CheckIcon size={16} className="ico" />
+                  ) : (
+                    <AlertTriangleIcon size={16} className="ico" />
                   )}
-                  {saveResult.kind === "partial" && (
-                    <div style={{ color: "var(--text-2)" }}>{saveResult.rollbackError}</div>
-                  )}
-                  {saveResult.kind !== "err" && saveResult.url && (
-                    <a href={saveResult.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--text-2)" }}>
-                      View the file on GitHub →
-                    </a>
-                  )}
-                  {/* Saving publishes the version to the registry; it does not
-                      run it anywhere. Without this line the obvious reading of
-                      a green "Saved" is that the migration has been applied,
-                      and the actual next screen was only findable through the
-                      sidebar.
+                  <div className="body">
+                    <div
+                      className="title"
+                      style={
+                        saveResult.kind === "ok"
+                          ? { color: "var(--sync)" }
+                          : saveResult.kind === "partial"
+                            ? { color: "var(--text)" }
+                            : undefined
+                      }
+                    >
+                      {saveResult.message}
+                    </div>
+                    {saveResult.kind === "ok" && saveResult.note && (
+                      <div style={{ color: "var(--text-2)" }}>{saveResult.note}</div>
+                    )}
+                    {saveResult.kind === "partial" && (
+                      <div style={{ color: "var(--text-2)" }}>{saveResult.rollbackError}</div>
+                    )}
+                    {saveResult.kind !== "err" && saveResult.url && (
+                      <a href={saveResult.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--text-2)" }}>
+                        View the file on GitHub →
+                      </a>
+                    )}
+                    {/* Saving publishes the version to the registry; it does not
+                        run it anywhere. Without this line the obvious reading of
+                        a green "Saved" is that the migration has been applied,
+                        and the actual next screen was only findable through the
+                        sidebar.
 
-                      Only on "ok". A partial save means the version went out
-                      without its rollback, and the panel directly below offers
-                      to attach one — which is the better next step, and two
-                      competing ones would just split the reader's attention. */}
-                  {saveResult.kind === "ok" && (
-                    <Link href={orgPath("/deploy")} style={{ color: "var(--text-2)" }}>
-                      Nothing has run yet — deploy it on the Deploy page →
-                    </Link>
-                  )}
+                        Only on "ok". A partial save means the version went out
+                        without its rollback, and the panel directly below offers
+                        to attach one — which is the better next step, and two
+                        competing ones would just split the reader's attention. */}
+                    {saveResult.kind === "ok" && (
+                      <Link href={orgPath("/deploy")} style={{ color: "var(--text-2)" }}>
+                        Nothing has run yet — deploy it on the Deploy page →
+                      </Link>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Add the rollback in the box to the version just saved with this
                 same migration. Its outcome stays after the offer goes away. */}
@@ -1654,6 +1669,7 @@ export default function ScriptEditorPage() {
                   <p
                     className={`text-[12.5px]${attachOffer ? " mt-2" : ""}`}
                     style={{ color: offerHere.kind === "ok" ? "var(--sync)" : "var(--drift)" }}
+                    role={offerHere.kind === "ok" ? "status" : "alert"}
                   >
                     {offerHere.message}
                   </p>
@@ -1759,6 +1775,7 @@ export default function ScriptEditorPage() {
                 <p
                   className={`text-[12.5px]${fixCount > 0 ? " mt-3" : ""}`}
                   style={{ color: fixHere.kind === "ok" ? "var(--sync)" : "var(--drift)" }}
+                  role={fixHere.kind === "ok" ? "status" : "alert"}
                 >
                   {fixHere.message}
                 </p>

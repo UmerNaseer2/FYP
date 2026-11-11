@@ -113,6 +113,26 @@ export const APPROVAL_VALID_HOURS = 24 * 7;
 /** An approval that is still good: approved, and not past its expiry. */
 const UNEXPIRED = `(expires_at IS NULL OR expires_at > now())`;
 
+/**
+ * The saved connection was not edited after this approval was given.
+ *
+ * An approval names a connection by its id only. Without this, someone who may
+ * edit connections could get SQL approved for connection 7, then point
+ * connection 7 at another database and run the approved SQL there, and no
+ * second person would ever have seen that target. So an approval given before
+ * the connection's last saved edit no longer counts, and the run has to be
+ * asked for again. Any saved edit does it, a rename too: simple, and on the
+ * safe side.
+ *
+ * A request still waiting has no decided_at, so it is not affected: the
+ * approver decides on the connection as it is when they look.
+ */
+const CONNECTION_NOT_EDITED_SINCE = `NOT EXISTS (
+  SELECT 1 FROM connections c
+   WHERE c.id = deploy_approvals.connection_id
+     AND c.org_id = deploy_approvals.org_id
+     AND c.updated_at > deploy_approvals.decided_at)`;
+
 const COLUMNS = `id, connection_id, schema_name, script_name, target_version,
   run_fingerprint, migration_count, breaking_count, requested_by, requested_at,
   status, decided_by, decided_at, self_approved, note, used_at, action, expires_at`;
@@ -230,7 +250,9 @@ export async function createApprovalRequest(input: {
         -- An approved row that has expired cannot be claimed, so handing it
         -- back here would show "approved" on a screen whose Deploy button then
         -- says the run needs approval. Let it fall through to a fresh request.
+        -- The same goes for one given before the connection was last edited.
         AND ${UNEXPIRED}
+        AND ${CONNECTION_NOT_EDITED_SINCE}
       ORDER BY id DESC LIMIT 1`,
     [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId]
   );
@@ -442,6 +464,7 @@ export async function listRunsReadyToRun(orgId: number): Promise<ListedApproval[
   const result = await pool.query<ListedApproval>(
     `SELECT ${LISTED_COLUMNS} FROM deploy_approvals
       WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}
+        AND ${CONNECTION_NOT_EDITED_SINCE}
       ORDER BY id LIMIT 100`,
     [orgId]
   );
@@ -452,7 +475,8 @@ export async function countRunsReadyToRun(orgId: number): Promise<number> {
   await syncMetadataTables();
   const result = await pool.query<{ count: number }>(
     `SELECT count(*)::int AS count FROM deploy_approvals
-      WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}`,
+      WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}
+        AND ${CONNECTION_NOT_EDITED_SINCE}`,
     [orgId]
   );
   return result.rows[0]?.count ?? 0;
@@ -548,6 +572,7 @@ export async function findOpenApproval(input: {
         AND run_fingerprint = $3 AND action = $4 AND org_id = $5
         AND status IN ('pending', 'approved')
         AND ${UNEXPIRED}
+        AND ${CONNECTION_NOT_EDITED_SINCE}
       ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END, id ASC
       LIMIT 1`,
     [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId],
@@ -591,6 +616,7 @@ export async function claimApproval(input: {
            AND run_fingerprint = $3 AND action = $4 AND org_id = $5
            AND status = 'approved'
            AND ${UNEXPIRED}
+           AND ${CONNECTION_NOT_EDITED_SINCE}
          ORDER BY id ASC LIMIT 1
          FOR UPDATE SKIP LOCKED
       ) AND org_id = $5

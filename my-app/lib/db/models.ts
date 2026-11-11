@@ -909,6 +909,7 @@ export class AgentLinkRow extends Model<
   declare approved_org_id: number | null;
   declare approved_profile_id: number | null;
   declare approved_at: Date | null;
+  declare caller_hash: string | null;
 }
 
 AgentLinkRow.init(
@@ -925,6 +926,10 @@ AgentLinkRow.init(
     approved_org_id: { type: DataTypes.INTEGER, allowNull: true },
     approved_profile_id: { type: DataTypes.INTEGER, allowNull: true },
     approved_at: { type: DataTypes.DATE, allowNull: true },
+    // Who asked, as a hash of their network address, so that one caller
+    // cannot take every waiting place (lib/agent-db.ts openLink). Null where
+    // the address is not known.
+    caller_hash: { type: DataTypes.TEXT, allowNull: true },
   },
   { sequelize, tableName: "agent_links" }
 );

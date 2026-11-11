@@ -175,30 +175,34 @@ body {
   --border-strong:#d4d4d8;
   --text:         #18181b;
   --text-2:       #52525b;
-  --text-3:       #8a8a93;
+  /* Text colours here are checked against WCAG AA (4.5:1) on every surface
+     and soft tint of this theme by tests/globals-contrast.test.ts. --text-3,
+     --brand, --sync, --pending, --drift and --break were each too light for
+     small text, most of all on their own tints (pills, the + and - chips). */
+  --text-3:       #6b6b74;
   --text-inv:     #ffffff;
 
-  --brand:        #6366f1;
+  --brand:        #585be9;
   --brand-2:      #4f52e0;
   --brand-soft:   #eef0ff;
   --brand-soft-2: #dde0ff;
 
-  --sync:         #16a34a;
+  --sync:         #107535;
   --sync-soft:    #e6f6ec;
-  --pending:      #2563eb;
+  --pending:      #2260e8;
   --pending-soft: #e6efff;
-  --drift:        #b45309;
+  --drift:        #a64c08;
   --drift-soft:   #fdf2dc;
   --drift-soft-2: #fae6bb;
-  --break:        #dc2626;
+  --break:        #c22121;
   --break-soft:   #fdecec;
 
   --diff-add-bg:  #ecfbf2;
-  --diff-add-bd:  #16a34a;
+  --diff-add-bd:  #107535;
   --diff-rem-bg:  #fdecec;
-  --diff-rem-bd:  #dc2626;
+  --diff-rem-bd:  #c22121;
   --diff-chg-bg:  #fdf3dc;
-  --diff-chg-bd:  #b45309;
+  --diff-chg-bd:  #a64c08;
 
   --shadow-sm:    0 1px 2px rgba(16,16,20,0.04), 0 0 0 1px rgba(16,16,20,0.04);
   --shadow-md:    0 6px 24px -8px rgba(16,16,20,0.10), 0 2px 6px rgba(16,16,20,0.04);
@@ -220,7 +224,8 @@ body {
   --border-strong:#363740;
   --text:         #f3f3f5;
   --text-2:       #b0b0ba;
-  --text-3:       #7a7a85;
+  /* Lifted from #7a7a85, which was under 4.5:1 on cards and tinted rows. */
+  --text-3:       #8a8a94;
   --text-inv:     #0a0a0c;
 
   --brand:        #7c7fff;
@@ -293,13 +298,16 @@ body {
 .btn-xs { padding:3px 8px; font-size:11px; border-radius:6px; gap:5px; }
 .btn-lg { padding:10px 18px; font-size:14px; border-radius:10px; }
 .btn-icon { padding:0; width:30px; height:30px; flex:none; }
-.btn-primary    { background:var(--brand); color:#fff; border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
+/* Text on a coloured fill is --text-inv, not a fixed white: white in the light
+   theme, near-black in the dark one, where the fills are pale and white on
+   them was as low as 1.7:1. */
+.btn-primary    { background:var(--brand); color:var(--text-inv); border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
 .btn-primary:hover    { background:var(--brand-2); border-color:var(--brand-2); }
 .btn-secondary  { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
 .btn-secondary:hover  { background:var(--surface-3); }
 .btn-ghost      { background:transparent; color:var(--text-2); border-color:transparent; }
 .btn-ghost:hover      { background:var(--surface-3); color:var(--text); }
-.btn-destructive{ background:var(--break); color:#fff; border-color:var(--break); }
+.btn-destructive{ background:var(--break); color:var(--text-inv); border-color:var(--break); }
 .btn-destructive:hover{ filter:brightness(.95); }
 .btn[disabled]  { opacity:.45; cursor:not-allowed; }
 /* Disabled buttons must not look interactive: cancel the per-variant hover. */
@@ -317,6 +325,9 @@ body {
          padding:8px 10px; font-size:13px; color:var(--text); }
 .input:focus { outline:2px solid var(--brand); outline-offset:0; border-color:transparent; }
 .input.mono { font-family:var(--font-geist-mono), ui-monospace; }
+/* Tailwind's default placeholder is the text colour at half strength, about
+   3.4:1 on a white field. --text-3 is quiet enough and still readable. */
+.input::placeholder { color:var(--text-3); opacity:1; }
 .label { font-size:12px; color:var(--text-2); font-weight:500; }
 /* Hint text under a field or beside a control — quieter than .label so the two
    can sit in the same row without competing. */
@@ -353,7 +364,7 @@ body {
 .nav-item.active{ background:var(--brand-soft); color:var(--brand); }
 .nav-item .ico { width:16px; height:16px; flex:none; }
 .nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px;
-                   background:var(--brand); color:#fff; font-weight:600; }
+                   background:var(--brand); color:var(--text-inv); font-weight:600; }
 /* The rail folded to icons: no room for a number, so a dot on the icon's corner. */
 .nav-item { position:relative; }
 .nav-item .badge-dot { position:absolute; top:5px; right:5px; margin:0; padding:0; width:7px; height:7px; }
@@ -503,7 +514,7 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
 .input[aria-invalid="true"]:focus { outline-color:var(--break); }
 
 /* The spinner on a brand-colored button, where the brand-colored ring would vanish */
-.btn-primary .spin { width:14px; height:14px; border-color:color-mix(in oklab, #fff 35%, transparent); border-top-color:#fff; }
+.btn-primary .spin { width:14px; height:14px; border-color:color-mix(in oklab, currentColor 35%, transparent); border-top-color:currentColor; }
 
 /* An invitation at /invite/<token> (components/invite/), on the same frame.
    The organization it is for sits in a row like an .onb-org, but still, since
@@ -954,7 +965,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
              border-bottom:1px solid var(--border); }
 .matrix thead th:first-child { text-align:left; }
 .matrix th .sub { display:block; margin-top:1px; font-size:10px; font-weight:400; letter-spacing:0;
-                  text-transform:none; opacity:.75; }
+                  text-transform:none; }
 .matrix td { padding:6px 10px; border-bottom:1px solid var(--border); }
 .matrix tbody th { padding:6px 10px; border-bottom:1px solid var(--border); text-align:left;
                    font-size:12.5px; font-weight:500; letter-spacing:0; text-transform:none;
@@ -963,8 +974,9 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .matrix .matrix-n { text-align:right; font-family:var(--font-geist-mono), ui-monospace;
                     font-variant-numeric:tabular-nums; font-weight:600; }
 /* A zero is information, not noise — it stays readable but never competes with
-   the counts that mean somebody has to do something. */
-.matrix .is-zero { color:var(--text-3); font-weight:400; opacity:.6; }
+   the counts that mean somebody has to do something. Quiet by colour and
+   weight only: fading it as well took it down to about 2:1. */
+.matrix .is-zero { color:var(--text-3); font-weight:400; }
 .matrix .tone-sync { color:var(--text-2); }
 .matrix .tone-add  { color:var(--sync); }
 .matrix .tone-rem  { color:var(--break); }
@@ -1240,11 +1252,11 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .step .label { line-height:1.25; min-width:0; }
 .step .label .name { font-size:14px; font-weight:600; color:var(--text-2); white-space:nowrap; }
 .step .label .sub  { font-size:11.5px; color:var(--text-3); margin-top:1px; white-space:nowrap; }
-.step.done .n { background:var(--sync); border-color:var(--sync); color:#fff; }
-.step.active .n { background:var(--brand); border-color:var(--brand); color:#fff; box-shadow: 0 0 0 5px var(--brand-soft); }
+.step.done .n { background:var(--sync); border-color:var(--sync); color:var(--text-inv); }
+.step.active .n { background:var(--brand); border-color:var(--brand); color:var(--text-inv); box-shadow: 0 0 0 5px var(--brand-soft); }
 .step.active .label .name { color:var(--text); }
 .step.running .n { background:var(--brand); border-color:var(--brand); }
-.step.running .n .spin { width:16px; height:16px; border-color: rgba(255,255,255,.35); border-top-color:#fff; }
+.step.running .n .spin { width:16px; height:16px; border-color:color-mix(in oklab, var(--text-inv) 35%, transparent); border-top-color:var(--text-inv); }
 .step-sep { height:2px; background:var(--border); border-radius:1px; margin: 0 8px; }
 .step-sep.done { background:var(--sync); }
 .step-sep.active { background: linear-gradient(90deg, var(--sync), var(--brand)); }
@@ -1267,11 +1279,11 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .mig-row.running { background: color-mix(in oklab, var(--brand) 4%, var(--surface));
                    border-color: color-mix(in oklab, var(--brand) 35%, var(--border));
                    box-shadow: 0 0 0 4px color-mix(in oklab, var(--brand) 10%, transparent); }
-.mig-row.running .seq-circle { background:var(--brand); border-color:var(--brand); color:#fff; }
-.mig-row.applied .seq-circle { background:var(--sync); border-color:var(--sync); color:#fff; }
+.mig-row.running .seq-circle { background:var(--brand); border-color:var(--brand); color:var(--text-inv); }
+.mig-row.applied .seq-circle { background:var(--sync); border-color:var(--sync); color:var(--text-inv); }
 .mig-row.failed  { background: color-mix(in oklab, var(--break) 4%, var(--surface));
                    border-color: color-mix(in oklab, var(--break) 45%, var(--border)); }
-.mig-row.failed  .seq-circle { background:var(--break); border-color:var(--break); color:#fff; }
+.mig-row.failed  .seq-circle { background:var(--break); border-color:var(--break); color:var(--text-inv); }
 .mig-row.skipped { opacity:.55; }
 .mig-row.skipped .seq-circle { background:var(--surface-3); border-color:var(--border); color:var(--text-3); }
 /* not known — the commit never reported back. Amber and at full opacity on
@@ -1279,14 +1291,14 @@ summary.obj-header::-webkit-details-marker { display:none; }
    the page that needs the reader to go and look. */
 .mig-row.unknown { background: color-mix(in oklab, var(--drift) 4%, var(--surface));
                    border-color: color-mix(in oklab, var(--drift) 45%, var(--border)); }
-.mig-row.unknown .seq-circle { background:var(--drift); border-color:var(--drift); color:#fff; }
+.mig-row.unknown .seq-circle { background:var(--drift); border-color:var(--drift); color:var(--text-inv); }
 
 /* small round status icon at the end of a run row */
 .status-ico { width:18px; height:18px; border-radius:999px; display:grid; place-items:center; flex:none; }
-.status-ico.applied { background:var(--sync); color:#fff; }
-.status-ico.failed  { background:var(--break); color:#fff; }
+.status-ico.applied { background:var(--sync); color:var(--text-inv); }
+.status-ico.failed  { background:var(--break); color:var(--text-inv); }
 .status-ico.skipped { background:var(--surface-3); color:var(--text-3); border:1px solid var(--border); }
-.status-ico.unknown { background:var(--drift); color:#fff; }
+.status-ico.unknown { background:var(--drift); color:var(--text-inv); }
 
 /* the SQL a migration row will run — collapsed by default, open for the
    breaking ones, because the checklist asks the reader to attest they read it */
@@ -1326,7 +1338,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
 /* Not ".ring": Tailwind has a utility of that name, and it drew an outline here. */
 .verify-hero .verify-glow { position:absolute; right:-80px; top:-80px; width:340px; height:340px; pointer-events:none;
                      background: radial-gradient(circle, color-mix(in oklab, var(--sync) 24%, transparent) 0%, transparent 60%); }
-.check-big { width:56px; height:56px; border-radius:999px; background:var(--sync); color:#fff; display:grid; place-items:center;
+.check-big { width:56px; height:56px; border-radius:999px; background:var(--sync); color:var(--text-inv); display:grid; place-items:center;
              box-shadow: 0 0 0 8px color-mix(in oklab, var(--sync) 18%, transparent); }
 
 /* mini snapshot-diff row */
@@ -1824,3 +1836,54 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .plan-share-text-none { color:var(--text-3); }
 .plan-share-text-warm { color:var(--drift); font-weight:600; }
 .plan-share-text-hot  { color:var(--break); font-weight:600; }
+
+/* ——— Skip link (components/studio/StudioShell.tsx) ———
+   The first thing Tab reaches on every studio screen. It sits above the top
+   edge until it has focus, then drops into the corner. Pressing it moves focus
+   past the sidebar to <main>, which shows no outline of its own for that. */
+.skip-link { position:fixed; top:8px; left:8px; z-index:90; padding:8px 14px; border-radius:8px;
+             background:var(--brand); color:var(--text-inv); font-size:13px; font-weight:600;
+             text-decoration:none; transform:translateY(-200%); }
+.skip-link:focus { transform:none; outline:2px solid var(--text); outline-offset:2px; }
+#main-content:focus { outline:none; }
+
+/* ——— Phones: nothing too small to read or to tap ———
+   Small on purpose. It changes no layout, it only stops the smallest things
+   being smaller than a phone can show: text under 12px, tap targets under
+   24px, and form fields under 16px (iOS zooms the whole page when a smaller
+   one gets focus). */
+@media (max-width: 640px) {
+  /* Text the stylesheet sets below 12px. Left out: the diagram's table cards
+     (they zoom), the sign-in backdrop (decoration) and digits inside
+     fixed-size circles. */
+  .pill, .btn-xs, .help, .nav-item .badge, .vsync-side__sub, .section-title,
+  .banner pre, .test-banner pre, .onb-org .slug, .inv-org .slug,
+  .conns thead th, .local-finder__where,
+  .set-bar__label, .source-bar__label, .picker .kind, .ds-select__trigger--sub,
+  .ver-seg-suggest, .delta, .diff-row .tag, .history__row .mono,
+  .sample-rows, .sample-rows__note, .table-picker__item span,
+  .matrix th, .matrix th .sub, .matrix .matrix-na,
+  .verdet__title, .verdet__verdict, .verdet__role, .verdet__from, .verdet__more > summary,
+  .verdet__outdated, .verdet__fam table, .verdet__fam th,
+  .rename .what, .perm-screen > h3, .perm-unsaved, .role-card__people, .role-glance dt,
+  .role-compare thead th:first-child, .role-compare__group th,
+  .appr__meta, .step .label .sub, .mig-row .seq-circle, .mig-row .sub, .mig-sql > summary, .err-pre,
+  .viz-search-count, .viz-panel--hint, .export-bar__label, .responsive-table td::before,
+  .vtl__note, .vtl__table thead th, .vtl__group th, .vtl__label, .vtl__head, .vtl__when,
+  .vtl__scripthead, .vtl__scriptnote, .vtl__noscript, .vtl__sql, .vtl__switch button, .vtl__legend,
+  .plan-node-caption { font-size:12px; }
+
+  /* The same for the small sizes pages ask for with a Tailwind class. A rule
+     here is outside Tailwind's layers, so it wins over the utility. */
+  .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\] { font-size:12px; }
+
+  /* Fields: 16px stops iOS zooming the page on focus. */
+  .input { font-size:16px; }
+
+  /* Tap targets that were 13 to 20px tall: the bare pickers on Compare, the
+     "+ New group" text button, and plain checkboxes and radio buttons.
+     :where() keeps this weaker than any rule that sizes a checkbox itself. */
+  .ds-select__trigger { min-height:28px; }
+  .family-toggle { min-height:24px; }
+  :where(.studio, .studio-portal) :where(input[type="checkbox"], input[type="radio"]) { width:24px; height:24px; }
+}

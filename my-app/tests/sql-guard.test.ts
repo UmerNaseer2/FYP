@@ -7,6 +7,7 @@ import {
   doBlockBodies,
   extractEnumAddValues,
   findMightFailStatements,
+  EXECUTE_CANNOT_BE_READ,
   findRowDestroyingStatements,
   hasExecutableSql,
   maskNonCode,
@@ -348,6 +349,80 @@ describe("findRowDestroyingStatements", () => {
       findRowDestroyingStatements("DO $$ BEGIN RAISE NOTICE 'delete from orders'; -- truncate later\nEND $$;")
     ).toEqual([]);
   });
+
+  // A DO body may be a plain string. It used to be read only between $$ marks.
+  it("reads a DO body written in single quotes", () => {
+    expect(findRowDestroyingStatements("DO 'BEGIN DELETE FROM orders WHERE id = 1; END';")).toEqual(["DELETE"]);
+    expect(findRowDestroyingStatements("DO LANGUAGE plpgsql E'BEGIN TRUNCATE orders; END';")).toEqual(["TRUNCATE"]);
+    expect(findRowDestroyingStatements("DO 'BEGIN RAISE NOTICE ''truncate orders''; END';")).toEqual([]);
+  });
+
+  it("flags a MERGE that deletes the rows it matches", () => {
+    expect(
+      findRowDestroyingStatements(
+        "MERGE INTO order_items oi USING returned r ON oi.id = r.id WHEN MATCHED THEN DELETE;"
+      )
+    ).toEqual(["DELETE"]);
+    expect(
+      findRowDestroyingStatements(
+        "MERGE INTO order_items oi USING returned r ON oi.id = r.id WHEN MATCHED THEN UPDATE SET qty = 0;"
+      )
+    ).toEqual([]);
+  });
+
+  it("flags DROP OWNED, which drops every table the role owns", () => {
+    expect(findRowDestroyingStatements("DROP OWNED BY app_user;")).toEqual(["DROP OWNED"]);
+  });
+
+  // Checked on PostgreSQL 18: DROP TYPE ... CASCADE drops the columns of that type.
+  it("flags a DROP ... CASCADE that can take columns with it", () => {
+    expect(findRowDestroyingStatements("DROP TYPE order_status CASCADE;")).toEqual(["DROP … CASCADE"]);
+    expect(findRowDestroyingStatements("DROP DOMAIN email CASCADE;")).toEqual(["DROP … CASCADE"]);
+    expect(findRowDestroyingStatements("DO $$ BEGIN DROP FUNCTION twice(int) CASCADE; END $$;")).toEqual([
+      "DROP … CASCADE",
+    ]);
+    // No CASCADE, no columns taken: PostgreSQL refuses the drop instead.
+    expect(findRowDestroyingStatements("DROP TYPE order_status;")).toEqual([]);
+    // A view's CASCADE only reaches other views. The generator writes this one.
+    expect(findRowDestroyingStatements("DROP VIEW IF EXISTS open_orders CASCADE;")).toEqual([]);
+    expect(findRowDestroyingStatements("DROP INDEX orders_idx CASCADE;")).toEqual([]);
+    // Already named on its own, so it is not named twice.
+    expect(findRowDestroyingStatements("DROP TABLE orders CASCADE;")).toEqual(["DROP TABLE"]);
+  });
+
+  // The SQL that EXECUTE runs is a string, which the mask blanks. It could be a
+  // TRUNCATE, so it is named as something the check cannot read.
+  it("names EXECUTE in a DO block as something it cannot read", () => {
+    const unreadable = [EXECUTE_CANNOT_BE_READ];
+    expect(EXECUTE_CANNOT_BE_READ).toBe("EXECUTE (cannot be read)");
+    expect(findRowDestroyingStatements("DO $$ BEGIN EXECUTE 'DROP TABLE orders CASCADE'; END $$;")).toEqual(unreadable);
+    expect(findRowDestroyingStatements("DO $$ BEGIN EXECUTE 'TRUN' || 'CATE orders'; END $$;")).toEqual(unreadable);
+    expect(
+      findRowDestroyingStatements("DO $x$ BEGIN IF true THEN EXECUTE format('DELETE FROM %I', 'orders'); END IF; END $x$;")
+    ).toEqual(unreadable);
+    expect(
+      findRowDestroyingStatements(
+        "DO $$ DECLARE r record; BEGIN FOR r IN EXECUTE 'DELETE FROM orders RETURNING id' LOOP NULL; END LOOP; END $$;"
+      )
+    ).toEqual(unreadable);
+    expect(findRowDestroyingStatements("DO 'BEGIN EXECUTE ''TRUNCATE orders''; END';")).toEqual(unreadable);
+  });
+
+  it("does not take CREATE TRIGGER ... EXECUTE FUNCTION for an EXECUTE it cannot read", () => {
+    const trigger = "CREATE TRIGGER audit AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION audit_row();";
+    expect(findRowDestroyingStatements(trigger)).toEqual([]);
+    expect(findRowDestroyingStatements(`DO $$ BEGIN ${trigger} END $$;`)).toEqual([]);
+    expect(findRowDestroyingStatements("DO $$ BEGIN GRANT EXECUTE ON FUNCTION audit_row() TO app_user; END $$;")).toEqual([]);
+    // A prepared statement holds its SQL in the open, where the other checks read it.
+    expect(findRowDestroyingStatements("PREPARE recent AS SELECT 1; EXECUTE recent;")).toEqual([]);
+  });
+
+  it("stays fast on a DO body in single quotes followed by a long run of blanks", () => {
+    const sql = `DO 'BEGIN NULL; END'\n${" ".repeat(5000)}LANGUAGE plpgsql;`;
+    const started = Date.now();
+    expect(findRowDestroyingStatements(sql)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
 
 /**
@@ -365,12 +440,24 @@ describe("ROW_DESTROYING_NOT_BREAKING", () => {
     ["DROP COLUMN", "ALTER TABLE orders DROP COLUMN legacy_ref;"],
     ["DROP SCHEMA", "DROP SCHEMA archive CASCADE;"],
     ["DROP DATABASE", "DROP DATABASE shop;"],
+    ["DROP OWNED", "DROP OWNED BY app_user;"],
+    ["DROP … CASCADE", "DROP TYPE order_status CASCADE;"],
   ];
 
   it.each(oneOfEach)("%s is listed exactly when the breaking grade misses it", (label, sql) => {
     expect(findRowDestroyingStatements(sql)).toEqual([label]);
     const gradedBreaking = gradeSql(sql).sureLevel === "breaking";
     expect(ROW_DESTROYING_NOT_BREAKING.includes(label)).toBe(!gradedBreaking);
+  });
+
+  // The one label in neither group. The pages say a listed kind "changes no
+  // structure", which nobody can say about SQL that cannot be read.
+  it("leaves out EXECUTE, which is graded breaking unless and may change structure", () => {
+    const sql = "DO $$ BEGIN EXECUTE 'DROP TABLE orders'; END $$;";
+    expect(findRowDestroyingStatements(sql)).toEqual([EXECUTE_CANNOT_BE_READ]);
+    expect(gradeSql(sql).level).toBe("breaking");
+    expect(gradeSql(sql).sureLevel).toBe("patch");
+    expect(ROW_DESTROYING_NOT_BREAKING.includes(EXECUTE_CANNOT_BE_READ)).toBe(false);
   });
 });
 
@@ -531,6 +618,15 @@ describe("codeBodiesIn", () => {
     expect(codeBodiesIn("DO 'BEGIN NULL; END' LANGUAGE plpgsql;").bodies).toEqual([{ kind: "do", text: "BEGIN NULL; END" }]);
   });
 
+  // Same slow pattern, in the reader of a body written as a plain string.
+  test("stays fast on a long run of blanks after a string body and a line break", () => {
+    const sql = `DO 'BEGIN NULL; END'\n${" ".repeat(5000)}LANGUAGE plpgsql;`;
+    const started = Date.now();
+    const { bodies } = codeBodiesIn(sql);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(bodies).toEqual([{ kind: "do", text: "BEGIN NULL; END" }]);
+  });
+
   test("reads a body inside a body", () => {
     expect(codeBodiesIn("DO $$ BEGIN EXECUTE 'x'; END $$; DO 'BEGIN DO ''BEGIN NULL; END''; END';").bodies).toEqual([
       { kind: "do", text: " BEGIN EXECUTE 'x'; END " },
@@ -595,6 +691,27 @@ describe("maskNonCode", () => {
     expect(masked).not.toContain("Audit");
     expect(masked).not.toContain("why");
     expect(masked).not.toContain("x");
+  });
+
+  // The pattern that follows a string over a line break used to try every way
+  // of splitting a run of blanks, so each extra blank doubled the time
+  // (28 blanks took 2.6 s). The Script Editor runs this scanner on every edit.
+  it("stays fast on a long run of blanks after a string and a line break", () => {
+    const sql = `SELECT CASE WHEN status = 'active'\n${" ".repeat(5000)}THEN 1 ELSE 0 END FROM orders;`;
+    const started = Date.now();
+    const masked = maskNonCode(sql);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked).not.toContain("active");
+    expect(masked).toContain("THEN 1 ELSE 0 END FROM orders;");
+  });
+
+  it("still follows a string that goes on after a line break and blank lines", () => {
+    const sql = `SELECT 'first'\n  -- a note\n\n   'second', kept;`;
+    const masked = maskNonCode(sql);
+    expect(masked).not.toContain("first");
+    expect(masked).not.toContain("second");
+    expect(masked).toContain("kept");
   });
 
   // Only the change-type reader asks for this, to compare trigger and index names.

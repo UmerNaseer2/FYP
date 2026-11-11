@@ -1,6 +1,5 @@
 "use client";
 
-import { Suspense } from "react";
 import AuthGuard from "@/components/AuthGuard";
 import LinkComputer from "@/components/computers/LinkComputer";
 import { useTheme } from "@/hooks/useTheme";
@@ -10,10 +9,7 @@ export default function LinkComputerPage() {
   useTheme();
   return (
     <AuthGuard>
-      {/* useSearchParams has to sit under a Suspense boundary. */}
-      <Suspense fallback={null}>
-        <LinkComputer />
-      </Suspense>
+      <LinkComputer />
     </AuthGuard>
   );
 }

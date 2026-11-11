@@ -34,6 +34,7 @@ import {
 } from "@/lib/application-targeting";
 import {
   containsTransactionControl,
+  EXECUTE_CANNOT_BE_READ,
   findRowDestroyingStatements,
   ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql-guard";
@@ -907,6 +908,48 @@ function rollbackProblemText(
  * principal, so whoever asked is also the one who clears it, unless View as
  * has them looking at the app as a role that may not approve.
  */
+/**
+ * Splits the kinds the row-loss reader found into the two ways to word them.
+ *
+ * The reader (findRowDestroyingStatements) names what it found: "TRUNCATE",
+ * "DELETE", a DROP. One of its names is "EXECUTE (cannot be read)": a DO block
+ * that runs SQL from a string. That SQL may delete rows or may not, so the
+ * page must not say that it does.
+ *
+ *   named   the statements that do delete rows
+ *   unread  true when part of the SQL could not be read
+ */
+function rowLossKinds(kinds: ReadonlyArray<string>): { named: string[]; unread: boolean } {
+  return {
+    named: kinds.filter((kind) => kind !== EXECUTE_CANNOT_BE_READ),
+    unread: kinds.includes(EXECUTE_CANNOT_BE_READ),
+  };
+}
+
+/** Said in a row-loss box when part of the SQL could not be read. */
+const UNREAD_SQL_SENTENCE =
+  "Part of the SQL could not be read: an EXECUTE inside a DO block runs SQL " +
+  "that is put together while it runs. It may delete rows. ";
+
+/** The tick under a row-loss box. Nobody can know "which rows" for SQL that could not be read. */
+function rowLossAck(sure: boolean): string {
+  return sure
+    ? "I have read these statements and know which rows they delete."
+    : "I have read this SQL and know whether it deletes rows.";
+}
+
+/** One rollback's line in the row-loss box above a rollback. */
+function rollbackLossSentence(version: string, kinds: ReadonlyArray<string>): string {
+  const { named, unread } = rowLossKinds(kinds);
+  if (named.length === 0) {
+    return `Part of the rollback of ${vLabel(version)} could not be read (an EXECUTE inside a DO block) and may delete rows.`;
+  }
+  return (
+    `The rollback of ${vLabel(version)} contains ${named.join(", ")}.` +
+    (unread ? " Part of it could not be read as well and may delete more rows." : "")
+  );
+}
+
 function approvalRequestedToast(bypass: boolean, mayApprove: boolean): string {
   if (!bypass) return "Approval requested — someone else has to clear it";
   return mayApprove
@@ -1504,6 +1547,9 @@ function DeployBody() {
       }),
     [rollbackSteps]
   );
+  // False when all that was found is SQL that could not be read: the box then
+  // says "may delete rows", not "deletes rows".
+  const rollbackLossSure = rollbackDataLoss.some((loss) => rowLossKinds(loss.kinds).named.length > 0);
 
   // Other families' versions applied after the oldest version this plan
   // undoes: a rollback can remove something they use, and a DROP ... CASCADE
@@ -1550,13 +1596,14 @@ function DeployBody() {
     rollbackBusy !== null ||
     isDeploying ||
     (targetIsProduction && !rollbackProdAck) ||
-    (rollbackDataLoss.length > 0 && !rollbackDataLossAck);
-  // What additionally stops the real rollback. The server checks the other
-  // scripts and the approval only on a real run, so the page does the same.
-  const rollbackRunBlocked =
-    rollbackBlocked ||
-    (rollbackOthers.length > 0 && !rollbackOtherAck) ||
+    (rollbackDataLoss.length > 0 && !rollbackDataLossAck) ||
+    // The server asks for the production approval on a dry run too, and hands
+    // it back afterwards, so one approval covers the rehearsal and the rollback.
     (targetIsProduction && !approvedRollback);
+  // What additionally stops the real rollback. The server checks the other
+  // scripts only on a real run, so the page does the same.
+  const rollbackRunBlocked =
+    rollbackBlocked || (rollbackOthers.length > 0 && !rollbackOtherAck);
   // The line under the buttons: the first reason they are disabled, or what
   // pressing will do. Same order as the checks above.
   const rollbackHint = !rollbackReady
@@ -1570,12 +1617,12 @@ function DeployBody() {
       : (targetIsProduction && !rollbackProdAck) ||
           (rollbackDataLoss.length > 0 && !rollbackDataLossAck)
         ? "Tick every box above to enable this"
-        : rollbackOthers.length > 0 && !rollbackOtherAck
-          ? "Tick the box about the other scripts to roll back — a dry run does not need it"
-          : targetIsProduction && !approvedRollback
-            ? // The panel above says who clears it: a second person, or you
-              // yourself under the auth bypass.
-              "Rolling back on production needs an approval — a dry run does not"
+        : targetIsProduction && !approvedRollback
+          ? // The panel above says who clears it: a second person, or you
+            // yourself under the auth bypass.
+            "Rolling back on production needs an approval, and so does its dry run"
+          : rollbackOthers.length > 0 && !rollbackOtherAck
+            ? "Tick the box about the other scripts to roll back — a dry run does not need it"
             : "The rollback runs in one transaction — every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
   // (see rollbackError) is shown whatever the plan.
@@ -1828,10 +1875,14 @@ function DeployBody() {
   const dataLossScripts = runRisk.dataLoss;
   // Named rather than counted: "TRUNCATE, DELETE" tells the reader what to go
   // and look for, where "3 statements" tells them only that there are three.
-  const dataLossKinds = useMemo(
-    () => [...new Set(dataLossScripts.flatMap((entry) => entry.kinds))].join(", "),
+  const dataLoss = useMemo(
+    () => rowLossKinds([...new Set(dataLossScripts.flatMap((entry) => entry.kinds))]),
     [dataLossScripts]
   );
+  const dataLossKinds = dataLoss.named.join(", ");
+  // False when all that was found is SQL that could not be read (an EXECUTE in
+  // a DO block). The page then says "may delete rows", not "deletes rows".
+  const dataLossSure = dataLoss.named.length > 0;
   // The kinds in that list the breaking grade never sees. For these the
   // deletes-rows gate is the only warning on the page. Every DROP it names is
   // graded breaking as well, so "nothing else catches this" would be wrong there.
@@ -2073,11 +2124,15 @@ function DeployBody() {
     // A rollback in flight is changing the same ledger.
     rollbackBusy !== null ||
     driftChecking ||
-    unacknowledgedGates;
-  // What additionally stops a real deploy. A dry run is exempt because the
-  // server exempts it: a rehearsal writes nothing, and charging a second person
-  // for a rehearsal would make the careful path the expensive one.
-  const deployBlocked = runBlocked || (targetIsProduction && !approvedRun);
+    unacknowledgedGates ||
+    // Production needs an approval for a dry run as well as a real deploy,
+    // because the server asks for it on both: a rehearsal still runs the
+    // script on production, holds its locks, and uses up sequence numbers
+    // that a rollback does not give back. The same approval covers both.
+    (targetIsProduction && !approvedRun);
+  // Deploy and Dry run are stopped by the same things now. The second name
+  // stays so each button still says which run it starts.
+  const deployBlocked = runBlocked;
   // The target pickers hold still while a rollback runs: its outcome, and the
   // ledger it reads afterwards, belong to the target it was started on.
   const targetLocked = rollbackBusy !== null;
@@ -3563,17 +3618,25 @@ function DeployBody() {
                       {rollbackDataLoss.length > 0 && (
                         <RiskGate
                           tone="break"
-                          title={`${countOf(rollbackDataLoss.length, "rollback")} ${rollbackDataLoss.length === 1 ? "deletes" : "delete"} rows`}
+                          title={
+                            rollbackLossSure
+                              ? `${countOf(rollbackDataLoss.length, "rollback")} ${rollbackDataLoss.length === 1 ? "deletes" : "delete"} rows`
+                              : `${countOf(rollbackDataLoss.length, "rollback")} may delete rows`
+                          }
                           body={
                             rollbackDataLoss
-                              .map((loss) => `The rollback of ${vLabel(loss.version)} contains ${loss.kinds.join(", ")}.`)
+                              .map((loss) => rollbackLossSentence(loss.version, loss.kinds))
                               .join(" ") +
-                            " Those take rows out of a live table, and deploying the " +
-                            "version again does not bring them back — it rebuilds " +
-                            "structure, not data. Have a backup you can restore from " +
-                            "before running this."
+                            (rollbackLossSure
+                              ? " Those take rows out of a live table, and deploying the " +
+                                "version again does not bring them back — it rebuilds " +
+                                "structure, not data. Have a backup you can restore from " +
+                                "before running this."
+                              : " Deploying the version again does not bring deleted rows " +
+                                "back: it rebuilds structure, not data. Have a backup you " +
+                                "can restore from before running this.")
                           }
-                          ack="I have read these statements and know which rows they delete."
+                          ack={rowLossAck(rollbackLossSure)}
                           acknowledged={rollbackDataLossAck}
                           onAcknowledge={setRollbackDataLossAck}
                         />
@@ -4005,7 +4068,7 @@ function DeployBody() {
                             rows is what you need a backup for. A rename is the
                             first and not the second. */}
                         <div className="flex justify-between" title="Migrations marked breaking, or containing SQL that is always breaking"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Deletes rows</span><span className="mono">{dataLossScripts.length}</span></div>
+                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>{dataLossScripts.length > 0 && !dataLossSure ? "May delete rows" : "Deletes rows"}</span><span className="mono">{dataLossScripts.length}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Lines of SQL</span><span className="mono">{linesOfSql}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
                       </div>
@@ -4049,11 +4112,22 @@ function DeployBody() {
                         {dataLossScripts.length > 0 && (
                           <RiskGate
                             tone="break"
-                            title={`${dataLossScripts.length} ${dataLossScripts.length === 1 ? "migration deletes" : "migrations delete"} rows`}
+                            title={
+                              dataLossSure
+                                ? `${dataLossScripts.length} ${dataLossScripts.length === 1 ? "migration deletes" : "migrations delete"} rows`
+                                : `${countOf(dataLossScripts.length, "migration")} may delete rows`
+                            }
                             body={
-                              `This run contains ${dataLossKinds}. Those take rows out of ` +
-                              "a live table, and no rollback puts them back — a down " +
-                              "script rebuilds structure, not data. " +
+                              (dataLossSure
+                                ? `This run contains ${dataLossKinds}. Those take rows out of ` +
+                                  "a live table, and no rollback puts them back — a down " +
+                                  "script rebuilds structure, not data. "
+                                : "") +
+                              (dataLoss.unread ? UNREAD_SQL_SENTENCE : "") +
+                              (dataLossSure
+                                ? ""
+                                : "No rollback puts deleted rows back: a down script " +
+                                  "rebuilds structure, not data. ") +
                               (unflaggedDataLossKinds.length === 0
                                 ? ""
                                 : unflaggedDataLossKinds.length === 1
@@ -4065,7 +4139,7 @@ function DeployBody() {
                                     "the only warning they get. ") +
                               "Have a backup you can restore from before running this."
                             }
-                            ack="I have read these statements and know which rows they delete."
+                            ack={rowLossAck(dataLossSure)}
                             acknowledged={dataLossAcknowledged}
                             onAcknowledge={setDataLossAcknowledged}
                           />
@@ -4250,7 +4324,7 @@ function DeployBody() {
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
-                              ? "Deploy on production needs an approval — a dry run does not"
+                              ? "Deploy on production needs an approval, and so does a dry run"
                               : enumAdditions.length > 0
                               ? "All migrations run in one transaction — all of them or " +
                                 "none, apart from the enum values noted above"
@@ -4348,12 +4422,15 @@ function DeployBody() {
                         )}
                         {dataLossScripts.length > 0 ? (
                           <ChecklistItem ok={dataLossAcknowledged}>
-                            Deletes rows · {dataLossKinds} in{" "}
+                            {dataLossSure
+                              ? `Deletes rows · ${dataLossKinds}${dataLoss.unread ? ", and part of the SQL could not be read" : ""}`
+                              : "May delete rows · part of the SQL could not be read"}{" "}
+                            in{" "}
                             {countOf(dataLossScripts.length, "script")}{" "}
                             {dataLossAcknowledged ? "· acknowledged" : "· needs acknowledging"}
                           </ChecklistItem>
                         ) : (
-                          <ChecklistItem ok>Nothing in this run deletes rows</ChecklistItem>
+                          <ChecklistItem ok>No statement found that deletes rows</ChecklistItem>
                         )}
                         {mightFailScripts.length > 0 ? (
                           // `info`, not a failed tick: this is a thing that might

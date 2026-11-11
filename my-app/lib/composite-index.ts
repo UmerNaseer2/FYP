@@ -210,12 +210,47 @@ export function indexServesSearch(index: { columns: string[] }, search: ColumnSe
   return index.columns[search.equality.length] === search.range;
 }
 
+/** An index as compositeIndexAdvice needs it: its name, columns and WHERE. */
+export type SearchIndex = { name: string; columns: string[]; predicate: string | null };
+
+/**
+ * Every index on one table that can serve a search, for compositeIndexAdvice.
+ *
+ * A table's snapshot lists its stand-alone indexes only. The index behind a
+ * PRIMARY KEY or a UNIQUE constraint is not in `indexes`, it is recorded with
+ * the constraint. Those are added here, or a search on the primary key's own
+ * columns would be told to build a copy of the primary key.
+ *
+ * `usable` says whether a stand-alone index counts (an invalid one does not).
+ */
+export function tableSearchIndexes(
+  table: {
+    indexes?: SearchIndex[];
+    primaryKey: { name: string; columns: string[] } | null;
+    uniqueConstraints: { name: string; columns: string[] }[];
+  },
+  usable: (index: SearchIndex) => boolean = () => true
+): SearchIndex[] {
+  const list: SearchIndex[] = [];
+  if (table.primaryKey) {
+    list.push({ name: table.primaryKey.name, columns: table.primaryKey.columns, predicate: null });
+  }
+  for (const unique of table.uniqueConstraints) {
+    list.push({ name: unique.name, columns: unique.columns, predicate: null });
+  }
+  for (const index of table.indexes ?? []) {
+    if (usable(index)) list.push({ name: index.name, columns: index.columns, predicate: index.predicate });
+  }
+  return list;
+}
+
 /**
  * Advice for the patterns no existing index serves.
  *
- * `indexes` is table name → the indexes on it, and only the ones PostgreSQL
- * will actually use should be passed: an invalid index serves nothing, and
- * counting it would silence a suggestion that is still needed.
+ * `indexes` is table name → the indexes on it (build each list with
+ * tableSearchIndexes), and only the ones PostgreSQL will actually use should
+ * be passed: an invalid index serves nothing, and counting it would silence a
+ * suggestion that is still needed.
  *
  * A PARTIAL index (one with a WHERE) never counts as serving a pattern, because
  * whether it does depends on whether each query's own WHERE implies its
@@ -234,7 +269,7 @@ export function indexServesSearch(index: { columns: string[] }, search: ColumnSe
 export function compositeIndexAdvice(
   schema: string,
   patterns: SearchPattern[],
-  indexes: Record<string, { name: string; columns: string[]; predicate: string | null }[]>,
+  indexes: Record<string, SearchIndex[]>,
   takenNames: string[],
   windowDays: number
 ): PerfAdvice[] {
@@ -286,7 +321,7 @@ export function compositeIndexAdvice(
           ? `There are single-column indexes on some of them (${singles.join(", ")}), and the ` +
             `server can only lead with one of those per scan — the rest of the columns are ` +
             `checked row by row afterwards. `
-          : `No index leads with these columns, so the server narrows by none of them. `) +
+          : `No single-column index covers these columns. `) +
         `One index across all ${columns.length} lets it find the matching rows directly.`,
       fix:
         `-- ${howOften.charAt(0).toUpperCase()}${howOften.slice(1)}.\n` +

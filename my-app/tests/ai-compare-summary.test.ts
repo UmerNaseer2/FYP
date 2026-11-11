@@ -11,6 +11,7 @@ import { compareSchemas } from "@/lib/compare";
 import {
   buildCompareSummaryTask,
   changeLabel,
+  compareSummarySchema,
   MAX_LISTED_CHANGES,
   checkCompareSummary,
   citedChanges,
@@ -241,7 +242,11 @@ describe("checkCompareSummary", () => {
       risks: [{ title: "New column", changes: [isbnAdded(t)], level: "breaking", why: "Nothing breaks.", affects: [] }],
     });
     const checked = checkCompareSummary(loud, t.facts);
-    expect(checked.value.risks[0].level).not.toBe("breaking");
+    // The app adds the breaking change this answer left out as an item of its
+    // own, so the model's item is found by its title.
+    const newColumn = checked.value.risks.find((risk) => risk.title === "New column");
+    expect(newColumn?.level).toBeDefined();
+    expect(newColumn?.level).not.toBe("breaking");
   });
 
   test("ids are read loosely, but an id that is not listed drops its item", () => {
@@ -354,5 +359,160 @@ describe("through runAiTask", () => {
     expect(JSON.stringify(provider.requests[1])).toContain(priceDropped(t));
     expect(result.value.risks[0].level).toBe("breaking");
     expect(provider.requests[0].model).toBe("fast-model");
+  });
+});
+
+describe("after the 2026-11-10 review", () => {
+  // The shop of the review: the migration drops legacy_notes, changes the type
+  // of orders.status and widens products.name. Nothing uses legacy_notes;
+  // order_lines points at orders.
+  const shopTarget = schema([
+    table("legacy_notes", [id(), column("note", { typeDisplay: "text" })], { primaryKey: pk("legacy_notes_pkey") }),
+    table("orders", [id(), column("status", { typeDisplay: "text" })], { primaryKey: pk("orders_pkey") }),
+    table("products", [id(), column("name", { typeDisplay: "character varying(80)" })], { primaryKey: pk("products_pkey") }),
+    table("order_lines", [id(), column("order_id")], {
+      primaryKey: pk("order_lines_pkey"),
+      foreignKeys: [fk("order_lines_order_id_fkey", "order_id", "orders")],
+    }),
+  ]);
+  const shopSource = schema([
+    table("orders", [id(), column("status", { typeDisplay: "integer" })], { primaryKey: pk("orders_pkey") }),
+    table("products", [id(), column("name", { typeDisplay: "character varying(20)" })], { primaryKey: pk("products_pkey") }),
+    table("order_lines", [id(), column("order_id")], {
+      primaryKey: pk("order_lines_pkey"),
+      foreignKeys: [fk("order_lines_order_id_fkey", "order_id", "orders")],
+    }),
+  ]);
+
+  function shopTask(): CompareSummaryTask {
+    const built = buildCompareSummaryTask(compareSchemas(shopSource, shopTarget), { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    return built;
+  }
+  const notesDropped = (t: CompareSummaryTask) => idOf(t, (label) => /Table legacy_notes dropped/.test(label));
+  const statusChanged = (t: CompareSummaryTask) => idOf(t, (label) => /orders\.status changed/.test(label));
+
+  /** A fake model answer that covers only the dropped table. */
+  function notesOnly(t: CompareSummaryTask, affects: string[]): CompareSummaryAnswer {
+    return {
+      headline: "Drops `legacy_notes`.",
+      risks: [
+        { title: "Dropping `legacy_notes`", changes: [notesDropped(t)], level: "breaking", why: "Its rows are lost.", affects },
+      ],
+      order: [{ step: "Back up, then drop `legacy_notes`.", changes: [notesDropped(t)] }],
+    };
+  }
+
+  // T9-01: "Used by: orders" was shown under legacy_notes because orders is a
+  // real table, although nothing in the target uses legacy_notes.
+  test("a user that exists but does not use the cited change is struck out", () => {
+    const t = shopTask();
+    const result = checkCompareSummary(notesOnly(t, ["orders", "order_lines"]), t.facts);
+    expect(result.value.risks[0].affects).toEqual([]);
+    expect(result.report.droppedNames).toBe(2);
+  });
+
+  test("a real user of the cited change stays, however the model spells it", () => {
+    const t = shopTask();
+    const result = checkCompareSummary(
+      {
+        headline: "Changes `orders.status`.",
+        risks: [
+          {
+            title: "`orders.status` changes type",
+            changes: [statusChanged(t)],
+            level: "breaking",
+            why: "Values may not fit.",
+            affects: ["Order_Lines", "public.order_lines", "products", "legacy_notes"],
+          },
+        ],
+        order: [],
+      },
+      t.facts
+    );
+    expect(result.value.risks[0].affects).toEqual(["Order_Lines", "public.order_lines"]);
+    expect(result.report.droppedNames).toBe(2);
+  });
+
+  // T9-02: one breaking change covered was enough, so the other breaking
+  // changes went missing with nothing on screen to say so.
+  test("breaking changes the answer leaves out are added by the app", () => {
+    const t = shopTask();
+    expect(t.facts.breakingIds.length).toBeGreaterThanOrEqual(3);
+    const result = checkCompareSummary(notesOnly(t, []), t.facts);
+    expect(result.problems).toEqual([]);
+    const leftOut = t.facts.breakingIds.filter((id) => id !== notesDropped(t));
+    const added = result.value.risks[result.value.risks.length - 1];
+    expect(added.level).toBe("breaking");
+    expect(added.title).toMatch(/did not cover/);
+    expect(added.changes).toEqual(leftOut);
+    expect(added.changes).toContain(statusChanged(t));
+    // Every breaking change is now cited once, and the screen can label each.
+    const cited = result.value.risks.flatMap((risk) => risk.changes);
+    expect([...cited].sort()).toEqual([...t.facts.breakingIds].sort());
+    expect(Object.keys(citedChanges(result.value, t.facts))).toEqual(expect.arrayContaining(leftOut));
+    // The answer still fits the shape a saved answer is read back with.
+    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
+  });
+
+  test("an answer that covers every breaking change gets nothing added", () => {
+    const t = shopTask();
+    const all = notesOnly(t, []);
+    all.risks[0].changes = [...t.facts.breakingIds];
+    const result = checkCompareSummary(all, t.facts);
+    expect(result.value.risks).toHaveLength(1);
+  });
+
+  test("more left-out breaking changes than one item holds: the first 20, and a count of the rest", () => {
+    const extra = Array.from({ length: 30 }, (_, i) =>
+      table(`old_${String(i).padStart(2, "0")}`, [id()], { primaryKey: pk(`old_${i}_pkey`) })
+    );
+    const built = buildCompareSummaryTask(compareSchemas(schema([]), schema(extra)), { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    const first = built.facts.breakingIds[0];
+    const result = checkCompareSummary(
+      {
+        headline: "Drops old tables.",
+        risks: [{ title: "One old table goes", changes: [first], level: "breaking", why: "Rows are lost.", affects: [] }],
+        order: [],
+      },
+      built.facts
+    );
+    const added = result.value.risks[1];
+    expect(added.changes).toHaveLength(20);
+    expect(added.why).toContain("9 more");
+    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
+  });
+
+  test("through runAiTask: the fake model's invented user and missing changes never reach the screen", async () => {
+    const t = shopTask();
+    const provider = new MockProvider([notesOnly(t, ["orders"])]);
+    const result = await runAiTask({ orgId: 1, email: "ada@example.com" }, t.spec, {
+      config: {
+        provider: "openai-compatible",
+        baseUrl: "https://example.test/v1/",
+        apiKey: "test-key",
+        models: { fast: "fast-model", smart: "smart-model" },
+        reasoningEffort: "low",
+        timeoutMs: 90_000,
+        dailyLimit: 300,
+        perMinuteLimit: 10,
+      },
+      provider,
+      readSettings: async () => ({ ...AI_OFF, enabled: true, features: { ...AI_OFF.features } }),
+      store: {
+        recordAiCall: async () => 1,
+        callsToday: async () => 0,
+        callsLastMinute: async () => 0,
+        readSavedAnswer: (async () => null) as AiDeps["store"]["readSavedAnswer"],
+        saveAnswer: async () => undefined,
+      },
+      now: () => 0,
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(provider.requests).toHaveLength(1);
+    expect(result.value.risks[0].affects).toEqual([]);
+    expect(result.value.risks.flatMap((risk) => risk.changes)).toEqual(expect.arrayContaining(t.facts.breakingIds));
   });
 });

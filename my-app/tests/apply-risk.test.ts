@@ -81,10 +81,11 @@ jest.mock("../lib/registry-archive", () => ({
 }));
 
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
+const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   mayDecideOwn: jest.requireActual("../lib/approvals-db").mayDecideOwn,
-  releaseApproval: async () => undefined,
+  releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
 
 type RouteModule = typeof import("../app/api/scripts/apply/route");
@@ -154,6 +155,8 @@ beforeEach(() => {
   mockRecordLineage.mockResolvedValue({ advanced: false });
   mockClaim.mockReset();
   mockClaim.mockResolvedValue(null);
+  mockRelease.mockReset();
+  mockRelease.mockResolvedValue(undefined);
   mockClient = createFakeClient(target());
   mockConnectError = null;
   mockBuildPgConfig.mockReset();
@@ -301,19 +304,43 @@ describe("production approval", () => {
     expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
   });
 
-  it("runs once an approval is claimed, and needs none for a dry run", async () => {
+  it("runs once an approval is claimed", async () => {
     mockClaim.mockResolvedValue({ id: 9 });
     const real = await apply({ ...SAFE, acknowledgeProduction: true });
     expect(real.status).toBe(200);
     expect(count(mockClient, "COMMIT")).toBe(1);
+  });
 
-    mockClaim.mockReset();
-    mockClaim.mockResolvedValue(null);
-    mockClient = createFakeClient(target());
+  it("needs the approval for a dry run too, and touches nothing without one", async () => {
+    const res = await apply({ ...SAFE, acknowledgeProduction: true, dryRun: true });
+    expect(res.status).toBe(403);
+    expect(res.body.needsApproval).toBe(true);
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("rehearses with an approval, then hands it back for the real run", async () => {
+    mockClaim.mockResolvedValue({ id: 9 });
     const rehearsal = await apply({ ...SAFE, acknowledgeProduction: true, dryRun: true });
     expect(rehearsal.status).toBe(200);
-    expect(mockClaim).not.toHaveBeenCalled();
+    expect(rehearsal.body.dryRun).toBe(true);
     expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+    expect(mockRelease).toHaveBeenCalledWith(expect.anything(), 9);
+    // Only a dry run gets a time limit. See the next test for the real run.
+    // The line is sent again before every script (lib/run-settings), so it is
+    // there more than once, always with the same limit.
+    const limits = queriesMatching(mockClient, /statement_timeout/).map((query) => query.text);
+    expect(limits.length).toBeGreaterThan(0);
+    expect(new Set(limits)).toEqual(new Set(["SET LOCAL statement_timeout = 300000"]));
+  });
+
+  it("sets no time limit on a real run", async () => {
+    mockClaim.mockResolvedValue({ id: 9 });
+    const real = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(real.status).toBe(200);
+    expect(queriesMatching(mockClient, /statement_timeout/)).toEqual([]);
+    expect(mockRelease).not.toHaveBeenCalled();
   });
 });
 

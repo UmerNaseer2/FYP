@@ -363,6 +363,30 @@ function leadingColumns(value: unknown): string[] {
   return coerceTextArray(stop === -1 ? value : value.slice(0, stop));
 }
 
+/**
+ * The sequence a `nextval('name'::regclass)` default reads, or null when the
+ * default is not one. Defaults are already schema-stripped, and PostgreSQL
+ * quotes the name only when it needs quotes, so either form is read.
+ */
+function sequenceReadByDefault(columnDefault: string | null): string | null {
+  const match = /^\s*nextval\s*\(\s*'([^']+)'/i.exec(columnDefault ?? "");
+  if (!match) return null;
+  return match[1].replace(/^"(.*)"$/, "$1").replace(/""/g, '"');
+}
+
+/**
+ * An enum's labels, exactly as PostgreSQL holds them.
+ *
+ * The query casts each label to text, so node-postgres hands back a real array
+ * and a label is never cut up: 'a, b' stays one label, and a double quote or a
+ * backslash stays as typed. Nothing is trimmed either, because ' a' and 'a'
+ * are two different labels. Text (PGlite) still goes through coerceTextArray.
+ */
+function enumLabels(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((label) => String(label));
+  return coerceTextArray(value);
+}
+
 function coerceTextArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
@@ -1994,7 +2018,7 @@ export async function fetchSchemaSnapshot(
            ELSE 'range'
          END AS kind,
          CASE WHEN t.typtype = 'e' THEN (
-           SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder)
+           SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
              FROM pg_enum e WHERE e.enumtypid = t.oid
          ) END AS enum_labels,
          CASE WHEN t.typtype = 'd'
@@ -2578,6 +2602,18 @@ export async function fetchSchemaSnapshot(
       const owner = tablesByName.get(ownerName);
       const column = owner?.columns.find((c) => c.name === sequence.ownedByColumn);
       if (!column) continue;
+      // A column can own one sequence while its default reads another: a serial
+      // whose default was later pointed at a different sequence. The owned one
+      // is then not the column's counter. Treated as one, the column counted
+      // as a serial, the comparison hid which sequence its default names, and
+      // the script built the wrong sequence. So it is listed as a sequence of
+      // its own and the column keeps an ordinary default.
+      const read = sequenceReadByDefault(column.columnDefault);
+      if (read !== null && read !== sequence.name) {
+        sequence.ownedByTable = null;
+        sequence.ownedByColumn = null;
+        continue;
+      }
       column.sequenceOptions = {
         dataType: sequence.dataType,
         startValue: sequence.startValue,
@@ -2590,7 +2626,7 @@ export async function fetchSchemaSnapshot(
     }
 
     const types: TypeSnapshot[] = typeResult.rows.map((row) => {
-      const labels = coerceTextArray(row.enum_labels);
+      const labels = enumLabels(row.enum_labels);
       const checks = coerceJsonArray<DomainCheck>(row.domain_checks).map((check) => ({
         name: check.name,
         expression: stripSchemaFromExpr(check.expression, schemaName) ?? check.expression,

@@ -1316,3 +1316,75 @@ describe("schema chat review fixes", () => {
     expect(calls.snapshot).toHaveLength(1);
   });
 });
+
+/* ---------------------------------------------------------------------
+ * T9-03 (review of 2026-11-10): names written without backticks.
+ * --------------------------------------------------------------------- */
+describe("names the answer writes without backticks", () => {
+  // The answer the review saw, after "Looked up connections" only: none of
+  // these columns or tables exist, and none was in backticks.
+  const invented =
+    "The gift_cards table holds one row per card. Its key is gift_card_id, and it has foreign keys to the brand, store and category tables through brand_id and store_id.";
+
+  it("flags made-up names although they are not in backticks", async () => {
+    const { chat } = await looked([["list_connections", {}]]);
+    const checked = checkChatAnswer(invented, chat, []);
+    expect(checked.answer.unverifiedNames).toEqual(["gift_cards", "gift_card_id", "brand_id", "store_id"]);
+    expect(checked.problems.join(" ")).toContain("gift_card_id");
+  });
+
+  it("flags them after a schema lookup too, and a bare table.column pair that is not real", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer("orders has book_id and created_at. The price is in orders.price, next to discount_code.", chat, []);
+    expect(checked.answer.unverifiedNames).toEqual(["orders.price", "discount_code"]);
+  });
+
+  it("leaves real names, the lookups' own names and ordinary words alone", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer(
+      "I used show_schema. books.price is numeric(10,2), e.g. 9.99, and orders has book_id and created_at. See example.com for more.",
+      chat,
+      []
+    );
+    expect(checked.answer.unverifiedNames).toEqual([]);
+    expect(checked.problems).toEqual([]);
+  });
+
+  it("a name is listed once, whether it is in backticks, bare or both", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer("`discount_code` is missing. discount_code was never added, and neither was discount_code.", chat, []);
+    expect(checked.answer.unverifiedNames).toEqual(["discount_code"]);
+  });
+
+  it("a bare name the draft makes is not flagged", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer(
+      "This adds stock_count to books.\n```sql\nALTER TABLE books ADD COLUMN stock_count integer;\n```\nNot run.",
+      chat,
+      []
+    );
+    expect(checked.answer.sqlProblems).toEqual([]);
+    expect(checked.answer.unverifiedNames).toEqual([]);
+  });
+
+  it("through the chat: the fake model's invented schema goes back once, then is flagged on screen", async () => {
+    const provider = new MockProvider([invented, invented]);
+    const { chat } = tools();
+    const { deps: d } = deps(provider);
+    const answer = ok(
+      await runSchemaChat(caller, { question: "What does the gift_cards table hold and does it have a comment?", history: [], tools: chat }, d)
+    );
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1].messages.at(-1)?.content).toContain("These names are not in anything the lookups returned: gift_cards, gift_card_id");
+    expect(answer.unverifiedNames).toEqual(["gift_cards", "gift_card_id", "brand_id", "store_id"]);
+    expect(answer.toolsUsed.map((t) => t.name)).toEqual(["list_connections"]);
+  });
+
+  it("tells the model it is never shown comments", async () => {
+    const provider = new MockProvider(["One connection, `Shop dev`."]);
+    const { chat } = tools();
+    const { deps: d } = deps(provider);
+    ok(await runSchemaChat(caller, { question: "Does books have a comment?", history: [], tools: chat }, d));
+    expect(provider.requests[0].system).toMatch(/never shown comments/);
+  });
+});

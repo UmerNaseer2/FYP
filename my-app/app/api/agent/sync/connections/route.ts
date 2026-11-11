@@ -4,7 +4,7 @@ import { agentPrincipal, type Principal } from "@/lib/auth-guard";
 import { hasPermission, refusalMessage, type PermissionKey } from "@/lib/permissions";
 import { runConnectionTest } from "@/lib/connection-config";
 import { createConnection, deleteConnection, updateConnection, type WriteAnswer } from "@/lib/connection-writes";
-import { sslModeFromLegacyBoolean, toSslMode } from "@/lib/connection-validate";
+import { sslModeFromLegacyBoolean, sslModeProblem, toSslMode } from "@/lib/connection-validate";
 import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "@/lib/local-secrets";
 
 /**
@@ -57,6 +57,9 @@ export async function POST(request: NextRequest) {
   const asked = await acting(request, "connections:create");
   if (!asked.ok) return asked.response;
   const { body } = asked;
+  // An ssl_mode nobody knows is refused, never quietly saved as "disable".
+  const sslProblem = sslModeProblem(body.ssl_mode);
+  if (sslProblem) return NextResponse.json({ saved: false, reason: sslProblem });
   const sslMode =
     body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
       ? toSslMode(body.ssl_mode)

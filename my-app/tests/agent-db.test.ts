@@ -160,7 +160,11 @@ describeWithDatabase("linked computers in a real metadata database", () => {
     it("waits, then hands over a token once, and keeps only hashes", async () => {
       const opened = await agents.openLink("Ada's laptop");
       if (opened === null) throw new Error("No link opened.");
-      expect(await agents.readLink(opened.userCode)).toBe("Ada's laptop");
+      const waiting = await agents.readLink(opened.userCode);
+      expect(waiting?.computerName).toBe("Ada's laptop");
+      // When it was opened, for the person approving to check: just now.
+      const openedAgo = Date.now() - new Date(waiting?.openedAt ?? "").getTime();
+      expect(Math.abs(openedAgo)).toBeLessThan(60_000);
       expect(await agents.claimLink(opened.deviceCode)).toEqual({ kind: "waiting" });
 
       expect(await agents.approveLink(opened.userCode, orgA.id, ada.id)).toBe(true);
@@ -234,6 +238,27 @@ describeWithDatabase("linked computers in a real metadata database", () => {
       expect(await agents.openLink("Next")).not.toBeNull();
     }, SLOW);
 
+    it("lets one caller hold five waiting links, and leaves room for everyone else", async () => {
+      for (let n = 1; n <= 5; n++) {
+        expect(await agents.openLink(`Flood ${n}`, "203.0.113.9")).not.toBeNull();
+      }
+      expect(await agents.openLink("Flood 6", "203.0.113.9")).toBeNull();
+      // Someone else, and a caller whose address is not known, still get in.
+      expect(await agents.openLink("Ada's laptop", "198.51.100.7")).not.toBeNull();
+      expect(await agents.openLink("No address")).not.toBeNull();
+      // Only a hash of the address is kept.
+      const kept = await rows<{ caller_hash: string | null }>(`SELECT DISTINCT caller_hash FROM agent_links`);
+      expect(JSON.stringify(kept)).not.toContain("203.0.113.9");
+    }, SLOW);
+
+    it("stops counting a link against its caller once somebody approved it", async () => {
+      const opened = [];
+      for (let n = 1; n <= 5; n++) opened.push(await agents.openLink(`Office ${n}`, "203.0.113.9"));
+      expect(await agents.openLink("Office 6", "203.0.113.9")).toBeNull();
+      await db.query(`UPDATE agent_links SET approved_at = now() WHERE user_code = $1`, [opened[0]?.userCode]);
+      expect(await agents.openLink("Office 6", "203.0.113.9")).not.toBeNull();
+    }, SLOW);
+
     it("keeps a person's ten newest computers", async () => {
       const first = await linked(orgA, ada, "Oldest");
       for (let count = 0; count < 10; count += 1) await linked(orgA, ada, `Computer ${count}`);
@@ -260,6 +285,38 @@ describeWithDatabase("linked computers in a real metadata database", () => {
 
     it("means nothing when it is not one", async () => {
       expect(await agents.findAgent(`${TOKEN_PREFIX}made-up`)).toBeNull();
+    }, SLOW);
+
+    it("stops working once its computer has not called for ninety days", async () => {
+      const { token, caller } = await linked(orgA, ada);
+      await db.query(`UPDATE agents SET last_seen_at = now() - interval '89 days' WHERE id = $1`, [caller.id]);
+      expect(await agents.findAgent(token)).not.toBeNull();
+      await db.query(`UPDATE agents SET last_seen_at = now() - interval '91 days' WHERE id = $1`, [caller.id]);
+      expect(await agents.findAgent(token)).toBeNull();
+      // A computer never heard from counts from the day it was linked.
+      await db.query(`UPDATE agents SET last_seen_at = NULL WHERE id = $1`, [caller.id]);
+      expect(await agents.findAgent(token)).not.toBeNull();
+      await db.query(`UPDATE agents SET created_at = now() - interval '91 days' WHERE id = $1`, [caller.id]);
+      expect(await agents.findAgent(token)).toBeNull();
+    }, SLOW);
+
+    it("stays alive while its computer keeps calling", async () => {
+      const { token, caller } = await linked(orgA, ada);
+      await db.query(
+        `UPDATE agents SET created_at = now() - interval '200 days', last_seen_at = now() - interval '89 days' WHERE id = $1`,
+        [caller.id]
+      );
+      await agents.nextAgentJob(caller.id);
+      await db.query(`UPDATE agents SET last_seen_at = last_seen_at - interval '2 days' WHERE id = $1`, [caller.id]);
+      expect(await agents.findAgent(token)).not.toBeNull();
+    }, SLOW);
+
+    it("is cleared away with the other old rows once it has ended that way", async () => {
+      const kept = await linked(orgA, ada, "In use");
+      const left = await linked(orgA, bea, "Put away");
+      await db.query(`UPDATE agents SET last_seen_at = now() - interval '91 days' WHERE id = $1`, [left.caller.id]);
+      await agents.sweepAgentRows();
+      expect(await rows<{ id: number }>(`SELECT id FROM agents`)).toEqual([{ id: kept.caller.id }]);
     }, SLOW);
   });
 
@@ -334,6 +391,18 @@ describeWithDatabase("linked computers in a real metadata database", () => {
       expect(await agents.removeComputer(orgB.id, ada.id, caller.id)).toBe(false);
       expect(await agents.removeComputer(orgA.id, ada.id, caller.id)).toBe(true);
       expect(await agents.listComputers(orgA.id, ada.id)).toEqual([]);
+    }, SLOW);
+
+    it("lets an Admin's route remove any computer of the organization, and no other's", async () => {
+      const { token, caller } = await linked(orgA, ada);
+      // Not from another organization, whoever asks.
+      expect(await agents.removeOrgComputer(orgB.id, caller.id)).toBe(false);
+      expect(await agents.findAgent(token)).not.toBeNull();
+      // From its own, without being its owner. The token is dead at once.
+      expect(await agents.removeOrgComputer(orgA.id, caller.id)).toBe(true);
+      expect(await agents.findAgent(token)).toBeNull();
+      expect(await agents.listOrgComputers(orgA.id, bea.id)).toEqual([]);
+      expect(await agents.removeOrgComputer(orgA.id, caller.id)).toBe(false);
     }, SLOW);
   });
 

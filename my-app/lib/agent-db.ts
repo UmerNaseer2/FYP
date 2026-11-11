@@ -30,7 +30,25 @@ import type { AgentJob } from "@/lib/agent-jobs";
 /** Enough for anyone linking at once, and a floor under what a stranger can fill. */
 const MOST_OPEN_LINKS = 100;
 
+/**
+ * How many links one caller may have waiting. Starting a link needs no sign-in,
+ * so without this one caller could take all the places above and leave nobody
+ * else able to link a computer. Five is plenty for one person or one office.
+ */
+const MOST_OPEN_LINKS_PER_CALLER = 5;
+
 const MOST_COMPUTERS_PER_PERSON = 10;
+
+/**
+ * A link ends when its computer has not called for this many days. A computer
+ * in use calls every few seconds, so this only ends the links of computers put
+ * away, lost or sold, whose tokens would otherwise work for ever. Linking the
+ * computer again takes a minute.
+ */
+export const UNUSED_LINK_DAYS = 90;
+
+/** The database's text for a link that ended that way. A computer never heard from counts from its linking. */
+const LEFT_UNUSED = `COALESCE(a.last_seen_at, a.created_at) <= now() - make_interval(days => ${UNUSED_LINK_DAYS})`;
 
 const MOST_WAITING_JOBS = 20;
 
@@ -55,32 +73,56 @@ function newUserCode(): string {
 
 export type OpenedLink = { deviceCode: string; userCode: string };
 
-/** Start a link for a computer, or null when too many are waiting already. */
-export async function openLink(computerName: string): Promise<OpenedLink | null> {
+/**
+ * Start a link for a computer, or null when too many are waiting already:
+ * too many in all, or too many from this caller. `caller` is the address the
+ * request came from, or null when it is not known. Only its hash is stored. A
+ * link somebody approved no longer counts against its caller.
+ */
+export async function openLink(computerName: string, caller: string | null = null): Promise<OpenedLink | null> {
   await syncMetadataTables();
   await pool.query("DELETE FROM agent_links WHERE expires_at <= now()");
   const deviceCode = randomBytes(32).toString("base64url");
   const userCode = newUserCode();
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO agent_links (device_code_hash, user_code, computer_name, expires_at)
-     SELECT $1, $2, $3, now() + make_interval(mins => $4)
+    `INSERT INTO agent_links (device_code_hash, user_code, computer_name, expires_at, caller_hash)
+     SELECT $1, $2, $3, now() + make_interval(mins => $4), $6::text
       WHERE (SELECT count(*) FROM agent_links) < $5
+        AND ($6::text IS NULL
+             OR (SELECT count(*) FROM agent_links
+                  WHERE caller_hash = $6::text AND approved_at IS NULL) < $7)
      ON CONFLICT (user_code) DO NOTHING
      RETURNING id`,
-    [hashSecret(deviceCode), userCode, computerName, LINK_MINUTES, MOST_OPEN_LINKS]
+    [
+      hashSecret(deviceCode),
+      userCode,
+      computerName,
+      LINK_MINUTES,
+      MOST_OPEN_LINKS,
+      caller === null ? null : hashSecret(caller),
+      MOST_OPEN_LINKS_PER_CALLER,
+    ]
   );
   return rows.length === 1 ? { deviceCode, userCode } : null;
 }
 
-/** The computer asking to be linked with this code, if the code is still good. */
-export async function readLink(userCode: string): Promise<string | null> {
+export type WaitingLink = { computerName: string; openedAt: string };
+
+/**
+ * The computer asking to be linked with this code and when it asked, if the
+ * code is still good. A link lasts LINK_MINUTES from the moment it was opened,
+ * so that moment is read back from when it ends.
+ */
+export async function readLink(userCode: string): Promise<WaitingLink | null> {
   await syncMetadataTables();
-  const { rows } = await pool.query<{ computer_name: string }>(
-    `SELECT computer_name FROM agent_links
+  const { rows } = await pool.query<{ computer_name: string; opened_at: Date }>(
+    `SELECT computer_name, expires_at - make_interval(mins => $2) AS opened_at
+       FROM agent_links
       WHERE user_code = $1 AND expires_at > now() AND approved_at IS NULL`,
-    [userCode]
+    [userCode, LINK_MINUTES]
   );
-  return rows[0]?.computer_name ?? null;
+  const row = rows[0];
+  return row ? { computerName: row.computer_name, openedAt: row.opened_at.toISOString() } : null;
 }
 
 /** Link the waiting computer to this person in this organization. False if the code is no good. */
@@ -159,6 +201,9 @@ export type AgentCaller = { id: number; orgId: number; profileId: number };
 /**
  * The computer holding this token. The join ends the link the moment its person
  * leaves the organization, without anything having to remember to delete it.
+ * A token left unused for UNUSED_LINK_DAYS is no longer one. Using the computer
+ * keeps its link alive, because every poll for a question writes last_seen_at
+ * (nextAgentJob).
  */
 export async function findAgent(token: string): Promise<AgentCaller | null> {
   await syncMetadataTables();
@@ -166,7 +211,7 @@ export async function findAgent(token: string): Promise<AgentCaller | null> {
     `SELECT a.id, a.org_id, a.profile_id
        FROM agents a
        JOIN memberships m ON m.org_id = a.org_id AND m.profile_id = a.profile_id
-      WHERE a.token_hash = $1`,
+      WHERE a.token_hash = $1 AND NOT (${LEFT_UNUSED})`,
     [hashSecret(token)]
   );
   const row = rows[0];
@@ -328,8 +373,9 @@ export type OrgComputer = {
  * Every computer linked in this organization, with the connections only it
  * holds. Everyone who can read connections sees these by name, so a laptop's
  * databases are listed for the org the same way the server's local ones are.
- * Names and environments only: comparing or removing a computer stays its
- * owner's (listComputers, removeComputer).
+ * Names and environments only: comparing through a computer stays its
+ * owner's (listComputers). Unlinking it is its owner's too (removeComputer),
+ * and an Admin's (removeOrgComputer).
  */
 export async function listOrgComputers(orgId: number, profileId: number | null): Promise<OrgComputer[]> {
   await syncMetadataTables();
@@ -376,6 +422,17 @@ export async function removeComputer(orgId: number, profileId: number, agentId: 
     "DELETE FROM agents WHERE id = $1 AND org_id = $2 AND profile_id = $3",
     [agentId, orgId, profileId]
   );
+  return rowCount === 1;
+}
+
+/**
+ * Unlink any computer of this organization, whoever linked it. For someone who
+ * may remove members: a lost laptop can be cut off without its owner, and
+ * without removing its owner. False if the organization has no such computer.
+ */
+export async function removeOrgComputer(orgId: number, agentId: number): Promise<boolean> {
+  await syncMetadataTables();
+  const { rowCount } = await pool.query("DELETE FROM agents WHERE id = $1 AND org_id = $2", [agentId, orgId]);
   return rowCount === 1;
 }
 
@@ -442,14 +499,16 @@ export async function readAgentJobFor(orgId: number, profileId: number, jobId: n
 }
 
 /**
- * Clear out old questions, old answers and links nobody approved. Called when a
- * question is asked and on every drift tick, so an answer does not stay in this
- * database for long even if nobody ever asks another.
+ * Clear out old questions, old answers, links nobody approved and computers
+ * whose link ended for want of use. Called when a question is asked and on
+ * every drift tick, so an answer does not stay in this database for long even
+ * if nobody ever asks another.
  */
 export async function sweepAgentRows(): Promise<void> {
   await pool.query("DELETE FROM agent_jobs WHERE created_at < now() - make_interval(mins => $1)", [
     KEEP_JOBS_MINUTES,
   ]);
   await pool.query("DELETE FROM agent_links WHERE expires_at <= now()");
+  await pool.query(`DELETE FROM agents a WHERE ${LEFT_UNUSED}`);
 }
 

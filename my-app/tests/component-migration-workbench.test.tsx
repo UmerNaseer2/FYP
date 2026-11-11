@@ -858,8 +858,13 @@ describe("what the push sends", () => {
     await versionReady();
     fireEvent.click(pushButton());
 
+    // The link carries the target, the script and the version just pushed, so
+    // the Deploy page opens on them and nobody has to pick all three again.
     const done = await screen.findByText("Nothing has run yet — deploy it");
-    expect(done).toHaveAttribute("href", "/test-org/deploy");
+    expect(done).toHaveAttribute(
+      "href",
+      "/test-org/deploy?connection=7&schema=public&script=add_due_date&version=1.1.0"
+    );
     expect(screen.getByRole("link", { name: "View on GitHub" })).toHaveAttribute(
       "href",
       "https://github.com/x/y/blob/main/v1.1.0.sql"

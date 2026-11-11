@@ -151,6 +151,22 @@ export function toSslMode(value: unknown): SslMode {
 }
 
 /**
+ * The message for an ssl_mode that was sent but is not one of ours, or null
+ * when it is fine. Nothing sent (undefined, null or "") is fine: the caller
+ * then uses the default.
+ *
+ * toSslMode alone turns a typo such as "required", or PostgreSQL's own
+ * "verify-ca", into "disable", which is no TLS at all. A route must ask this
+ * first, with the value as it arrived, so the caller is told instead.
+ */
+export function sslModeProblem(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if ((SSL_MODES as readonly string[]).includes(raw)) return null;
+  return `ssl_mode must be one of: ${SSL_MODES.join(", ")}.`;
+}
+
+/**
  * Bridge for the legacy boolean `ssl` column: `true` meant "encrypt, don't
  * verify", which is exactly `require`. Used when reading rows written before
  * ssl_mode existed.
@@ -296,6 +312,10 @@ export function validateConnection(
   // Only the server writes a local connection's marker (lib/local-secrets).
   if (typedLocalMarker(password)) errors.password = TYPED_MARKER_MESSAGE;
   if (typedLocalMarker(connection_string)) errors.connection_string = TYPED_MARKER_MESSAGE;
+
+  // An ssl_mode that is not one of ours is refused, never read as "disable".
+  const sslProblem = sslModeProblem(draft.ssl_mode);
+  if (sslProblem) errors.ssl_mode = sslProblem;
 
   if (rawEnvironment !== "" && rawEnvironment.toLowerCase() !== environment) {
     errors.environment =

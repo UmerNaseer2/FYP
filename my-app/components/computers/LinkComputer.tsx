@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ErrorNote, JSON_HEADERS, Meta, errorFrom } from "@/components/phone/parts";
 import { Button, Card, Input } from "@/components/ui";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { useOrg } from "@/hooks/useOrg";
-import { readUserCode, showUserCode } from "@/lib/agent-rules";
+import { readUserCode } from "@/lib/agent-rules";
 import { apiFetch } from "@/lib/api-fetch";
 import { orgHref } from "@/lib/org-slug";
 import { isOrgListing, type OrgSummary } from "@/lib/organization-list";
+import { timeAgo } from "@/lib/time-ago";
 
 const COULD_NOT_READ = "Could not read that code. Try again.";
 const COULD_NOT_LINK = "Could not link that computer. Try again.";
@@ -18,12 +19,28 @@ const OFFLINE = "This device could not reach the site. Check its connection and 
 
 type Finished = "linked" | "turned-away";
 
+/** When a computer asked to be linked, as the site sent it, or null if that is not a time. */
+function readTime(value: unknown): string | null {
+  return typeof value === "string" && !Number.isNaN(new Date(value).getTime()) ? value : null;
+}
+
+/** "14:32", on this device's clock. */
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 /**
- * Where someone says yes to a computer. The desktop app opens this page with a
- * code it is also showing, so the person links what is in front of them.
+ * Where someone says yes to a computer. The desktop app opens this page and
+ * shows a code in its own Settings, and the person types that code here, so
+ * they link what is in front of them.
+ *
+ * The code is never taken from the page's address. A link that carried one
+ * would let a stranger send "press Link" to a member and get their own
+ * computer linked, with the organization's connection passwords. Typing the
+ * code means reading it off a computer the person can see.
  *
  * Whoever holds the code can only ask. Nothing happens until someone signed in
- * says so here, which is why the page asks them to check the code and the name
+ * says so here, which is why the page asks them to check the name and the time
  * instead of linking as soon as it opens.
  */
 export default function LinkComputer() {
@@ -31,13 +48,9 @@ export default function LinkComputer() {
   const router = useRouter();
   const orgFieldId = useId();
   const codeFieldId = useId();
-  const params = useSearchParams();
-  const [typed, setTyped] = useState(() => {
-    const given = readUserCode(params.get("code"));
-    return given === null ? "" : showUserCode(given);
-  });
+  const [typed, setTyped] = useState("");
   const code = readUserCode(typed);
-  const [computer, setComputer] = useState<{ code: string; name: string } | null>(null);
+  const [computer, setComputer] = useState<{ code: string; name: string; openedAt: string | null } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [others, setOthers] = useState<OrgSummary[]>([]);
   const [busy, setBusy] = useState(false);
@@ -56,13 +69,13 @@ export default function LinkComputer() {
           if (current) setProblem(message);
           return;
         }
-        const body = (await response.json()) as { computerName?: unknown };
+        const body = (await response.json()) as { computerName?: unknown; openedAt?: unknown };
         if (!current) return;
         if (typeof body.computerName !== "string") {
           setProblem(COULD_NOT_READ);
           return;
         }
-        setComputer({ code: asked, name: body.computerName });
+        setComputer({ code: asked, name: body.computerName, openedAt: readTime(body.openedAt) });
         setProblem(null);
       } catch {
         if (current) setProblem(OFFLINE);
@@ -99,7 +112,8 @@ export default function LinkComputer() {
 
   function moveTo(value: string) {
     if (value === slug) return;
-    router.push(orgHref(value, `/link-computer${code ? `?code=${code}` : ""}`));
+    // The code does not travel in the address, so it is typed again there.
+    router.push(orgHref(value, "/link-computer"));
   }
 
   async function answer(method: "POST" | "DELETE", fallback: string, then: Finished) {
@@ -126,7 +140,9 @@ export default function LinkComputer() {
 
   // The name on screen has to be the name for the code on screen. An answer
   // for the code someone just changed is not one.
-  const asking = computer !== null && computer.code === code ? computer.name : null;
+  const shown = computer !== null && computer.code === code ? computer : null;
+  const asking = shown === null ? null : shown.name;
+  const openedAt = shown === null ? null : shown.openedAt;
   const orgName = org?.name ?? "this organization";
   const options: SelectOption[] =
     org === null
@@ -166,8 +182,12 @@ export default function LinkComputer() {
         {finished === null && (
           <Card className="p-4 flex flex-col gap-3">
             <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
-              Only link a computer you are sitting at. Once linked, it can answer questions from
-              your account about the connections you choose to share on it.
+              Only link a computer you are sitting at. Type the code it is showing in Schema
+              Studio&apos;s Settings. Never type a code that someone sent you.
+            </p>
+            <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
+              Linking lets that computer open {orgName}&apos;s saved connections, including their
+              passwords, and answer questions from your account.
             </p>
 
             <div className="flex flex-col gap-1">
@@ -210,6 +230,12 @@ export default function LinkComputer() {
                 <p className="text-[14px] font-semibold">
                   Link {asking} to {orgName}?
                 </p>
+                {openedAt !== null && (
+                  <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
+                    This computer asked to be linked at {clockTime(openedAt)} ({timeAgo(openedAt)}). If you
+                    did not start that on your computer just now, choose Not mine.
+                  </p>
+                )}
                 <div className="flex gap-2">
                   <Button
                     size="sm"

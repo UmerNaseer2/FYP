@@ -1,3 +1,5 @@
+> **Old prompt, kept for history.** It was written for an earlier state of the project and may not match the code as it is now.
+
 # External review prompt
 
 Paste everything below the line into the reviewing model, with the repository

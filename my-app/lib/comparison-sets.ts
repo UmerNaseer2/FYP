@@ -29,8 +29,10 @@ export {
  * keeps its history when it is dropped from a set, added to another, or
  * compared once by hand outside any set at all.
  *
- * Lives in the same metadata database as `connections` and the lineage tables,
- * and is declared with them as a Sequelize model in `lib/db/models.ts`.
+ * Lives in the same metadata database as `connections` and the lineage tables.
+ * Its tables are declared with them as Sequelize models in `lib/db/models.ts`,
+ * which is what creates them. The reads and writes in this file do not go
+ * through the models: they are parameterised SQL on the metadata pool.
  *
  * Every set belongs to one organization. Each function here takes the caller's
  * organization first and reads or writes only that organization's sets, so

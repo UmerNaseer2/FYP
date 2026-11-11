@@ -12,6 +12,7 @@ import {
   savedPasswordWouldMove,
   tlsWouldWeaken,
   sslModeFromLegacyBoolean,
+  sslModeProblem,
   toSslMode,
   type SslMode,
 } from "@/lib/connection-validate";
@@ -44,6 +45,10 @@ export async function POST(request: NextRequest) {
     if (portGiven && parsePort(body.port) === null) {
       return failure("Port must be a whole number between 1 and 65535.", 400);
     }
+
+    // An ssl_mode nobody knows is refused, never quietly tested as "disable".
+    const sslProblem = sslModeProblem(body.ssl_mode);
+    if (sslProblem) return failure(sslProblem, 400);
 
     const sslMode: SslMode =
       body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""

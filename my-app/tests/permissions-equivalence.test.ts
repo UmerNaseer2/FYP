@@ -109,7 +109,7 @@ const ADDED: Record<string, Gate> = {
   "DELETE /api/phone/push": { kind: "member" },
   "POST /api/phone/push/test": { kind: "member" },
   "GET /api/computers": { kind: "permission", keys: ["compare:read"] },
-  "DELETE /api/computers/[id]": { kind: "permission", keys: ["compare:read"] },
+  "DELETE /api/computers/[id]": { kind: "permission", keys: ["compare:read", "users:delete"] },
   "GET /api/computers/link": { kind: "permission", keys: ["compare:read"] },
   "POST /api/computers/link": { kind: "permission", keys: ["compare:read"] },
   "DELETE /api/computers/link": { kind: "permission", keys: ["compare:read"] },

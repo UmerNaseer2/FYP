@@ -11,8 +11,13 @@
 //     it is in (or, in the headline, sends the answer back once);
 //   - every item's level is overwritten with the engine's grade of the
 //     changes it cites;
+//   - a name under "Used by" stays only when the target schema shows it uses
+//     the table or view the item's changes are in (a view that reads it, a
+//     table with a foreign key to it, a trigger on it);
 //   - when there are breaking changes, the answer must cover at least one of
-//     them, or it goes back once with that spelled out.
+//     them, or it goes back once with that spelled out;
+//   - breaking changes the answer still leaves out are added by the app as an
+//     item of its own, so the summary never reads as complete when it is not.
 // Only structure goes in the prompt: change rows, names, types, keys. The
 // database names, hosts and any row counts stay out.
 // ---------------------------------------------------------------------------
@@ -36,6 +41,8 @@ const NEW_TABLES_TOKENS = 1_000;
 const MAX_DEPENDENT_LINES = 25;
 const MAX_RISKS = 6;
 const MAX_STEPS = 8;
+/** Left-out breaking changes the app lists in its own item. The same as the most ids one item may cite. */
+const MAX_LEFT_OUT = 20;
 
 const LEVEL_ORDER: SummaryLevel[] = ["info", "safe", "breaking"];
 
@@ -67,7 +74,7 @@ export const COMPARE_SUMMARY_SYSTEM = [
   "The source is the schema as it should be. The target is the schema the migration rewrites to match it.",
   "Answer in JSON with three parts:",
   "- headline: one sentence of at most 30 words on what the migration does to the target.",
-  `- risks: the changes that can hurt, most serious first, at most ${MAX_RISKS}. Put related changes in one item (a dropped column and its index). Cover every breaking change, grouping them when there are many. Each item cites the ids of its changes (C1, C2 ...), says in one or two sentences why it can hurt, and lists in affects the target objects that use what changes, taken from the WHAT USES list or the schema text (an empty list when nothing does). Set level to the grade the app gave the cited changes. When nothing can hurt, risks is an empty list.`,
+  `- risks: the changes that can hurt, most serious first, at most ${MAX_RISKS}. Put related changes in one item (a dropped column and its index). Cover every breaking change, grouping them when there are many. Each item cites the ids of its changes (C1, C2 ...), says in one or two sentences why it can hurt, and lists in affects the names of the views, tables and triggers that the WHAT USES list gives for the tables and views its changes are in (an empty list when it gives none, never a guess). Set level to the grade the app gave the cited changes. When nothing can hurt, risks is an empty list.`,
   `- order: the order to apply the changes in, at most ${MAX_STEPS} steps, each citing the ids it covers. The usual order is new types and tables, then new columns, then data fixes, then constraints and indexes, then drops last. Say when a step should wait for a backup or for code that still uses the old shape.`,
   "Cite only ids from the CHANGES list, and only in the changes fields: the screen shows them beside each item, so never write an id in headline, title, why or step. Put every table, column, view or other object name you write in backticks, and nothing else in backticks.",
 ].join("\n");
@@ -91,6 +98,11 @@ export type CompareSummaryFacts = {
   listed: Set<string>;
   known: Set<string>;
   breakingIds: string[];
+  /**
+   * For each listed change: the target objects known to use the table or view
+   * it is in, in lower case, with and without the schema in front.
+   */
+  usedBy: Map<string, Set<string>>;
 };
 
 export type CompareSummaryTask = {
@@ -146,14 +158,23 @@ export function buildCompareSummaryTask(
   // table has another name in the target, which is the one its users read.
   const targetNameOf = new Map<string, string>();
   for (const match of report.matchedTables) targetNameOf.set(match.left.name, match.right.name);
+  const index = buildDependencyIndex(target);
   const touched: string[] = [];
-  for (const [, row] of listedEntries) {
+  // Kept for the check: an item may only say "used by" what is found here.
+  const usedBy = new Map<string, Set<string>>();
+  for (const [id, row] of listedEntries) {
     const filedAs = row.table || (row.category === "View" ? row.object : "");
     const name = targetNameOf.get(filedAs) ?? filedAs;
-    if (!name || !targetNames.has(name) || touched.includes(name)) continue;
+    if (!name || !targetNames.has(name)) continue;
+    const users = new Set<string>();
+    for (const dependent of index.dependentsOf(name)) {
+      users.add(dependent.name.toLowerCase());
+      users.add(`${target.schema}.${dependent.name}`.toLowerCase());
+    }
+    usedBy.set(id, users);
+    if (touched.includes(name)) continue;
     if (row.severity === "breaking" || row.change !== "added") touched.push(name);
   }
-  const index = buildDependencyIndex(target);
   const dependentLines = touched.slice(0, MAX_DEPENDENT_LINES).map((name) => describeDependents(index, name));
 
   const slice = schemaSlice(target, { focus: touched, maxTokens: TARGET_SLICE_TOKENS });
@@ -201,6 +222,7 @@ export function buildCompareSummaryTask(
     // where a new table will live once the migration runs.
     known: knownNames(report.left, report.right, report.left && report.right ? { ...report.left, schema: report.right.schema } : null),
     breakingIds,
+    usedBy,
   };
 
   return {
@@ -213,7 +235,9 @@ export function buildCompareSummaryTask(
       prompt,
       schema: compareSummarySchema,
       // The prompt is built only from the diff, so the same diff asks the same question.
-      cacheInput: { prompt },
+      // "checks" is the version of the code checks below: an answer saved
+      // before a check was added is not served again.
+      cacheInput: { prompt, checks: 2 },
       maxOutputTokens: 1_500,
       check: (value) => checkCompareSummary(value, facts),
     },
@@ -254,6 +278,20 @@ export function unknownTickedNames(
   return unknown;
 }
 
+/** Most serious first. */
+function byLevel(a: { level: SummaryLevel }, b: { level: SummaryLevel }): number {
+  return LEVEL_ORDER.indexOf(b.level) - LEVEL_ORDER.indexOf(a.level);
+}
+
+/** A name as the usedBy lists hold it: no quotes, lower case. */
+function plainName(raw: string): string {
+  return raw
+    .replace(/"/g, "")
+    .split(".")
+    .map((part) => part.trim().toLowerCase())
+    .join(".");
+}
+
 function normaliseIds(ids: readonly string[]): string[] {
   return [...new Set(ids.map((id) => id.trim().toUpperCase()))];
 }
@@ -288,7 +326,9 @@ export function checkCompareSummary(answer: CompareSummaryAnswer, facts: Compare
       continue;
     }
     const affects = [...new Set(risk.affects.map((name) => name.trim()).filter(Boolean))];
-    const realAffects = affects.filter((name) => isKnownName(name, facts.known));
+    // Only what the target schema shows as a user of a cited change. A name
+    // that merely exists somewhere is the model's guess, so it is struck out.
+    const realAffects = affects.filter((name) => ids.some((id) => facts.usedBy.get(id)?.has(plainName(name))));
     droppedNames += affects.length - realAffects.length;
     // The grade lock: the engine's grade of the cited changes, whatever the model said.
     const level = ids.reduce<SummaryLevel>((highest, id) => {
@@ -298,7 +338,7 @@ export function checkCompareSummary(answer: CompareSummaryAnswer, facts: Compare
     if (level !== risk.level) levelFixed += 1;
     risks.push({ ...risk, changes: ids, level, affects: realAffects });
   }
-  risks.sort((a, b) => LEVEL_ORDER.indexOf(b.level) - LEVEL_ORDER.indexOf(a.level));
+  risks.sort(byLevel);
 
   const order: CompareSummaryAnswer["order"] = [];
   for (const step of answer.order) {
@@ -325,8 +365,31 @@ export function checkCompareSummary(answer: CompareSummaryAnswer, facts: Compare
     );
   }
 
+  // Breaking changes no shown item cites, listed or not. The app adds them as
+  // an item of its own: a reader takes the summary as complete, so a breaking
+  // change must never be missing from it without a word.
+  const shown = risks.slice(0, MAX_RISKS + 2);
+  const covered = new Set(shown.flatMap((risk) => risk.changes));
+  const leftOut = [...facts.rows.entries()]
+    .filter(([id, row]) => row.severity === "breaking" && !covered.has(id))
+    .map(([id]) => id);
+  if (leftOut.length > 0) {
+    const more = leftOut.length - MAX_LEFT_OUT;
+    shown.push({
+      title: "Breaking changes the AI summary did not cover",
+      changes: leftOut.slice(0, MAX_LEFT_OUT),
+      level: "breaking",
+      why:
+        "The app added these from its own comparison, because the AI's summary left them out. Check each one before you apply the migration." +
+        (more > 0 ? ` Only the first ${MAX_LEFT_OUT} are shown here: ${more} more are in the list of differences.` : ""),
+      affects: [],
+    });
+    // After the AI's own breaking items, before its safe and info ones.
+    shown.sort(byLevel);
+  }
+
   return {
-    value: { headline: answer.headline.trim(), risks: risks.slice(0, MAX_RISKS + 2), order },
+    value: { headline: answer.headline.trim(), risks: shown, order },
     problems,
     report: { droppedItems, droppedNames, levelFixed },
   };

@@ -96,7 +96,8 @@ describe("rebuilding a column another table points at", () => {
     const dropColumn = position(sql, /"products" DROP COLUMN IF EXISTS "code" CASCADE/);
     const addColumn = position(sql, /"products" ADD COLUMN IF NOT EXISTS "code"/);
     const addKey = position(sql, /"products" ADD CONSTRAINT "products_code_key"/);
-    const addFk = position(sql, /"orders" ADD CONSTRAINT "fk_product" FOREIGN KEY \("product_code"\) REFERENCES "products" \("code"\)/);
+    // The key goes back in PostgreSQL's own words (the snapshot's definition).
+    const addFk = position(sql, /"orders" ADD CONSTRAINT "fk_product" FOREIGN KEY \(product_code\) REFERENCES products\(code\)/);
 
     expect(dropFk).toBeGreaterThan(-1);
     expect(dropFk).toBeLessThan(dropColumn);
@@ -151,7 +152,7 @@ describe("rebuilding a column another table points at", () => {
     );
     const sql = statementsThatRun(script).map((s) => s.sql);
     expect(position(sql, /RENAME COLUMN "code" TO "codes"/)).toBeGreaterThan(-1);
-    expect(position(sql, /"orders" ADD CONSTRAINT "fk_product" FOREIGN KEY \("product_code"\) REFERENCES "products" \("codes"\)/)).toBeGreaterThan(-1);
+    expect(position(sql, /"orders" ADD CONSTRAINT "fk_product" FOREIGN KEY \(product_code\) REFERENCES products\(codes\)/)).toBeGreaterThan(-1);
   });
 
   it("drops the key once and leaves it off when the source has no key to point at", () => {

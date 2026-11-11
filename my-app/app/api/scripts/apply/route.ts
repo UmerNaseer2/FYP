@@ -17,11 +17,8 @@ import {
   extractEnumAddValues,
   hasExecutableSql,
 } from "@/lib/sql-guard";
-import {
-  ScriptEndedTransactionError,
-  currentTransactionId,
-  readStringsTheStandardWay,
-} from "@/lib/script-transaction";
+import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/script-transaction";
+import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/run-settings";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
 import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
@@ -128,11 +125,47 @@ const LOCK_TIMEOUT_MS = 15_000;
 /** PostgreSQL's SQLSTATE for "gave up waiting for a lock" (lock_not_available). */
 const LOCK_NOT_AVAILABLE = "55P03";
 
+/**
+ * The longest one statement of a DRY RUN may take. A real run has no such
+ * limit (see the note where lock_timeout is set), but a rehearsal is thrown
+ * away anyway, so stopping it is harmless and keeps a slow one from holding
+ * its locks on the target for hours. Five minutes is a judgement call.
+ */
+const DRY_RUN_STATEMENT_TIMEOUT_MS = 5 * 60_000;
+const QUERY_CANCELED = "57014";
+
+/**
+ * PostgreSQL's SQLSTATE for "this statement cannot run inside a transaction
+ * block" (active_sql_transaction): CREATE INDEX CONCURRENTLY, VACUUM, CREATE
+ * DATABASE and a few more. Checked on PostgreSQL 18.
+ */
+const NOT_IN_A_TRANSACTION = "25001";
+
 // Safely quote a PostgreSQL identifier (schema name, table name).
 // Wraps in double-quotes and escapes any internal double-quotes.
 // Prevents SQL injection when the schema name comes from user input.
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * A failure answer, with a sentence added when step 7 had already added enum values.
+ *
+ * Those statements run before the transaction and PostgreSQL cannot remove an
+ * enum value, so they stay when the run fails and is rolled back. A failure
+ * answer that only says "nothing was applied" would leave a difference in the
+ * database that nobody can explain. Empty when nothing was added early (every
+ * dry run, and every run without such a statement).
+ */
+function withEnumValuesThatStay(text: string, hoisted: string[]): string {
+  if (hoisted.length === 0) return text;
+  const ran = hoisted.length === 1 ? "One statement" : `${hoisted.length} statements`;
+  // PostgreSQL's own messages end without a full stop, the route's end with one.
+  const sentence = text.trim().replace(/\.$/, "");
+  return (
+    `${sentence}. ${ran} of this run did not roll back: an enum value is added before the ` +
+    `transaction, and PostgreSQL cannot remove an enum value, so it stays: ${hoisted.join(" ")}`
+  );
 }
 
 /**
@@ -187,50 +220,50 @@ async function ensureScriptPatchTable(
     // benign concurrent-creation race — the table exists, carry on.
   }
 
-  // 7b. Add script_name to tables that were created by an older version of
-  //     this app (before the column existed).  IF NOT EXISTS makes this safe
-  //     to run when the column is already present.
-  await client.query(`
-    ALTER TABLE ${quotedSchema}.script_patch
-    ADD COLUMN IF NOT EXISTS script_name VARCHAR(150) NOT NULL DEFAULT 'unknown'
-  `);
-
-  // 7b-2. Same back-fill for source_ref, added in a later version. Nullable
-  //       so existing rows (and ad-hoc applies) need no value.
-  await client.query(`
-    ALTER TABLE ${quotedSchema}.script_patch
-    ADD COLUMN IF NOT EXISTS source_ref TEXT
-  `);
-
-  // 7b-3. Back-fill sql_content (added for Version Sync / version replay): the
-  //       exact SQL applied each time, so a behind schema can be brought up to
-  //       an ahead one by replaying its ledger. Nullable — rows applied before
-  //       this column existed simply have no stored script.
-  await client.query(`
-    ALTER TABLE ${quotedSchema}.script_patch
-    ADD COLUMN IF NOT EXISTS sql_content TEXT
-  `);
-
-  // 7b-4. Back-fill down_sql: the script that undoes this one, recorded at
-  //       apply time so the row carries its own rollback. Version Sync replays
-  //       this ledger onto another schema and passes it along, which is what
-  //       makes a replayed version revertable there too.
-  await client.query(`
-    ALTER TABLE ${quotedSchema}.script_patch
-    ADD COLUMN IF NOT EXISTS down_sql TEXT
-  `);
-
-  // 7b-5. Back-fill applied_by (spec 07 — track SQL execution history for
-  //       auditing): who ran this version. Nullable, because rows written
-  //       before this column existed have no honest answer and a default would
-  //       invent one — a ledger that names somebody for every historical row is
-  //       worse than one that admits it does not know.
+  // 7b. Bring a table made by an older version of this app up to date.
   //
-  //       320 characters is the longest address RFC 5321 allows (64 + @ + 255).
-  await client.query(`
-    ALTER TABLE ${quotedSchema}.script_patch
-    ADD COLUMN IF NOT EXISTS applied_by VARCHAR(320)
-  `);
+  //     The catalog is read first and an ALTER runs only for a column that is
+  //     missing. ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes an ACCESS
+  //     EXCLUSIVE lock even when the column is already there (checked on
+  //     PostgreSQL 18), so running the five of them on every deploy made this
+  //     step wait behind any open transaction that had touched the ledger, and
+  //     made every new reader of the ledger wait behind this step. The usual
+  //     run now finds every column in place and takes no strong lock at all.
+  const ledgerColumns = await client.query<{ column_name: string; data_type: string }>(
+    `SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'script_patch'`,
+    [schemaName]
+  );
+  const columnTypes = new Map(
+    ledgerColumns.rows.map((row) => [row.column_name, row.data_type] as const)
+  );
+
+  // The columns added after the first version of the ledger, oldest first:
+  //   script_name  the script family (before it, a ledger held one family).
+  //   source_ref   where the script came from. Nullable, so old rows and
+  //                ad-hoc applies need no value.
+  //   sql_content  the exact SQL applied, so Version Sync can replay a ledger
+  //                onto a schema that is behind.
+  //   down_sql     the script that undoes this one, recorded at apply time so
+  //                the row carries its own rollback.
+  //   applied_by   who ran this version (spec 07, auditing). Nullable, because
+  //                rows written before it existed have no honest answer. 320
+  //                characters is the longest address RFC 5321 allows.
+  const laterColumns: [string, string][] = [
+    ["script_name", "VARCHAR(150) NOT NULL DEFAULT 'unknown'"],
+    ["source_ref", "TEXT"],
+    ["sql_content", "TEXT"],
+    ["down_sql", "TEXT"],
+    ["applied_by", "VARCHAR(320)"],
+  ];
+  for (const [column, definition] of laterColumns) {
+    if (columnTypes.has(column)) continue;
+    // IF NOT EXISTS stays: another deploy may have added it since the read.
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch
+      ADD COLUMN IF NOT EXISTS ${column} ${definition}
+    `);
+  }
 
   // 7b-6. applied_at used to be TIMESTAMP — a wall clock with the offset
   //       thrown away. Postgres wrote it by down-casting CURRENT_TIMESTAMP
@@ -248,13 +281,7 @@ async function ensureScriptPatchTable(
   //       Guarded by the catalog, not run blindly: ALTER TYPE rewrites the table
   //       under an ACCESS EXCLUSIVE lock, and this runs at the top of every
   //       deploy.
-  const appliedAtType = await client.query<{ data_type: string }>(
-    `SELECT data_type FROM information_schema.columns
-      WHERE table_schema = $1 AND table_name = 'script_patch'
-        AND column_name = 'applied_at'`,
-    [schemaName]
-  );
-  if (appliedAtType.rows[0]?.data_type === "timestamp without time zone") {
+  if (columnTypes.get("applied_at") === "timestamp without time zone") {
     await client.query(`
       ALTER TABLE ${quotedSchema}.script_patch
       ALTER COLUMN applied_at TYPE TIMESTAMPTZ
@@ -267,12 +294,26 @@ async function ensureScriptPatchTable(
   //     Best-effort: if old rows have duplicate versions under the 'unknown'
   //     family (from before script_name existed), index creation fails here
   //     but uniqueness is still enforced by the SELECT check in step 8.
+  //
+  //     Asked for only when it is missing, for the same reason as the columns:
+  //     CREATE INDEX IF NOT EXISTS locks the table against writers before it
+  //     looks for the name, so it too waited behind another deploy's open
+  //     transaction.
+  const indexThere = await client.query(
+    `SELECT 1 FROM pg_indexes
+      WHERE schemaname = $1 AND indexname = 'script_patch_name_version_idx'`,
+    [schemaName]
+  );
+  if (indexThere.rows.length > 0) return;
   try {
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS script_patch_name_version_idx
       ON ${quotedSchema}.script_patch (script_name, version)
     `);
-  } catch {
+  } catch (indexError) {
+    // Giving up on a lock is not "old rows have duplicates": let it reach the
+    // route's catch block, which answers with the lock timeout message.
+    if ((indexError as { code?: string }).code === LOCK_NOT_AVAILABLE) throw indexError;
     console.warn(
       "Apply — could not create unique index on script_patch " +
       "(existing rows may have duplicate versions under 'unknown'). " +
@@ -303,10 +344,11 @@ async function ensureScriptPatchTable(
 async function addEnumValuesOutsideTransaction(
   client: PoolClient,
   quotedSchema: string,
-  sqlContent: string
-): Promise<string[]> {
+  sqlContent: string,
+  /** Each statement is added here the moment it has run (and so committed). */
+  hoisted: string[]
+): Promise<void> {
   const enumAdditions = extractEnumAddValues(sqlContent);
-  const hoisted: string[] = [];
   if (enumAdditions.length > 0) {
     // These statements name their type unqualified, so search_path has to
     // point at the target schema — and this is outside any transaction, so
@@ -323,7 +365,6 @@ async function addEnumValuesOutsideTransaction(
       await client.query("RESET search_path");
     }
   }
-  return hoisted;
 }
 
 /**
@@ -569,9 +610,30 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   attempt.dryRun = dryRun;
 
   // ─── 2. Validate every script in the run ─────────────────────────────────
-  if (!connectionId) {
+  if (connectionId === undefined || connectionId === null) {
     return answerBeforeRun(
       { error: "connectionId is required." },
+      { status: 400 }
+    );
+  }
+
+  // A whole number and nothing else. The string "12" used to work, because
+  // PostgreSQL reads it as 12 wherever it is bound, but the record of the
+  // attempt was then filed under no connection and never showed in that
+  // database's history.
+  if (typeof connectionId !== "number" || !Number.isInteger(connectionId) || connectionId <= 0) {
+    return answerBeforeRun(
+      { error: "connectionId must be a whole number, for example 12 and not \"12\"." },
+      { status: 400 }
+    );
+  }
+
+  // dryRun has to be true or false. Anything else ("true", 1, "yes") used to
+  // count as false, so a caller who clearly meant a rehearsal got a real
+  // deploy.
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+    return answerBeforeRun(
+      { error: "dryRun must be true or false. Nothing was run." },
       { status: 400 }
     );
   }
@@ -966,11 +1028,17 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // first also means two operators pressing Deploy together cannot both proceed.
   // If the run does not commit, the claim is handed back in the finally block.
   //
-  // A dry run is exempt. It writes nothing, and requiring a second person to
-  // rehearse would make the careful path the expensive one — the acknowledgement
-  // above already covers the locks a rehearsal really takes.
+  // A dry run needs the approval too. It used to be exempt, on the idea that a
+  // rehearsal writes nothing. That is not quite true on a real database:
+  //   - PostgreSQL does not undo sequence changes on ROLLBACK, so a script that
+  //     calls setval or nextval leaves the new number behind,
+  //   - the script holds its locks on production for as long as it runs,
+  //   - a failing statement can put row values in the error text.
+  // So a production dry run is treated like a real run. It costs no extra
+  // approval: a dry run never commits, so the finally block hands the claim
+  // back and the same approval then covers the real deploy.
   let claimedApprovalId: number | null = null;
-  if (isProduction(targetEnvironment) && !dryRun) {
+  if (isProduction(targetEnvironment)) {
     try {
       const claimed = await claimApproval({
         // Only an approval given in the caller's organization. The connection
@@ -1239,7 +1307,9 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // The enum additions step 7 actually ran and committed. Only the ones whose
   // type already existed are hoisted, so this is shorter than what the scripts
   // ask for whenever a run creates a type and extends it in the same breath.
-  let hoistedEnumAdditions: string[] = [];
+  // Filled one statement at a time, so it is right even when a later addition
+  // fails and step 7 throws.
+  const hoistedEnumAdditions: string[] = [];
 
   try {
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
@@ -1250,13 +1320,25 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // it has to sit out here. The enum hoist reads every script in the run at
     // once, because a value added by script 1 and used by script 3 has the same
     // problem as one added and used by a single script.
+    //
+    // They need locks too (a missing ledger column, an enum value), and out
+    // here the transaction's SET LOCAL lock_timeout does not exist yet. So the
+    // session gets the same limit for these two calls, and a wait behind
+    // another deploy ends in the same 503 as a wait inside the transaction
+    // instead of hanging with no message. Put back in the finally.
     if (!dryRun) {
-      await ensureScriptPatchTable(client, quotedSchema, schemaName);
-      hoistedEnumAdditions = await addEnumValuesOutsideTransaction(
-        client,
-        quotedSchema,
-        queue.map((job) => job.sqlContent).join("\n")
-      );
+      await client.query(`SET lock_timeout = ${LOCK_TIMEOUT_MS}`);
+      try {
+        await ensureScriptPatchTable(client, quotedSchema, schemaName);
+        await addEnumValuesOutsideTransaction(
+          client,
+          quotedSchema,
+          queue.map((job) => job.sqlContent).join("\n"),
+          hoistedEnumAdditions
+        );
+      } finally {
+        await client.query("RESET lock_timeout");
+      }
     }
 
     // ─── 8. Run every migration inside ONE transaction ──────────────────────
@@ -1284,12 +1366,16 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // ROLLBACK and an error the deploy screen can show, and the operator
     // retries when the table is quiet.
     //
-    // statement_timeout is deliberately NOT set alongside it: a migration that
-    // rewrites a large table legitimately takes minutes, and cancelling it
-    // half way is the thing this transaction exists to prevent.
+    // statement_timeout is deliberately NOT set alongside it for a real run: a
+    // migration that rewrites a large table legitimately takes minutes, and
+    // cancelling it half way is the thing this transaction exists to prevent.
+    // A dry run is different. It is rolled back whatever happens, so it gets a
+    // limit and cannot sit on the target's locks for as long as it likes.
     //
     // SET LOCAL, so the pooled connection goes back to the pool unchanged.
-    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
+    //
+    // (The settings themselves are put in place a few lines down, by
+    // applyRunSettings, once the search_path below is known.)
 
     // Scope unqualified names in the migration SQL to the target schema ONLY.
     // `public` is deliberately NOT on the path: with it, an unqualified DROP/RENAME/
@@ -1297,16 +1383,23 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // public's same-named table — silent cross-schema data loss, especially on a
     // Version Sync replay to a schema that lacks the object. Target-only means a
     // missing relation cleanly no-ops under IF EXISTS instead. Built-in types
-    // resolve via pg_catalog (always implicit); a migration needing a public
-    // extension type must schema-qualify it. SET LOCAL lasts only this transaction.
-    await client.query(
-      `SET LOCAL search_path TO ${quotedSchema}`
-    );
+    // resolve via pg_catalog (always implicit). A schema that holds nothing but
+    // installed extensions (Supabase's "extensions") is added after the target,
+    // so an unqualified citext or gin_trgm_ops resolves; a schema that also
+    // holds the user's own objects is not, for the reason above, and a
+    // migration needing an extension type from such a schema must
+    // schema-qualify it. See runSearchPath. SET LOCAL lasts only this transaction.
+    const runSettings: RunSettings = {
+      searchPath: await runSearchPath(client, schemaName),
+      lockTimeoutMs: LOCK_TIMEOUT_MS,
+      statementTimeoutMs: dryRun ? DRY_RUN_STATEMENT_TIMEOUT_MS : null,
+    };
 
-    // Make the server read strings the way lib/sql-guard did when it checked
-    // the scripts, then note which transaction this is. Each script is checked
-    // against that id after it runs: see lib/script-transaction.
-    await readStringsTheStandardWay(client);
+    // Put the settings in place (lock_timeout, the dry run's statement_timeout,
+    // search_path, and reading strings the way lib/sql-guard did when it
+    // checked the scripts), then note which transaction this is. Each script
+    // is checked against that id after it runs: see lib/script-transaction.
+    await applyRunSettings(client, runSettings);
     const runTransactionId = await currentTransactionId(client);
 
     // A dry run may be rehearsing against a schema that has never been deployed
@@ -1388,6 +1481,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       // versions hash to different keys, so they never block each other. The lock
       // is released automatically when the transaction ends.
       failedJob = job;
+
+      // Every script starts from the same settings. The script before this one
+      // may have run a plain SET search_path (a pg_dump header does), SET
+      // lock_timeout or SET ROLE, and inside a transaction that replaces the
+      // SET LOCAL above for everything that follows. Without this line the
+      // next script's unqualified DROP TABLE could land in another schema.
+      await applyRunSettings(client, runSettings);
+
       await lockScriptVersion(client, schemaName, job.scriptName, job.version);
 
       // Duplicate check scoped to this script family.
@@ -1421,12 +1522,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
                 job,
                 "Already applied to this schema."
               ),
-              error:
+              error: withEnumValuesThatStay(
                 `Version ${job.version} of "${job.scriptName}" has already been applied ` +
-                `to schema "${schemaName}". ` +
-                (queue.length > 1
-                  ? "Nothing in this run was applied."
-                  : "Check the script_patch table to confirm."),
+                  `to schema "${schemaName}". ` +
+                  (queue.length > 1
+                    ? "Nothing in this run was applied."
+                    : "Check the script_patch table to confirm."),
+                hoistedEnumAdditions
+              ),
             },
             { status: 409 }
           );
@@ -1533,7 +1636,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         message:
           `Dry run of ${describeRun(queue)} completed on schema "${schemaName}" — ` +
           `${totalStatements} statement${totalStatements === 1 ? " was" : "s were"} ` +
-          `run and rolled back. Nothing was written.`,
+          `run and rolled back. Nothing was written. Sequence numbers the script ` +
+          `used are the one thing a rollback does not give back.`,
       });
     }
 
@@ -1794,12 +1898,12 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
           dryRun,
           schema: schemaName,
           results: rolledBackOutcomes(queue, failedJob, "Applied by a concurrent request."),
-          error:
+          error: withEnumValuesThatStay(
             `${raced} was just applied by a concurrent request. ` +
-            (queue.length > 1
-              ? "Nothing in this run was applied. "
-              : "") +
-            `Check the script_patch table to confirm.`,
+              (queue.length > 1 ? "Nothing in this run was applied. " : "") +
+              `Check the script_patch table to confirm.`,
+            hoistedEnumAdditions
+          ),
         },
         { status: 409 }
       );
@@ -1827,14 +1931,42 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
             status: "failed" as const,
             error: "The COMMIT was refused, so the whole run was rolled back.",
           })),
-          error:
+          error: withEnumValuesThatStay(
             `PostgreSQL refused the COMMIT for ${describeRun(queue)} and rolled ` +
-            `the whole run back, so nothing was applied to schema "${schemaName}". ` +
-            `A constraint marked DEFERRABLE is checked at this point rather than ` +
-            `at the statement that tripped it, which is why this surfaced only at ` +
-            `the end. PostgreSQL said: ${said}`,
+              `the whole run back, so nothing was applied to schema "${schemaName}". ` +
+              `A constraint marked DEFERRABLE is checked at this point rather than ` +
+              `at the statement that tripped it, which is why this surfaced only at ` +
+              `the end. PostgreSQL said: ${said}`,
+            hoistedEnumAdditions
+          ),
         },
         { status: 500 }
+      );
+    }
+
+    // A dry run that hit its own time limit is not a broken script either.
+    // (A real run sets no statement_timeout, so this only fires on a dry run.)
+    if (
+      dryRun &&
+      pgCode === QUERY_CANCELED &&
+      /statement timeout/i.test(error instanceof Error ? error.message : "")
+    ) {
+      const slow = failedJob
+        ? `Version ${failedJob.version} of "${failedJob.scriptName}"`
+        : "This run";
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, failedJob, "Stopped at the dry run time limit."),
+          error:
+            `${slow} had a statement that ran longer than ` +
+            `${DRY_RUN_STATEMENT_TIMEOUT_MS / 60_000} minutes, so the dry run was stopped ` +
+            `and rolled back. This limit is for dry runs only, a real deploy has none. ` +
+            `The script may still be fine, it is just slow on this much data.`,
+        },
+        { status: 503 }
       );
     }
 
@@ -1851,14 +1983,44 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
           dryRun,
           schema: schemaName,
           results: rolledBackOutcomes(queue, failedJob, "Timed out waiting for a lock."),
-          error:
+          error: withEnumValuesThatStay(
             `${blocked} waited ${LOCK_TIMEOUT_MS / 1000} seconds for a lock in ` +
-            `"${schemaName}" and gave up, so nothing was applied. Something else ` +
-            `is holding it — a long query, an open transaction, or a deploy or ` +
-            `rollback of the same script that is still running. Try again once ` +
-            `it finishes.`,
+              `"${schemaName}" and gave up, so nothing was applied. Something else ` +
+              `is holding it — a long query, an open transaction, or a deploy or ` +
+              `rollback of the same script that is still running. Try again once ` +
+              `it finishes.`,
+            hoistedEnumAdditions
+          ),
         },
         { status: 503 }
+      );
+    }
+
+    // A statement PostgreSQL will not run inside a transaction. Its own words
+    // ("CREATE INDEX CONCURRENTLY cannot run inside a transaction block") do
+    // not tell the reader that the transaction is this route's and not theirs,
+    // or what to do about it.
+    if (pgCode === NOT_IN_A_TRANSACTION) {
+      const which = failedJob
+        ? `Version ${failedJob.version} of "${failedJob.scriptName}"`
+        : "This run";
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, failedJob, message),
+          error: withEnumValuesThatStay(
+            `${which} has a statement that PostgreSQL will not run inside a transaction, ` +
+              `such as CREATE INDEX CONCURRENTLY or VACUUM. Schema Studio runs a whole ` +
+              `${dryRun ? "dry run" : "deploy"} as one transaction so that a failed run can be undone, ` +
+              `so this statement cannot be run from here. Take the word CONCURRENTLY out, or ` +
+              `run that one statement yourself and leave it out of the script. ` +
+              `The run was rolled back and nothing was applied. PostgreSQL said: ${message}`,
+            hoistedEnumAdditions
+          ),
+        },
+        { status: 500 }
       );
     }
 
@@ -1868,7 +2030,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         dryRun,
         schema: schemaName,
         results: rolledBackOutcomes(queue, failedJob, message),
-        error: message,
+        error: withEnumValuesThatStay(message, hoistedEnumAdditions),
       },
       { status: 500 }
     );

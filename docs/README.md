@@ -16,7 +16,7 @@ Team: Umer Naseer, Frandya Meidy F., Cindy Wong IY. Supervisor: Jason Thomas Che
 | `REVIEW_PROMPT.md` | A paste-ready prompt for an external AI reviewer, including what is deliberately out of scope. | Getting a useful outside review instead of a list of things already known. |
 | `requirements/COS40005-team-and-project-plan.*` | The project plan agreed with the client. Stakeholders, scope, the mandated technology stack, and the 38-item Product Backlog (Table 5). | **The requirements.** This is the authoritative statement of what the software is supposed to do. |
 | `requirements/fyp-poster.*` | The academic poster: problem framing, literature review, gap analysis against Flyway and Liquibase. | Why the project exists and how it differs from existing tools. |
-| `user-manual/schema-studio-user-manual.txt` | End-user walkthrough of the app, screen by screen. | **The app as a user meets it.** Re-read against the code on 2026-09-18 (v2.1.0). Roles and permissions rewritten on 2026-10-17 (v2.2.0). |
+| `user-manual/schema-studio-user-manual.txt` | End-user walkthrough of the app, screen by screen. | **The app as a user meets it.** Re-read against the code on 2026-09-18 (v2.1.0). Roles and permissions rewritten on 2026-10-17 (v2.2.0). Its step-by-step parts (sign-in, Connections, Dashboard, Compare, Script Editor, Version Sync, Drift, Deploy, Admin) were checked against the pages on 2026-11-10 (v2.4.0), and the AI tab and the Requests page were added. |
 | `demo/week-7-permissions-demo.md` | The script for the Week 7 client demo of roles and permissions: what to set up, what to press, and what the screen says at each step. | Running that demo. Written from the code on 2026-10-17. |
 
 `.txt` files are text extractions of the original documents, kept alongside them
@@ -49,9 +49,9 @@ moved past them.
 - **The project plan lists rollback and query analysis as later work.** Both are
   built. See `my-app/lib/query-analysis.ts`, `my-app/lib/perf-advice.ts` and the
   `/api/scripts/revert` route.
-- **The project plan describes signing in with a Microsoft work account.** The sign-in flow is built and the login screen offers it, but this
-  repository carries no Entra ID credentials, so the button is disabled with an
-  explanation until a server is given them. A checkout can be opened for testing
+- **The project plan describes signing in with a Microsoft work account.** The sign-in flow is built, with GitHub as a second way in, but this
+  repository carries no credentials for either. Until a server is given them,
+  the login page shows a notice that single sign-on is not set up. A checkout can be opened for testing
   with `NEXT_PUBLIC_AUTH_BYPASS=true` in `.env.local`, which lets everybody in as
   an admin (or as the role picked in View as) and says so on screen — an "auth
   off" pill in the sidebar. Without that line authentication is enforced and an

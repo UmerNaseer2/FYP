@@ -28,6 +28,7 @@ import {
   doBlockBodies,
   dropsColumnWithoutKeyword,
   maskNonCode,
+  runsSqlFromString,
   splitStatements,
 } from "./sql-guard";
 import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
@@ -135,8 +136,11 @@ type GradeRule = {
   label: string;
   /** When the SQL alone cannot settle it: when it is NOT breaking. */
   unless: string | null;
-  /** Tested against one masked, lower-cased, single-spaced statement. */
-  matches: (statement: string) => boolean;
+  /**
+   * Tested against one masked, lower-cased, single-spaced statement.
+   * inDoBlock says whether the statement sits inside a DO block.
+   */
+  matches: (statement: string, inDoBlock: boolean) => boolean;
 };
 
 /** A rule that matches its pattern anywhere in the statement. */
@@ -165,6 +169,10 @@ function inAlterTable(pattern: RegExp): (statement: string) => boolean {
  * INDEX and CONSTRAINT are deliberately missing: whether dropping one breaks
  * anything depends on what it was (a unique index, a foreign key), which the
  * DROP statement does not say. They are in BREAKING_UNLESS below.
+ *
+ * The second half of the list is objects the generator never drops. A
+ * hand-written script can, and DROP ROUTINE or DROP OWNED BY used to grade
+ * patch because nothing here knew the words.
  */
 const DROPPED_OBJECTS = [
   "table",
@@ -183,6 +191,17 @@ const DROPPED_OBJECTS = [
   "rule",
   "policy",
   "collation",
+  // Hand-written scripts only.
+  "routine",
+  "aggregate",
+  "foreign table",
+  "owned",
+  "event trigger",
+  "operator",
+  "cast",
+  "publication",
+  "server",
+  "text search",
 ];
 
 /**
@@ -215,6 +234,22 @@ const ALWAYS_BREAKING: GradeRule[] = [
   { label: "CREATE POLICY", unless: null, matches: anywhere(/\bcreate policy\b/) },
   { label: "ALTER POLICY", unless: null, matches: anywhere(/\balter policy\b/) },
   { label: "REVOKE", unless: null, matches: anywhere(/\brevoke\b/) },
+  // The rest are statements the generator never writes. Each one takes
+  // something away from whoever reads the table, so a hand-written script that
+  // holds one is breaking.
+  // ALTER … SET SCHEMA moves the object out from under its old name. A bare
+  // SET SCHEMA 'x' only sets the search path, so the statement must be an ALTER.
+  { label: "SET SCHEMA", unless: null, matches: anywhere(/^alter\b.*\bset schema\b/) },
+  { label: "DETACH PARTITION", unless: null, matches: anywhere(/\bdetach partition\b/) },
+  { label: "DROP ATTRIBUTE", unless: null, matches: anywhere(/\bdrop attribute\b/) },
+  { label: "DISABLE TRIGGER", unless: null, matches: anywhere(/\bdisable trigger\b/) },
+  // ALTER TABLE child NO INHERIT parent: the child's rows leave the parent.
+  // CHECK (…) NO INHERIT is a constraint option, not this, and always follows
+  // a closing bracket.
+  { label: "NO INHERIT", unless: null, matches: inAlterTable(/(?:^|[^)] )no inherit\b/) },
+  // A rule rewrites every query on its table: DO INSTEAD NOTHING makes an
+  // INSERT store nothing and report no error.
+  { label: "CREATE RULE", unless: null, matches: anywhere(/\bcreate (or replace )?rule\b/) },
 ];
 
 /**
@@ -257,6 +292,20 @@ const BREAKING_UNLESS: GradeRule[] = [
     label: "OWNER TO",
     unless: "no app connects as the old owner",
     matches: anywhere(/\bowner to\b/),
+  },
+  {
+    // EXECUTE in a DO block runs SQL from a string, and the mask blanks every
+    // string, so EXECUTE 'DROP TABLE orders' looks the same as a harmless one.
+    label: "EXECUTE in a DO block",
+    unless: "the SQL it runs changes nothing that exists",
+    matches: (statement, inDoBlock) => inDoBlock && runsSqlFromString(statement),
+  },
+  {
+    // Any other DROP: an object kind no rule above names. Last on purpose, so
+    // DROP INDEX keeps its own sentence.
+    label: "DROP",
+    unless: "nothing else uses what it drops",
+    matches: anywhere(/^drop\b/),
   },
 ];
 
@@ -304,6 +353,8 @@ interface RunningStatement {
    * trigger or an index there, so such a DROP simply counts on its own.
    */
   names: string | null;
+  /** Whether the statement sits inside a DO block. */
+  inDoBlock: boolean;
 }
 
 /**
@@ -505,10 +556,10 @@ function statementsThatRun(sql: string): RunningStatement[] {
       const body = doBlockBodies(statement).replace(/\b(begin|then|else|loop)\b/gi, ";");
       for (const piece of body.split(";")) {
         const inner = tidy(piece);
-        if (inner) out.push({ code: inner, names: null });
+        if (inner) out.push({ code: inner, names: null, inDoBlock: true });
       }
     } else if (code) {
-      out.push({ code, names: maskNonCode(statement, { keepQuotedNames: true }) });
+      out.push({ code, names: maskNonCode(statement, { keepQuotedNames: true }), inDoBlock: false });
     }
   }
   return out;
@@ -532,7 +583,8 @@ function statementsThatRun(sql: string): RunningStatement[] {
  * - whether a dropped index was unique, or a dropped constraint was a CHECK;
  * - whether an ADD CONSTRAINT is for a table created earlier in the same script;
  * - whether anything still connects as the owner an OWNER TO replaces;
- * - what EXECUTE runs, because the SQL it runs is a string.
+ * - what EXECUTE in a DO block runs, because the SQL it runs is a string;
+ * - whether anything uses an object dropped by a DROP it has no rule for.
  * Those come back as "breaking unless…" with the reason, and never override a
  * stamp (see describeChangeType). It also errs loud in one known way: an
  * unquoted column literally named "type" whose default changes reads as a type
@@ -547,12 +599,13 @@ export function gradeSql(sql: string): SqlGrade {
   for (let index = 0; index < statements.length; index += 1) {
     if (isReplacedByNext(statements[index], statements[index + 1])) continue;
     const statement = statements[index].code;
+    const inDoBlock = statements[index].inDoBlock;
 
     if (firstAlways === null) {
-      firstAlways = ALWAYS_BREAKING.find((rule) => rule.matches(statement)) ?? null;
+      firstAlways = ALWAYS_BREAKING.find((rule) => rule.matches(statement, inDoBlock)) ?? null;
     }
     if (firstUnless === null) {
-      firstUnless = BREAKING_UNLESS.find((rule) => rule.matches(statement)) ?? null;
+      firstUnless = BREAKING_UNLESS.find((rule) => rule.matches(statement, inDoBlock)) ?? null;
     }
     if (!adds && addsSomething(statement)) adds = true;
   }

@@ -16,16 +16,19 @@ function logFailure(what: string, error: unknown) {
   console.error(what, error instanceof Error ? error.name : "unknown error");
 }
 
-/** GET /api/computers/link?code=XXXX-XXXX: which computer is asking, so the person can check it. */
+/**
+ * GET /api/computers/link?code=XXXX-XXXX: which computer is asking and when it
+ * asked, so the person can check both against the computer in front of them.
+ */
 export async function GET(request: NextRequest) {
   const gate = await requirePermission("compare:read");
   if (!gate.ok) return gate.response;
   const code = readUserCode(request.nextUrl.searchParams.get("code"));
   if (code === null) return NextResponse.json({ error: NO_SUCH_CODE }, { status: 404 });
   try {
-    const computerName = await readLink(code);
-    if (computerName === null) return NextResponse.json({ error: NO_SUCH_CODE }, { status: 404 });
-    return NextResponse.json({ computerName });
+    const link = await readLink(code);
+    if (link === null) return NextResponse.json({ error: NO_SUCH_CODE }, { status: 404 });
+    return NextResponse.json({ computerName: link.computerName, openedAt: link.openedAt });
   } catch (error) {
     logFailure("Could not read a computer link:", error);
     return NextResponse.json({ error: COULD_NOT_READ }, { status: 500 });

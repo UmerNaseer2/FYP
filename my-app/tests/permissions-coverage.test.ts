@@ -250,7 +250,7 @@ describe("every API route", () => {
     expect(open).toEqual([]);
   });
 
-  test("runs nothing before its gate, apart from the two known exceptions", () => {
+  test("runs nothing before its gate, apart from the known exceptions", () => {
     // The gate is the first thing awaited, so whatever comes before it is
     // synchronous. That is still somewhere a request body could be read or a
     // cookie trusted, so the list is kept to what is there for a reason.
@@ -263,8 +263,10 @@ describe("every API route", () => {
       ["GET /api/me/view-as", ["if (!BYPASS_AUTH) return notAvailable();"]],
       ["POST /api/me/view-as", ["if (!BYPASS_AUTH) return notAvailable();"]],
       // An empty record for the audit trail, filled in as runApply learns each
-      // fact. It is written whatever the gate decides.
+      // fact. It is written whatever the gate decides. A rollback keeps the
+      // same record, the same way.
       ["POST /api/scripts/apply", ["const attempt: AttemptContext = {};"]],
+      ["POST /api/scripts/revert", ["const attempt: AttemptContext = {};"]],
     ]);
   });
 

@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { authConfig, authUsable } from "./auth.config";
 import { BYPASS_AUTH } from "./lib/auth-mode";
 import { isPublicPath } from "./lib/public-paths";
+import { refreshesSession } from "./lib/session-cookie";
 
 /**
  * The edge proxy: the first line of defence for both pages and API routes.
@@ -24,6 +25,14 @@ import { isPublicPath } from "./lib/public-paths";
  *
  * The one page that opens without a session is the landing page at "/" (see
  * lib/public-paths.ts). It still passes through here, and is let through.
+ *
+ * It never hands the browser a session cookie. Auth.js would add a refreshed
+ * one to every answer that passes through here, and that broke Sign out: a
+ * request that was still open when the person pressed Sign out came back
+ * afterwards carrying the cookie, and signed them in again. Only /api/auth/*
+ * sets the session cookie now. The page asks /api/auth/session each time it
+ * loads or comes back into view (app/ClientProvider.tsx), and that answer is
+ * what keeps someone who is using the app signed in.
  */
 
 type EdgeHandler = (request: NextRequest) => Response | Promise<Response>;
@@ -91,7 +100,20 @@ export default function proxy(request: NextRequest) {
   // app/page.tsx decides where its buttons go.
   if (isPublicPath(request.nextUrl.pathname)) return NextResponse.next();
   if (!authUsable) return notConfigured(request);
-  return getEnforcer()(request);
+  return withoutSessionRefresh(getEnforcer()(request));
+}
+
+/** The same answer, minus any cookie that would sign the browser in again. */
+async function withoutSessionRefresh(answer: Response | Promise<Response>) {
+  const response = await answer;
+  const cookies = response.headers.getSetCookie();
+  if (!cookies.some(refreshesSession)) return response;
+
+  response.headers.delete("set-cookie");
+  for (const cookie of cookies) {
+    if (!refreshesSession(cookie)) response.headers.append("set-cookie", cookie);
+  }
+  return response;
 }
 
 export const config = {

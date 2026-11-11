@@ -246,6 +246,111 @@ describe("gradeSql — the generator's rules, read from the text", () => {
 });
 
 /**
+ * Statements the generator never writes but a hand-written script can. Each
+ * one used to grade patch, so Deploy asked for no breaking tick and showed a
+ * breaking count of 0.
+ */
+describe("gradeSql: hand-written statements the generator never writes", () => {
+  const alwaysBreaking: [string, string][] = [
+    ["DROP ROUTINE", "DROP ROUTINE tidy_up(int);"],
+    ["DROP AGGREGATE", "DROP AGGREGATE total(int);"],
+    ["DROP FOREIGN TABLE", "DROP FOREIGN TABLE remote_orders;"],
+    ["DROP OWNED", "DROP OWNED BY app_user;"],
+    ["DROP EVENT TRIGGER", "DROP EVENT TRIGGER audit_ddl;"],
+    ["DROP OPERATOR", "DROP OPERATOR === (int, int);"],
+    ["DROP CAST", "DROP CAST (int AS text);"],
+    ["DROP PUBLICATION", "DROP PUBLICATION all_tables;"],
+    ["DROP SERVER", "DROP SERVER warehouse CASCADE;"],
+    ["DROP TEXT SEARCH", "DROP TEXT SEARCH CONFIGURATION english_plain;"],
+    ["SET SCHEMA", "ALTER TABLE orders SET SCHEMA archive;"],
+    ["SET SCHEMA", 'ALTER TABLE "Orders" SET SCHEMA archive;'],
+    ["DETACH PARTITION", "ALTER TABLE orders DETACH PARTITION orders_2024;"],
+    ["DROP ATTRIBUTE", "ALTER TYPE address DROP ATTRIBUTE zip;"],
+    ["DISABLE TRIGGER", "ALTER TABLE orders DISABLE TRIGGER ALL;"],
+    ["NO INHERIT", "ALTER TABLE orders_2024 NO INHERIT orders;"],
+    ["NO INHERIT", 'ALTER TABLE "Orders2024" NO INHERIT orders;'],
+    ["CREATE RULE", "CREATE RULE quiet AS ON INSERT TO orders DO INSTEAD NOTHING;"],
+    ["CREATE RULE", "CREATE OR REPLACE RULE quiet AS ON INSERT TO orders DO INSTEAD NOTHING;"],
+  ];
+
+  it.each(alwaysBreaking)("grades %s breaking whatever the stamp says (%s)", (label, sql) => {
+    const grade = gradeSql(sql);
+    expect(grade.sureLevel).toBe("breaking");
+    expect(grade.because).toBe(label);
+    // Under a quieter stamp it still counts in the breaking checks.
+    expect(describeChangeType(`-- Change-type: patch\n${sql}`).countsAsBreaking).toBe(true);
+  });
+
+  it("does not take SET SCHEMA 'x' (a search path setting) for a moved object", () => {
+    expect(gradeSql("SET SCHEMA 'public';").level).toBe("patch");
+  });
+
+  it("does not take the NO INHERIT option of a CHECK constraint for ALTER TABLE ... NO INHERIT", () => {
+    const grade = gradeSql("ALTER TABLE orders ADD CONSTRAINT positive CHECK (total > 0) NO INHERIT;");
+    expect(grade.because).toBe("ADD CONSTRAINT");
+    expect(grade.sureLevel).toBe("patch");
+  });
+
+  // An object kind no rule names: the reader cannot know what depends on it.
+  it("reads any other DROP as breaking unless nothing uses what it drops", () => {
+    const grade = gradeSql("DROP STATISTICS orders_stats;");
+    expect(grade.level).toBe("breaking");
+    expect(grade.sureLevel).toBe("patch");
+    expect(grade.because).toBe("DROP");
+    expect(grade.unless).toBe("nothing else uses what it drops");
+    // DROP INDEX keeps its own sentence.
+    expect(gradeSql("DROP INDEX orders_idx;").because).toBe("DROP INDEX");
+  });
+});
+
+/**
+ * EXECUTE in a DO block runs SQL from a string. The mask blanks the string, so
+ * EXECUTE 'DROP TABLE orders CASCADE' used to grade patch.
+ */
+describe("gradeSql: EXECUTE in a DO block", () => {
+  const dynamic = [
+    "DO $$ BEGIN EXECUTE 'DROP TABLE orders CASCADE'; END $$;",
+    "DO $$ BEGIN EXECUTE format('DROP TABLE %I', 'orders'); END $$;",
+    "DO $$ BEGIN EXECUTE 'TRUN' || 'CATE orders'; END $$;",
+    "DO $x$ BEGIN IF true THEN EXECUTE 'DELETE FROM orders'; END IF; END $x$;",
+    "DO $$ DECLARE r record; BEGIN FOR r IN EXECUTE 'DELETE FROM orders RETURNING id' LOOP NULL; END LOOP; END $$;",
+    "DO 'BEGIN EXECUTE ''DROP TABLE orders''; END';",
+  ];
+
+  it.each(dynamic)("grades it breaking unless the SQL it runs changes nothing: %s", (sql) => {
+    const grade = gradeSql(sql);
+    expect(grade.level).toBe("breaking");
+    expect(grade.sureLevel).toBe("patch");
+    expect(grade.because).toBe("EXECUTE in a DO block");
+    expect(grade.unless).toBe("the SQL it runs changes nothing that exists");
+    // With no stamp it counts in the breaking checks. A stamp is not overridden.
+    expect(describeChangeType(sql).countsAsBreaking).toBe(true);
+    expect(describeChangeType(`-- Change-type: additive\n${sql}`).countsAsBreaking).toBe(false);
+  });
+
+  it("does not take CREATE TRIGGER ... EXECUTE FUNCTION for it, in or out of a DO block", () => {
+    const trigger = "CREATE TRIGGER audit AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION audit_row();";
+    expect(gradeSql(trigger).level).toBe("additive");
+    expect(gradeSql(`DO $$ BEGIN ${trigger} END $$;`).level).toBe("additive");
+    expect(
+      gradeSql("DO $$ BEGIN CREATE TRIGGER audit AFTER INSERT ON orders FOR EACH ROW EXECUTE PROCEDURE audit_row(); END $$;").level
+    ).toBe("additive");
+    expect(gradeSql("DO $$ BEGIN GRANT EXECUTE ON FUNCTION audit_row() TO app_user; END $$;").level).toBe("patch");
+  });
+
+  it("leaves EXECUTE of a prepared statement outside a DO block alone", () => {
+    expect(gradeSql("PREPARE recent AS SELECT 1; EXECUTE recent;").level).toBe("patch");
+  });
+
+  it("reads a DO body written in single quotes like one written between $$ marks", () => {
+    const grade = gradeSql("DO 'BEGIN DROP TABLE orders; END';");
+    expect(grade.sureLevel).toBe("breaking");
+    expect(grade.because).toBe("DROP TABLE");
+    expect(gradeSql("DO E'BEGIN ALTER TABLE orders RENAME TO sales; END';").because).toBe("RENAME");
+  });
+});
+
+/**
  * The reader and the generator must never disagree in the loud direction. If a
  * generated script's SQL read as SURELY breaking while the generator graded it
  * quieter, every generated trigger or index change would reach Deploy with a

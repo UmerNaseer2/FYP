@@ -2,6 +2,7 @@ import {
   isValidHost,
   parsePort,
   toSslMode,
+  sslModeProblem,
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
   validateConnection,
@@ -88,6 +89,16 @@ describe("ssl mode", () => {
     expect(toSslMode(undefined)).toBe(DEFAULT_SSL_MODE);
   });
 
+  it("names an ssl_mode that was sent but is not one of the three", () => {
+    for (const bad of ["bogus", "required", "verify-ca", "prefer", { a: 1 }, 1, true]) {
+      expect(sslModeProblem(bad)).toBe("ssl_mode must be one of: disable, require, verify-full.");
+    }
+    // Nothing sent is fine: the caller uses the default.
+    for (const fine of [undefined, null, "", "disable", "require", " Verify-Full "]) {
+      expect(sslModeProblem(fine)).toBeNull();
+    }
+  });
+
   it("reads the legacy boolean column the way it was written", () => {
     expect(sslModeFromLegacyBoolean(true)).toBe("require");
     expect(sslModeFromLegacyBoolean(false)).toBe("disable");
@@ -118,6 +129,14 @@ describe("validateConnection — field form", () => {
     expect(result.value.port).toBe(5432);
     expect(result.value.ssl_mode).toBe("disable");
     expect(result.value.environment).toBe("unset");
+  });
+
+  it("refuses an unknown ssl_mode instead of saving it as no TLS", () => {
+    const result = validateConnection({ ...good, ssl_mode: "bogus" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.ssl_mode).toMatch(/ssl_mode must be one of/);
+    expect(validateConnection({ ...good, ssl_mode: "require" }).ok).toBe(true);
   });
 
   it("defaults an omitted port to 5432 rather than rejecting", () => {
@@ -464,10 +483,11 @@ describe("checkConnectableHost", () => {
     });
   });
 
-  it("does not read a per-octet octal address as loopback", () => {
-    // Platforms disagree about "0177.0.0.1" — macOS resolves it to the public
-    // 177.0.0.1 — so normalising it would block a reachable host on a guess.
-    expect(checkConnectableHost("0177.0.0.1").ok).toBe(true);
+  it("refuses a per-octet octal address rather than guess what it means", () => {
+    // Platforms disagree about "0177.0.0.1": Linux reads it as 127.0.0.1 and
+    // macOS as the public 177.0.0.1. Letting it through was a way past the
+    // private-host rule on Linux, so the guard refuses the spelling outright.
+    expect(checkConnectableHost("0177.0.0.1").ok).toBe(false);
   });
 });
 

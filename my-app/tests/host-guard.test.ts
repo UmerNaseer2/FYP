@@ -111,6 +111,62 @@ describe("checkConnectableHost — the app server's own machine", () => {
   });
 });
 
+describe("checkConnectableHost — other spellings of the same address", () => {
+  const ODD = "That host isn't allowed. Write it as a name, or as a plain address such as 203.0.113.5.";
+
+  it.each([
+    "0x7f.0.0.1",
+    "0x7f000001",
+    "0xa9.0xfe.0xa9.0xfe",
+    "0177.0.0.1",
+    "127.1",
+    "10.1",
+    "169.254.43518",
+    "017700000001",
+    "99999999999",
+    "256.1.1.1",
+    "0x7f.0.0.1.",
+  ])("refuses the odd number spelling %s everywhere, even in development", (host) => {
+    expect(checkConnectableHost(host)).toEqual({ ok: false, message: ODD });
+    expect(inProduction(() => checkConnectableHost(host))).toEqual({ ok: false, message: ODD });
+  });
+
+  it.each(["203.0.113.5", "8.8.8.8", "db.example.com", "0x7f.example.com", "db1.2.3", "134744072"])(
+    "still allows the ordinary host %s in production",
+    (host) => {
+      expect(inProduction(() => checkConnectableHost(host))).toEqual({ ok: true });
+    },
+  );
+
+  it.each([
+    "0:0:0:0:0:0:0:1",
+    "[0000:0000:0000:0000:0000:0000:0000:0001]",
+    "localhost.",
+    "127.0.0.1.",
+    "fc00::1",
+    "fd12:3456:789a::1",
+    "100.64.0.1",
+    "100.127.255.254",
+  ])("reads %s as a private host in production", (host) => {
+    expect(inProduction(() => checkConnectableHost(host))).toEqual({ ok: false, message: PRIVATE });
+    expect(checkConnectableHost(host)).toEqual({ ok: true });
+  });
+
+  it.each(["100.63.0.1", "100.128.0.1", "2001:4860:4860::8888", "2606:4700::1"])(
+    "does not mistake the public address %s for a private one",
+    (host) => {
+      expect(inProduction(() => checkConnectableHost(host))).toEqual({ ok: true });
+    },
+  );
+
+  it.each(["fd00:ec2::254", "[fd00:ec2:0:0:0:0:0:254]", "169.254.169.254.", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:169.254.169.254"])(
+    "always refuses the metadata service spelled %s",
+    (host) => {
+      expect(checkConnectableHost(host)).toEqual({ ok: false, message: BLOCKED });
+    },
+  );
+});
+
 describe("checkConnectionTarget — the host pg will really dial", () => {
   it("sees the host a query parameter puts behind an innocent hostname", () => {
     // The whole point of this fix. The URL says db.example.com; pg dials the

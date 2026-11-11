@@ -156,6 +156,33 @@ describe("archiveAppliedVersions, organization folders", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each([
+    ["a database named ..", { database: "..", schema: "public" }, APPLIED, "database or schema name"],
+    ["a schema with a / in it", { database: "db", schema: "a/b" }, APPLIED, "database or schema name"],
+    ["a script name that steps up a folder", { database: "db", schema: "public" }, { ...APPLIED, scriptName: "../../13/x" }, "script name"],
+    ["a version with a / in it", { database: "db", schema: "public" }, { ...APPLIED, version: "1.0.0/../x" }, "version"],
+  ])("records nothing for %s, and asks GitHub nothing", async (_what, place, applied, part) => {
+    // Any of these would point the write outside the organization's folder.
+    const result = await archiveAppliedVersions({ owner: ORG_12, ...place, versions: [applied] });
+    expect(result).toHaveLength(1);
+    expect(result?.[0]).toMatchObject({ status: "not-saved", path: null, rollback_saved: false });
+    expect(result?.[0].reason).toContain(`its ${part} cannot be used`);
+    expect(result?.[0].reason).toContain("The migration itself is applied and safe.");
+    expect(calls).toEqual([]);
+  });
+
+  it("still records the good versions of a run that holds a bad script name", async () => {
+    answers[`GET ${REPO}/contents/orgs/12/db/public/orders_fix`] = () =>
+      json(200, [{ name: "v1.0.0.sql", sha: "a", type: "file" }]);
+    const result = await archiveAppliedVersions({
+      owner: ORG_12,
+      database: "db",
+      schema: "public",
+      versions: [{ ...APPLIED, scriptName: "a/b" }, APPLIED],
+    });
+    expect(result?.map((entry) => entry.status)).toEqual(["not-saved", "already-saved"]);
+  });
+
   it("records nothing for an organization with no GitHub settings, and never borrows the server's", async () => {
     const result = await archiveAppliedVersions({
       owner: { orgId: 13, orgIsDefault: false },

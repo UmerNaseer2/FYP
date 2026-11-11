@@ -297,11 +297,15 @@ for questions.
 
 - Linking works like signing in to a command line tool. The computer asks
   the site for a code, and opens the person's own browser at the site, where
-  they sign in as usual, check that the site shows the code the computer
-  shows, and approve it. Only a member who may compare can approve. The code
-  lasts 10 minutes (`my-app/lib/agent-rules.ts`). The computer never sees the
-  person's Microsoft sign-in, and the site keeps only a SHA-256 of the
-  computer's token (`my-app/lib/agent-db.ts`).
+  they sign in as usual, type the code the computer shows, and approve it.
+  The site never takes the code from the page's address, so a link someone
+  sends cannot fill it in: the person has to read it off a computer they can
+  see (`my-app/components/computers/LinkComputer.tsx`). Before they approve,
+  the page says that linking lets the computer open the organization's saved
+  connections, including their passwords. Only a member who may compare can
+  approve. The code lasts 10 minutes (`my-app/lib/agent-rules.ts`). The
+  computer never sees the person's Microsoft sign-in, and the site keeps
+  only a SHA-256 of the computer's token (`my-app/lib/agent-db.ts`).
 - The site's address must be https, apart from this computer's own
   `localhost` for testing. Its requests use a session with no cookies.
 - The token is kept like the phone link's keys, in `cloud-link.json`, and
@@ -328,7 +332,14 @@ for questions.
   Only an answer of 401 ends the link, so a site that is down never makes
   people link again.
 - Unlinking from the computer's Settings or from the phone app's Compare tab
-  deletes the computer's row on the site, and its token stops working.
+  deletes the computer's row on the site, and its token stops working. On the
+  site's Connections page its owner can unlink it too, and an Admin can
+  unlink any computer in the organization, for instance a lost one whose
+  owner is away.
+- A link ends by itself when its computer has not called the site for 90
+  days (`UNUSED_LINK_DAYS` in `my-app/lib/agent-db.ts`). A computer in use
+  calls every few seconds, so this only ends the links of computers that
+  were put away, lost or sold. Linking again takes a minute.
 
 ### Moving data to the web site
 
@@ -498,15 +509,19 @@ passphrase, the short pairing code, or what a phone asked to compare.
   hold schema names and a summary of the changes, with no SQL, hosts or rows,
   but whoever can read the site's database can read them. The phone link
   through the relay is the end to end way.
-- **Approving someone else's code.** A person who is tricked into approving a
-  code their own computer did not show links someone else's computer as
-  them. That computer cannot read anything from the site and never gets the
-  person's sign-in, but it can list made-up connections and give made-up
-  answers in that person's Compare tab. Approve only a code your own
-  computer is showing, and unlink anything unknown from the phone app.
-- **A copied token** answers as its computer until that computer is unlinked
-  or its person leaves the organization. Unlink a lost computer from the
-  phone app.
+- **Approving someone else's code.** A person who is tricked into typing and
+  approving a code their own computer did not show links someone else's
+  computer as them. That computer never gets the person's sign-in, but it
+  can open the organization's saved connections as that person, with their
+  passwords if the person may edit connections, and it can list made-up
+  connections and give made-up answers in that person's Compare tab. The
+  code has to be typed, so a link alone cannot do this. Type only a code your
+  own computer is showing, and unlink anything unknown from the phone app or
+  the site's Connections page, where an Admin can unlink it for you.
+- **A copied token** answers as its computer until that computer is unlinked,
+  its person leaves the organization, or 90 days pass without it being
+  used. Unlink a lost computer from the phone app or the site's Connections
+  page. An Admin can do that for anyone's computer.
 - **The web site holds everyone's saved connections.** Whoever controls the
   Vercel project (it holds `APP_ENCRYPTION_KEY`) or the Supabase project (it
   holds the database) controls the site and can read the passwords it keeps.

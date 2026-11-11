@@ -44,6 +44,21 @@ describe("databaseIdentity", () => {
     expect(databaseIdentity({ host: "db", port: 5432, database: "other" })).not.toBe(base);
     expect(databaseIdentity({ host: "db2", port: 5432, database: "app" })).not.toBe(base);
   });
+
+  it("ignores the user on an ordinary server", () => {
+    expect(databaseIdentity({ host: "db", port: 5432, database: "app", user: "alice" })).toBe(
+      databaseIdentity({ host: "db", port: 5432, database: "app", user: "bob.smith" }),
+    );
+  });
+
+  it("keeps two projects on Supabase's shared pooler apart", () => {
+    // Same host, port and database name: only the user says which project.
+    const pooler = { host: "aws-0-ap-southeast-2.pooler.supabase.com", port: 6543, database: "postgres" };
+    const dev = databaseIdentity({ ...pooler, user: "postgres.aaaa" });
+    expect(databaseIdentity({ ...pooler, user: "postgres.bbbb" })).not.toBe(dev);
+    // Another user of the same project is still the same database.
+    expect(databaseIdentity({ ...pooler, user: "Readonly.AAAA" })).toBe(dev);
+  });
 });
 
 describe("pickSchemaAfterConnectionChange", () => {

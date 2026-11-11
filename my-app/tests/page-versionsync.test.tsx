@@ -340,6 +340,50 @@ describe("the number beside Requests on the rail", () => {
   });
 });
 
+describe("what the replay check says about deleting rows", () => {
+  /** The usual routes, with the SQL of the one version to replay swapped. */
+  function routesReplaying(sql: string): FetchRoute[] {
+    const source = [SOURCE_LEDGER[0], { ...SOURCE_LEDGER[1], sqlContent: sql }];
+    return [
+      {
+        match: "/api/versionsync/ledger",
+        body: (url: string) =>
+          url.includes("connectionId=1") ? { entries: source } : { entries: TARGET_LEDGER },
+      },
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [] } },
+    ];
+  }
+
+  it("says a TRUNCATE deletes rows", async () => {
+    setRoutes(routesReplaying("TRUNCATE notes;"));
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
+    expect(screen.getByText(/This replay contains TRUNCATE\. Those take rows out of a live table/)).toBeInTheDocument();
+    expect(screen.getByText("I have read these statements and know which rows they delete.")).toBeInTheDocument();
+  });
+
+  it("says SQL it could not read may delete rows, not that it does", async () => {
+    // EXECUTE in a DO block runs SQL from a string. The reader cannot see what
+    // the string will be, so the box must not say that rows are deleted.
+    setRoutes(
+      routesReplaying("DO $$\nBEGIN\n  EXECUTE 'ANALYZE ' || 'notes';\nEND\n$$;")
+    );
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("1 migration may delete rows")).toBeInTheDocument();
+    expect(screen.getByText(/Part of the SQL could not be read: an EXECUTE inside a DO block/)).toBeInTheDocument();
+    expect(screen.getByText("I have read this SQL and know whether it deletes rows.")).toBeInTheDocument();
+
+    expect(screen.queryByText(/Those take rows out of a live table/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/migration deletes rows/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/know which rows they delete/)).not.toBeInTheDocument();
+  });
+});
+
 describe("who may replay", () => {
   it("shows a role without Deploy: Run the list, with nothing to press and one line on why", async () => {
     // A replay writes to the Target through the same apply route Deploy uses,

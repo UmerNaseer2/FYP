@@ -81,6 +81,30 @@ export function canExecute(who: ExecuteAbility, required: ExecuteRole): boolean 
   return required === "admin" ? who.isAdmin : true;
 }
 
+/** How strict each setting is: a higher number lets fewer people run. */
+const STRICTNESS: Record<ExecuteRole, number> = { editor: 0, admin: 1, none: 2 };
+
+/**
+ * True when a change of the setting lets more people run than before
+ * (read-only to anything else, or admins only to everyone who may deploy).
+ * Making it stricter, or leaving it as it is, is never a loosening.
+ */
+export function loosensExecuteRole(before: ExecuteRole, after: ExecuteRole): boolean {
+  return STRICTNESS[after] < STRICTNESS[before];
+}
+
+/**
+ * The refusal for someone who may not loosen the setting. Without this rule
+ * the person the setting holds back could switch it off and run anyway.
+ */
+export function loosenRefusal(connectionName: string, before: ExecuteRole): string {
+  return (
+    `Only someone who may approve production deploys (an Admin, unless your organization ` +
+    `changed it) can loosen who may run migrations on "${connectionName}". ` +
+    `It is set to "${describeExecuteRole(before)}". You can still make it stricter.`
+  );
+}
+
 /** The setting as a phrase for a picker. */
 export function describeExecuteRole(required: ExecuteRole): string {
   switch (required) {

@@ -8,12 +8,16 @@
 #
 # 1. runs every check in desktop.yml on the tagged commit, and stops if one
 #    fails.
-# 2. adds the apt source and its key to both .deb files, then signs the apt
+# 2. checks that both .deb files were built with Microsoft sign-in set up,
+#    and stops if one was not. The other checks pass without it, but nobody
+#    could sign in to that version, and apt would hand it to every
+#    installed copy.
+# 3. adds the apt source and its key to both .deb files, then signs the apt
 #    repository's index files (desktop/scripts/add-apt-source.sh and
 #    make-apt-repo.sh).
-# 3. puts them all in a new GitHub release for the tag, marked as the
+# 4. puts them all in a new GitHub release for the tag, marked as the
 #    latest one. Installed copies look for updates in the latest release.
-# 4. checks that apt finds the new version there and fetches the very file
+# 5. checks that apt finds the new version there and fetches the very file
 #    it published.
 #
 # A tag starts it rather than a Run workflow button, because GitHub shows
@@ -119,6 +123,32 @@ jobs:
               ;;
           esac
           echo "VERSION=$version" >> "$GITHUB_ENV"
+      # A .deb built without the repository variables AZURE_AD_CLIENT_ID and
+      # AZURE_AD_TENANT_ID passes every check above, but its sign-in says
+      # that it is not set up. Published, it would reach every installed
+      # copy as a normal update. So each .deb must hold both IDs, in
+      # out/build-config.json inside its app.asar. The IDs are not printed.
+      - name: Check that Microsoft sign-in is set up
+        run: |
+          # Reads that one file out of an app.asar. The archive starts with
+          # a JSON list of its files, then holds them one after another.
+          cat > "$RUNNER_TEMP/sign-in-set-up.js" <<'EOF'
+          const fs = require("node:fs");
+          const archive = fs.readFileSync(process.argv[2]);
+          const listSize = archive.readUInt32LE(4);
+          const list = JSON.parse(archive.toString("utf8", 16, 16 + archive.readUInt32LE(12)));
+          const entry = list.files.out.files["build-config.json"];
+          const start = 8 + listSize + Number(entry.offset);
+          const config = JSON.parse(archive.toString("utf8", start, start + entry.size));
+          process.exit(config.clientId && config.tenantId ? 0 : 1);
+          EOF
+          for deb in plain/*.deb; do
+            dpkg-deb --fsys-tarfile "$deb" | tar -xO "./opt/Schema Studio/resources/app.asar" > "$RUNNER_TEMP/app.asar"
+            if ! node "$RUNNER_TEMP/sign-in-set-up.js" "$RUNNER_TEMP/app.asar"; then
+              echo "::error::$(basename "$deb") was built without Microsoft sign-in set up, so nobody could sign in to this version. Add the repository variables AZURE_AD_CLIENT_ID and AZURE_AD_TENANT_ID (desktop/README.md, Setting up Microsoft sign-in, says where to find them), then choose Re-run all jobs on this run."
+              exit 1
+            fi
+          done
       # The key goes into a gpg folder in this run's temporary folder, which
       # the last step deletes.
       - name: Load the signing key

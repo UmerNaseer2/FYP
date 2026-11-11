@@ -6,6 +6,10 @@ document. Where a plan document says otherwise, the code wins — see
 [README.md](README.md) for the specific places the coursework documents have
 gone stale.
 
+Brought up to date with the code on 2026-11-10, at commit `e1a4d0c`: the
+counts, the stack versions, the sign-in providers, organizations and the AI
+features. The line numbers in section 7 are as of that commit.
+
 Paths are relative to the repository root. The application lives in `my-app/`.
 
 ---
@@ -37,11 +41,15 @@ underneath, those four.
 will make the whole codebase read wrong.**
 
 **The metadata database** is the tool's own store — one PostgreSQL database
-addressed by `DATABASE_URL_A`. It holds ten tables: saved connections, user
-profiles, tracked schemas, snapshots, lineage migrations, drift events, schema
-metrics, comparison sets, comparison-set targets, deploy approvals. It is owned
-by **Sequelize** (`my-app/lib/db/models.ts`, `my-app/lib/db/bootstrap.ts`), and
-reached everywhere through one handle: `pool`, the default export of
+addressed by `DATABASE_URL_A`. It holds 34 tables: organizations and who
+belongs to them, saved connections, roles and their permissions, tracked
+schemas, snapshots, lineage migrations, drift events, schema metrics,
+comparison sets, deploy approvals and attempts, the AI settings and call log,
+and the tables behind the desktop and phone links. **Sequelize** defines
+those tables as models and creates them (`my-app/lib/db/models.ts`,
+`my-app/lib/db/bootstrap.ts`), and it owns the connection pool. It does not do
+the reading and writing: every query is parameterised SQL sent with the `pg`
+client through one handle, `pool`, the default export of
 `my-app/lib/version-db.ts`.
 
 **Target databases** are the customer databases being compared and deployed to.
@@ -59,42 +67,48 @@ has hit this boundary.
 ```
 docs/                      the coursework documents (see docs/README.md)
 docker-compose.yml         Postgres 17 + the app, two containers
+deploy/                    server scripts
+desktop/                   the Electron desktop app
+relay/                     the Cloudflare Worker relay and the phone app
 my-app/
   app/
     page.tsx               the landing page at "/"
     [org]/                 one organization's pages: /acme/studio and so on
       layout.tsx           checks membership, tells the pages which organization
       page.tsx             /acme opens /acme/studio
-      (studio)/            11 pages, the whole product
+      (studio)/            12 pages, the whole product
     studio/, compare/, …   the old addresses: each [[...rest]]/page.tsx sends
                            /compare?left=1 on to the organization opened last
-    api/                   36 route handlers
+    api/                   83 route handlers
     login/                 the sign-in page
     layout.tsx             root layout, dark theme, fonts
-    globals.css            1,493 lines — design tokens + hand-written rules
+    globals.css            about 1,800 lines: design tokens + hand-written rules
     error.tsx              the boundaries: one per depth, see §11
   components/
-    studio/                40 feature components
+    studio/                49 feature components
+    admin/                 the Admin screen's tabs
     ui/                    17 files — the shared kit (EmptyState, Skeleton, dialogs, …)
-  lib/                     83 modules — all the logic
-    db/                    Sequelize: models, bootstrap, the instance (3 more)
-  tests/                   154 Jest suites, 4,215 tests
+  lib/                     132 modules at the top level: all the logic
+    ai/                    the AI features (32 files)
+    db/                    Sequelize: models, bootstrap, the instance (4 files)
+  tests/                   the Jest suites (their counts are kept in one
+                           place, the Jest row in my-app/README.md)
   proxy.ts                 Next 16's renamed middleware — the page auth gate
-  auth.ts, auth.config.ts  NextAuth v5 (Microsoft Entra ID)
+  auth.ts, auth.config.ts  NextAuth v5 (Microsoft Entra ID and GitHub)
   instrumentation.ts       starts the drift scheduler on boot
 ```
 
-Sizes, for scale: `app/` ~27,000 lines, `lib/` ~43,900, `components/` ~14,000,
-`tests/` ~53,500. The test tree being larger than the source it covers is a
+Sizes, for scale: `app/` ~35,000 lines, `lib/` ~66,800, `components/` ~24,100,
+`tests/` ~104,300. The test tree being larger than the source it covers is a
 consequence of how these suites are written: each one opens with a header
 saying what it is pinning down and what deliberately belongs to another file,
 and most assertions carry the reason they exist.
 
 ## 4. Stack
 
-Next.js 16.3.5 (App Router, Turbopack) · React 19.2.4 · TypeScript 5 strict ·
+Next.js 16.4.5 (App Router, Turbopack) · React 19.2.4 · TypeScript 5 strict ·
 Node 22 · PostgreSQL via `pg` 8.20 and Sequelize 6.37 · NextAuth v5 beta with
-Microsoft Entra ID · Tailwind v4 alongside hand-written CSS · Jest 30 ·
+Microsoft Entra ID and GitHub · Tailwind v4 alongside hand-written CSS · Jest 30 ·
 `@xyflow/react` + `@dagrejs/dagre` for the ERD visualiser.
 
 **There is no charting library.** Every chart in `components/studio/SchemaTrends.tsx`
@@ -103,7 +117,7 @@ choice, not an omission.
 
 ## 5. How a request flows
 
-Every one of the 11 studio pages is a **client component** that fetches from a
+Every one of the 12 studio pages is a **client component** that fetches from a
 route handler. No page queries a database at render time. (One page imports
 *types* from a `-db` module; types are erased at build.) That separation was a
 client requirement.
@@ -122,7 +136,7 @@ page.tsx  ──fetch──▶  app/api/**/route.ts
 
 Roles with per-feature permissions. `my-app/lib/permissions.ts` lists every
 feature and its permissions (Create, Read, Update, Delete, and Run or Approve
-where a feature has them), 42 in all across 16 features. What each role may do
+where a feature has them), 43 in all across 17 features. What each role may do
 is stored in the database (`roles`, `role_permissions`), turned on and off on
 the Admin screen's Roles & permissions tab, where each permission is a plain
 sentence such as "Add a connection" grouped under its sidebar screen, and
@@ -130,8 +144,8 @@ logged in `role_changes`. Three roles are built in and can't be deleted: Viewer
 and Editor start with the permissions that reproduce the old
 `viewer` < `editor` ladder, and Admin can always do everything, so its
 permissions are neither stored nor editable. An admin can add roles of their
-own. A person's role is on the `profiles` table, and the role and its
-permissions are re-read from the database on **every** session read
+own. A person has one role in each organization they belong to, stored on
+the `memberships` table, and the role and its permissions are re-read from the database on **every** session read
 (`my-app/auth.ts`), so a change takes effect on the next request rather than
 at the next sign-in.
 
@@ -141,10 +155,13 @@ Enforced at three layers that share one source of truth:
 - **Server** — `my-app/lib/auth-guard.ts` exposes a discriminated union,
   `{ok: true, principal} | {ok: false, response}`. Because the failure branch
   carries the response, forgetting to check `gate.ok` is a *type error*, not a
-  silent hole. **38 of the 39 route files call a gate**:
-  `requirePermission(...keys)`, which passes when the role has any one of the
-  permissions named, or `requireSignedIn()` for `me` and `me/view-as`, which every
-  role needs. The exception is `app/api/auth/[...nextauth]/route.ts`, which must
+  silent hole. **71 of the 83 route files call a gate**:
+  `requirePermission(...keys)` (61 files), which passes when the role has any
+  one of the permissions named; `requireMember()` (8 files, such as `me` and
+  `me/view-as`), for routes about the caller that every member needs; or
+  `requireSignedIn()` (2 files), for someone who may not be in an organization
+  yet. The other 12 are exempt, each with its reason written down in the test
+  named below. One of them is `app/api/auth/[...nextauth]/route.ts`, which must
   stay open for sign-in. `my-app/tests/permissions-coverage.test.ts` fails if a
   new route forgets its gate or a permission is checked by no route.
 - **Client** — `components/AuthGuard.tsx`, whose own header comment states it
@@ -198,15 +215,15 @@ route into the codebase.
 
 | Function | Where | What it is |
 |---|---|---|
-| `fetchSchemaSnapshot(cfg, schema)` | `lib/postgres.ts:1272` | The single introspection entry point. Everything downstream consumes its `SchemaSnapshot`. |
-| `compareSchemas(left, right)` | `lib/compare.ts:2738` | The diff engine. 2,828 lines; the only entry point the app calls. |
-| `generateMigration(report, opts)` | `lib/generate-sql.ts:3028` | Diff → migration SQL. |
-| `generateRollback(report, opts)` | `lib/generate-sql.ts:3616` | The inverse, by re-running the comparison backwards. |
-| `runComparison(query, record)` | `lib/compare-run.ts:698` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
-| `runDriftCheck(id, source, mode)` | `lib/drift-runner.ts:79` | One drift check, and the `drift_events` row it writes. |
-| `fetchSchemaVersionInfo(cfg, schema)` | `lib/version-detection.ts:313` | Finds a target's own version table — Flyway, Liquibase, or hand-rolled. |
-| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/query-analysis.ts:592`, `:733` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
-| `analyzeSchemaPerformance(snapshot)` | `lib/perf-advice.ts:163` | Structural performance advice. |
+| `fetchSchemaSnapshot(cfg, schema)` | `lib/postgres.ts:1394` | The single introspection entry point. Everything downstream consumes its `SchemaSnapshot`. |
+| `compareSchemas(left, right)` | `lib/compare.ts:2784` | The diff engine. 2,874 lines; the only entry point the app calls. |
+| `generateMigration(report, opts)` | `lib/generate-sql.ts:4222` | Diff → migration SQL. |
+| `generateRollback(report, opts)` | `lib/generate-sql.ts:4884` | The inverse, by re-running the comparison backwards. |
+| `runComparison(query, record)` | `lib/compare-run.ts:1027` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
+| `runDriftCheck(id, source, mode)` | `lib/drift-runner.ts:120` | One drift check, and the `drift_events` row it writes. |
+| `fetchSchemaVersionInfo(cfg, schema)` | `lib/version-detection.ts:575` | Finds a target's own version table: Flyway, Liquibase, or hand-rolled. |
+| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/query-analysis.ts:3517`, `:6049` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
+| `analyzeSchemaPerformance(snapshot)` | `lib/perf-advice.ts:1021` | Structural performance advice. |
 
 ### Rename detection is the interesting algorithm
 
@@ -221,10 +238,11 @@ rather than auto-emitting `ALTER TABLE … RENAME TO`. Primitives are in
 
 ## 8. The `lib/` purity split
 
-Of the 86 modules under `lib/`, **63 are pure** — their value-import closure
-contains no `pg`, `sequelize`, `next/*`, `@/auth` or `node:*` — and **23 are
-impure**. That is what decides whether a module can be imported by a client
-component.
+The modules under `lib/` are of two kinds. A **pure** module is one whose
+value-import closure contains no `pg`, `sequelize`, `next/*`, `@/auth` or
+`node:*`. The rest are **impure**. That is what decides whether a module can
+be imported by a client component. (This file used to give a count of each
+kind. The count was not redone on 2026-11-10, so it is left out.)
 
 Several files exist *only* to preserve that line: `lib/snapshot-facts.ts` holds
 one function so the UI can ask it without pulling in `pg`; `lib/parse-uri.ts`
@@ -238,25 +256,25 @@ the reason.
 The client's product backlog has 38 items (`docs/requirements/COS40005-team-and-project-plan.txt`,
 Table 5). Traced against the code:
 
-**36 done · 1 partial · 1 missing.**
+**37 done · 1 that needs configuration, not code.**
 
-The one partial and the one gap, precisely:
+The one that is not simply done:
 
 | # | Item | Status |
 |---|---|---|
-| 5 | NextAuth Microsoft OAuth | Code complete and wired end to end; no credentials provisioned, so the flow has never run. Needs env values, not more code. |
-| 38 | AI assistance | **Missing.** No AI SDK, no LLM call anywhere. Items 34–36 are rule-based heuristics. The backlog marks this "if time allows". |
+| 5 | NextAuth Microsoft OAuth | Code complete and wired end to end, with GitHub as a second provider. Real sign-in is the default. This repository carries no credentials, so a server has to be given the keys (§6) before the login page can offer it. |
 
-Four items that were partial when this file was first written have since been
-finished. They are listed rather than deleted, because a reviewer holding an
+Five items that were partial or missing when this file was first written have
+since been finished. They are listed rather than deleted, because a reviewer holding an
 older copy of this document will come looking for them:
 
 | # | Item | What closed it |
 |---|---|---|
 | 28 | Migration execution history and audit log | The ledger row already held the SQL, the rollback, the change type and the timestamp; it now holds the actor too (`applied_by`, added to older ledgers on the next apply), and the Deploy screen's timeline reads "Applied *date* by *who*". The *Audit log* tab on the Drift screen is a different log and always was — drift checks, not deployments. |
 | 30 | Save comparison history and templates | Templates are `lib/comparison-sets.ts`. History is `lib/comparison-history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
-| 31 | Jest testing for the main webpages | 154 suites, 4,215 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 38 component suites; the thirteenth, the landing page at `app/page.tsx`, has one suite for whom it sends where and one for what it shows. The addresses that only redirect (`/acme` and the ones from before organizations) are in `tests/org-redirect.test.ts`. jsdom is asked for per file, so the logic suites keep a node environment. |
+| 31 | Jest testing for the main webpages | The suite, test and coverage numbers are kept in one place: the Jest row of the compliance sheet in `my-app/README.md`. Of the 34 `page.tsx` files, the 19 that show something each have a suite of their own (`tests/page-*.test.tsx`), alongside 41 component suites; the landing page at `app/page.tsx` has one suite for whom it sends where and one for what it shows. The addresses that only redirect (`/acme` and the ones from before organizations) are in `tests/org-redirect.test.ts`. jsdom is asked for per file, so the logic suites keep a node environment. |
 | 32 | UI polish and error handling | The polish was already there. The error handling is `app/[org]/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
+| 38 | AI assistance | Built, and off by default. `my-app/lib/ai/` holds six features: a change summary on Compare, a migration review before deploy, an explanation of drift, one line in drift alerts, SQL written from plain words, and a schema chat. An organization gets them only after an Admin switches AI on in the Admin screen's AI tab, and only when the server or the organization has a key for an AI service. Using them needs the permission "Use AI assistance". Items 34 to 36 are still rule-based and do not need it. |
 
 ### Where the code exceeds the backlog
 
@@ -270,6 +288,10 @@ format versioning; and comparison breadth well past "tables, columns,
 constraints" — views, sequences, enum/range/composite types, routines, RLS
 policies, triggers and partitioning.
 
+Added since this list was first written: organizations with invitations and a
+role per organization, the Requests page, sign-in with GitHub, the desktop app
+in `desktop/`, and the relay and phone app in `relay/`.
+
 ## 10. Quality gates
 
 Four commands, all green at the current commit, all run in CI on every branch:
@@ -282,14 +304,14 @@ npm run build
 ```
 
 `.github/workflows/ci.yml` runs exactly these on push to any branch, pull
-request, and manual dispatch. Production build: 48 pages generated, 36 API
-routes, 13 page routes plus the 404, one proxy.
+request, and manual dispatch. The app has 83 API route files, 34 `page.tsx`
+files and one proxy.
 
 ## 11. Known state and honest caveats
 
 - **The metadata database is the Docker Compose Postgres.** For local work,
   `DATABASE_URL_A` points at the `db` service of the root `docker-compose.yml`
-  (Postgres 17 on `localhost:5433`). The app creates its ten tables itself on
+  (Postgres 17 on `localhost:5433`). The app creates its tables itself on
   first use. The hosted Supabase project it once pointed at has been deleted, and
   nothing saved there survives.
 - **The auth bypass is ON in local development only** (`.env.local`). The
@@ -302,8 +324,8 @@ routes, 13 page routes plus the 404, one proxy.
 - **`/api/lineage/acknowledge` is the only metadata-writing route that never
   calls `syncMetadataTables()`** before querying. On a fresh database it fails
   where its siblings self-heal.
-- **`app/api/scripts/apply/route.ts` is by far the largest file in `app/`**, at
-  about 1,800 lines. It is the most dangerous route in the codebase — it runs
+- **`app/api/scripts/apply/route.ts` is the largest route handler in `app/`**, at
+  nearly 2,000 lines. It is the most dangerous route in the codebase: it runs
   arbitrary DDL against a customer database — and repays careful reading.
 - **A render error is now caught at the depth it happened.**
   `app/[org]/(studio)/error.tsx` sits inside the route group, so a screen that throws

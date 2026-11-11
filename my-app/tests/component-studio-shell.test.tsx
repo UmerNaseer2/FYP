@@ -50,7 +50,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { OrgProvider } from "@/components/OrgProvider";
 import { StudioShell } from "@/components/studio/StudioShell";
@@ -62,6 +62,7 @@ import {
   presetFor,
   type BuiltInRole,
 } from "@/lib/permissions";
+import { pageLoader } from "@/lib/sign-out";
 import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import { setPathname } from "./helpers/render-page";
 
@@ -213,6 +214,30 @@ describe("a window with room for the rail", () => {
     // far down Deploy made the window taller than the screen without it.
     renderShell();
     expect(screen.getByRole("main")).toHaveClass("relative");
+  });
+
+  test("starts with a skip link that moves focus past the rail to the page", () => {
+    // A keyboard user would otherwise Tab through the whole rail, about
+    // fifteen presses, on every screen before reaching the page.
+    renderShell();
+    const skip = screen.getByRole("link", { name: "Skip to content" });
+    // First in the shell, so it is the first thing Tab reaches.
+    expect(grid().firstElementChild).toBe(skip);
+    expect(skip).toHaveAttribute("href", "#main-content");
+
+    const main = screen.getByRole("main");
+    expect(main).toHaveAttribute("id", "main-content");
+    // -1: focus can be put there, but Tab never stops on it.
+    expect(main).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.click(skip);
+    expect(main).toHaveFocus();
+  });
+
+  test("keeps the skip link first on a phone too, where the rail is in a drawer", () => {
+    mediaMatches = true;
+    renderShell();
+    expect(grid().firstElementChild).toBe(screen.getByRole("link", { name: "Skip to content" }));
   });
 
   test("names the screen you are on, from the address bar", () => {
@@ -484,16 +509,25 @@ describe("which screens the rail offers", () => {
     // the one way on, and it sits in the rail's footer, not among the rows.
     me = NOT_A_MEMBER;
     renderShell();
-    expect(screen.queryAllByRole("link")).toEqual([]);
+    // Inside the rail: the shell's own skip link is not a screen.
+    expect(within(rail()).queryAllByRole("link")).toEqual([]);
     expect(button("Sign out")).toBeInTheDocument();
   });
 });
 
 describe("signing out", () => {
-  test("asks next-auth to end the session and says where to land", () => {
-    renderShell();
-    fireEvent.click(button("Sign out"));
-    expect(mockSignOutCalls).toEqual([{ callbackUrl: "/login" }]);
+  test("asks next-auth to end the session, then loads the login screen", async () => {
+    // A test page cannot really go anywhere, so the page load is watched.
+    const loaded = jest.spyOn(pageLoader, "load").mockImplementation(() => {});
+    try {
+      renderShell();
+      fireEvent.click(button("Sign out"));
+      await waitFor(() => expect(loaded).toHaveBeenCalledWith("/login"));
+      // lib/sign-out.ts loads the page itself, once the session is gone.
+      expect(mockSignOutCalls).toEqual([{ redirect: false }]);
+    } finally {
+      loaded.mockRestore();
+    }
   });
 
   test("inside the desktop app, leaves it to the app, which forgets the Microsoft account too", async () => {

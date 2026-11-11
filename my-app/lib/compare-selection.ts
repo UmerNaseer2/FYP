@@ -43,11 +43,15 @@ const LOCAL_HOSTS = new Set(["", "localhost", "127.0.0.1", "::1", "[::1]"]);
  * Only the spellings of this machine are folded together. The same server
  * reached through two DNS names, or by name and by IP, still counts as two:
  * telling those apart needs a DNS lookup, and this runs on every comparison.
+ *
+ * The user is left out on purpose, with one exception: a shared pooler that
+ * picks the database from the user name. See poolerTenant.
  */
 export function databaseIdentity(config: {
   host?: string | null;
   port?: number | string | null;
   database?: string | null;
+  user?: string | null;
 }): string {
   const typedHost = (config.host ?? "").trim().toLowerCase();
   const host = LOCAL_HOSTS.has(typedHost) ? "localhost" : typedHost;
@@ -55,7 +59,27 @@ export function databaseIdentity(config: {
   const typedPort = Number(config.port);
   const port = Number.isInteger(typedPort) && typedPort > 0 ? typedPort : 5432;
   const database = (config.database ?? "").trim();
-  return `${host}:${port}/${database}`;
+  const tenant = poolerTenant(host, config.user);
+  return tenant ? `${host}:${port}/${database}@${tenant}` : `${host}:${port}/${database}`;
+}
+
+// Supabase's shared pooler: one host name for every project in a region.
+const TENANT_POOLER_SUFFIX = ".pooler.supabase.com";
+
+/**
+ * Which project a shared pooler sends this user to, or "" when the host is an
+ * ordinary server.
+ *
+ * On Supabase's shared pooler every project has the same host, port and
+ * database name ("postgres"). The project is the part of the user name after
+ * the last dot: "postgres.abcd" is project "abcd". Without this, two projects
+ * on one pooler would count as one database. Two users of the same project
+ * still give the same answer, so they still count as one database.
+ */
+function poolerTenant(host: string, user: string | null | undefined): string {
+  if (!host.endsWith(TENANT_POOLER_SUFFIX)) return "";
+  const typedUser = (user ?? "").trim().toLowerCase();
+  return typedUser.slice(typedUser.lastIndexOf(".") + 1);
 }
 
 /**

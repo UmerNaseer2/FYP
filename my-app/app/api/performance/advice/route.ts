@@ -4,7 +4,6 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { credentialsMessage } from "@/lib/secret-store";
 import { fetchSchemaSnapshot, getPoolForConfig, withoutToolTables } from "@/lib/postgres";
-import type { IndexSnapshot } from "@/lib/postgres";
 import type { PoolClient } from "pg";
 import {
   STATS_LOCK_TIMEOUT_MS,
@@ -29,7 +28,7 @@ import {
   type TableStats,
   type WaitingPartition,
 } from "@/lib/perf-advice";
-import { aggregateSearches, compositeIndexAdvice } from "@/lib/composite-index";
+import { aggregateSearches, compositeIndexAdvice, tableSearchIndexes } from "@/lib/composite-index";
 import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
 import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
 
@@ -607,7 +606,7 @@ export async function GET(request: NextRequest) {
   let patterns: AdviceItem[] = [];
   let patternsUnavailable: string | null = null;
   try {
-    const usable = (index: IndexSnapshot) =>
+    const usable = (index: { name: string }) =>
       // An invalid index is one the planner will not use, so it serves no
       // pattern. When the invalid list could not be read, every index counts —
       // which can only make this say less, never something untrue.
@@ -616,14 +615,12 @@ export async function GET(request: NextRequest) {
     patterns = compositeIndexAdvice(
       schema,
       aggregateSearches(await listSearches(gate.principal.orgId, connectionId, schema)),
+      // Primary key and unique constraint indexes count too: the snapshot
+      // keeps them apart from `indexes`, see tableSearchIndexes.
       Object.fromEntries(
         snapshot.tables.map((t) => [
           t.name,
-          (t.indexes ?? []).filter(usable).map((i) => ({
-            name: i.name,
-            columns: i.columns,
-            predicate: i.predicate,
-          })),
+          tableSearchIndexes(t, usable),
         ])
       ),
       [...relationNames(snapshot)],

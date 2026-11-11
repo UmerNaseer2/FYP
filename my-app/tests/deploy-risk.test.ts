@@ -134,6 +134,34 @@ describe("analyseRunRisk", () => {
     expect(risk.breaking).toEqual([]);
   });
 
+  // A hand-written script used to get no breaking tick and no data-loss
+  // warning for any of these.
+  it("counts hand-written destructive statements the generator never writes", () => {
+    const risk = analyseRunRisk([
+      script("1.0.0", "ALTER TABLE orders DETACH PARTITION orders_2024;"),
+      script("1.0.1", "DROP OWNED BY app_user;"),
+      script("1.0.2", "DROP TYPE order_status CASCADE;"),
+    ]);
+    expect(risk.breaking.map((entry) => entry.version)).toEqual(["1.0.0", "1.0.1", "1.0.2"]);
+    expect(risk.dataLoss.map((entry) => [entry.version, entry.kinds])).toEqual([
+      ["1.0.1", ["DROP OWNED"]],
+      ["1.0.2", ["DROP … CASCADE"]],
+    ]);
+  });
+
+  it("asks for both ticks when a DO block runs SQL from a string", () => {
+    const sql = "DO $$ BEGIN EXECUTE 'DROP TABLE orders CASCADE'; END $$;";
+    const risk = analyseRunRisk([script("1.0.0", sql)]);
+    expect(risk.breaking.map((entry) => entry.label)).toEqual(["orders_fix v1.0.0"]);
+    expect(risk.dataLoss[0].kinds).toEqual(["EXECUTE (cannot be read)"]);
+    expect(readScriptLevel(script("1.0.0", sql)).stored).toBe("breaking");
+
+    // Under a stamp the grade stays the author's, but the rows tick is still asked for.
+    const stamped = analyseRunRisk([script("1.0.0", `-- Change-type: patch\n${sql}`)]);
+    expect(stamped.breaking).toEqual([]);
+    expect(stamped.dataLoss[0].kinds).toEqual(["EXECUTE (cannot be read)"]);
+  });
+
   it("warns about statements existing rows can refuse, and reads enum additions across the run", () => {
     const risk = analyseRunRisk([
       script("1.3.0", "ALTER TABLE orders ADD COLUMN ref text NOT NULL;"),

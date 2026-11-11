@@ -23,8 +23,16 @@ const ORGS: FetchRoute = {
   body: { organizations: [], canCreate: false },
 };
 
+/** Three minutes ago: links last ten. */
+const OPENED_AT = new Date(Date.now() - 3 * 60_000).toISOString();
+
 function computerAsking(name = "Ada's laptop"): FetchRoute {
-  return { match: "/api/computers/link", body: { computerName: name } };
+  return { match: "/api/computers/link", body: { computerName: name, openedAt: OPENED_AT } };
+}
+
+/** Type the code the way the person reads it off their computer. */
+async function typeCode(code = "BCDF-GHJK") {
+  fireEvent.change(await screen.findByLabelText("Code shown on the computer"), { target: { value: code } });
 }
 
 function sentBody(method: string) {
@@ -46,12 +54,30 @@ describe("the link page", () => {
     expect(await screen.findByText(/Only link a computer you are sitting at/)).toBeInTheDocument();
   });
 
-  it("starts from the code the computer put in its link, and names the computer", async () => {
+  it("says plainly that the computer gets the organization's connections and their passwords", async () => {
+    render(<LinkComputerPage />);
+    expect(
+      await screen.findByText(/Linking lets that computer open .* saved connections, including their\s+passwords/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Never type a code that someone sent you/)).toBeInTheDocument();
+  });
+
+  it("does not take the code from the link, so a link someone sent cannot fill it in", async () => {
     setSearchParams("code=bcdf-ghjk");
     render(<LinkComputerPage />);
+    const box = await screen.findByLabelText("Code shown on the computer");
+    await waitFor(() => expect(fetchCalls.some((entry) => entry.url === "/api/organizations")).toBe(true));
+    expect(box).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Link this computer" })).not.toBeInTheDocument();
+    expect(fetchCalls.some((entry) => entry.url.includes("/api/computers/link"))).toBe(false);
+  });
+
+  it("names the computer for a typed code, and says when it asked", async () => {
+    render(<LinkComputerPage />);
+    await typeCode("bcdf-ghjk");
     expect(await screen.findByText(/Link Ada's laptop to/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Code shown on the computer")).toHaveValue("BCDF-GHJK");
     expect(fetchCalls.some((entry) => entry.url.includes("code=BCDFGHJK"))).toBe(true);
+    expect(screen.getByText(/This computer asked to be linked at .* \(3m ago\)/)).toBeInTheDocument();
   });
 
   it("asks nothing and offers nothing until a whole code is typed", async () => {
@@ -66,8 +92,8 @@ describe("the link page", () => {
   });
 
   it("links the computer on a yes, and says to go back to it", async () => {
-    setSearchParams("code=BCDF-GHJK");
     render(<LinkComputerPage />);
+    await typeCode();
     fireEvent.click(await screen.findByRole("button", { name: "Link this computer" }));
     expect(await screen.findByText("Linked")).toBeInTheDocument();
     expect(sentBody("POST")).toEqual({ code: "BCDFGHJK" });
@@ -76,8 +102,8 @@ describe("the link page", () => {
   });
 
   it("turns the computer away on a no", async () => {
-    setSearchParams("code=BCDF-GHJK");
     render(<LinkComputerPage />);
+    await typeCode();
     fireEvent.click(await screen.findByRole("button", { name: "Not mine" }));
     expect(await screen.findByText("Nothing was linked")).toBeInTheDocument();
     expect(sentBody("DELETE")).toEqual({ code: "BCDFGHJK" });
@@ -87,15 +113,15 @@ describe("the link page", () => {
   it("shows the site's sentence for a code that ran out, and offers nothing", async () => {
     const sentence = "That code has expired or is not right. Start again on the computer.";
     setRoutes([{ match: "/api/computers/link", status: 404, body: { error: sentence } }, ORGS]);
-    setSearchParams("code=BCDF-GHJK");
     render(<LinkComputerPage />);
+    await typeCode();
     expect(await screen.findByText(sentence)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Link this computer" })).not.toBeInTheDocument();
   });
 
   it("keeps the choice open when linking fails", async () => {
-    setSearchParams("code=BCDF-GHJK");
     render(<LinkComputerPage />);
+    await typeCode();
     const yes = await screen.findByRole("button", { name: "Link this computer" });
     const sentence = "That code has expired or is not right. Start again on the computer.";
     setRoutes([

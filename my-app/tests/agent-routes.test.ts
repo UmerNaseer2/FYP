@@ -22,6 +22,7 @@ jest.mock("../lib/agent-db", () => ({
   readLink: jest.fn(),
   removeAgent: jest.fn(),
   removeComputer: jest.fn(),
+  removeOrgComputer: jest.fn(),
   replaceAgentConnections: jest.fn(),
   runningJobMethod: jest.fn(),
 }));
@@ -64,6 +65,7 @@ function idOf(id: string) {
 
 const member = principalFor("editor", { profileId: 12 });
 const inBypass = { ...member, profileId: null, bypass: true };
+const admin = principalFor("admin", { profileId: 30 });
 
 let errorLog: jest.SpyInstance;
 
@@ -94,7 +96,19 @@ describe("POST /api/agent/link", () => {
       intervalSeconds: 3,
       expiresInSeconds: 600,
     });
-    expect(db.openLink).toHaveBeenCalledWith("Ada's laptop");
+    expect(db.openLink).toHaveBeenCalledWith("Ada's laptop", null);
+  });
+
+  it.each([
+    ["the plain header", { "x-real-ip": " 203.0.113.9 " }, "203.0.113.9"],
+    // Each server on the way adds to the list, so only the last entry is one
+    // a server saw for itself. The first is whatever the caller sent.
+    ["the last entry of the list", { "x-forwarded-for": "10.0.0.1, 198.51.100.7" }, "198.51.100.7"],
+    ["the plain header before the list", { "x-real-ip": "203.0.113.9", "x-forwarded-for": "1.2.3.4" }, "203.0.113.9"],
+  ])("tells the store who is asking, from %s", async (_what, headers, caller) => {
+    db.openLink.mockResolvedValue({ deviceCode: "device-secret", userCode: "BCDFGHJK" });
+    await openLink(call("POST", "/api/agent/link", { computerName: "x" }, headers));
+    expect(db.openLink).toHaveBeenCalledWith("x", caller);
   });
 
   it.each([[{}], [{ computerName: "" }], [{ computerName: 12 }], ["not json"]])(
@@ -102,14 +116,14 @@ describe("POST /api/agent/link", () => {
     async (body) => {
       db.openLink.mockResolvedValue({ deviceCode: "device-secret", userCode: "BCDFGHJK" });
       expect((await openLink(call("POST", "/api/agent/link", body))).status).toBe(201);
-      expect(db.openLink).toHaveBeenCalledWith("Computer");
+      expect(db.openLink).toHaveBeenCalledWith("Computer", null);
     }
   );
 
   it("cuts a very long name", async () => {
     db.openLink.mockResolvedValue({ deviceCode: "device-secret", userCode: "BCDFGHJK" });
     await openLink(call("POST", "/api/agent/link", { computerName: "x".repeat(500) }));
-    expect(db.openLink).toHaveBeenCalledWith("x".repeat(60));
+    expect(db.openLink).toHaveBeenCalledWith("x".repeat(60), null);
   });
 
   it("asks a computer to wait when too many are open", async () => {
@@ -329,7 +343,6 @@ describe("who may use a person's computers", () => {
 
   it.each([
     ["list", () => computers(call("GET", "/api/computers"))],
-    ["remove", () => removeComputer(call("DELETE", "/api/computers/1"), idOf("1"))],
     ["read a link", () => readLink(call("GET", "/api/computers/link?code=BCDF-GHJK"))],
     ["approve", () => approve(call("POST", "/api/computers/link", { code: "BCDF-GHJK" }))],
     ["turn away", () => turnAway(call("DELETE", "/api/computers/link", { code: "BCDF-GHJK" }))],
@@ -339,6 +352,14 @@ describe("who may use a person's computers", () => {
     mockGate = { ok: false, response: refused };
     expect((await route()).status).toBe(401);
     expect(mockRequirePermission).toHaveBeenCalledWith("compare:read");
+  });
+
+  it("remove answers with the gate's refusal, and needs compare:read or users:delete", async () => {
+    mockGate = { ok: false, response: refused };
+    expect((await removeComputer(call("DELETE", "/api/computers/1"), idOf("1"))).status).toBe(401);
+    expect(mockRequirePermission).toHaveBeenCalledWith("compare:read", "users:delete");
+    expect(db.removeComputer).not.toHaveBeenCalled();
+    expect(db.removeOrgComputer).not.toHaveBeenCalled();
   });
 });
 
@@ -367,6 +388,31 @@ describe("DELETE /api/computers/[id]", () => {
     db.removeComputer.mockResolvedValue(true);
     expect((await removeComputer(call("DELETE", "/api/computers/9"), idOf("9"))).status).toBe(200);
     expect(db.removeComputer).toHaveBeenCalledWith(member.orgId, 12, 9);
+    // Someone who may not remove members reaches nobody else's computer.
+    expect(db.removeOrgComputer).not.toHaveBeenCalled();
+  });
+
+  it("lets someone who may remove members unlink any computer of the organization", async () => {
+    mockGate = { ok: true, principal: admin };
+    db.removeOrgComputer.mockResolvedValue(true);
+    expect((await removeComputer(call("DELETE", "/api/computers/9"), idOf("9"))).status).toBe(200);
+    expect(db.removeOrgComputer).toHaveBeenCalledWith(admin.orgId, 9);
+    expect(db.removeComputer).not.toHaveBeenCalled();
+  });
+
+  it("tells them when the organization has no such computer", async () => {
+    mockGate = { ok: true, principal: admin };
+    db.removeOrgComputer.mockResolvedValue(false);
+    const response = await removeComputer(call("DELETE", "/api/computers/9"), idOf("9"));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "That computer is not linked to this organization." });
+  });
+
+  it("has none to remove under the sign-in bypass, for a role that may not remove members", async () => {
+    mockGate = { ok: true, principal: inBypass };
+    expect((await removeComputer(call("DELETE", "/api/computers/9"), idOf("9"))).status).toBe(404);
+    expect(db.removeComputer).not.toHaveBeenCalled();
+    expect(db.removeOrgComputer).not.toHaveBeenCalled();
   });
 
   it("finds nothing that is not theirs", async () => {
@@ -378,9 +424,11 @@ describe("DELETE /api/computers/[id]", () => {
 
 describe("/api/computers/link", () => {
   it("reads which computer is asking, however the code was typed", async () => {
-    db.readLink.mockResolvedValue("Ada's laptop");
+    const openedAt = "2026-11-10T09:30:00.000Z";
+    db.readLink.mockResolvedValue({ computerName: "Ada's laptop", openedAt });
     const response = await readLink(call("GET", "/api/computers/link?code=bcdf-ghjk"));
-    expect(await response.json()).toEqual({ computerName: "Ada's laptop" });
+    // The name and when it asked, for the person to check before saying yes.
+    expect(await response.json()).toEqual({ computerName: "Ada's laptop", openedAt });
     expect(db.readLink).toHaveBeenCalledWith("BCDFGHJK");
   });
 

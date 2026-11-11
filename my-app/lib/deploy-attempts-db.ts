@@ -2,6 +2,7 @@ import pool, { syncMetadataTables } from "./version-db";
 import {
   attemptDetail,
   attemptOutcome,
+  rollbackDetail,
   type AttemptContext,
   type AttemptResponseBody,
   type DeployAttemptRow,
@@ -52,6 +53,9 @@ export async function recordDeployAttempt(
 ): Promise<void> {
   if (context.orgId === undefined) return;
   const outcome = attemptOutcome(status, body);
+  // A rollback is marked in its detail line: the table has no action column.
+  const ownDetail = attemptDetail(outcome, body);
+  const detail = context.action === "revert" ? rollbackDetail(ownDetail) : ownDetail;
   try {
     await syncMetadataTables();
     // The caller's organization, which is also the connection's whenever the
@@ -75,7 +79,7 @@ export async function recordDeployAttempt(
         outcome,
         context.dryRun === true,
         status,
-        attemptDetail(outcome, body),
+        detail,
         context.actor ?? null,
         context.orgId,
       ]

@@ -3,7 +3,14 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { credentialsMessage } from "@/lib/secret-store";
-import { fetchSchemaSnapshot, type SchemaSnapshot } from "@/lib/postgres";
+import {
+  fetchSchemaSnapshot,
+  withCurrentNormalization,
+  withoutToolTables,
+  type SchemaSnapshot,
+} from "@/lib/postgres";
+import { compareSchemas } from "@/lib/compare";
+import { driftFingerprint } from "@/lib/drift-fingerprint";
 import {
   getNextLineageVersion,
   buildDriftSummary,
@@ -11,7 +18,7 @@ import {
 } from "@/lib/lineage-db";
 
 /**
- * POST /api/lineage/rebaseline  { trackedSchemaId }
+ * POST /api/lineage/rebaseline  { trackedSchemaId, shownFingerprint? }
  *
  * Accept the live database as the new expected snapshot. We capture the live
  * structure, record it as the next lineage entry (seq + 1, version bumped by the
@@ -20,6 +27,11 @@ import {
  *
  * This is honest about what it stores: the new entry has no migration SQL of its
  * own — it was captured from the live DB, exactly like the original baseline.
+ *
+ * shownFingerprint is the fingerprint of the differences the person had on
+ * screen (GET /api/lineage/drift sends it). When it is given, the live schema
+ * read here must show the same differences, or nothing is saved: accepting a
+ * change nobody saw in the diff is not what the person agreed to.
  *
  * Everything happens inside the caller's organization: the schema must be one
  * of its own, and the snapshot, the lineage row and the drift event all take
@@ -31,7 +43,7 @@ export async function POST(request: NextRequest) {
 
   await syncMetadataTables();
 
-  let body: { trackedSchemaId?: number };
+  let body: { trackedSchemaId?: number; shownFingerprint?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -42,6 +54,11 @@ export async function POST(request: NextRequest) {
   if (!trackedSchemaId) {
     return NextResponse.json({ error: "trackedSchemaId is required." }, { status: 400 });
   }
+  // Left out by a caller that showed no diff: the check below is then skipped.
+  const shownFingerprint =
+    typeof body.shownFingerprint === "string" && body.shownFingerprint !== ""
+      ? body.shownFingerprint
+      : null;
   const orgId = gate.principal.orgId;
 
   // ── 1. Load the tracked schema + connection (LEFT JOIN: may be removed) ────
@@ -197,6 +214,44 @@ export async function POST(request: NextRequest) {
         },
         { status: 409 }
       );
+    }
+
+    // The person accepted the differences they read on the drift screen. If the
+    // live schema has moved since (somebody dropped a column by hand in the
+    // meantime, or a deploy changed the baseline), the reading in hand shows
+    // other differences than those, and saving it would accept a change nobody
+    // looked at. The comparison is the drift screen's own: the head's snapshot,
+    // or the newest capture when the lineage has none, against the live read.
+    if (shownFingerprint !== null) {
+      let expected = headSnapshot;
+      if (!expected) {
+        const latest = await client.query<{ snapshot: SchemaSnapshot }>(
+          `SELECT snapshot FROM snapshots
+           WHERE tracked_schema_id = $1 AND org_id = $2
+           ORDER BY captured_at DESC, id DESC LIMIT 1`,
+          [trackedSchemaId, orgId]
+        );
+        expected = latest.rows[0]?.snapshot ?? null;
+      }
+      if (expected) {
+        const report = compareSchemas(
+          withoutToolTables(withCurrentNormalization(expected)),
+          live.data
+        );
+        if (driftFingerprint(report) !== shownFingerprint) {
+          await client.query("ROLLBACK");
+          return NextResponse.json(
+            {
+              error:
+                "The live schema has changed since this page read it, so the differences " +
+                "you were shown are out of date. Nothing was saved. Read the differences " +
+                "again, then re-baseline.",
+              code: "stale_view",
+            },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     // Infer the bump from how the live structure moved since the previous HEAD

@@ -49,7 +49,15 @@ describe("renderMigrationScript — header tally", () => {
   });
 
   it("keeps the plain tally when every statement runs", () => {
-    const script = migration(source, target, { allowDataLoss: true });
+    // A column that is plainly not full_name under an old name. A possible
+    // rename would add a MANUAL note, and a note is a statement that never runs.
+    const unlike = schema([
+      table("customers", [
+        column("id", { nullable: false }),
+        column("legacy_code", { typeDisplay: "boolean", nullable: false, columnDefault: "false" }),
+      ]),
+    ]);
+    const script = migration(source, unlike, { allowDataLoss: true });
     expect(statementsThatRun(script)).toHaveLength(script.statements.length);
     const sql = renderMigrationScript(script);
     expect(sql).toMatch(/-- Statements: \d+  \(\d+ breaking · \d+ safe · \d+ info\)/);

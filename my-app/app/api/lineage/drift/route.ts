@@ -8,9 +8,18 @@ import {
   type DriftStatus,
 } from "@/lib/lineage-db";
 import { runDriftCheck } from "@/lib/drift-runner";
+import { driftFingerprint } from "@/lib/drift-fingerprint";
 
 // Re-export so existing callers can keep importing these from here.
 export type { DriftCounts, DriftDetailView };
+
+/**
+ * What GET sends: the detail view, plus a fingerprint of the differences in
+ * its report (null when there is no report). The screen sends it back with a
+ * re-baseline, so the route can tell whether the live schema still shows the
+ * differences the person read.
+ */
+export type DriftDetailAnswer = DriftDetailView & { fingerprint: string | null };
 
 export type DriftCheckResult = {
   trackedSchemaId: number;
@@ -46,7 +55,11 @@ export async function GET(request: NextRequest) {
     if (!view) {
       return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
     }
-    return NextResponse.json(view);
+    const answer: DriftDetailAnswer = {
+      ...view,
+      fingerprint: view.report ? driftFingerprint(view.report) : null,
+    };
+    return NextResponse.json(answer);
   } catch (error) {
     console.error("GET drift detail error:", error);
     return NextResponse.json(

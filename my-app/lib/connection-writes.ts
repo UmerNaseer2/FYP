@@ -16,6 +16,7 @@ import {
 import { deleteLocalSecret, saveLocalSecret } from "@/lib/local-store";
 import { hasPermission } from "@/lib/permissions";
 import { toEnvironment } from "@/lib/environments";
+import { loosenRefusal, loosensExecuteRole, toExecuteRole } from "@/lib/connection-access";
 import {
   UNLABEL_PRODUCTION_PERMISSION,
   lowersProduction,
@@ -29,6 +30,7 @@ import {
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
   summariseErrors,
+  sslModeProblem,
   toSslMode,
   validateConnection,
   type SslMode,
@@ -193,6 +195,10 @@ export async function createConnection(
   principal: Principal,
   body: Record<string, unknown>
 ): Promise<WriteAnswer> {
+  // An ssl_mode nobody knows is refused, never quietly saved as "disable".
+  const sslProblem = sslModeProblem(body.ssl_mode);
+  if (sslProblem) return reply({ error: sslProblem }, { status: 400 });
+
   // Accept either the new three-way mode or the old boolean, so an older client
   // (or a saved bookmarklet/curl) keeps working.
   const ssl_mode: SslMode =
@@ -293,6 +299,9 @@ export async function updateConnection(
     return reply({ error: "A connection id is required." }, { status: 400 });
   }
 
+  const sslProblem = sslModeProblem(body.ssl_mode);
+  if (sslProblem) return reply({ error: sslProblem }, { status: 400 });
+
   const ssl_mode: SslMode =
     body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
       ? toSslMode(body.ssl_mode)
@@ -344,9 +353,10 @@ export async function updateConnection(
       environment: string | null;
       version: number;
       site_id: number | null;
+      execute_role: string | null;
     }>(
       `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode,
-              name, environment, version, site_id
+              name, environment, version, site_id, execute_role
          FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
@@ -389,6 +399,25 @@ export async function updateConnection(
       console.info(
         `Connection ${id} ("${existing.rows[0].name}") in organization ${principal.orgId} ` +
           `relabelled from prod to ${value.environment} by ${principal.email}.`
+      );
+    }
+
+    // "Who may run migrations here" is what holds an Editor back from a
+    // connection marked admins only or read-only. If the same Editor could
+    // loosen it, the setting would stop nobody, so loosening needs the same
+    // permission as taking the Production label off. Making it stricter stays
+    // open to everyone who may edit the connection.
+    const executeRoleBefore = toExecuteRole(existing.rows[0].execute_role);
+    if (loosensExecuteRole(executeRoleBefore, value.execute_role)) {
+      if (!hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)) {
+        return reply(
+          { error: loosenRefusal(existing.rows[0].name, executeRoleBefore) },
+          { status: 403 }
+        );
+      }
+      console.info(
+        `Connection ${id} ("${existing.rows[0].name}") in organization ${principal.orgId}: ` +
+          `who may run migrations changed from ${executeRoleBefore} to ${value.execute_role} by ${principal.email}.`
       );
     }
 
@@ -664,7 +693,8 @@ export async function deleteConnection(
 
     // tracked_schemas deliberately has no foreign key to connections (see the
     // note in lib/lineage-db), so deleting a connection silently orphans every
-    // tracked schema, snapshot and drift event that pointed at it. Saved
+    // tracked schema, snapshot and drift event that pointed at it. Nothing of
+    // that history is removed: it stays, it just can no longer be checked. Saved
     // comparison sets do have one, but it is ON DELETE SET NULL — they survive
     // and keep the label, they just lose the way to reach the database. Either
     // way something the user built stops working, so say what and make them
@@ -685,13 +715,14 @@ export async function deleteConnection(
       }
 
       let error = `"${existing.rows[0].name}" is still used by ${uses.join(" and ")}.`;
-      // Only worth a sentence when there is actually history to lose — "removes
-      // 0 snapshots" reads like a bug, not a warning.
+      // Say what really happens to the history. Deleting the connection removes
+      // only the connection: the tracked schemas and their snapshots stay, but
+      // nothing can reach the database to check them any more.
       if (dependents.snapshots > 0) {
         error +=
-          ` Deleting it also removes ${dependents.snapshots} snapshot` +
-          `${dependents.snapshots === 1 ? "" : "s"} and ` +
-          `${dependents.snapshots === 1 ? "its" : "their"} drift history.`;
+          ` The ${dependents.snapshots} snapshot${dependents.snapshots === 1 ? "" : "s"}` +
+          ` and the drift history are kept, but the tracked` +
+          ` schema${dependents.trackedSchemas === 1 ? "" : "s"} can no longer be checked for drift.`;
       }
       if (dependents.comparisonSets > 0) {
         error +=

@@ -17,15 +17,26 @@ import { isPublicPath } from "../lib/public-paths";
 // decision about a session, not whether NextAuth decodes a cookie correctly;
 // the second needs a real integration test, not a richer mock.
 let mockSession: unknown = null;
+// The real `auth()` also adds cookies to the answer: the session cookie with a
+// later end date, each time it reads a session. A case that cares puts the
+// Set-Cookie lines here.
+let mockAuthCookies: string[] = [];
 jest.mock("next-auth", () => ({
   __esModule: true,
   default: () => ({
     auth:
       (handler: (request: unknown) => Response) =>
-      (request: object) =>
-        handler(Object.assign(request, { auth: mockSession })),
+      (request: object) => {
+        const response = handler(Object.assign(request, { auth: mockSession }));
+        for (const cookie of mockAuthCookies) response.headers.append("set-cookie", cookie);
+        return response;
+      },
   }),
 }));
+
+afterEach(() => {
+  mockAuthCookies = [];
+});
 jest.mock("next-auth/providers/microsoft-entra-id", () => ({
   __esModule: true,
   default: () => ({ id: "microsoft-entra-id" }),
@@ -239,6 +250,38 @@ describe("edge proxy", () => {
       const { proxy } = await loadProxy(desktop);
       expect((await proxy(page())).status).toBe(200);
       expect((await proxy(api())).status).toBe(200);
+    });
+
+    it("never hands the browser a session cookie", async () => {
+      // A request still open when the person pressed Sign out used to come
+      // back with this cookie and sign them in again. Only /api/auth/* may set
+      // it now.
+      mockSession = { user: { email: "someone@example.com" }, expires: "2099-01-01" };
+      mockAuthCookies = [
+        "authjs.session-token=abc.def.ghi; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax",
+        "__Secure-authjs.session-token.1=jkl; Path=/; Max-Age=2592000; HttpOnly; Secure",
+        "authjs.csrf-token=xyz; Path=/; HttpOnly; SameSite=Lax",
+      ];
+      const { proxy } = await loadProxy(desktop);
+      for (const request of [page(), api()]) {
+        const response = await proxy(request);
+        expect(response.status).toBe(200);
+        expect(response.headers.getSetCookie()).toEqual([
+          "authjs.csrf-token=xyz; Path=/; HttpOnly; SameSite=Lax",
+        ]);
+      }
+    });
+
+    it("still passes on a cookie that ends the session", async () => {
+      mockSession = null;
+      mockAuthCookies = [
+        "authjs.session-token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+        "__Secure-authjs.session-token=gone; Path=/; Max-Age=0; HttpOnly; Secure",
+      ];
+      const { proxy } = await loadProxy(desktop);
+      const response = await proxy(page());
+      expect(response.status).toBe(307);
+      expect(response.headers.getSetCookie()).toEqual(mockAuthCookies);
     });
 
     it("says sign-in is not set up in an app built without the two IDs", async () => {

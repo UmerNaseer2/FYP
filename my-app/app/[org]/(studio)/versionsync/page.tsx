@@ -43,7 +43,7 @@ import {
 } from "@/lib/version-timeline";
 import { analyseRunRisk, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
 import { changeLevelWord, normalizeChangeLevel } from "@/lib/change-level";
-import { ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
+import { EXECUTE_CANNOT_BE_READ, ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import { countOf } from "@/lib/plural";
 import { utcStamp } from "@/lib/format-date";
@@ -1288,6 +1288,14 @@ function ReplayBody({
   const louderCount = risk.breaking.filter((b) => b.louderNote !== null).length;
   const dataLossCount = risk.dataLoss.length;
   const dataLossKinds = [...new Set(risk.dataLoss.flatMap((d) => d.kinds))];
+  // "EXECUTE (cannot be read)" is a DO block that runs SQL from a string. That
+  // SQL may delete rows or may not, so it is worded apart from the statements
+  // that do (TRUNCATE, DELETE, a DROP).
+  const namedLossKinds = dataLossKinds.filter((kind) => kind !== EXECUTE_CANNOT_BE_READ);
+  const unreadSql = dataLossKinds.includes(EXECUTE_CANNOT_BE_READ);
+  // False when all that was found is SQL that could not be read: the box then
+  // says "may delete rows", not "deletes rows".
+  const dataLossSure = namedLossKinds.length > 0;
   const unflaggedKinds = dataLossKinds.filter((kind) => ROW_DESTROYING_NOT_BREAKING.includes(kind));
   const mightFailKinds = [...new Set(risk.mightFail.flatMap((m) => m.kinds))].join(", ");
   const enumCount = risk.enumAdditions.length;
@@ -1696,14 +1704,29 @@ function ReplayBody({
           {dataLossCount > 0 && (
             <RiskGate
               tone="break"
-              title={`${dataLossCount} ${dataLossCount === 1 ? "migration deletes" : "migrations delete"} rows`}
+              title={
+                dataLossSure
+                  ? `${dataLossCount} ${dataLossCount === 1 ? "migration deletes" : "migrations delete"} rows`
+                  : `${dataLossCount} ${dataLossCount === 1 ? "migration" : "migrations"} may delete rows`
+              }
               body={
-                `This replay contains ${dataLossKinds.join(", ")}. Those take rows out of a live table, ` +
-                "and no rollback puts them back — a down script rebuilds structure, not data. " +
+                (dataLossSure
+                  ? `This replay contains ${namedLossKinds.join(", ")}. Those take rows out of a live table, ` +
+                    "and no rollback puts them back — a down script rebuilds structure, not data. "
+                  : "") +
+                (unreadSql
+                  ? "Part of the SQL could not be read: an EXECUTE inside a DO block runs SQL " +
+                    "that is put together while it runs. It may delete rows. "
+                  : "") +
+                (dataLossSure ? "" : "No rollback puts deleted rows back: a down script rebuilds structure, not data. ") +
                 unflaggedSentence +
                 "Have a backup you can restore from before running this."
               }
-              ack="I have read these statements and know which rows they delete."
+              ack={
+                dataLossSure
+                  ? "I have read these statements and know which rows they delete."
+                  : "I have read this SQL and know whether it deletes rows."
+              }
               acknowledged={dataLossAck}
               onAcknowledge={setDataLossAck}
             >

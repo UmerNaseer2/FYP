@@ -62,6 +62,17 @@ describe("configIdentity", () => {
     );
   });
 
+  it("keeps two projects on Supabase's shared pooler apart", () => {
+    // A dev project on the pooler must not be taken for a twin of production.
+    const pooler = { host: "aws-0-ap-southeast-2.pooler.supabase.com", port: 6543, database: "postgres" };
+    expect(configIdentity({ ...pooler, user: "postgres.devref" })).not.toBe(
+      configIdentity({ ...pooler, user: "postgres.prodref" })
+    );
+    expect(configIdentity({ ...pooler, user: "app.prodref" })).toBe(
+      configIdentity({ ...pooler, user: "postgres.prodref" })
+    );
+  });
+
   it("is null when the host or the database is missing", () => {
     expect(configIdentity({ host: "", database: "sales" })).toBeNull();
     expect(configIdentity({ host: "db.example.test", database: null })).toBeNull();

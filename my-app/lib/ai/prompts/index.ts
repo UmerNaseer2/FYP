@@ -6,12 +6,12 @@
 // ---------------------------------------------------------------------------
 
 export const PROMPT_VERSIONS = {
-  "compare-summary": 2,
+  "compare-summary": 3,
   "migration-review": 2,
   "drift-explain": 2,
   "drift-oneliner": 2,
   "sql-generate": 3,
-  "schema-chat": 2,
+  "schema-chat": 3,
 } as const;
 
 export type AiFeature = keyof typeof PROMPT_VERSIONS;

@@ -146,6 +146,27 @@ const DENIED_FUNCTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Functions that read a file or a folder on the database server.
+ *
+ * They change nothing, so READ ONLY lets them run, and a superuser (or a role
+ * in pg_read_server_files) can read any file the server can. An analysis is
+ * meant to return a plan and timings, never a server's files, so measured
+ * mode refuses them by name too. The pg_ls_ family (pg_ls_dir, pg_ls_logdir,
+ * pg_ls_waldir and the rest) is matched by the start of its name.
+ */
+const FILE_READING_FUNCTIONS: ReadonlySet<string> = new Set([
+  "pg_read_file",
+  "pg_read_binary_file",
+  "pg_stat_file",
+]);
+const FILE_READING_PREFIX = "pg_ls_";
+
+/** Whether a function called `name` (lower-cased) reads the server's files. */
+function readsServerFiles(name: string): boolean {
+  return FILE_READING_FUNCTIONS.has(name) || name.startsWith(FILE_READING_PREFIX);
+}
+
+/**
  * Whole families refused by the start of their name: every advisory-lock
  * function (pg_advisory_lock, pg_advisory_xact_lock, pg_try_advisory_lock, …),
  * every dblink function (they open a second connection that READ ONLY does not
@@ -180,7 +201,11 @@ function deniedFunctionIn(text: string): string | null {
 
 /** Whether a function called `name` (lower-cased) is one measured mode refuses. */
 function isDenied(name: string): boolean {
-  return DENIED_FUNCTIONS.has(name) || DENIED_PREFIXES.some((p) => name.startsWith(p));
+  return (
+    DENIED_FUNCTIONS.has(name) ||
+    DENIED_PREFIXES.some((p) => name.startsWith(p)) ||
+    readsServerFiles(name)
+  );
 }
 
 /**
@@ -230,8 +255,11 @@ function deniedMessage(name: string, foundIn: "query" | "plan"): string {
     foundIn === "query"
       ? `This query calls ${name}()`
       : `This query ends up calling ${name}() (the plan shows it, for example inside a view the query reads)`;
+  const what = readsServerFiles(name)
+    ? "which reads files on the database server rather than data in tables"
+    : "which acts on the server itself rather than reading data";
   return (
-    `${where}, which acts on the server itself rather than reading data. A ` +
+    `${where}, ${what}. A ` +
     `read-only transaction does not stop that, so it cannot be measured here. ` +
     `Untick Run it and measure to see the plan without running the query.`
   );
@@ -501,6 +529,28 @@ function withStop(text: string): string {
 }
 
 /**
+ * The errors of a measured run whose sentence below is safe to give: they are
+ * about the run itself (read-only, time limit, a lock, a missing permission)
+ * and never carry a value from a row. Every other error of a measured run gets
+ * one fixed sentence. See `source.ran` in describeQueryError.
+ */
+const RUN_ERRORS_SAFE_TO_DESCRIBE: ReadonlySet<string> = new Set([
+  "25006", // tried to write in a read-only transaction
+  "57014", // statement timeout, or cancelled
+  "55P03", // lock not available
+  "42501", // permission denied: names the table or function, not a value
+]);
+
+/** What the commonest value errors of a measured run mean, in fixed words. */
+const RUN_VALUE_PROBLEMS: Record<string, string> = {
+  "22012": "it divided by zero",
+  "22003": "a number was too large or too small for its type",
+  "22P02": "a value could not be read as the type the query asks for (for example text cast to a number)",
+  "22007": "a value could not be read as a date or time",
+  "22008": "a date or time was out of range",
+};
+
+/**
  * Turn a PostgreSQL error into a sentence an IT person can act on.
  *
  * Mapped by SQLSTATE, the stable code PostgreSQL attaches to every error,
@@ -511,17 +561,39 @@ function withStop(text: string): string {
  * `schema` is the one chosen on screen; unqualified names are looked up there
  * and then in public, so a missing table names both. `source` is the query as
  * typed plus the length of the EXPLAIN prefix, for pointing at a line.
+ *
+ * `source.ran` is true when the error came from the measured run, the one that
+ * really runs the query. PostgreSQL has by then read and planned the query
+ * once without complaint, so the error comes from the rows it met, and its
+ * message can quote them: casting a row to a number fails with
+ * `invalid input syntax for type integer: "<the row>"`. An analysis returns a
+ * plan and timings, never row values, so PostgreSQL's text is then left out.
  */
 export function describeQueryError(
   err: QueryError,
   schema: string,
   timeoutSeconds: number,
-  source?: { sql: string; prefixLength: number }
+  source?: { sql: string; prefixLength: number; ran?: boolean }
 ): string {
   const message = err.message;
   const where = locateError(err, source);
   const at = where ? ` (at ${where} of your query)` : "";
   const searched = schema === "public" ? "in public" : `in ${schema} or in public`;
+
+  if (source?.ran && !RUN_ERRORS_SAFE_TO_DESCRIBE.has(err.code ?? "")) {
+    const what =
+      RUN_VALUE_PROBLEMS[err.code ?? ""] ??
+      (err.code?.startsWith("22")
+        ? "a value it read could not be used the way the query asks"
+        : "PostgreSQL stopped it part way");
+    return (
+      `The query failed while it was running: ${what}` +
+      (err.code ? ` (PostgreSQL error code ${err.code})` : "") +
+      `. PostgreSQL's own message is not shown, because it can quote values from ` +
+      `the rows the query read. Untick Run it and measure to see the plan without ` +
+      `running the query.`
+    );
+  }
 
   switch (err.code) {
     case "42P01": {

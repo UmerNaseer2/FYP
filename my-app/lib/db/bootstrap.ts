@@ -579,6 +579,8 @@ async function backfillOlderTables(): Promise<void> {
   );
   // What a computer's own drift checks found, so its person sees them on the website.
   await metadataPool.query(`ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS drift JSONB`);
+  // Who asked for each waiting link, so one caller cannot take every place.
+  await metadataPool.query(`ALTER TABLE agent_links ADD COLUMN IF NOT EXISTS caller_hash TEXT`);
   // On a linked desktop, the website role that caps what its person may do there (lib/site-role.ts).
   await metadataPool.query(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS site_role JSONB`);
 

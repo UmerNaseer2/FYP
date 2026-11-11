@@ -18,6 +18,7 @@ import {
   otherSchemasIn,
   refusedIn,
   requestAsksForDataLoss,
+  sequenceCallIn,
   type TrialHook,
   type TrialOutcome,
 } from "@/lib/ai/features/sql-generate";
@@ -449,6 +450,44 @@ describe("the try on the database", () => {
     const { facts } = withTrial({ status: "failed", step: "rollback", message: "x (SQLSTATE 42P01)." });
     const out = await checkSqlGenerate(answer(), facts);
     expect(out.problems[0]).toContain("the rollback failed after it");
+  });
+
+  test("a script that moves a sequence is shown without being tried", async () => {
+    // A rolled back try would still leave the sequence at its new number.
+    const { calls, facts } = withTrial({ status: "passed" });
+    const out = await checkSqlGenerate(
+      answer({
+        sql: "SELECT setval('books_id_seq', 1000);",
+        rollbackSql: "",
+        summary: "Moves the id counter of `books` to 1000.",
+      }),
+      facts
+    );
+    expect(out.problems).toEqual([]);
+    expect(calls).toHaveLength(0);
+    expect(facts.last?.trial).toEqual({
+      status: "not-tried",
+      reason:
+        "The script calls setval. PostgreSQL does not undo a sequence change when the " +
+        "try is rolled back, so the app did not try this script on the database.",
+    });
+  });
+
+  test("sequenceCallIn finds direct calls and leaves a stored default alone", () => {
+    expect(sequenceCallIn("SELECT setval('s', 5);")).toBe("setval");
+    expect(sequenceCallIn("SELECT pg_catalog.setval('s', 5);")).toBe("setval");
+    expect(sequenceCallIn('SELECT "setval"(\'s\', 5);')).toBe("setval");
+    expect(sequenceCallIn("INSERT INTO books (id) VALUES (nextval('s'));")).toBe("nextval");
+    expect(sequenceCallIn("DO $$ BEGIN PERFORM nextval('s'); END $$;")).toBe("nextval");
+    expect(sequenceCallIn("DO 'BEGIN PERFORM setval(''s'', 5); END';")).toBe("setval");
+    // Only stored, never called by the script itself.
+    expect(sequenceCallIn("CREATE TABLE t (id bigint DEFAULT nextval('s'));")).toBeNull();
+    expect(sequenceCallIn("ALTER TABLE t ALTER COLUMN id SET DEFAULT nextval('s');")).toBeNull();
+    // Adding a column with that default calls nextval for every row already there.
+    expect(sequenceCallIn("ALTER TABLE t ADD COLUMN n bigint DEFAULT nextval('s');")).toBe("nextval");
+    // Words in a string or a comment are not calls.
+    expect(sequenceCallIn("SELECT 'setval(1)'; -- nextval('s')")).toBeNull();
+    expect(sequenceCallIn("ALTER SEQUENCE s RESTART WITH 5;")).toBeNull();
   });
 
   test("a try that could not run is shown, not sent back", async () => {

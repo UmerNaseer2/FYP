@@ -29,8 +29,10 @@ import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
  * it was taken: a list of "long-running queries" with no timestamp on it is a
  * screen that ages into a lie.
  *
- * `schema` is not a filter here — pg_stat_activity is server-wide and a session
- * has no schema. It is carried because the alert threshold for what counts as
+ * `schema` is not a filter here: a session has no schema. The list is the
+ * sessions of the chosen connection's database only (pg_stat_activity covers
+ * the whole server, and lib/db-activity.ts narrows it to current_database()).
+ * `schema` is carried because the alert threshold for what counts as
  * long-running is stored per connection-and-schema, and the screen already has
  * a schema selected.
  */

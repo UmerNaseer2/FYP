@@ -174,11 +174,36 @@ type PushState =
       rollbackLine: string | null;
       rollbackFailed: boolean;
       url: string | null;
+      // The query for the "deploy it" link: the target, script and version
+      // that were pushed. Empty when the target has no saved connection.
+      deployQuery: string;
     }
   // offerNext: the server said the number was taken, so offer the next free
   // one. suggested: the number the server's message names, to spot when
   // GitHub moved on again before the re-read came back.
   | { kind: "err"; message: string; offerNext: boolean; suggested: string | null };
+
+/**
+ * The query string that opens the Deploy page on what was just pushed, so the
+ * person does not have to pick the connection, schema and script group again.
+ * The Deploy page reads these four names from the address. Without a saved
+ * connection there is nothing to pick for them, so the link stays plain.
+ */
+function deployLinkQuery(
+  connectionId: number | null,
+  schema: string,
+  scriptName: string,
+  version: string
+): string {
+  if (connectionId === null) return "";
+  const params = new URLSearchParams({
+    connection: String(connectionId),
+    schema,
+    script: scriptName,
+    version,
+  });
+  return `?${params.toString()}`;
+}
 
 /** The last push that saved a version, as it was sent. */
 type PushedVersion = {
@@ -522,6 +547,9 @@ export function MigrationWorkbench({
     const sentSql = sql;
     const sentDown = downSql;
     const where = `${targetDatabase}/${targetSchema}/${scriptName}`;
+    const sentConnectionId = targetConnectionId;
+    const sentSchema = targetSchema;
+    const sentName = scriptName;
     setPush({ kind: "pushing" });
     // The last offer's outcome was about the version pushed before this one.
     setAttach(null);
@@ -583,6 +611,7 @@ export function MigrationWorkbench({
     const saved = typeof data.version === "string" ? data.version : version;
     learn(sentKey, saved);
     const url = typeof data.url === "string" ? data.url : null;
+    const deployQuery = deployLinkQuery(sentConnectionId, sentSchema, sentName, saved);
     if (sentDown === undefined) {
       setLastPushed({ key: sentKey, sql: sentSql, version: saved, sentDown: null, hasRollback: false });
       setPush({
@@ -593,6 +622,7 @@ export function MigrationWorkbench({
         rollbackLine: "No rollback was saved, so Deploy cannot undo this version.",
         rollbackFailed: false,
         url,
+        deployQuery,
       });
     } else if (data.rollback_saved === true) {
       setLastPushed({ key: sentKey, sql: sentSql, version: saved, sentDown, hasRollback: true });
@@ -604,6 +634,7 @@ export function MigrationWorkbench({
         rollbackLine: null,
         rollbackFailed: false,
         url,
+        deployQuery,
       });
     } else {
       // The version is saved; only its rollback is not. The offer below Push
@@ -624,6 +655,7 @@ export function MigrationWorkbench({
         rollbackLine: data.rollback_error ?? `Its rollback was not saved, so Deploy cannot undo v${saved} yet.`,
         rollbackFailed: true,
         url,
+        deployQuery,
       });
     }
   }
@@ -1210,7 +1242,10 @@ export function MigrationWorkbench({
                           while something better is one button away. */}
                       {!push.rollbackFailed && (
                         <div className="mt-1">
-                          <Link href={orgPath("/deploy")} style={{ color: "var(--brand)", textDecoration: "underline" }}>
+                          <Link
+                            href={orgPath(`/deploy${push.deployQuery}`)}
+                            style={{ color: "var(--brand)", textDecoration: "underline" }}
+                          >
                             Nothing has run yet — deploy it
                           </Link>
                           {" "}on the Deploy page.

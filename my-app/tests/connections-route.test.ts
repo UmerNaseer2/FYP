@@ -139,6 +139,22 @@ describe("PUT /api/connections — a kept password stays where it was", () => {
     }
   });
 
+  it("refuses an ssl_mode it does not know, on edit and on create, and saves nothing", async () => {
+    // "required" is a typo and "prefer" is PostgreSQL's own word: neither may
+    // be quietly saved as "disable", which would turn encryption off.
+    for (const mode of ["required", "prefer"]) {
+      setUp();
+      const edited = await put({ ...EDIT, password: "typed-again", ssl_mode: mode });
+      expect(edited.status).toBe(400);
+      expect(edited.body.error).toMatch(/ssl_mode must be one of/);
+      expect(updated()).toBe(false);
+
+      const created = await post({ ...EDIT, id: undefined, password: "typed-again", ssl_mode: mode });
+      expect(created.status).toBe(400);
+      expect(created.body.error).toMatch(/ssl_mode must be one of/);
+    }
+  });
+
   it("saves a new host when the password is typed again", async () => {
     setUp();
     const result = await put({ ...EDIT, host: "db2.internal.example.com", password: "typed-again" });
@@ -403,6 +419,98 @@ describe("connections inside the caller's organization", () => {
     expect(result.status).toBe(200);
     expect(mockDependents).toHaveBeenCalledWith(TEST_ORG.id, 4);
     expect(statements(/DELETE FROM connections/)[0][1]).toEqual([4, TEST_ORG.id, null]);
+  });
+
+  // The delete removes only the connection row. The tracked schemas and their
+  // snapshots stay behind, so the warning must not say they are removed.
+  it("says the snapshots are kept when it asks to confirm a delete", async () => {
+    setUpTwoOrgs();
+    mockDependents.mockResolvedValueOnce({
+      trackedSchemas: 1,
+      schemaNames: ["public"],
+      snapshots: 3,
+      comparisonSets: 0,
+      comparisonSetNames: [],
+    });
+    const result = await remove({ id: 4 });
+    expect(result.status).toBe(409);
+    expect(result.body.needsConfirmation).toBe(true);
+    expect(result.body.error).toBe(
+      '"Production" is still used by 1 tracked schema. The 3 snapshots and the drift history ' +
+        "are kept, but the tracked schema can no longer be checked for drift."
+    );
+    expect(statements(/DELETE FROM connections/)).toHaveLength(0);
+  });
+});
+
+// "Who may run migrations here" holds an Editor back from a connection marked
+// admins only or read-only. An Editor who could loosen it would switch it off
+// and run anyway, so loosening needs the permission that approves production
+// deploys. Making it stricter stays open to every editor.
+describe("loosening who may run migrations on a connection", () => {
+  let infoSpy: jest.SpyInstance;
+
+  function setUpSetting(execute_role: string | null) {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockImplementation(async (text: string) => {
+      if (/SELECT password, connection_string/.test(text)) {
+        return { rows: [{ ...SAVED, name: "Sales", environment: "staging", execute_role }] };
+      }
+      if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Sales" }] };
+      return { rows: [], rowCount: 1 };
+    });
+  }
+
+  beforeEach(() => {
+    infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    mockRole = "editor";
+    infoSpy.mockRestore();
+  });
+
+  it.each([
+    ["admin", "editor"],
+    ["none", "editor"],
+    ["none", "admin"],
+  ])("refuses an editor who changes it from %s to %s, and saves nothing", async (before, after) => {
+    setUpSetting(before);
+    const result = await put({ ...EDIT, execute_role: after });
+    expect(result.status).toBe(403);
+    expect(result.body.error).toMatch(/can loosen who may run migrations on "Sales"/);
+    expect(updated()).toBe(false);
+  });
+
+  it("refuses an editor whose request leaves the setting out, because that would reset it", async () => {
+    setUpSetting("admin");
+    const result = await put({ ...EDIT });
+    expect(result.status).toBe(403);
+    expect(updated()).toBe(false);
+  });
+
+  it("lets an admin loosen it, and logs who did", async () => {
+    mockRole = "admin";
+    setUpSetting("admin");
+    const result = await put({ ...EDIT, execute_role: "editor" });
+    expect(result.status).toBe(200);
+    expect(updated()).toBe(true);
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/who may run migrations changed from admin to editor by admin@test/)
+    );
+  });
+
+  it.each([
+    ["editor", "admin"],
+    ["editor", "none"],
+    ["admin", "none"],
+    ["admin", "admin"],
+    [null, "editor"],
+  ])("lets an editor keep it or make it stricter (%s to %s), with nothing logged", async (before, after) => {
+    setUpSetting(before);
+    const result = await put({ ...EDIT, execute_role: after });
+    expect(result.status).toBe(200);
+    expect(updated()).toBe(true);
+    expect(infoSpy).not.toHaveBeenCalled();
   });
 });
 

@@ -11,17 +11,18 @@ import { metadataWantsSsl } from "./metadata-ssl";
  *
  *   • This database — connections, snapshots, lineage, drift, comparison sets,
  *     approvals, profiles. A fixed schema the app owns. Sequelize defines those
- *     tables (lib/db/models.ts), creates them, and does the reading and writing.
+ *     tables (lib/db/models.ts), creates them, and owns the connection pool.
  *
  *   • The databases being COMPARED and DEPLOYED to. Arbitrary schemas the app
  *     has never seen, read out of pg_catalog and changed with generated DDL.
  *     There is nothing for an ORM to model there, so lib/postgres.ts keeps
  *     talking to them with the driver directly.
  *
- * A handful of metadata reads are genuinely SQL — a recursive walk up a lineage,
- * an advisory lock, an aggregate feed. Those stay as SQL and run through
- * `metadataPool` below, which borrows a connection from this same Sequelize
- * pool. One pool, one place that knows the connection string.
+ * The reading and writing of those tables is not done through the models. Every
+ * read and write is parameterised SQL (`$1` placeholders, never values pasted
+ * into the text) run through `metadataPool` below, which borrows a connection
+ * from this same Sequelize pool. One pool, one place that knows the connection
+ * string.
  */
 
 declare global {
@@ -42,6 +43,22 @@ if (!connectionString) {
 }
 
 /**
+ * Time limits for this pool. Without them a database that is paused, or a
+ * network that drops packets, leaves every page waiting: the driver has no
+ * limit of its own on a connect or on a statement.
+ *
+ *  - CONNECT: how long opening one connection may take.
+ *  - QUERY: how long one statement may take. The driver counts this itself
+ *    rather than asking the server to (statement_timeout), because a server-side
+ *    setting sent at connect time is refused by some connection poolers.
+ *  - ACQUIRE: how long a caller waits for one of the pool's connections.
+ *    Longer than CONNECT, so a failed connect is reported as what it is.
+ */
+export const METADATA_CONNECT_TIMEOUT_MS = 10_000;
+export const METADATA_QUERY_TIMEOUT_MS = 60_000;
+export const METADATA_ACQUIRE_TIMEOUT_MS = 15_000;
+
+/**
  * Hosted Postgres (Supabase, Neon, RDS) requires SSL but commonly presents a
  * cert chain the runtime doesn't trust, so when SSL is on, accept the cert
  * without local CA verification, the same thing lib/connection-config.ts does
@@ -56,10 +73,16 @@ function createSequelize(): Sequelize {
     // see it — Sequelize's own `require("pg")` is invisible to Turbopack.
     dialectModule: pg,
     logging: false,
-    dialectOptions: metadataWantsSsl(connectionString!)
-      ? { ssl: { require: true, rejectUnauthorized: false } }
-      : {},
-    pool: { max: 5, idle: 10_000 },
+    dialectOptions: {
+      ...(metadataWantsSsl(connectionString!)
+        ? { ssl: { require: true, rejectUnauthorized: false } }
+        : {}),
+      connectionTimeoutMillis: METADATA_CONNECT_TIMEOUT_MS,
+      query_timeout: METADATA_QUERY_TIMEOUT_MS,
+      // Lets the operating system notice a server that has gone silent.
+      keepAlive: true,
+    },
+    pool: { max: 5, idle: 10_000, acquire: METADATA_ACQUIRE_TIMEOUT_MS },
     define: {
       // The tables predate this file and are named the way SQL names things.
       // Sequelize would otherwise pluralise and camel-case them out from under
@@ -113,6 +136,30 @@ function giveBack(connection: PoolClient): void {
   sequelize.connectionManager.releaseConnection(connection as unknown as object);
 }
 
+/** The driver's error when a statement outlives METADATA_QUERY_TIMEOUT_MS. */
+function isQueryTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === "Query read timeout";
+}
+
+/**
+ * Close a connection instead of handing it back.
+ *
+ * For a connection whose statement timed out. The driver stops waiting, but the
+ * server may still be running the statement, and the connection can carry
+ * nothing else until it ends. Handed back, it would make the next caller wait
+ * behind it and time out too. Closing it lets the pool open a fresh one.
+ */
+async function closeStuck(connection: PoolClient): Promise<void> {
+  try {
+    await sequelize.connectionManager.destroyConnection(connection as unknown as object);
+  } catch (error) {
+    console.error(
+      "Metadata database: could not close a timed-out connection:",
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
 /**
  * Drop-in for a `pg.Pool`: the shape the metadata SQL was written against, over
  * Sequelize's pool. Kept deliberately small — `query` for one statement and
@@ -130,10 +177,15 @@ export const metadataPool = {
     values?: unknown[]
   ): Promise<QueryResult<R>> {
     const connection = await borrow();
+    let timedOut = false;
     try {
       return await connection.query<R>(text, values as unknown[] | undefined);
+    } catch (error) {
+      timedOut = isQueryTimeout(error);
+      throw error;
     } finally {
-      giveBack(connection);
+      if (timedOut) await closeStuck(connection);
+      else giveBack(connection);
     }
   },
 
@@ -144,13 +196,23 @@ export const metadataPool = {
   async connect(): Promise<MetadataClient> {
     const connection = await borrow();
     let released = false;
+    let timedOut = false;
     return {
-      query: (text, values) => connection.query(text, values as unknown[] | undefined),
+      query: async (text, values) => {
+        try {
+          return await connection.query(text, values as unknown[] | undefined);
+        } catch (error) {
+          if (isQueryTimeout(error)) timedOut = true;
+          throw error;
+        }
+      },
       release: () => {
         // Releasing twice would return someone else's connection to the pool.
         if (released) return;
         released = true;
-        giveBack(connection);
+        // closeStuck never rejects, so there is nothing to wait for here.
+        if (timedOut) void closeStuck(connection);
+        else giveBack(connection);
       },
     };
   },

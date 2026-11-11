@@ -220,15 +220,17 @@ function normalizeType(typeDisplay: string): string {
 }
 
 // Pulls out just the base type name, stripping any size or precision in parentheses.
+// Only the bracketed part is removed. What follows it is part of the type: the
+// time zone words of a timestamp and the [] of an array both come after the size.
 // Examples:
-//   "character varying(100)"  →  "character varying"
-//   "numeric(10,2)"           →  "numeric"
-//   "integer"                 →  "integer"
+//   "character varying(100)"       →  "character varying"
+//   "numeric(10,2)"                →  "numeric"
+//   "integer"                      →  "integer"
+//   "timestamp(3) with time zone"  →  "timestamp with time zone"
+//   "character varying(10)[]"      →  "character varying[]"
 export function extractBaseType(typeDisplay: string): string {
   const normalized = normalizeType(typeDisplay);
-  const parenIndex = normalized.indexOf("(");
-  if (parenIndex === -1) return normalized;
-  return normalized.slice(0, parenIndex).trim();
+  return normalized.replace(/\s*\([^)]*\)/, "").trim();
 }
 
 // Pulls the numeric size/precision parameters out of a type display.
@@ -454,13 +456,46 @@ function columnOrderSimilarity(
   return Math.max(0, 1 - diff * 2);
 }
 
-// A serial/identity column's default is `nextval('<schema>.<seq>'::regclass)`.
-// The sequence name embeds the schema, so it differs across two schemas being
-// compared even when the columns are logically identical — comparing it would
-// manufacture false "default changed" noise. Such columns are excluded from the
-// default diff (their identity is reproduced via GENERATED ... AS IDENTITY).
+// True for a default that reads a sequence: `nextval('<seq>'::regclass)`.
+// On its own this does NOT make the column a serial: see serialSides below.
 function isNextvalDefault(defaultValue: string | null): boolean {
   return defaultValue !== null && /^\s*nextval\s*\(/i.test(defaultValue);
+}
+
+/**
+ * Which of two matched columns is a serial.
+ *
+ * A serial is a column whose nextval default reads a sequence the column itself
+ * OWNS. The snapshot puts `sequenceOptions` on a column exactly when the catalog
+ * says it owns a sequence, and null when it owns none, so that is the test.
+ *
+ * The sequence of a serial is named after its table, so its name differs after
+ * a table rename and is left out of the comparison. A nextval default on a
+ * sequence the column does not own (a standalone one, often shared by several
+ * tables) is an ordinary default: which sequence it names matters, and it is
+ * compared as text like every other default. Calling both of them "serial"
+ * reported two columns reading different sequences as identical.
+ *
+ * `undefined` means the snapshot was taken before ownership was read, so it
+ * cannot say. When either side cannot say, both fall back to the old reading
+ * (any nextval default is a serial) so an old snapshot does not show a change
+ * that is only missing information.
+ *
+ * Exported because the migration generator has to use the same rule.
+ */
+export function serialSides(
+  left: ColumnSnapshot,
+  right: ColumnSnapshot
+): { left: boolean; right: boolean } {
+  const leftNextval = isNextvalDefault(left.columnDefault);
+  const rightNextval = isNextvalDefault(right.columnDefault);
+  const ownershipKnown =
+    left.sequenceOptions !== undefined && right.sequenceOptions !== undefined;
+  if (!ownershipKnown) return { left: leftNextval, right: rightNextval };
+  return {
+    left: leftNextval && left.sequenceOptions !== null,
+    right: rightNextval && right.sequenceOptions !== null,
+  };
 }
 
 /**
@@ -476,13 +511,15 @@ function isNextvalDefault(defaultValue: string | null): boolean {
  * `identity: undefined` means the snapshot predates the field, so it cannot
  * rule identity out. A nextval default still proves serial in that case; the
  * absence of one proves nothing, hence null.
+ *
+ * `serial` is this column's answer from serialSides.
  */
-function describeGenerated(column: ColumnSnapshot): string | null {
+function describeGenerated(column: ColumnSnapshot, serial: boolean): string | null {
   if (column.identity === undefined) {
-    return isNextvalDefault(column.columnDefault) ? "serial" : null;
+    return serial ? "serial" : null;
   }
   if (column.identity) return `GENERATED ${column.identity} AS IDENTITY`;
-  return isNextvalDefault(column.columnDefault) ? "serial" : "none";
+  return serial ? "serial" : "none";
 }
 
 /**
@@ -493,13 +530,12 @@ function describeGenerated(column: ColumnSnapshot): string | null {
  * (the expression is moved out of columnDefault at capture), so without this a
  * table where one side computes a column and the other stores it would report
  * "Default changed from none to …" on top of the real change.
+ *
+ * `serial` is this column's answer from serialSides. A nextval default on a
+ * sequence the column does not own is a plain default and is not counted here.
  */
-function isGeneratedColumn(column: ColumnSnapshot): boolean {
-  return (
-    Boolean(column.identity) ||
-    Boolean(column.generated) ||
-    isNextvalDefault(column.columnDefault)
-  );
+function isGeneratedColumn(column: ColumnSnapshot, serial: boolean): boolean {
+  return Boolean(column.identity) || Boolean(column.generated) || serial;
 }
 
 /**
@@ -883,6 +919,36 @@ export function objectDiffSeverity(diff: ObjectDiff): ChangeSeverity {
   return diff.severity;
 }
 
+// The four parts of a column pair's score, before rounding. compareColumnPair
+// and columnPairScore both start here, so the two can never drift apart.
+function columnScoreParts(
+  leftTable: TableSnapshot,
+  leftColumn: ColumnSnapshot,
+  rightTable: TableSnapshot,
+  rightColumn: ColumnSnapshot
+): { name: number; type: number; constraints: number; order: number } {
+  return {
+    name: stringSimilarity(leftColumn.name, rightColumn.name) * WEIGHTS.column.name,
+    type: typeScore(leftColumn.typeDisplay, rightColumn.typeDisplay),
+    constraints: columnConstraintSimilarity(leftColumn, rightColumn) * WEIGHTS.column.constraints,
+    order: columnOrderSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.order,
+  };
+}
+
+// Only the score of a column pair, the same number compareColumnPair gives.
+// Rename matching scores every column of every leftover table against every
+// column of every leftover table on the other side. It needs the number and
+// nothing else, so this skips the list of changes compareColumnPair builds.
+function columnPairScore(
+  leftTable: TableSnapshot,
+  leftColumn: ColumnSnapshot,
+  rightTable: TableSnapshot,
+  rightColumn: ColumnSnapshot
+): number {
+  const parts = columnScoreParts(leftTable, leftColumn, rightTable, rightColumn);
+  return roundScore(parts.name + parts.type + parts.constraints + parts.order);
+}
+
 function compareColumnPair(
   leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,
@@ -905,10 +971,7 @@ function compareColumnPair(
   // Type is the heaviest signal because changing a type is usually a breaking
   // database change. Order is the lightest because column reordering is usually
   // cosmetic and should not drag down the overall match score.
-  const name        = stringSimilarity(leftColumn.name, rightColumn.name) * WEIGHTS.column.name;
-  const type        = typeScore(leftColumn.typeDisplay, rightColumn.typeDisplay);
-  const constraints = columnConstraintSimilarity(leftColumn, rightColumn) * WEIGHTS.column.constraints;
-  const order       = columnOrderSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.order;
+  const { name, type, constraints, order } = columnScoreParts(leftTable, leftColumn, rightTable, rightColumn);
 
   const changes: ColumnChange[] = [];
 
@@ -981,8 +1044,9 @@ function compareColumnPair(
   // serial columns in different schemas have different sequence NAMES in their
   // defaults, so the raw text always differs — and serial versus identity is a
   // real change that the default text describes badly.
-  const leftGenerated = describeGenerated(leftColumn);
-  const rightGenerated = describeGenerated(rightColumn);
+  const serial = serialSides(leftColumn, rightColumn);
+  const leftGenerated = describeGenerated(leftColumn, serial.left);
+  const rightGenerated = describeGenerated(rightColumn, serial.right);
   if (leftGenerated !== null && rightGenerated !== null && leftGenerated !== rightGenerated) {
     changes.push({
       kind: "generated",
@@ -1022,8 +1086,12 @@ function compareColumnPair(
   // qualifier stripped at snapshot time), so a plain text compare is safe. It is
   // skipped whenever either side generates its own values, because there the
   // "default" is just the generator showing through and the line above already
-  // reported it.
-  if (!isGeneratedColumn(leftColumn) && !isGeneratedColumn(rightColumn)) {
+  // reported it. Two nextval defaults on sequences their columns do not own are
+  // plain defaults, so they are compared here: they name different sequences.
+  if (
+    !isGeneratedColumn(leftColumn, serial.left) &&
+    !isGeneratedColumn(rightColumn, serial.right)
+  ) {
     const leftDefault = leftColumn.columnDefault?.trim() || null;
     const rightDefault = rightColumn.columnDefault?.trim() || null;
     if (leftDefault !== rightDefault) {
@@ -1102,23 +1170,19 @@ function pairwiseAverageBestScore(
 ): number {
   if (leftTable.columns.length === 0 && rightTable.columns.length === 0) return 1;
 
-  const leftScores = leftTable.columns.map((leftColumn) =>
-    Math.max(
-      0,
-      ...rightTable.columns.map(
-        (rightColumn) => compareColumnPair(leftTable, leftColumn, rightTable, rightColumn).score / COLUMN_TOTAL_WEIGHT
-      )
-    )
-  );
+  // The best score each column finds on the other side. Every pair is scored
+  // once and the one number counts for both of its columns.
+  const leftScores = leftTable.columns.map(() => 0);
+  const rightScores = rightTable.columns.map(() => 0);
 
-  const rightScores = rightTable.columns.map((rightColumn) =>
-    Math.max(
-      0,
-      ...leftTable.columns.map(
-        (leftColumn) => compareColumnPair(leftTable, leftColumn, rightTable, rightColumn).score / COLUMN_TOTAL_WEIGHT
-      )
-    )
-  );
+  leftTable.columns.forEach((leftColumn, leftIndex) => {
+    rightTable.columns.forEach((rightColumn, rightIndex) => {
+      const score =
+        columnPairScore(leftTable, leftColumn, rightTable, rightColumn) / COLUMN_TOTAL_WEIGHT;
+      if (score > leftScores[leftIndex]) leftScores[leftIndex] = score;
+      if (score > rightScores[rightIndex]) rightScores[rightIndex] = score;
+    });
+  });
 
   return average([...leftScores, ...rightScores]);
 }
@@ -1323,6 +1387,45 @@ function compareTablePair(
   const score = maxTotal === 0 ? 0 : (rawTotal * 100) / maxTotal;
 
   return { score: roundScore(score), breakdown };
+}
+
+// ============================================================================
+// A limit on table rename matching
+// ============================================================================
+
+// Rename matching scores every leftover table on one side against every
+// leftover table on the other, and inside each pair every column against every
+// column. The work grows with tables x tables x columns x columns, and it all
+// runs in one go, so nothing else on the server is answered until it is done.
+// Two unrelated schemas of 100 tables with 20 columns each took over a minute.
+//
+// Past these limits the engine does not look for renamed tables at all. Tables
+// with the same name on both sides are never part of this: they are matched by
+// name first, however many there are. At the limits the scoring takes a second
+// or two.
+const RENAME_MATCH_MAX_TABLE_PAIRS = 10_000;
+const RENAME_MATCH_MAX_COLUMN_PAIRS = 500_000;
+
+function renameMatchingTooBig(leftTables: TableSnapshot[], rightTables: TableSnapshot[]): boolean {
+  const countColumns = (tables: TableSnapshot[]) =>
+    tables.reduce((sum, t) => sum + t.columns.length, 0);
+
+  return (
+    leftTables.length * rightTables.length > RENAME_MATCH_MAX_TABLE_PAIRS ||
+    countColumns(leftTables) * countColumns(rightTables) > RENAME_MATCH_MAX_COLUMN_PAIRS
+  );
+}
+
+/**
+ * True when a compare was too big to look for renamed tables, so a table that
+ * was only renamed is listed as one table to create and one to drop.
+ *
+ * Read off the report itself: when matching is skipped, every leftover table
+ * lands in the two "only in" lists, so the lists are over the limit. When it
+ * runs, the leftovers were under the limit and the lists can only be smaller.
+ */
+export function renameMatchingSkipped(report: CompareReport): boolean {
+  return renameMatchingTooBig(report.tablesOnlyInA, report.tablesOnlyInB);
 }
 
 // ============================================================================
@@ -2805,19 +2908,24 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
   const leftForSimilarity  = left.tables.filter((t) => !rightByName.has(normalizeIdentifier(t.name)));
   const rightForSimilarity = right.tables.filter((t) => !matchedRightNames.has(normalizeIdentifier(t.name)));
 
-  const similarityResults = getBestMatches(
-    leftForSimilarity,
-    rightForSimilarity,
-    (leftTable, rightTable) => compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming, left.schema, right.schema),
-    TABLE_MATCH_ACCEPT_THRESHOLD,
-    TABLE_MATCH_POSSIBLE_THRESHOLD,
-    "table",
-    (t) => t.name,
-    (t) => t.name,
-    // Auto-accept a rename only when the names are nearly the same; otherwise
-    // surface it as a review candidate (issue #7, see NAME_SIMILARITY_FLOOR).
-    (leftTable, rightTable) => nameRenameGuard(leftTable.name, rightTable.name)
-  );
+  // Two big schemas with little in common leave too many pairs to score (see
+  // RENAME_MATCH_MAX_TABLE_PAIRS). No renames are looked for then: every
+  // leftover table is listed as only in its own schema.
+  const similarityResults = renameMatchingTooBig(leftForSimilarity, rightForSimilarity)
+    ? { accepted: [], possible: [], leftOnly: leftForSimilarity, rightOnly: rightForSimilarity }
+    : getBestMatches(
+        leftForSimilarity,
+        rightForSimilarity,
+        (leftTable, rightTable) => compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming, left.schema, right.schema),
+        TABLE_MATCH_ACCEPT_THRESHOLD,
+        TABLE_MATCH_POSSIBLE_THRESHOLD,
+        "table",
+        (t) => t.name,
+        (t) => t.name,
+        // Auto-accept a rename only when the names are nearly the same; otherwise
+        // surface it as a review candidate (issue #7, see NAME_SIMILARITY_FLOOR).
+        (leftTable, rightTable) => nameRenameGuard(leftTable.name, rightTable.name)
+      );
 
   for (const match of similarityResults.accepted) {
     matchedTables.push(compareMatchedTables(match.left, match.right, match.score, false, match.breakdown, left.schema, right.schema));

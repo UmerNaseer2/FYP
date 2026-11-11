@@ -24,7 +24,13 @@
  * The module holds the SQL and the shaping. The route opens the connection.
  */
 
-/** A session's own connection is never reported — it would always be the newest. */
+/**
+ * A session's own connection is never reported: it would always be the newest.
+ *
+ * Only sessions of the database this connection is in are listed. The view
+ * covers every database on the server, and the screen says "on <database>",
+ * so a statement running in another database must not appear under this one.
+ */
 export const ACTIVITY_SQL = `
   SELECT
     pid,
@@ -42,6 +48,7 @@ export const ACTIVITY_SQL = `
     EXTRACT(EPOCH FROM (now() - state_change))     AS state_seconds
   FROM pg_stat_activity
   WHERE pid <> pg_backend_pid()
+    AND datname = current_database()
     AND backend_type = 'client backend'
     AND state IS NOT NULL
     AND state <> 'idle'
@@ -59,6 +66,8 @@ export const ACTIVITY_SQL = `
  * cancelled. pg_cancel_backend leaves the session connected. There is no
  * terminate here on purpose: ending a session rolls back its work and takes
  * its connection away, which is not a thing to do from a phone.
+ *
+ * Like the list, it reaches only sessions of this connection's own database.
  */
 export const CANCEL_SQL = `
   SELECT pg_cancel_backend(pid) AS cancelled
@@ -66,6 +75,7 @@ export const CANCEL_SQL = `
    WHERE pid = $1
      AND query_start = $2::timestamptz
      AND pid <> pg_backend_pid()
+     AND datname = current_database()
      AND backend_type = 'client backend'
      AND state = 'active'
 `;

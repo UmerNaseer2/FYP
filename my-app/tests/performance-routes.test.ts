@@ -172,6 +172,35 @@ describe("POST /api/performance/analyze", () => {
     expect(client.releasedWith).toBe(true);
   });
 
+  it("does not pass on a row value that a failed measured run quotes", async () => {
+    target([
+      {
+        match: /^EXPLAIN \(ANALYZE/,
+        error: {
+          code: "22P02",
+          message: 'invalid input syntax for type integer: "ben@example.com"',
+        },
+      },
+      ...PLANS,
+    ]);
+    const res = await analyze("SELECT (SELECT email FROM customers LIMIT 1)::int", true);
+
+    expect(res.status).toBe(400);
+    const text = JSON.stringify(await res.json());
+    expect(text).not.toContain("ben@example.com");
+    expect(text).toContain("PostgreSQL error code 22P02");
+  });
+
+  it("keeps PostgreSQL's words when the plain estimate fails, even with measuring ticked", async () => {
+    target([
+      { match: /^EXPLAIN/, error: { code: "42P01", message: 'relation "orderz" does not exist' } },
+    ]);
+    const res = await analyze("SELECT id FROM orderz", true);
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain("orderz");
+  });
+
   it("closes the connection too when the measured run fails partway", async () => {
     const client = target([
       {
@@ -291,6 +320,45 @@ describe("GET /api/performance/advice", () => {
     attached_example: { schema: "shop", name: "events_2025_k_idx" },
     top_index: null,
   };
+
+  it("does not suggest an index that copies a table's primary key", async () => {
+    // order_items has PRIMARY KEY (order_id, product_id) and no other index,
+    // and two analysed queries looked rows up by both columns.
+    mockFetchSchemaSnapshot.mockResolvedValue({
+      ok: true,
+      data: {
+        ...SNAPSHOT,
+        tables: [
+          {
+            ...SNAPSHOT.tables[0],
+            name: "order_items",
+            primaryKey: {
+              name: "order_items_pkey",
+              kind: "PRIMARY KEY",
+              columns: ["order_id", "product_id"],
+              definition: "PRIMARY KEY (order_id, product_id)",
+              normalizedDefinition: "PRIMARY KEY (order_id, product_id)",
+            },
+            indexes: [],
+          },
+        ],
+      },
+    });
+    const search = [{ table: "order_items", equality: ["order_id", "product_id"], range: null }];
+    mockPoolQuery.mockImplementation(async (text: unknown) =>
+      /FROM query_history/.test(String(text))
+        ? { rows: [{ fingerprint: "q1", searched_columns: search }, { fingerprint: "q2", searched_columns: search }] }
+        : { rows: [ROW] }
+    );
+    target(statsSteps([]));
+
+    const res = await advise();
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.patternsUnavailable ?? null).toBeNull();
+    expect(idsIn(body)).not.toContain("composite-index-pattern");
+  });
 
   /** Pass two's reads, with `invalid` as the list of invalid indexes. */
   function statsSteps(invalid: Record<string, unknown>[]): FakeStep[] {

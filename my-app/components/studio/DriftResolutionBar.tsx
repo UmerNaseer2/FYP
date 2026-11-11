@@ -16,7 +16,10 @@ type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
  *   • Author a migration — opens Compare with this live schema preloaded (the
  *     bridge to the existing author flow; no fabricated migration is created).
  *   • Re-baseline to live — POST /api/lineage/rebaseline behind a confirm; it
- *     accepts the current structure as the new expected snapshot.
+ *     accepts the current structure as the new expected snapshot. It sends the
+ *     fingerprint of the differences on screen, and the route refuses when the
+ *     live schema no longer shows those: the person agreed to the diff they
+ *     read, not to whatever is live at the click.
  *   • Acknowledge — POST /api/lineage/acknowledge; records the drift as reviewed
  *     without changing the database.
  *   • Re-check — re-runs the drift check (shared RecheckDriftButton island).
@@ -33,11 +36,18 @@ export function DriftResolutionBar({
   trackedSchemaId,
   state,
   compareHref,
+  shownFingerprint = null,
   onDone,
 }: {
   trackedSchemaId: number;
   state: DriftState;
   compareHref: string | null;
+  /**
+   * Which differences the screen is showing (from GET /api/lineage/drift).
+   * Null when the caller shows no diff: the re-baseline is then not checked
+   * against one.
+   */
+  shownFingerprint?: string | null;
   /** Make the screen re-read after any of the writes below. */
   onDone: () => void;
 }) {
@@ -69,11 +79,19 @@ export function DriftResolutionBar({
       const res = await apiFetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackedSchemaId }),
+        // Only a re-baseline says which differences were on screen.
+        body: JSON.stringify(
+          kind === "rebaseline" && shownFingerprint !== null
+            ? { trackedSchemaId, shownFingerprint }
+            : { trackedSchemaId }
+        ),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.success) {
         setError(data?.error ?? "Action failed.");
+        // The live schema moved after the screen read it. Nothing was saved;
+        // read it again so the differences on screen are the current ones.
+        if (data?.code === "stale_view") onDone();
         return;
       }
       onDone();

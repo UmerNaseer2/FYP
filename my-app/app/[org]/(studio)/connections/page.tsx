@@ -380,6 +380,8 @@ export default function ConnectionsPage() {
   const appTableId = useId();
   const localOnlyId = useId();
   const executeRoleId = useId();
+  // The start of the id of every field in the drawer (see fieldProps below).
+  const formId = useId();
   useDialogFocus(drawerOpen, drawerRef);
   useDialogFocus(deleteTarget !== null, deleteRef);
   // Set once the API has told us the connection is still in use; the next press
@@ -799,6 +801,24 @@ export default function ConnectionsPage() {
     }
   }
 
+  // What ties one drawer field to its label (the id) and, when Save found a
+  // problem with it, to the message under it.
+  function fieldProps(field: string) {
+    const problem = formErrors[field];
+    return {
+      id: `${formId}-${field}`,
+      "aria-invalid": problem ? true : undefined,
+      "aria-describedby": problem ? `${formId}-${field}-problem` : undefined,
+    };
+  }
+
+  // After a save that found problems, focus goes to the first field that has
+  // one, so the person lands on what to fix and hears its message.
+  useEffect(() => {
+    if (Object.keys(formErrors).length === 0) return;
+    drawerRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [formErrors]);
+
   // ——— Save ———
   async function save() {
     const name = form.name.trim();
@@ -810,7 +830,10 @@ export default function ConnectionsPage() {
     // blank URI is allowed: it keeps the string already saved, and the loose
     // fields loaded for the row are what gets validated below.
     if (fieldMode === "uri" && editingId === null && !form.uri.trim()) {
-      setFormErrors({ connection_string: "Paste a connection string first." });
+      // A missing name is said here too, so one press of Save lists everything.
+      const errors: FieldErrors = { connection_string: "Paste a connection string first." };
+      if (!name) errors.name = "Give this connection a name.";
+      setFormErrors(errors);
       showToast("Paste a connection string first.");
       return;
     }
@@ -1268,7 +1291,16 @@ export default function ConnectionsPage() {
   const editingSite = bridge !== null && connections.some((c) => c.id === editingId && c.site_id != null);
   const siteLocked =
     bridge !== null && syncStatus?.linked === true && !syncStatus.online && connections.some((c) => c.site_id != null);
-  const computersWithConnections = bridge ? [] : computers.filter((c) => c.connections.length > 0);
+  // Who may unlink a computer here: its owner, and whoever may remove members
+  // (an Admin), who can cut off anyone's, for instance a lost laptop. The server
+  // checks again (DELETE /api/computers/[id]).
+  const mayUnlinkAny = !sessionLoading && can("users:delete");
+  const mayUnlinkOwn = !sessionLoading && can("compare:read");
+  // An Admin sees every linked computer, so one that keeps no connections can
+  // still be unlinked. Everyone else sees the ones that hold something.
+  const computersWithConnections = bridge
+    ? []
+    : computers.filter((c) => mayUnlinkAny || c.connections.length > 0);
 
   const tlsOn = sslModeUsesTls(form.sslMode);
   const sslChoice = SSL_CHOICES.find((c) => c.mode === form.sslMode) ?? SSL_CHOICES[0];
@@ -1831,6 +1863,8 @@ export default function ConnectionsPage() {
               Connections kept in the desktop app on computers linked to {orgName}. Their passwords
               stay on that computer, so they can&apos;t be changed or used here. Open Schema Studio on
               that computer to use them. Its owner can also compare them from here while it is on.
+              A linked computer can open this organization&apos;s saved connections. Its owner or an
+              Admin can unlink it here, for instance when it is lost.
             </p>
             <div className="card overflow-hidden">
               {computersWithConnections.map((computer, index) => (
@@ -1861,14 +1895,26 @@ export default function ConnectionsPage() {
                       </span>
                     )}
                   </div>
-                  <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5" aria-label={`Connections on ${computer.name}`}>
-                    {computer.connections.map((c) => (
-                      <li key={c.id} className="flex items-center gap-1.5 text-[12.5px]">
-                        <span>{c.name}</span>
-                        <EnvironmentPill environment={toEnvironment(c.environment)} />
-                      </li>
-                    ))}
-                  </ul>
+                  {computer.connections.length === 0 ? (
+                    <div className="mt-2 text-[12.5px]" style={{ color: "var(--text-3)" }}>
+                      Keeps no connections of its own.
+                    </div>
+                  ) : (
+                    <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5" aria-label={`Connections on ${computer.name}`}>
+                      {computer.connections.map((c) => (
+                        <li key={c.id} className="flex items-center gap-1.5 text-[12.5px]">
+                          <span>{c.name}</span>
+                          <EnvironmentPill environment={toEnvironment(c.environment)} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {(mayUnlinkAny || (computer.mine && mayUnlinkOwn)) && (
+                    <UnlinkComputer
+                      computer={computer}
+                      onGone={() => setComputers((list) => list.filter((c) => c.id !== computer.id))}
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -1952,8 +1998,11 @@ export default function ConnectionsPage() {
           {/* Name */}
           <div className="mb-4">
             <div className="flex items-center justify-between mb-1.5">
-              <label className="label">
-                Friendly name <span style={{ color: "var(--break)" }}>*</span>
+              <label className="label" htmlFor={`${formId}-name`}>
+                Friendly name{" "}
+                <span style={{ color: "var(--break)" }} aria-hidden="true">
+                  *
+                </span>
               </label>
               <span className="help">Shown in lists and breadcrumbs.</span>
             </div>
@@ -1962,8 +2011,10 @@ export default function ConnectionsPage() {
               placeholder="e.g. Staging — Neon"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              aria-required="true"
+              {...fieldProps("name")}
             />
-            <FieldError message={formErrors.name} />
+            <FieldError id={`${formId}-name-problem`} message={formErrors.name} />
           </div>
 
           {/* Environment — a typed label rather than a word inside the name.
@@ -2084,6 +2135,9 @@ export default function ConnectionsPage() {
                   placeholder="postgres://user:pass@host:5432/database?sslmode=require"
                   value={form.uri}
                   onChange={(e) => editConnectionField({ uri: e.target.value })}
+                  aria-label="Connection string"
+                  aria-required={editingId === null ? "true" : undefined}
+                  {...fieldProps("connection_string")}
                 />
                 <button
                   className="btn btn-ghost btn-xs"
@@ -2102,7 +2156,10 @@ export default function ConnectionsPage() {
                   Paste
                 </button>
               </div>
-              <FieldError message={formErrors.connection_string} />
+              <FieldError
+                id={`${formId}-connection_string-problem`}
+                message={formErrors.connection_string}
+              />
               {editingId !== null && (
                 <div className="help">
                   Leave blank to keep the saved connection string, or paste a new one to replace it.
@@ -2117,57 +2174,69 @@ export default function ConnectionsPage() {
             <div className="space-y-3">
               <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 120px" }}>
                 <div>
-                  <div className="label mb-1">Host</div>
+                  <label className="label mb-1 block" htmlFor={`${formId}-host`}>
+                    Host
+                  </label>
                   <input
                     className="input mono"
                     placeholder="db.example.com"
+                    {...fieldProps("host")}
                     value={form.host}
                     onChange={(e) => editConnectionField({ host: e.target.value })}
                   />
-                  <FieldError message={formErrors.host} />
+                  <FieldError id={`${formId}-host-problem`} message={formErrors.host} />
                 </div>
                 <div>
-                  <div className="label mb-1">Port</div>
+                  <label className="label mb-1 block" htmlFor={`${formId}-port`}>
+                    Port
+                  </label>
                   <input
                     className="input mono"
                     type="number"
                     min={PORT_MIN}
                     max={PORT_MAX}
                     placeholder="5432"
+                    {...fieldProps("port")}
                     value={form.port}
                     onChange={(e) => editConnectionField({ port: e.target.value })}
                   />
-                  <FieldError message={formErrors.port} />
+                  <FieldError id={`${formId}-port-problem`} message={formErrors.port} />
                 </div>
               </div>
               <div>
-                <div className="label mb-1">Database</div>
+                <label className="label mb-1 block" htmlFor={`${formId}-database_name`}>
+                    Database
+                  </label>
                 <input
                   className="input mono"
                   placeholder="postgres"
                   value={form.database}
                   onChange={(e) => editConnectionField({ database: e.target.value })}
+                    {...fieldProps("database_name")}
                 />
-                <FieldError message={formErrors.database_name} />
+                <FieldError id={`${formId}-database_name-problem`} message={formErrors.database_name} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="label mb-1">User</div>
+                  <label className="label mb-1 block" htmlFor={`${formId}-username`}>
+                    User
+                  </label>
                   <input
                     className="input mono"
                     placeholder="postgres"
                     value={form.user}
                     onChange={(e) => editConnectionField({ user: e.target.value })}
+                    {...fieldProps("username")}
                   />
-                  <FieldError message={formErrors.username} />
+                  <FieldError id={`${formId}-username-problem`} message={formErrors.username} />
                 </div>
                 <div>
-                  <div className="label mb-1">
+                  <label className="label mb-1 block" htmlFor={`${formId}-password`}>
                     Password{" "}
                     {editingId !== null && (
                       <span className="help">· blank keeps current</span>
                     )}
-                  </div>
+                  </label>
                   <div className="relative">
                     <input
                       ref={passwordRef}
@@ -2177,6 +2246,7 @@ export default function ConnectionsPage() {
                       placeholder="••••••••"
                       value={form.password}
                       onChange={(e) => editConnectionField({ password: e.target.value })}
+                      {...fieldProps("password")}
                     />
                     <button
                       className="btn btn-ghost btn-xs"
@@ -2188,7 +2258,7 @@ export default function ConnectionsPage() {
                       <EyeIcon size={12} />
                     </button>
                   </div>
-                  <FieldError message={formErrors.password} />
+                  <FieldError id={`${formId}-password-problem`} message={formErrors.password} />
                 </div>
               </div>
             </div>
@@ -2446,12 +2516,14 @@ export default function ConnectionsPage() {
                       <div className="text-[12px] mt-1" style={{ color: "var(--text-2)" }}>
                         {deleteDependents.trackedSchemas} tracked schema
                         {deleteDependents.trackedSchemas === 1 ? "" : "s"}
+                        {/* Deleting removes only the connection. The tracked
+                            schemas and their snapshots stay, so say that. */}
                         {deleteDependents.snapshots > 0
-                          ? ` — deleting it also removes ${deleteDependents.snapshots} snapshot${
+                          ? `. The ${deleteDependents.snapshots} snapshot${
                               deleteDependents.snapshots === 1 ? "" : "s"
-                            } and ${
-                              deleteDependents.snapshots === 1 ? "its" : "their"
-                            } drift history.`
+                            } and the drift history are kept, but the tracked schema${
+                              deleteDependents.trackedSchemas === 1 ? "" : "s"
+                            } can no longer be checked for drift.`
                           : ", which will lose their way to reach the database."}
                       </div>
                       {deleteDependents.schemaNames.length > 0 && (
@@ -2656,11 +2728,76 @@ export default function ConnectionsPage() {
 
 // ——— Small presentational helpers ———
 
+/**
+ * Unlink one linked computer, after a second press. Its token stops working at
+ * once, so a lost or wrongly linked computer no longer reaches the
+ * organization's connections. The connections kept on it are not touched.
+ */
+function UnlinkComputer({ computer, onGone }: { computer: Computer; onGone: () => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const whose = computer.mine ? "your" : `${computer.owner}'s`;
+
+  async function unlink() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/computers/${computer.id}`, { method: "DELETE" });
+      if (res.ok) {
+        onGone();
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+      setError(typeof body?.error === "string" ? body.error : "Could not unlink that computer.");
+    } catch {
+      setError("Could not reach the site. Try again.");
+    }
+    setBusy(false);
+  }
+
+  if (!asking) {
+    return (
+      <div className="mt-2">
+        <button
+          className="btn btn-ghost btn-xs"
+          type="button"
+          aria-label={`Unlink ${computer.name}`}
+          onClick={() => setAsking(true)}
+        >
+          Unlink
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+        Unlink {computer.name}, {whose} computer? It can no longer open this organization&apos;s
+        connections until someone links it again.
+      </div>
+      {error !== null && (
+        <div className="text-[12px]" role="alert" style={{ color: "var(--break)" }}>
+          {error}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button className="btn btn-destructive btn-xs" type="button" disabled={busy} onClick={() => void unlink()}>
+          {busy ? "Unlinking…" : "Unlink this computer"}
+        </button>
+        <button className="btn btn-ghost btn-xs" type="button" disabled={busy} onClick={() => setAsking(false)}>
+          Keep it linked
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** One validation message under the field it belongs to. Renders nothing when clear. */
-function FieldError({ message }: { message?: string }) {
+function FieldError({ id, message }: { id: string; message?: string }) {
   if (!message) return null;
   return (
-    <div className="text-[11.5px] mt-1" style={{ color: "var(--break)" }}>
+    <div id={id} className="field-problem mt-1">
       {message}
     </div>
   );

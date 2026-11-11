@@ -29,7 +29,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import ScriptEditorPage from "@/app/[org]/(studio)/script-editor/page";
 import {
@@ -537,11 +537,19 @@ describe("after a save", () => {
     await pickTarget("add_invoices");
     writeSql("SQL", ADDS_A_COLUMN);
     writeSql(/Rollback SQL/, DROPS_THE_COLUMN);
+    await saveButton("1.0.0");
+
+    // The result box is on the page before there is a result, so a screen
+    // reader announces what arrives in it.
+    const outcome = screen.getByRole("status");
+    expect(outcome).toBeEmptyDOMElement();
     fireEvent.click(await saveButton("1.0.0"));
 
     expect(
-      await screen.findByText("v1.0.0 saved to shop/public/add_invoices on GitHub, with its rollback.")
+      await within(outcome).findByText("v1.0.0 saved to shop/public/add_invoices on GitHub, with its rollback.")
     ).toBeInTheDocument();
+    // Focus goes to the result, not to the top of the page.
+    expect(outcome).toHaveFocus();
     const push = fetchCalls.find((c) => c.url.includes("/api/github/push"));
     expect(JSON.parse(push?.body ?? "null")).toMatchObject({
       database_name: "shop",
@@ -611,9 +619,13 @@ describe("after a save", () => {
     writeSql(/Rollback SQL/, DROPS_THE_COLUMN);
     fireEvent.click(await saveButton("1.0.0"));
 
+    // A failure is an alert, so it is read out at once.
     expect(
-      await screen.findByText(/Nothing was saved: GitHub already has v2\.0\.0 of add_invoices/)
+      await within(await screen.findByRole("alert")).findByText(
+        /Nothing was saved: GitHub already has v2\.0\.0 of add_invoices/
+      )
     ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveFocus();
     expect(pushes).toBe(1);
     // The version it offers next is worked out again, from a floor that now
     // includes what the route said. A minor bump above v2.0.0 is v2.1.0.

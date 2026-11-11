@@ -9,11 +9,10 @@ import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { credentialsMessage } from "@/lib/secret-store";
 import { containsTransactionControl } from "@/lib/sql-guard";
-import {
-  ScriptEndedTransactionError,
-  currentTransactionId,
-  readStringsTheStandardWay,
-} from "@/lib/script-transaction";
+import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/script-transaction";
+import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/run-settings";
+import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
+import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
 import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/script-status";
 import {
   checkNewestFirst,
@@ -77,6 +76,8 @@ function quoteIdent(name: string): string {
 // for a lock exactly as long as a deploy does.
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_NOT_AVAILABLE = "55P03";
+// A statement that PostgreSQL will not run inside a transaction block.
+const NOT_IN_A_TRANSACTION = "25001";
 
 // script_patch.change_type is a constrained VARCHAR; these are its legal values,
 // which are also exactly the ChangeLevel union the lineage helper accepts.
@@ -96,6 +97,13 @@ function newestFirst(left: string, right: string): number {
 /** Every refusal has the same shape: ok/success false plus a readable error. */
 function fail(status: number, payload: Record<string, unknown> & { error: string }) {
   return NextResponse.json({ ok: false, success: false, ...payload }, { status });
+}
+
+// A 500 or 503 given before the target was touched. nothingRan says so in a
+// field, the way the apply route does, so the attempt is recorded as "refused
+// before anything ran" and not as "failed and rolled back".
+function failBeforeRun(status: number, payload: Record<string, unknown> & { error: string }) {
+  return fail(status, { ...payload, nothingRan: true });
 }
 
 // ─── Request body ──────────────────────────────────────────────────────────
@@ -234,6 +242,13 @@ function parseRequest(body: RevertBody): RevertRequest | string {
     }
   }
 
+  // dryRun has to be true or false. Anything else ("true", 1, "yes") used to
+  // count as false, so a caller who clearly meant a rehearsal got a real
+  // rollback.
+  if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+    return "dryRun must be true or false. Nothing was run.";
+  }
+
   return {
     connectionId,
     schemaName,
@@ -265,10 +280,18 @@ type OtherScript = { script_name: string; version: string; applied_at: Date | st
 /** One version that passed every check, with the rollback that will run for it. */
 type PlannedStep = { row: LedgerRow; sql: string; source: "ledger" | "registry" };
 
-export async function POST(request: NextRequest) {
+/**
+ * The route proper. Wrapped by POST at the bottom of this file, which records
+ * the attempt. `attempt` is filled in as each fact about the run is learned,
+ * so a rollback refused at step 2 still leaves a row with what was known.
+ */
+async function runRevert(request: NextRequest, attempt: AttemptContext): Promise<NextResponse> {
   // ─── 1. Only roles that may run deployments ──────────────────────────────
   const gate = await requirePermission("deploy:run");
   if (!gate.ok) return gate.response;
+  attempt.action = "revert";
+  attempt.orgId = gate.principal.orgId;
+  attempt.actor = actorFor(gate.principal);
 
   // ─── 2. Parse and validate the body ──────────────────────────────────────
   let body: RevertBody;
@@ -282,6 +305,10 @@ export async function POST(request: NextRequest) {
   if (typeof parsed === "string") return fail(400, { error: parsed });
 
   const { connectionId, schemaName, scriptName: name, versions, dryRun } = parsed;
+  attempt.connectionId = connectionId;
+  attempt.schemaName = schemaName;
+  attempt.dryRun = dryRun;
+  attempt.scripts = versions.map((version) => ({ script_name: name, version }));
   const registryCopyFor = (version: string): string | null =>
     parsed.registry.find((entry) => compareVersions(entry.version, version) === 0)?.downSql ??
     null;
@@ -321,7 +348,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — failed to fetch connection record:", message);
-    return fail(500, {
+    return failBeforeRun(500, {
       error: "Could not read the saved connection, so nothing was run. Is the app database reachable?",
     });
   }
@@ -363,7 +390,7 @@ export async function POST(request: NextRequest) {
     // have dropped what a migration added on production without ever asking.
     // Apply answers the same failure with 503, and so does this.
     console.error("Revert — could not read the tracked schema's environment:", error);
-    return fail(503, {
+    return failBeforeRun(503, {
       error:
         "Could not read this schema's tracking record, so its environment label is " +
         "unknown. Nothing was run. Try again in a moment; if it keeps failing, check " +
@@ -396,7 +423,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — could not read the saved connection's credentials:", message);
-    return fail(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
+    return failBeforeRun(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
   }
 
   // The same check as the apply route: another saved connection to this
@@ -407,7 +434,7 @@ export async function POST(request: NextRequest) {
       twin = await findProductionTwin(gate.principal.orgId, connectionId, configIdentity(targetConfig));
     } catch (error) {
       console.error("Revert — could not check for a production connection to the same database:", error);
-      return fail(503, {
+      return failBeforeRun(503, {
         error:
           "Could not check whether another saved connection labels this database " +
           "Production, so nothing was run. Try again in a moment.",
@@ -422,7 +449,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — could not connect to target DB:", message);
-    return fail(503, {
+    return failBeforeRun(503, {
       error:
         `Could not connect to target database ` +
         `(${connRow.host}:${connRow.port}/${connRow.database_name}). ` +
@@ -503,12 +530,20 @@ export async function POST(request: NextRequest) {
     // Scope unqualified names in the rollback SQL to the target schema ONLY —
     // `public` is deliberately off the path for the same reason as apply: an
     // unqualified DROP of a relation missing from the target must no-op, not
-    // fall through and hit public's same-named table.
-    await client.query(`SET LOCAL search_path TO ${quotedSchema}`);
+    // fall through and hit public's same-named table. A schema that holds
+    // nothing but installed extensions is added after it, so an unqualified
+    // citext still resolves: see runSearchPath.
+    const runSettings: RunSettings = {
+      searchPath: await runSearchPath(client, schemaName),
+      lockTimeoutMs: LOCK_TIMEOUT_MS,
+      // Like a real deploy, no time limit on a statement.
+      statementTimeoutMs: null,
+    };
 
-    // Read strings the way lib/sql-guard did, and note which transaction this
-    // is, so a down script that ends it is noticed. See lib/script-transaction.
-    await readStringsTheStandardWay(client);
+    // Put the settings in place (search_path, and reading strings the way
+    // lib/sql-guard did), then note which transaction this is, so a down
+    // script that ends it is noticed. See lib/script-transaction.
+    await applyRunSettings(client, runSettings);
     const runTransactionId = await currentTransactionId(client);
 
     // ─── 7. Ledger checks ──────────────────────────────────────────────────
@@ -700,7 +735,12 @@ export async function POST(request: NextRequest) {
     // After the ledger read, because the approved text is the resolved,
     // ledger-first rollback SQL, newest version first — the same list the
     // Deploy screen hashes with rollbackFingerprintBody when it asks.
-    if (isProduction(targetEnvironment) && !dryRun) {
+    //
+    // A dry run needs it too, for the same reasons as in the apply route: a
+    // ROLLBACK does not undo sequence changes, the rehearsal holds real locks
+    // on production, and an error can show row values. A dry run never commits,
+    // so the finally block hands the claim back for the real rollback.
+    if (isProduction(targetEnvironment)) {
       let claimed;
       try {
         claimed = await claimApproval({
@@ -725,6 +765,10 @@ export async function POST(request: NextRequest) {
         });
       }
       if (!claimed) {
+        // The same wording for a real rollback and its dry run, apart from the
+        // first words and the button to press afterwards.
+        const what = dryRun ? "A rollback dry run on production" : "Rolling back on production";
+        const again = dryRun ? "start the dry run again" : "press Roll back again";
         return await refuse(403, {
           needsApproval: true,
           // Under the auth bypass there is one principal, and it may clear its
@@ -732,15 +776,14 @@ export async function POST(request: NextRequest) {
           // second person to ask. With the two-person rule off there may be,
           // but there needn't be.
           error: gate.principal.bypass
-            ? "Rolling back on production needs an approval. Request it in the Approvals " +
-              "panel and approve it there yourself (the auth bypass is on), then press " +
-              "Roll back again."
+            ? `${what} needs an approval. Request it in the Approvals ` +
+              `panel and approve it there yourself (the auth bypass is on), then ${again}.`
             : !gate.principal.orgTwoPersonRule
-            ? "Rolling back on production needs an approval. Request it in the Approvals " +
-              "panel and approve it there (this organization's two-person rule is off, so " +
-              "you may approve it yourself), then press Roll back again."
-            : "Rolling back on production needs a second person's approval. Ask for it in the " +
-              "Approvals panel, then press Roll back again.",
+            ? `${what} needs an approval. Request it in the Approvals ` +
+              `panel and approve it there (this organization's two-person rule is off, so ` +
+              `you may approve it yourself), then ${again}.`
+            : `${what} needs a second person's approval. Ask for it in the ` +
+              `Approvals panel, then ${again}.`,
         });
       }
       claimedApprovalId = claimed.id;
@@ -818,6 +861,10 @@ export async function POST(request: NextRequest) {
     // history can tell that they came off together.
     for (const step of plan) {
       runningVersion = step.row.version;
+      // Every down script starts from the same settings. The one before it may
+      // have run a plain SET search_path, SET lock_timeout or SET ROLE, which
+      // inside a transaction replaces the SET LOCAL for everything after it.
+      await applyRunSettings(client, runSettings);
       await client.query(step.sql);
       if ((await currentTransactionId(client)) !== runTransactionId) {
         throw new ScriptEndedTransactionError(
@@ -887,7 +934,8 @@ export async function POST(request: NextRequest) {
         otherScripts,
         message:
           `Dry run passed: the rollback of ${listVersions(undone)} ran without errors and was ` +
-          `then undone. Nothing changed.${noticeNote}`,
+          `then undone. Nothing changed, except that sequence numbers the script used ` +
+          `are not given back.${noticeNote}`,
       });
     }
 
@@ -1040,6 +1088,21 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // A statement PostgreSQL will not run inside a transaction, such as DROP
+    // INDEX CONCURRENTLY. Its own words do not say that the transaction is
+    // this route's, or what to do about it.
+    if (pgCode === NOT_IN_A_TRANSACTION) {
+      return fail(500, {
+        error:
+          `The down script for ${vLabel(runningVersion ?? versions[0])} has a statement that ` +
+          `PostgreSQL will not run inside a transaction, such as DROP INDEX CONCURRENTLY or ` +
+          `VACUUM. Schema Studio runs a whole rollback as one transaction so that a failed ` +
+          `one can be undone, so this statement cannot be run from here. Take the word ` +
+          `CONCURRENTLY out of the down script, or run that one statement yourself. Nothing ` +
+          `was changed - every version in this rollback is still applied. PostgreSQL said: ${message}`,
+      });
+    }
+
     // Before any rollback SQL ran, name the first (newest) version.
     return fail(500, {
       error:
@@ -1069,4 +1132,34 @@ export async function POST(request: NextRequest) {
       client.release(true);
     }
   }
+}
+
+/**
+ * Run the rollback, then record that it was attempted, the way the apply
+ * route does (see the note above its POST).
+ *
+ * A rollback that worked leaves a row in the target's script_patch_reverted
+ * table. One that was refused, failed half way or ended with an unknown
+ * commit left nothing at all, and those are the ones somebody has to be able
+ * to look up later. The row goes to the metadata database, on its own
+ * connection, so the rollback's ROLLBACK cannot take it away.
+ *
+ * Recording cannot change the answer: it reads a clone of the response and
+ * swallows its own errors.
+ */
+export async function POST(request: NextRequest) {
+  const attempt: AttemptContext = {};
+  const response = await runRevert(request, attempt);
+
+  let body: AttemptResponseBody | null = null;
+  try {
+    // A clone, because a response body can only be read once. Some answers
+    // (the sign-in gate's) carry no JSON at all.
+    body = (await response.clone().json()) as AttemptResponseBody;
+  } catch {
+    body = null;
+  }
+  await recordDeployAttempt(attempt, response.status, body);
+
+  return response;
 }

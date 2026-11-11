@@ -3,8 +3,8 @@
                     PostgreSQL Schema Comparison & Versioning
 ================================================================================
 
-VERSION: 2.3.0
-LAST UPDATED: 2026-11-05
+VERSION: 2.4.0
+LAST UPDATED: 2026-11-10
 
 ================================================================================
 TABLE OF CONTENTS
@@ -39,9 +39,18 @@ Schema Studio is a web-based tool for PostgreSQL schema management. It lets you:
   • Find what a schema is likely to be slow at, and analyse individual queries
   • Safely apply and audit all schema changes
 
-All work is scoped by your saved database connection. You can have multiple
-PostgreSQL connections (dev, staging, production) and compare/sync between any
-two.
+All work belongs to an organization. Each organization has its own people,
+roles, saved connections and scripts, and its address is the first part of the
+address of every screen. Inside it you can have multiple PostgreSQL connections
+(dev, staging, production) and compare/sync between any two.
+
+AI assistance is optional. It can summarise a comparison, review a run before
+you deploy it, explain a drift, draft SQL from plain words and answer
+questions about a schema. It is off until an admin switches it on (see THE AI
+TAB in section 11).
+
+This manual covers the website. The desktop app and the phone app have their
+own guides in the project: desktop/README.md and relay/README.md.
 
 ================================================================================
 2. GETTING STARTED
@@ -49,21 +58,39 @@ two.
 
 LOGIN
 -----
-Schema Studio uses Microsoft Entra ID (Azure AD) for authentication. Sign in with
-your organization account.
+Schema Studio signs you in with an account you already have: a Microsoft
+account (Microsoft Entra ID, which used to be called Azure AD) or a GitHub
+account. The login page shows a button for each one the server is set up for.
 
 SIGN IN FLOW
-  1. Click "Continue with Microsoft" on the login page
-  2. Enter your Microsoft/Azure AD email
-  3. Complete multi-factor authentication if prompted
-  4. You'll be logged in and redirected to the Dashboard
+  1. Open the site. The first page has two buttons, "Create account" and
+     "Log in". Both take you to the login page.
+  2. Click "Continue with Microsoft" or "Continue with GitHub"
+  3. Sign in on that service's own page. Complete multi-factor authentication
+     if prompted.
+  4. You come back signed in. If you already belong to an organization, you
+     land on its Dashboard.
 
-If the server you're using has no Entra ID credentials configured, that button
-is disabled and says so underneath, rather than failing when you press it. Ask
-whoever set the server up; the four values it needs are listed in the project
-README.
+If the server you're using has no sign-in keys at all, the login page says
+"Single sign-on is not set up." and names the values the server needs. The
+Microsoft button is shown switched off, rather than failing when you press it.
+Ask whoever set the server up; the values are also listed in the project
+README. "Trouble signing in?" under the buttons opens a short help text.
 
-Once signed in, you have a role. Three are built in:
+YOUR FIRST ORGANIZATION
+-----------------------
+Someone who is not in any organization yet lands on "Your organizations",
+which says "You are not in any organization yet." There are two ways on:
+  • Join one. If someone sent you an invitation link, open it. The page is
+    titled "Join" and the organization's name. Press "Join".
+  • Create one. Under "New organization", type a Name. The Address is the part
+    of the web address its pages open at. "Connect GitHub (optional)" takes
+    the Repository and Access token where the organization's scripts will be
+    kept. You can leave it and add it later on the Admin screen, under GitHub.
+    Press "Create organization". You will be its Admin, and can invite others
+    from it.
+
+Once you are in an organization, you have a role in it. Three are built in:
   • Viewer: starts able to open every screen except Admin (compare, visualise,
     review) and to change nothing
   • Editor: starts able to change things too, and to run migrations on the
@@ -91,11 +118,11 @@ bottom-left of the sidebar under your name. See SETTINGS in section 12.
 
 DASHBOARD
 ---------
-After login, you land on /studio (the Dashboard). Here you can:
+After login, you land on your organization's Dashboard. Here you can:
   • See all tracked schemas at a glance
   • View drift status (schemas vs. their baseline snapshot)
-  • Click a schema card to inspect tables, columns, and constraints
-  • Untrack schemas you no longer need to monitor
+  • Open a schema card to see its history of versions and its drift
+  • Stop tracking schemas you no longer need to monitor
 
 ================================================================================
 3. CONNECTIONS
@@ -106,14 +133,19 @@ A "Connection" is a saved PostgreSQL database you want to compare or monitor.
 ADDING A CONNECTION
 -------------------
   1. Go to Connections (left sidebar > Connections)
-  2. Click "New Connection"
-  3. Give it a friendly name — e.g., "production", "staging", "dev local"
-  4. Set the Environment: unset, dev, staging or prod. This is only a label,
-     but it is the label that drives the production warnings you'll see before
-     a deploy, so it is worth setting.
+  2. Click "Add connection" (on an empty list the button reads "Add your
+     first connection"). A drawer titled "Add connection" opens. Under "Quick
+     start", "Local Postgres" and "Hosted (Neon · Supabase · RDS)" fill in a
+     name and the SSL mode each one needs.
+  3. Give it a "Friendly name", for example "production", "staging" or
+     "dev local"
+  4. Set the Environment: Unlabelled, Dev, Staging or Production. You can also
+     tick "Mark as production". This is only a label, but it is the label that
+     drives the production warnings and the approval you'll meet before a
+     deploy, so it is worth setting.
   5. Enter the connection details, either way round:
      • Connection string: paste a postgres:// URI
-     • Fields: host, port (usually 5432), database, username, password
+     • Fields: Host, Port (usually 5432), Database, User, Password
   6. Pick the SSL mode:
      • Off — no encryption. Normal for a localhost loopback connection.
      • Require — encrypts the link but accepts whatever certificate the server
@@ -128,23 +160,31 @@ ADDING A CONNECTION
      This is checked by Deploy, by Revert and by a Version Sync replay, on top
      of the "Apply or revert migrations" permission (section 11).
      It can only narrow who may run migrations here, never let anyone else
-     in. Comparing, generating scripts, previewing and exporting are
+     in. Anyone who may edit the connection can make it stricter. Making
+     it looser again (read-only to anything else, or admins only back to
+     the default) needs "Approve production runs", which out of the box
+     only an Admin has. Comparing, generating scripts, previewing and exporting are
      unaffected by it: it only decides who may make this app WRITE to this
      database. A reference or model schema you never want written to is the
      read-only case.
   8. Optionally name an Application table — a table on this database with an
      `application_name` column. Deploy reads it to decide whether a script
      marked `-- Applies-to: billing` may run here.
-  9. Click "Test" to verify the connection works, then "Save"
+  9. Under "Test connection", click "Test now" to verify the connection works.
+     Then click "Save connection" at the bottom of the drawer ("Cancel" closes
+     it without saving).
 
 Once saved, the connection is listed in a table. You can:
-  • Test it again (verify credentials are still valid)
+  • Test it again with "Test" on its row (verify credentials are still valid)
   • View its last-tested timestamp
-  • Edit it — including its environment label. A schema you track through
+  • Edit it with "Edit" on its row, including its environment label. The
+    drawer's button then reads "Save changes". A schema you track through
     this connection inherits that label when you start tracking it, and can be
     relabelled afterwards on its own detail page.
-  • Group the list by environment, or filter it
-  • Delete it (removes it from the app, not the actual database)
+  • Tick "Group by environment", or filter the list (All, Local, Remote,
+    SSL on)
+  • Delete it (removes it from the app, not the actual database). It asks you
+    to confirm first.
 
 Each of these is its own permission: "Add a connection", "Edit or test a saved
 connection" and "Delete a connection". Out of the box Editor and Admin have all
@@ -153,42 +193,91 @@ why once, under its header.
 
 IMPORTANT: Passwords are encrypted at rest and never shown after saving.
 
+LINKING A COMPUTER
+------------------
+The desktop app can be linked to an organization on the website. A linked
+computer gets the organization's saved connections, and the connections kept
+only on that computer are listed here by name (their passwords stay on it).
+
+  1. On the computer, open Schema Studio's Settings, enter the site's address
+     and click "Link". The app shows a code of eight letters and numbers, and
+     your web browser opens the site's "Link a computer" page.
+  2. Sign in if the site asks you to.
+  3. Type the code under "Code shown on the computer". The address of the
+     page never fills it in, so you always read it off the computer in front
+     of you. Only link a computer you are sitting at, and never type a code
+     that someone sent you.
+  4. Read what the page says before you go on: linking lets that computer
+     open the organization's saved connections, including their passwords,
+     and answer questions from your account.
+  5. If you belong to more than one organization, pick the right one under
+     "Organization".
+  6. The page names the computer and says when it asked. Click "Link this
+     computer", or "Not mine" if you did not start this just now.
+
+A code works for 10 minutes. Linking needs a role that may compare schemas.
+
+Linked computers are listed on the Connections page under "On linked
+computers". An Admin sees every linked computer there and can unlink any of
+them with "Unlink", for instance one that was lost. Everyone else sees the
+computers that hold connections of their own, and can unlink their own one.
+A computer can also be unlinked from its own Settings.
+
+A link ends by itself when the computer has not been used with the site for
+90 days. Link it again the same way: it takes a minute.
+
 ================================================================================
 4. DASHBOARD
 ================================================================================
 
-The Dashboard (/studio) shows all schemas you've tracked and their current state.
+The Dashboard shows all schemas you've tracked and their current state.
 
 TRACKING A SCHEMA
 -----------------
   1. Go to Dashboard
-  2. Click "Track a Schema" (or the + button on a card)
-  3. Pick a Connection from the dropdown
-  4. The app introspects that database and lists all schemas
-  5. Click the schema name to start tracking it
-  6. A baseline snapshot is created immediately
+  2. Click "Track a schema". A dialog with the same title opens.
+  3. Pick a Connection ("Select a connection…")
+  4. The app reads that database and lists its schemas. Pick a Schema
+     ("Select a schema…").
+  5. The Environment starts as the connection's ("Inherited from the
+     connection"). Change it if this schema is a different one ("Set for this
+     schema"). You can also type a "Label (optional)".
+  6. Click "Track schema" ("Cancel" closes the dialog). A baseline snapshot is
+     taken straight away and recorded as version v1.0.0.
 
 Once tracked, the schema appears as a card showing:
-  • Schema name and connection
-  • Table count, column count, foreign keys
-  • Drift status: "in sync" (no drift detected) or "drifted" (unintended changes)
-  • Last snapshot timestamp
+  • Schema name, its connection and database, and its label if it has one
+  • Drift status: Drifted, In sync, Unreachable or Not checked
+  • Its environment
+  • Its lineage version. This is Schema Studio's own counter for the tracked
+    schema. It is separate from the script versions that Deploy shows.
+  • What the last drift check found, or "No drift check yet."
+
+Each card has buttons: "Open", "Check drift", "Compare", a button to stop
+tracking, and "Review drift" when the schema has drifted. Above the cards,
+"Refresh" reads the list again, and the filter chips (All, Production,
+Drifted, In sync, Unreachable, Not checked) narrow it.
 
 VIEWING SCHEMA DETAILS
 ---------------------
-Click any schema card to open its detail page (/schemas/[id]). You'll see:
-  • All tables, with their columns and types
-  • Primary keys and foreign key constraints
-  • Indexes
-  • Ability to compare this schema against another
+Click "Open" on a schema card to open its detail page. You'll see:
+  • Its drift state, with "Check drift now" (or "Re-check drift"), and
+    "Review drift" when it has drifted
+  • Counts of what is in the schema, taken from its newest snapshot
+  • Its environment, which you can change here
+  • Lineage: the history of its versions, each with its snapshot and its
+    migration script where one is stored
+  • "Compare with another database", which opens Compare with this schema as
+    the target
 
 DRIFT DETECTION
 ---------------
-Schema Studio takes a snapshot of each tracked schema on first track and then
-whenever you manually refresh. The "drift" status compares the live database
-against the stored baseline snapshot.
+Schema Studio takes a snapshot of each tracked schema when you first track it.
+The "drift" status compares the live database against the stored baseline
+snapshot. A check runs when you press "Check drift", after each deploy, and on
+its own if the schema has a schedule (Drift > Schedule, section 8).
 
-If drift is detected, click the card or go to Drift Detection to see:
+If drift is detected, click "Review drift" or go to Drift to see:
   • Tables added or dropped
   • Columns added, renamed, or dropped
   • Type or constraint changes
@@ -198,8 +287,10 @@ Note: Drift is informational. It doesn't auto-correct anything.
 
 UNTRACKING A SCHEMA
 -------------------
-On any schema card, click the menu (...) and select "Untrack". This removes
-the schema from your dashboard and deletes its baseline snapshot.
+On a schema card, click the stop tracking button. A dialog asks "Stop tracking
+this schema?". Press "Stop tracking" to confirm. This removes the schema from
+your dashboard and deletes its baseline snapshot. The database itself is not
+touched.
 
 ================================================================================
 5. COMPARE & AUTHOR
@@ -210,64 +301,101 @@ Compare two schemas and generate migration SQL to sync them.
 STARTING A COMPARISON
 ---------------------
   1. Go to Compare (left sidebar > Compare & Author)
-  2. Pick two schemas:
-     • "Left" (usually the source/baseline)
-     • "Right" (usually the target you want to evolve)
-  3. Click "Compare"
+  2. Pick two schemas, each as a connection and a schema:
+     • "Source · the schema you want"
+     • "Target · the schema that gets updated"
+  3. Optionally click "Add target" to compare the same source with more
+     targets, up to six. Each target is compared with the source only, not
+     with the other targets. "Use as source" on a target swaps it with the
+     source.
+  4. Set the two switches if you need them:
+     • "Allow data loss": while it is off, statements that would delete data
+       (DROP TABLE, DROP COLUMN) are written into the script commented out
+     • "Compare row data": also reads the rows of every table and reports
+       which ones differ. Much slower on big tables.
+  5. Click "Compare"
 
 The app will:
   • Introspect both schemas
   • Find differences
-  • Highlight tables added/removed, columns changed, constraints modified
-  • Render a visual diff
+  • Show a report of them, and a generated migration, for each target
+
+Comparing changes nothing in either database.
+
+The "Saved sets" bar at the top keeps a source and its targets under a name,
+so you can open the same comparison again later ("Open a saved set…").
 
 READING THE DIFF
 ----------------
-The diff shows, for each table:
-  • Green rows: new tables or columns (only in Right)
-  • Red rows: dropped tables or columns (only in Left)
-  • Yellow rows: modified columns (type, default, nullability changed)
-  • Renamed columns are detected by similarity matching (70%+ threshold)
+Each target's result has:
+  • A "Summary" table with one row for every kind of object and four columns:
+    In sync, Only in source, Only in target and Changed
+  • The report itself, grouped by kind: tables (columns, primary key, foreign
+    keys, other constraints, indexes, triggers, row security, partitioning),
+    views, sequences, types, extensions, collations, functions, and ownership
+    and grants
+  • "Export this diff": Copy as Markdown, JSON, CSV, or Print / PDF
+
+A renamed table or column is written as a rename only when its structure
+matches and the two names are very close. Otherwise the report offers it as a
+rename to confirm by hand, and until then the script creates the new one and
+drops the old one. That drop deletes data, so it stays commented out while
+"Allow data loss" is off.
 
 Foreign key changes are also shown. Note: cross-schema FKs may report spurious
 changes due to schema-prefix differences in the comparison.
 
+If AI assistance is on (section 11), a "Change summary" panel has a
+"Summarize with AI" button that explains the differences in plain words.
+
 GENERATING MIGRATION SQL
 ------------------------
-  1. Once a diff is displayed, click "Author SQL"
-  2. The app generates a migration script in 5 phases:
-     • DROP constraints
-     • DROP tables
-     • CREATE tables
-     • ADD columns
-     • ADD constraints
+There is no button to press: every target's result already has a "Generated
+migration" panel under its report.
+  1. The "Migration" tab holds the script that makes the target match the
+     source. The "Rollback" tab holds the script that undoes it.
+  2. The script is written in dependency order. In short: extensions,
+     collations, types and sequences first, then new tables, then changes to
+     tables that exist on both sides, then dropped tables, then indexes,
+     foreign keys, triggers, row security and views, then ownership and
+     grants. Things that are no longer used are dropped last.
   3. The SQL respects PostgreSQL's dependency order (you can't drop a table
      if another table references it with a foreign key)
 
 REVIEWING & CUSTOMIZING
 -----------------------
-The generated SQL is fully editable. You can:
+The generated SQL is fully editable, on both tabs. You can:
   • Delete steps you don't want to apply
   • Reorder steps (be careful of dependencies)
   • Add your own SQL (e.g., data migrations, index creation)
   • Add comments for clarity
+"Reset" puts the generated script back and "Copy" copies it. Do not write
+BEGIN, COMMIT or ROLLBACK in a script: Deploy wraps the whole run in one
+transaction, and the panel refuses to push a script that has them.
 
-APPLYING MIGRATION SQL
-----------------------
-Once happy with the SQL:
-  1. Click "Next: Apply" or go to Deploy
-  2. Pick the target connection and schema
-  3. Optionally add a script name and version (for Version Sync ledger)
-  4. Click "Pre-flight Check" to validate the SQL syntax and check for conflicts
-  5. If all checks pass, click "Apply"
+SAVING THE MIGRATION
+--------------------
+Compare never runs the script. It saves it to your organization's script
+registry on GitHub, and Deploy runs it from there (section 10).
+  1. Check the "Migration name" (this is the script group the version belongs
+     to) and type a "Description" if you want one
+  2. Under "Change level", pick breaking, additive or patch. "Next version"
+     shows the version number that level gives.
+  3. A version is saved with its rollback. To save one without it, tick the
+     box that starts "Save without a rollback". Deploy will then not be able
+     to undo that version.
+  4. Click the push button. It reads "Push to GitHub", with the version number
+     in it once that is known.
+  5. When it has saved, "View on GitHub" opens the file, and the link that
+     starts "Nothing has run yet" takes you to Deploy.
 
-The migration runs inside a transaction. If any step fails, the whole migration
-is rolled back.
+Saving needs "Save scripts to the registry", and a GitHub repository set up
+for the organization (Admin > GitHub, section 11).
 
-After successful apply:
-  • The schema_patch table (on that schema) is updated with a new ledger entry
+After a successful deploy (section 10):
+  • The script_patch table (on that schema) is updated with a new ledger entry
   • The script's SQL is stored for future version replay
-  • You can see the applied script in Script Editor
+  • The version shows as applied on Deploy and on Version Sync
 
 ================================================================================
 6. SCRIPT EDITOR & VERSION SYNC
@@ -278,12 +406,44 @@ replay missed versions to catch one schema up to another.
 
 SCRIPT EDITOR
 -------------
-Go to Script Editor (left sidebar). Here you can:
-  • Browse saved migrations (the ledger) for any schema
-  • View the exact SQL that was applied
-  • See metadata: script name, version, change type (breaking/additive/patch)
+Go to Script Editor (left sidebar). The page is headed "Write a migration
+script." It is where you write a migration by hand and save it to the GitHub
+registry. Nothing runs against a database from this page: running is Deploy's
+job (section 10).
 
-The ledger is stored in the target schema's `script_patch` table:
+  1. Under "Where this script belongs", pick a Connection, a Schema and a
+     Script group. Choose "Pick existing" for a group that is already in the
+     registry, or "+ New group" and type a name.
+  2. Type the migration under "SQL"
+  3. Type the statements that undo it under "Rollback SQL". Deploy needs them
+     to undo this version. To save without them, tick the box that starts
+     "Save without a rollback".
+  4. Optionally fill in the "Change log"
+  5. Under "Version", check the number. It is suggested from your SQL and is
+     always higher than the version applied to the database and the highest
+     one in GitHub. "Version bump" lets you pick another step, and "Check
+     GitHub again" reads the registry once more.
+  6. Click the save button, which reads "Save", the version number, then
+     "to GitHub"
+  7. When it has saved, follow the link to the file on GitHub, or the link to
+     the Deploy page to run it
+
+Do not write COMMIT, ROLLBACK or other transaction statements in either box.
+Deploy runs the whole script in one transaction of its own, and the page will
+not save a script that has them.
+
+If a version was saved without a rollback, "Add a missing rollback" at the
+bottom of the page adds one to it later.
+
+If AI assistance is on (section 11), "Write it with AI" drafts a script for
+you: type what it should do under "What should the script do?" and press
+"Write the script". Read the draft before you save it.
+
+Saving needs "Save scripts to the registry". If the page says the GitHub
+registry is not set up, an admin adds it on the Admin screen, under GitHub.
+
+Once a version has been deployed, it is recorded in a ledger. The ledger is
+stored in the target schema's `script_patch` table:
   • script_name: the family name (e.g., "users_migration")
   • version: semantic version (e.g., "v1.0.0")
   • title: short description of what changed
@@ -295,29 +455,45 @@ VERSION SYNC
 ------------
 Go to Version Sync (left sidebar). This compares two schemas' ledgers.
 
-  1. Pick a Source schema (ahead, has more versions applied)
-  2. Pick a Target schema (behind, missing some versions)
-  3. Click "Sync"
+  1. Pick a Source: a connection and a schema (ahead, has more versions
+     applied)
+  2. Pick a Target the same way (behind, missing some versions). The button
+     between the two pickers swaps Source and Target.
 
-The app shows:
-  • Missing versions: versions the Source has but Target lacks (can be replayed)
-  • Diverged versions: both have a version, but the SQL differs (warn user)
-  • Up-to-date indicator: true if Target has all Source versions
+There is no button to start it: as soon as both are picked, the page reads
+both ledgers and shows:
+  • "Missing on the Target": versions the Source has but the Target lacks, in
+    the order the Source ran them (these can be replayed)
+  • "Cannot be replayed forward": versions the Target is already at or above.
+    A replay only moves forward, so the server refuses these.
+  • "These schemas have diverged.": the Target has versions the Source does
+    not, so a replayed script may clash with the Target's own changes
+  • "You’re up-to-date!" when the Target has every version the Source has
 
 REPLAYING VERSIONS
 ------------------
-  1. Once you've diffed the ledgers, the missing versions are listed
-  2. Select the versions you want to replay (or replay all)
-  3. Click "Apply"
-  4. Each version's stored SQL is executed against the Target in order
-  5. A new ledger entry is added to the Target's script_patch table
+  1. The missing versions are listed in the order they will run
+  2. Each row has a "Run" button. It replays the versions from the top of the
+     list down to that row, because a later version may depend on an earlier
+     one. A button above the list replays every version in the list, in one
+     transaction.
+  3. Pressing one opens the "Replay" dialog. Nothing has run yet. It shows
+     "What runs, in order", the Target it runs on, and a tick box for each
+     thing you must have read first: breaking migrations, statements that
+     delete rows, and a drift check that did not pass.
+  4. Click "Dry run" to rehearse it (the scripts run and are then rolled back,
+     so nothing is written), or the "Replay" button to do it for real. On a
+     production Target the Replay button says so, and both a replay and its
+     dry run need an approval (see WHO MAY APPLY in section 10).
+  5. Each version's stored SQL is executed against the Target in order
+  6. A new ledger entry is added to the Target's script_patch table
 
 Important: Replay assumes the stored SQL uses unqualified table names
 (no schema prefix). The apply route sets `search_path` to scope them
 to the target schema automatically.
 
-If a version has no stored SQL (legacy entries before P1), it's marked
-"not replayable" and can't be auto-applied.
+If a version has no stored SQL (it was applied before the app stored it), it
+is marked as one that can't be replayed.
 
 A replay writes to the Target, so it needs the same permission as Deploy, "Apply
 or revert migrations", and a Target whose connection lets your role run
@@ -334,7 +510,7 @@ Visualizer draws an interactive entity-relationship diagram (ERD) of any schema.
 OPENING VISUALIZER
 ------------------
   1. Go to Visualizer (left sidebar > Visualizer)
-  2. Pick a schema from the dropdown
+  2. Pick a connection, then one of its schemas
   3. The diagram renders automatically
 
 USING THE DIAGRAM
@@ -379,11 +555,20 @@ In a production environment, untracked schema changes are a warning sign:
 
 VIEWING DRIFT DETAILS
 ---------------------
-Go to Drift Detection (left sidebar > Drift). Pick a schema.
+Go to Drift (left sidebar > Drift). Pick a schema.
 
-You'll see two tabs:
-  • Schema Details: the live state vs. the baseline (red = new, blue = removed)
-  • Audit Log: a timeline of detected changes (when drift was first noticed)
+You'll see three tabs:
+  • Drift detail: the expected structure (the baseline) next to the actual
+    one (the live database), and the recent checks for this schema
+  • Audit log: every recorded drift check, newest first. You can filter it by
+    status and search it by schema, connection or summary.
+  • Schedule: how often each tracked schema is checked without anyone asking.
+    Pick a time under "How often" (from "Manual only" up to "Once a day").
+    The tab also shows when each schema was last checked, when its next
+    check is due, and whether automatic checking is running on this server.
+
+If AI assistance is switched on (section 11), the Drift detail tab also has a
+panel "Explain this drift" with a button "Explain with AI".
 
 RESOLVING DRIFT
 ---------------
@@ -545,26 +730,63 @@ ledger entry.
 
 WORKFLOW
 --------
-  1. Author SQL (Compare & Author → Author SQL)
-     (or paste custom SQL if applying a script from elsewhere)
-  2. Go to Deploy (auto-navigates, or left sidebar > Deploy)
-  3. Specify:
-     • Target connection (which database)
-     • Target schema (which schema in that database)
-     • Script name: family (e.g., "users_migration") — used for versioning
-     • Version: semantic version (e.g., "v1.0.0")
-     • Change type: breaking, additive, patch, or unknown
-     • Title: short description
-  4. Paste or review the migration SQL
-  5. Click "Pre-flight Check"
-     • Validates SQL syntax
-     • Checks for duplicate version (can't apply v1.0.0 twice to same schema)
-     • Verifies the script_patch table exists (app creates it if missing)
-  6. If all checks pass, click "Apply"
+Deploy does not take pasted SQL. It runs versions that were saved to the
+GitHub registry, from Compare & Author (section 5) or the Script Editor
+(section 6). The page has three steps, shown along the top: Pre-flight, Run
+and Verify.
+
+  1. Save the migration to the registry first (section 5 or 6)
+  2. Go to Deploy (left sidebar > Deploy, or the link shown after a save)
+  3. On Pre-flight, pick:
+     • Connection (which database)
+     • Schema (which schema in that database)
+     • Script group (the family of versions to bring this schema up to)
+  4. Click "Check database". The page reads the target's ledger and shows:
+     • "Applied to target": the version this schema is on now
+     • "Version timeline": every version of the group, and which are applied
+     • "Pending migrations": the versions the target does not have yet
+  5. Choose how far to go. Each pending row has a "Run" button for the
+     versions up to that row, and "Run all" picks every pending version.
+     These buttons only choose the range. Nothing runs yet.
+  6. Read the "Pre-flight checklist". It covers, among other things, that the
+     target can be reached, that you may run on it, its environment, the
+     applications it is used by, that no script holds a transaction statement,
+     the approval, the ledger table and the drift check.
+  7. Tick the boxes the page asks for. There is one for a production target,
+     one for breaking migrations, one for statements that delete rows, and
+     one when the drift check did not pass.
+  8. Click the "Dry run" button to rehearse: the scripts run against the
+     target and are then rolled back, so nothing is written. On a
+     production target a dry run needs the approval as well, and the same
+     approval then covers the real deploy. A dry run stops any statement
+     that takes longer than five minutes.
+  9. Click the "Deploy" button to run for real. Both buttons name the range of
+     versions, and Deploy adds "to production" on a production target. After
+     a clean rehearsal the Run step offers "Deploy for real".
+ 10. The Run step shows how each migration went. If the run stopped, nothing
+     was applied; you can go "Back to Pre-flight" or press "Run again".
+ 11. The Verify step shows "What was applied" and a "Verify diff", with links
+     to Version Sync and Drift and a "Re-check target" button.
+
+If AI assistance is switched on (section 11), Pre-flight also has a panel
+"Review this run" with a button "Review with AI".
+
+ROLLING BACK
+------------
+On Pre-flight, "Plan a rollback" opens the rollback plan for the script
+group. Choose the version to roll back to. The page shows the order the
+steps run in and the rollback SQL of each one. "Dry run the rollback" rehearses
+it without changing anything, and the roll back button next to it does it for
+real. A rollback needs the same permission, and on production the same
+approval, as a deploy, and so does its dry run (see WHO MAY APPLY below).
+
+Below that, "Rollback history" and "Deploy history (all attempts)" list what
+was run on this schema for the group.
 
 EXECUTION
 ---------
-When you click "Apply":
+When you click the Deploy button:
+  • The script_patch ledger table is created if the schema does not have one
   • A transaction begins
   • An advisory lock is acquired (prevents concurrent applies of the same
     script name + version)
@@ -574,6 +796,11 @@ When you click "Apply":
   • The transaction commits
 
 If any step fails, everything rolls back. You'll see the error message.
+
+One exception: a new enum value (ALTER TYPE ... ADD VALUE) is added before the
+transaction opens, because PostgreSQL does not let a new value be used in the
+transaction that adds it. It stays even if the rest of the run fails. The page
+warns about this before the run.
 
 WHO MAY APPLY
 -------------
@@ -592,6 +819,12 @@ Nobody can approve their own request. An approval covers one run of the SQL it
 was given, for up to 7 days: change the SQL, or wait longer, and it needs
 approving again.
 
+A dry run on production needs the approval too. A rehearsal still runs the
+script on the production database: it holds locks while it runs, and
+sequence numbers it uses are not given back when it is rolled back. A dry
+run does not use the approval up, so one approval covers the rehearsal and
+the real run after it.
+
 Two exceptions let you approve your own request, and the approval is then
 recorded as a self-approval:
   • While sign-in is switched off for testing there is only one person.
@@ -603,7 +836,8 @@ BEST PRACTICES
   • Always test migrations on a dev/staging schema first
   • Use semantic versioning (v1.0.0, v1.0.1, v1.1.0, v2.0.0)
   • Write clear script names and titles (future you will thank you)
-  • Mark breaking changes as change_type='breaking' so Version Sync can warn
+  • Pick the right change level when you save (breaking, additive or patch), so
+    Deploy and Version Sync can warn before a breaking change runs
   • Store migrations in version control (Git); don't rely on the app as your
     single source of truth
 
@@ -611,19 +845,20 @@ BEST PRACTICES
 11. PEOPLE AND THE ORGANIZATION (ADMIN)
 ================================================================================
 
-The Admin page, titled "People and the organization", has up to four tabs:
+The Admin page, titled "People and the organization", has up to five tabs:
   • Users: who is in this organization, and which role each person has
   • Roles & permissions: what each role may do
   • Organization: its name, its two-person rule, and deleting it
   • GitHub: the repository where the organization's scripts are kept
+  • AI: whether the organization uses AI assistance, and for what
 
 ACCESSING ADMIN
 ---------------
 Go to Admin (left sidebar > Admin). Each tab shows only to a role allowed to
 see it, and Admin shows in the sidebar to anyone who may see at least one of
-the four. On a new install that is the Admin role alone.
+the five. On a new install that is the Admin role alone.
 
-The Roles & permissions and Organization tabs are for Admin only: no other
+The Roles & permissions, Organization and AI tabs are for Admin only: no other
 role can be given them, so no role can make itself an admin. The Users and
 GitHub tabs can be given to another role, so an admin can make, for example,
 a role that looks after people and nothing else. If you don't see Admin in
@@ -821,7 +1056,9 @@ Refusals and access requests name a line exactly as it reads here.
     A  Remove a user
     A  See which GitHub repository the organization uses
     A  Change the GitHub repository or its access token
-  The Roles & permissions and Organization tabs are Admin's alone, always.
+  AI assistance
+    E  Use AI assistance
+  The Roles & permissions, Organization and AI tabs are Admin's alone, always.
 
 LINES THAT NEED A WORD MORE
 ---------------------------
@@ -936,6 +1173,62 @@ If the tab says the saved token can't be read, the server's encryption key has
 changed since it was saved: paste the token again. The desktop app keeps its
 GitHub settings in its own Settings window instead (File > Settings).
 
+THE AI TAB
+----------
+Only the Admin role sees this tab. AI assistance is off until an admin
+switches it on here, and it needs an AI service: either one set up on the
+server, or the organization's own key (below). With neither, the tab says
+"No AI service is set up on this server".
+
+  • The switch "Let people in this organization use AI assistance" turns it
+    on or off for the whole organization. Turning it on asks you to confirm
+    first ("Switch AI assistance on?", then "Switch on").
+  • What is sent to the AI service: table, column, index, constraint and view
+    definitions, and the SQL of the scripts being reviewed. Never rows of
+    data, passwords, connection addresses or anyone's details. While the
+    switch is off, nothing about the organization's schemas is sent.
+  • "Organization AI key": save one key for the whole organization, used in
+    place of the server's AI settings. Pick the Service (Anthropic Claude,
+    Google Gemini or OpenAI) and paste the API key. You can also name the
+    model for reviews and explanations and the model for short summaries.
+    After "Save key" the tab shows only which service the key is for and its
+    last four characters. "Remove key" puts the organization back on the
+    server's settings.
+  • "Features": one switch for each AI feature, so you can keep some off:
+    Compare change summary, Migration review before deploy, Explain drift,
+    One line in drift alerts, Write SQL from plain words, and Schema chat.
+  • A usage card for the last 30 days: how many calls were made, how many
+    gave no usable answer, the tokens used, and how long answers took.
+
+Using AI needs the line "Use AI assistance" (out of the box, Editor and
+Admin). Where it is on, you meet it in these places: "Summarize with AI" on
+Compare, "Review with AI" on Deploy, "Explain with AI" on Drift, "Write it
+with AI" in the Script Editor, and "Ask AI" in the top bar, which opens the
+schema chat. The app checks every answer against its own engine before
+showing it, and nothing the AI writes runs without someone approving it.
+
+THE REQUESTS PAGE
+-----------------
+Requests is a page of its own (left sidebar > Requests), and every member of
+the organization can open it. It is where you ask for something your role
+can't do yet, and where the people who can answer see what is waiting.
+
+Asking (every role except Admin, which already has everything):
+  1. Under "What do you need?", choose the thing your role can't do yet, or
+     "Something else"
+  2. Say why if you like ("Why? (optional)"), then click "Send request"
+  3. The request shows under "Your requests", with its answer once it has
+     one. "Withdraw" takes it back.
+
+Answering: people who may change what a role can do, or change someone's
+role, see "Waiting for you". For each request they can allow the thing for
+everyone in the asker's role, give the asker another role, mark it as done,
+or decline.
+
+Production runs show here too. A run that needs your approval reads "Needs
+approval" with a link "Review it on Deploy". A run of yours that has been
+approved reads "Ready to run" with a link "Open it on Deploy".
+
 ================================================================================
 12. KEYBOARD SHORTCUTS & TIPS
 ================================================================================
@@ -988,19 +1281,22 @@ SETTINGS
   • Check network connectivity (schema introspection queries the live DB)
   • If using SSL, ensure the certificate is valid
   • On Neon, make sure you're using the pooler endpoint, not the direct one
-  • Try "Test Connection" on the connection card to get a detailed error
+  • Click "Test" on the connection's row (or "Test now" while editing it) to
+    get a detailed error
 
 "Version already applied" or Duplicate Version Error
 -----------------------------------------------------
   • You tried to apply the same (script_name, version) to a schema twice
   • Check the script_patch table: `SELECT * FROM schema_name.script_patch`
-  • Either pick a new version number, or delete the old ledger entry if it
-    failed/was rolled back
+  • Save the change as a new, higher version. Deploy only moves forward: a
+    version must be above every version already applied for that script. A
+    run that failed wrote nothing to the ledger, so it can simply be run
+    again.
 
 "Drift detected" but I didn't change anything
 ----------------------------------------------
   • Drift might be from an earlier change you forgot about
-  • Check the Audit Log (Drift page) to see when it was detected
+  • Check the Audit log tab on the Drift page to see when it was detected
   • If the live structure is the one you want, use "Re-baseline to live" on the
     Drift page to accept it as the new expected snapshot. (The Refresh button
     on the Dashboard only re-reads the list; it does not touch a baseline.)
@@ -1009,7 +1305,7 @@ SETTINGS
 "Pre-flight check failed" or "SQL syntax error"
 ------------------------------------------------
   • Check your SQL for typos (missing semicolons, mismatched quotes)
-  • Make sure unqualified table names are correct (schema_path will scope them)
+  • Make sure unqualified table names are correct (search_path will scope them)
   • If you reference a schema explicitly (schema.table), it may not scope correctly
   • Try running the SQL manually in a SQL IDE first to confirm it works
 
@@ -1088,4 +1384,4 @@ For more help, contact your system administrator. Developers: the code is
 described in docs/PROJECT_CONTEXT.md, and docs/README.md says which document to
 trust when two of them disagree.
 
-Last updated: 2026-11-05 · Manual version 2.3.0
+Last updated: 2026-11-10 · Manual version 2.4.0

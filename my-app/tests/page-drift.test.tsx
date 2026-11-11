@@ -425,6 +425,37 @@ describe("the schema picker after a fix", () => {
   });
 });
 
+describe("re-baselining from the detail screen", () => {
+  it("sends the fingerprint of the differences it is showing", async () => {
+    // The detail read says which differences it found. The person accepts
+    // those, so the re-baseline has to name them: the route refuses when the
+    // live schema has changed since this page read it.
+    setRoutes([
+      { match: "/api/lineage/rebaseline", method: "POST", body: { success: true } },
+      { match: /\/api\/lineage$/, body: [tracked({ id: 1, driftStatus: "drifted" })] },
+      {
+        match: "/api/lineage/drift",
+        body: {
+          ...detail({ trackedSchemaId: 1, state: "drifted", report: emptyReport() }),
+          fingerprint: "f1ngerpr1nt",
+        },
+      },
+      { match: "/api/lineage/audit", body: [] },
+      { match: "/api/computers", body: { computers: [] } },
+    ]);
+    render(<DriftPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Re-baseline to live" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-baseline" }));
+
+    await waitFor(() =>
+      expect(fetchCalls.some((c) => c.url.includes("/api/lineage/rebaseline"))).toBe(true)
+    );
+    const sent = fetchCalls.find((c) => c.url.includes("/api/lineage/rebaseline"))!;
+    expect(sent.body).toBe(JSON.stringify({ trackedSchemaId: 1, shownFingerprint: "f1ngerpr1nt" }));
+  });
+});
+
 describe("the audit tab", () => {
   it("says the history could not be read, rather than that none exists", async () => {
     setSearchParams("tab=audit");

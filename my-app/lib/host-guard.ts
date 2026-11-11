@@ -43,10 +43,10 @@ function dottedQuad(value: number): string {
  * check below. Normalising first is what makes that check about the address
  * rather than about how somebody chose to type it.
  *
- * Deliberately narrow — IPv4-mapped IPv6 and the bare 32-bit integer. Per-octet
- * octal ("0177.0.0.1") is left alone on purpose: platforms disagree about what
- * it means, macOS resolves it to the public 177.0.0.1, and guessing wrong would
- * block a host that is genuinely reachable.
+ * Deliberately narrow: IPv4-mapped IPv6 and the bare 32-bit integer. The other
+ * odd spellings (hex parts, a leading zero, fewer than four parts) are not
+ * worked out here, because platforms disagree about what they mean. They are
+ * refused outright instead: see isOddNumberSpelling below.
  */
 function toIPv4Literal(host: string): string | null {
   // ::ffff:127.0.0.1 and ::127.0.0.1 — the dotted tail is the address.
@@ -72,6 +72,55 @@ function toIPv4Literal(host: string): string | null {
 }
 
 /**
+ * True for a host made only of numbers that is not written the ordinary way.
+ *
+ * "0x7f.0.0.1", "0177.0.0.1" and "127.1" are all this machine to a Linux
+ * resolver, and "0xa9fe.0xa9fe" style spellings reach the cloud metadata
+ * service. None of them starts with "127." or "169.254.", so the checks below
+ * never saw them. Nobody types a database host this way by accident, so
+ * rather than guess what each platform makes of one, the guard refuses them
+ * all. Two spellings are ordinary and stay: four plain parts (203.0.113.5),
+ * and one plain whole number, which toIPv4Literal works out.
+ */
+function isOddNumberSpelling(host: string): boolean {
+  const parts = host.split(".");
+  const onlyNumbers = parts.every((part) => /^(?:0x[0-9a-f]*|\d+)$/.test(part));
+  if (!onlyNumbers) return false;
+
+  const plainPart = (part: string) => /^(?:0|[1-9]\d*)$/.test(part);
+  if (parts.length === 4) {
+    return !parts.every((part) => plainPart(part) && Number(part) <= 255);
+  }
+  if (parts.length === 1) {
+    return !(plainPart(host) && Number(host) <= 0xffffffff);
+  }
+  return true;
+}
+
+/**
+ * The host as the checks below should read it: lower case, without the
+ * brackets a URL puts around an IPv6 address, without the one trailing dot DNS
+ * allows ("localhost." is localhost), and with an IPv6 address in its short
+ * form, so that "0:0:0:0:0:0:0:1" is read as "::1".
+ */
+function readableHost(host: string | undefined): string {
+  const raw = (host ?? "").trim().toLowerCase();
+  const bare = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  if (bare.startsWith("/") || bare.startsWith("@")) return bare;
+  const h = bare.endsWith(".") ? bare.slice(0, -1) : bare;
+  if (!h.includes(":")) return h;
+  try {
+    // The URL parser writes every IPv6 address one way.
+    return new URL(`http://[${h}]`).hostname.slice(1, -1);
+  } catch {
+    return h;
+  }
+}
+
+/** 100.64.0.0 to 100.127.255.255: addresses shared inside a provider's own network. */
+const SHARED_RANGE = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
+
+/**
  * Judge one host literal.
  *
  * Note: this checks the literal host only; a public hostname that resolves to an
@@ -81,10 +130,17 @@ function toIPv4Literal(host: string): string | null {
 export function checkConnectableHost(
   host: string | undefined
 ): { ok: true } | { ok: false; message: string } {
-  const raw = (host ?? "").trim().toLowerCase();
   // A connection string carries an IPv6 literal in brackets. The address is
   // what is being judged, not the punctuation a URL needed around it.
-  const h = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  const h = readableHost(host);
+
+  if (isOddNumberSpelling(h)) {
+    return {
+      ok: false,
+      message:
+        "That host isn't allowed. Write it as a name, or as a plain address such as 203.0.113.5.",
+    };
+  }
 
   // Every spelling of the same address has to get the same answer, so both the
   // literal and its normalised form are tested.
@@ -97,6 +153,7 @@ export function checkConnectableHost(
       f === "metadata.google.internal" ||
       f.startsWith("169.254.") || // IPv4 link-local, incl. 169.254.169.254 metadata
       f.startsWith("fe80:") || // IPv6 link-local
+      f === "fd00:ec2::254" || // the AWS metadata service over IPv6
       f === "::" ||
       f === "0.0.0.0"
   );
@@ -146,15 +203,15 @@ export function checkConnectableHost(
 /**
  * True for an address only this machine or its own network can reach: this
  * machine itself (localhost, 127.x, ::1, a unix socket, no host at all) or a
- * private network (10.x, 192.168.x, 172.16 to 172.31, *.local, *.internal).
+ * private network (10.x, 192.168.x, 172.16 to 172.31, 100.64 to 100.127,
+ * IPv6 addresses starting fc or fd, *.local, *.internal).
  *
  * The rule private hosts are blocked by above, and the guess the Connections
  * page starts from when it asks whether a new connection is local to this
  * machine (lib/local-secrets).
  */
 export function isPrivateHost(host: string | undefined): boolean {
-  const raw = (host ?? "").trim().toLowerCase();
-  const h = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  const h = readableHost(host);
   if (h === "" || h.startsWith("/") || h.startsWith("@")) return true;
   const forms = [h];
   const normalised = toIPv4Literal(h);
@@ -168,6 +225,8 @@ export function isPrivateHost(host: string | undefined): boolean {
       f.startsWith("10.") ||
       f.startsWith("192.168.") ||
       /^172\.(1[6-9]|2\d|3[01])\./.test(f) ||
+      SHARED_RANGE.test(f) ||
+      /^f[cd][0-9a-f]{2}:/.test(f) || // fc00::/7, IPv6's private range
       f.endsWith(".internal") ||
       f.endsWith(".local")
   );

@@ -120,7 +120,8 @@ describe("the two scripts the app writes", () => {
     expect(revert.sql).toContain('ALTER TABLE "books" ADD COLUMN IF NOT EXISTS "price" numeric;');
     expect(revert.sql).toContain('-- ALTER TABLE "books" DROP COLUMN IF EXISTS "isbn" CASCADE;');
     expect(runnable(revert.sql).some((line) => /\bDROP\b/i.test(line))).toBe(false);
-    expect(revert).toMatchObject({ statements: 4, runs: 2, heldBack: 2, manual: 0 });
+    // The fifth statement is the note that says "isbn" may be "price" renamed.
+    expect(revert).toMatchObject({ statements: 5, runs: 2, heldBack: 2, manual: 1 });
     expect(revert.rollbackSql).not.toBeNull();
     expect(revert.description).toBe("Revert drift on public: back to the registry's 1.2.0");
   });
@@ -132,7 +133,7 @@ describe("the two scripts the app writes", () => {
     expect(adopt.sql).toContain('CREATE TABLE IF NOT EXISTS "reviews"');
     expect(adopt.sql).toContain('"isbn"');
     expect(runnable(adopt.sql).some((line) => /\bDROP\b/i.test(line))).toBe(false);
-    expect(adopt).toMatchObject({ statements: 4, runs: 2, heldBack: 2, manual: 0 });
+    expect(adopt).toMatchObject({ statements: 5, runs: 2, heldBack: 2, manual: 1 });
     expect(adopt.description).toBe("Adopt drift on public into the registry");
   });
 

@@ -107,6 +107,8 @@ const ALLOWED: Record<string, string> = {
   [path.join("lib", "ai", "openai-compatible.ts")]: "the server's own calls to the AI service",
   [path.join("app", "login", "page.tsx")]:
     "the sign-in page reads NextAuth's providers, which belong to no organization",
+  [path.join("lib", "sign-out.ts")]:
+    "Sign out asks NextAuth whether the session is really gone, which belongs to no organization",
 };
 
 function sourceFiles(dir: string): string[] {

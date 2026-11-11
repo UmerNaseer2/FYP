@@ -318,6 +318,11 @@ the organizations and their people, the scripts and the history. The
 databases you compare are not in it. [`backup.sh`](backup.sh) saves a copy of
 it in `~/FYP/backups` and keeps the newest 14. Try it once:
 
+One exception: if this server shares the Supabase database with the web site
+(see [SUPABASE-VERCEL.md](SUPABASE-VERCEL.md)), the organizations' data lives
+in Supabase, not here, and this backup does not hold it. Use Supabase's own
+backups for that data.
+
 ```bash
 ./deploy/backup.sh
 ls -l backups
