@@ -362,6 +362,14 @@ describe("isPublicPath", () => {
     }
   });
 
+  it("opens the trial's sign-in route and nothing beside it", () => {
+    // Nobody is signed in when they press "Try as ..."; the route signs in only the trial's own accounts.
+    expect(isPublicPath("/api/trial")).toBe(true);
+    for (const guarded of ["/api/trial/", "/api/trial/x", "/api/trials", "/trial", "/trial/studio"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
   it("opens the desktop sync route and nothing beside it", () => {
     // The route checks the desktop's main-process token, and answers 404 off a desktop.
     expect(isPublicPath("/api/desktop/sync")).toBe(true);

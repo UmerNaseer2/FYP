@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireMember } from "@/lib/auth-guard";
+import { TRIAL_REFUSAL, isTrialOrg } from "@/lib/trial-rules";
 import {
   deletePushSubscription,
   pushPublicKey,
@@ -55,6 +56,8 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
   const { profileId } = gate.principal;
   if (profileId === null) return NextResponse.json({ error: NEEDS_ACCOUNT }, { status: 409 });
+  // A trial account is shared, so alerts would go to every visitor's device.
+  if (isTrialOrg(gate.principal.orgSlug)) return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
 
   const body = await request.json().catch(() => null);
   const subscription = readPushSubscription({

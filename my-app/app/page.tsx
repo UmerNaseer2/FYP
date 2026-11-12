@@ -4,6 +4,7 @@ import { authUsable, desktopMode } from "@/auth.config";
 import { LandingPage } from "@/components/landing/LandingPage";
 import { BYPASS_AUTH } from "@/lib/auth-mode";
 import { encryptionKeySource } from "@/lib/secret-store";
+import { trialEnabled } from "@/lib/trial-rules";
 
 /**
  * The front door: the landing page for a visitor, and a quick hop into the
@@ -74,6 +75,7 @@ export default async function RootPage() {
       createAccountHref={CREATE_ACCOUNT_HREF}
       logInHref="/login"
       encryptsPasswords={encryptsPasswords}
+      trialAction={authUsable && trialEnabled() ? "/api/trial" : undefined}
     />
   );
 }

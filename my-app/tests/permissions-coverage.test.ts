@@ -46,6 +46,9 @@ const EXEMPT: Record<string, string> = {
   "agent/sync/connections": "checked against the computer's own token, then its person's role",
   "agent/sync/drift": "checked against the computer's own token, then its person's role (lib/agent-sync.ts)",
   "desktop/sync": "checked against the desktop's own main-process token, and 404 off the desktop (lib/desktop-sync.ts)",
+  // The landing page's "Try as ..." buttons. Nobody is signed in yet, and it
+  // can only sign in one of the shared trial's three accounts (lib/trial-rules.ts).
+  trial: "signs in a trial account, before anyone is known",
 };
 
 /**

@@ -19,7 +19,9 @@
  * nothing about anyone. The desktop sync route checks the desktop app's own
  * main-process token, and answers 404 anywhere that is not a desktop
  * (lib/desktop-sync.ts); the main process keeps the computer in step with its
- * website whether or not anyone is signed in here.
+ * website whether or not anyone is signed in here. The trial route
+ * (app/api/trial/route.ts) is how a visitor with no account signs in to the
+ * shared trial, so it cannot need a session.
  *
  * Edge-safe: the proxy runs on the edge runtime, so this file imports nothing.
  */
@@ -28,6 +30,7 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/demo",
   "/api/internal/drift-tick",
   "/api/desktop/sync",
+  "/api/trial",
   "/sw.js",
   "/manifest.webmanifest",
 ]);

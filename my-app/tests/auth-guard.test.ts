@@ -44,6 +44,7 @@ import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import { ORG_HEADER } from "@/lib/org-slug";
 import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/permissions";
 import { TEST_ORG, bypassAdminPrincipal } from "./helpers/principals";
+import { TRIAL_REFUSAL } from "@/lib/trial-rules";
 
 let mockBypass = false;
 jest.mock("../lib/auth-mode", () => ({
@@ -823,5 +824,42 @@ describe("requireSignedIn, the gate that asks only who someone is", () => {
     expect(await requireSignedIn()).toEqual({ ok: true, caller: { profileId: null, bypass: true } });
     expect(mockAuth).not.toHaveBeenCalled();
     nothingElseRead();
+  });
+});
+
+describe("in the shared trial organization", () => {
+  const ADMIN = { role: "admin", roleLabel: "Admin", permissions: [...(presetFor("admin") ?? [])] };
+  const TRIAL = process.env.TRIAL_SANDBOX;
+
+  beforeEach(() => {
+    process.env.TRIAL_SANDBOX = "on";
+    mockHeaders = { [ORG_HEADER]: "trial" };
+    mockAuth.mockResolvedValue(session());
+    mockFindMembership.mockResolvedValue({ ...membership("admin"), slug: "trial", name: "Schema Studio Trial" });
+    mockGetRoleAccess.mockResolvedValue(ADMIN);
+  });
+
+  afterEach(() => {
+    if (TRIAL === undefined) delete process.env.TRIAL_SANDBOX;
+    else process.env.TRIAL_SANDBOX = TRIAL;
+  });
+
+  test("even an Admin is refused what the trial switches off, in the trial's words", async () => {
+    for (const key of ["connections:create", "users:update", "roles:delete", "organization:update", "github:update"]) {
+      expect(await refusal(await requirePermission(key as never))).toEqual([403, { error: TRIAL_REFUSAL }]);
+    }
+  });
+
+  test("the principal never lists a switched-off permission, and keeps the rest", async () => {
+    const principal = principalOf(await requirePermission("deploy:run"));
+    expect(principal.permissions).not.toContain("connections:create");
+    expect(principal.permissions).not.toContain("organization:delete");
+    expect(principal.permissions).toContain("approvals:create");
+  });
+
+  test("an organization called trial is an ordinary one on a server without the trial", async () => {
+    delete process.env.TRIAL_SANDBOX;
+    const principal = principalOf(await requirePermission("connections:create"));
+    expect(principal.permissions).toContain("connections:create");
   });
 });

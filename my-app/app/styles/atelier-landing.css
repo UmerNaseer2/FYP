@@ -80,6 +80,10 @@
 }
 .lp-cta { display: flex; gap: 10px; flex-wrap: wrap; }
 .lp-fine { margin-top: 14px; font-size: 12.5px; color: var(--ink-3); }
+.lp-trial { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); max-width: 52ch; }
+.lp-trial__lead { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); }
+.lp-trial__row { display: flex; gap: 8px; flex-wrap: wrap; }
+.lp-trial__row .btn { min-height: 44px; }
 
 /* ——— the example card ——— */
 .lp-stage {
@@ -227,6 +231,7 @@
   .lp-envs li { grid-template-columns: minmax(0, 1fr) auto; }
   .lp-envs code { display: none; }
   .lp-cta .btn { flex: 1 1 100%; }
+  .lp-trial__row .btn { flex: 1 1 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

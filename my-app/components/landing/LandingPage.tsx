@@ -13,6 +13,7 @@ import {
 import { BrandMark } from "@/components/ui/BrandMark";
 import { LandingThemeToggle } from "./LandingThemeToggle";
 import { LandingReveal, SectionButton } from "./LandingMotion";
+import { TRIAL_PEOPLE, TRIAL_ROLES } from "@/lib/trial-rules";
 import "@/app/styles/atelier-landing.css";
 
 /**
@@ -43,6 +44,11 @@ export type LandingPageProps = {
   encryptsPasswords: boolean;
   /** A demo server with sign-in switched off, where both buttons open the studio. */
   demo?: boolean;
+  /**
+   * Where the shared trial's buttons post to (app/api/trial/route.ts), when
+   * this server offers the trial (lib/trial-rules.ts).
+   */
+  trialAction?: string;
 };
 
 type Feature = { icon: ReactNode; title: string; body: string };
@@ -135,7 +141,13 @@ function delay(ms: number): CSSProperties {
   return { "--d": ms } as CSSProperties;
 }
 
-export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, demo = false }: LandingPageProps) {
+export function LandingPage({
+  createAccountHref,
+  logInHref,
+  encryptsPasswords,
+  demo = false,
+  trialAction,
+}: LandingPageProps) {
   return (
     <div className="lp-page">
       <LandingReveal />
@@ -186,6 +198,21 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
                   ? "This is a demo server with sign-in switched off, so both buttons open the studio."
                   : "New here? Your account is created the first time you sign in."}
               </p>
+              {trialAction && (
+                <form action={trialAction} method="post" className="lp-trial lp-in" style={delay(740)}>
+                  <p className="lp-trial__lead">
+                    Or try it first, no account needed. Everyone shares one trial organization, and it
+                    starts fresh every night.
+                  </p>
+                  <div className="lp-trial__row">
+                    {TRIAL_ROLES.map((role) => (
+                      <button key={role} type="submit" name="role" value={role} className="btn btn-secondary">
+                        Try as {TRIAL_PEOPLE[role].name.replace("Trial ", "")}
+                      </button>
+                    ))}
+                  </div>
+                </form>
+              )}
             </div>
 
             <figure className="card lp-stage" aria-label="Example: one schema in three environments">

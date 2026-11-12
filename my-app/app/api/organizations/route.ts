@@ -5,6 +5,7 @@ import { readGitHubPair } from "@/lib/github-settings";
 import { createOrganization, listMemberships, listOrganizations } from "@/lib/orgs-db";
 import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/new-organization";
 import { encryptionKeySource } from "@/lib/secret-store";
+import { TRIAL_REFUSAL, trialEnabled } from "@/lib/trial-rules";
 
 /**
  * The caller's organizations, and a way to make a new one.
@@ -53,7 +54,7 @@ export async function GET() {
       : await listMemberships(caller.profileId);
     return NextResponse.json({
       organizations: organizations.map(({ slug, name }) => ({ slug, name })),
-      canCreate: !caller.bypass && !onDesktop(),
+      canCreate: !caller.bypass && !onDesktop() && !(await isTrialAccount(caller.profileId).catch(() => true)),
     });
   } catch (error) {
     console.error("Failed to list organizations:", error);
@@ -71,6 +72,10 @@ export async function POST(request: NextRequest) {
       { error: "The desktop app keeps a single organization of its own." },
       { status: 403 }
     );
+  }
+  // The trial's accounts are shared by everyone, so none of them may start or join anything.
+  if (!caller.bypass && (await isTrialAccount(caller.profileId).catch(() => true))) {
+    return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
   }
   if (caller.bypass) {
     return NextResponse.json(
@@ -177,4 +182,11 @@ function unavailable(what: string): NextResponse {
     { error: `${what} The app's database may be unreachable. Try again in a moment.` },
     { status: 503 }
   );
+}
+
+/** Only loaded when the trial is on: lib/trial-sandbox.ts opens the database as it loads. */
+async function isTrialAccount(profileId: number): Promise<boolean> {
+  if (!trialEnabled()) return false;
+  const { isTrialProfile } = await import("@/lib/trial-sandbox");
+  return isTrialProfile(profileId);
 }

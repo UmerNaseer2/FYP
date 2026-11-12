@@ -1,4 +1,5 @@
 import { ORG_SLUG_PATTERN, isReservedSlug } from "./org-slug";
+import { TRIAL_ORG_SLUG } from "./trial-rules";
 
 /**
  * The rules for a new organization's name and address, in one place so the
@@ -49,6 +50,10 @@ export function orgSlugProblem(slug: string): string | null {
     );
   }
   if (isReservedSlug(slug)) return "That address is used by the app itself. Pick another.";
+  // Kept for the shared trial organization (lib/trial-rules.ts). Not one of
+  // the reserved slugs, because those can never be an organization's address
+  // at all, and the trial's is one.
+  if (slug === TRIAL_ORG_SLUG) return "That address is kept for the trial organization. Pick another.";
   return null;
 }
 

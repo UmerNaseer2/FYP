@@ -152,6 +152,8 @@ const UNGATED = [
   "DELETE /api/agent/sync/connections",
   // The desktop app's own server, answering only its main process's token.
   "POST /api/desktop/sync",
+  // The landing page's "Try as ..." buttons, signing in a trial account.
+  "POST /api/trial",
   "GET /api/internal/drift-tick",
   "GET /api/auth/[...nextauth]",
   "POST /api/auth/[...nextauth]"];

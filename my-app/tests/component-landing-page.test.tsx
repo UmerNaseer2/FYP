@@ -39,6 +39,19 @@ function links(): [string | null, string | null][] {
 }
 
 describe("LandingPage", () => {
+  it("offers the shared trial as one button per role, only when the server has it", () => {
+    const { rerender } = render(<LandingPage {...SIGN_IN} />);
+    expect(screen.queryByRole("button", { name: /^Try as/ })).toBeNull();
+    rerender(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
+    const buttons = screen.getAllByRole("button", { name: /^Try as/ });
+    expect(buttons.map((b) => [b.textContent, b.getAttribute("name"), b.getAttribute("value")])).toEqual([
+      ["Try as Admin", "role", "admin"],
+      ["Try as Editor", "role", "editor"],
+      ["Try as Viewer", "role", "viewer"],
+    ]);
+    expect(screen.getByText(/Everyone shares one trial organization/)).toBeInTheDocument();
+  });
+
   it("offers exactly two ways in", () => {
     // The name in the header is deliberately not a link: on the front page it
     // would only lead back here.

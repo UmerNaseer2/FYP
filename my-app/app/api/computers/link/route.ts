@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { approveLink, denyLink, readLink } from "@/lib/agent-db";
 import { readUserCode } from "@/lib/agent-rules";
 import { requirePermission } from "@/lib/auth-guard";
+import { TRIAL_REFUSAL, isTrialOrg } from "@/lib/trial-rules";
 
 const NEEDS_ACCOUNT = "Linking a computer needs a signed-in account.";
 const NO_SUCH_CODE = "That code has expired or is not right. Start again on the computer.";
@@ -41,6 +42,9 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
   const { principal } = gate;
   if (principal.profileId === null) return NextResponse.json({ error: NEEDS_ACCOUNT }, { status: 409 });
+  // Everyone in the trial is the same three people, so a computer linked there
+  // would be open to every visitor.
+  if (isTrialOrg(principal.orgSlug)) return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
   const code = codeFromBody(await request.json().catch(() => null));
   if (code === null) return NextResponse.json({ error: NO_SUCH_CODE }, { status: 404 });
   try {

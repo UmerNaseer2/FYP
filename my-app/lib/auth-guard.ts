@@ -11,6 +11,7 @@ import {
   type PermissionKey,
 } from "./permissions";
 import { ORG_HEADER } from "./org-slug";
+import { TRIAL_BLOCKED_PERMISSIONS, TRIAL_REFUSAL, isTrialOrg, trialPermissions } from "./trial-rules";
 import {
   findDefaultMembership,
   findDefaultOrganization,
@@ -326,7 +327,8 @@ function memberPrincipal(
     name: membership.personName ?? membership.email,
     role: access.role,
     roleLabel: access.roleLabel,
-    permissions: access.permissions,
+    // The shared trial switches some things off for every role in it (lib/trial-rules.ts).
+    permissions: isTrialOrg(membership.slug) ? trialPermissions(access.permissions) : access.permissions,
     bypass: false,
     viewingAs: null,
     orgId: membership.orgId,
@@ -431,6 +433,9 @@ export async function requirePermission(
   if (found.kind !== "ok") return refusalFor(found);
   const { principal } = found;
   if (!hasPermission(principal, ...keys)) {
+    if (isTrialOrg(principal.orgSlug) && keys.some((key) => TRIAL_BLOCKED_PERMISSIONS.has(key))) {
+      return refuse(403, TRIAL_REFUSAL);
+    }
     return refuse(403, refusalMessage(principal.roleLabel, keys[0]));
   }
   return { ok: true, principal };

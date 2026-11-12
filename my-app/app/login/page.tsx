@@ -82,6 +82,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   EmailUnverified:
     "That account has not confirmed its email address is yours. Confirm it with Microsoft or GitHub, or use another account.",
   AccountUnavailable: "Schema Studio could not finish signing you in. Try again in a moment.",
+  TrialUnavailable: "The trial could not be opened just now. Try again in a moment.",
   CredentialsSignin: "Schema Studio could not confirm your Microsoft sign-in.",
   SessionRevoked: "Your Microsoft sign-in has ended. Sign in again to carry on.",
   OfflineTooLong:

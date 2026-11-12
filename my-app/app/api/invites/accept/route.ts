@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSignedIn } from "@/lib/auth-guard";
+import { TRIAL_REFUSAL, trialEnabled } from "@/lib/trial-rules";
 import { acceptInvite, type InviteAcceptance } from "@/lib/invites-db";
 
 /**
@@ -43,6 +44,10 @@ export async function POST(request: NextRequest) {
       { error: "Taking an invitation needs a real sign-in. The demo has nobody to join as." },
       { status: 403 }
     );
+  }
+  // A trial account is shared by everyone, so it may not join a real organization.
+  if (await isTrialAccount(caller.profileId).catch(() => true)) {
+    return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
   }
 
   let body: { token?: unknown };
@@ -114,4 +119,11 @@ function answer(result: InviteAcceptance): NextResponse {
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
 function onDesktop(): boolean {
   return process.env.SCHEMA_STUDIO_DESKTOP === "1";
+}
+
+/** Only loaded when the trial is on: lib/trial-sandbox.ts opens the database as it loads. */
+async function isTrialAccount(profileId: number): Promise<boolean> {
+  if (!trialEnabled()) return false;
+  const { isTrialProfile } = await import("@/lib/trial-sandbox");
+  return isTrialProfile(profileId);
 }

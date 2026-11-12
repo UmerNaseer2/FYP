@@ -36,6 +36,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
      * by, which can differ from what the provider sent this time.
      */
     async signIn({ user, account, profile }) {
+      // The trial's accounts are made by the trial itself (lib/trial-sandbox.ts),
+      // which hands back the profile ID already; they are never matched by address.
+      if (account?.provider === "trial") return /^\d+$/.test(user.id ?? "");
       const who = identityFrom({ user, account, profile });
       if (!who) return "/login?error=NoEmail";
       try {

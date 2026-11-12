@@ -3,6 +3,7 @@ import type { CredentialsConfig } from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 import { isPlaceholderSecret } from "./lib/placeholder-secrets";
+import { trialEnabled } from "./lib/trial-rules";
 
 /**
  * The edge-safe half of the NextAuth configuration.
@@ -80,6 +81,12 @@ export const desktopConfigured =
   Boolean(process.env.AZURE_AD_CLIENT_ID && process.env.AZURE_AD_TENANT_ID);
 
 /**
+ * The shared trial organization's one-click sign-in (lib/trial-rules.ts):
+ * on when TRIAL_SANDBOX=on, and never in the desktop app.
+ */
+export const trialConfigured = trialEnabled();
+
+/**
  * NextAuth signs its session cookie with this and refuses to start without it.
  *
  * It is checked separately from the provider keys because the failure mode is
@@ -104,7 +111,7 @@ export const secretConfigured =
  * app/api/auth/[...nextauth]/route.ts and proxy.ts.
  */
 export const authUsable =
-  (entraConfigured || githubConfigured || desktopConfigured) && secretConfigured;
+  (entraConfigured || githubConfigured || desktopConfigured || trialConfigured) && secretConfigured;
 
 /**
  * Reads who signed in with GitHub, and whether GitHub has checked their
@@ -185,6 +192,24 @@ const desktopProvider = {
 } satisfies CredentialsConfig;
 
 /**
+ * The landing page's "Try as Admin / Editor / Viewer" buttons. No password:
+ * the visitor picks one of the trial's three accounts, and authorize() makes
+ * the trial organization ready and hands back that account
+ * (lib/trial-sandbox.ts). It can only ever be one of those three, in that
+ * one organization, which nobody can use to reach anything else.
+ */
+const trialProvider = {
+  id: "trial",
+  name: "Trial",
+  type: "credentials",
+  credentials: { role: {} },
+  async authorize(credentials) {
+    const { trialSignIn } = await import("./lib/trial-sandbox");
+    return trialSignIn(credentials?.role);
+  },
+} satisfies CredentialsConfig;
+
+/**
  * Each kind of sign-in this file can offer. Named rather than left as
  * NextAuthConfig["providers"], which also allows a provider written as a
  * function and so has no `id` to read without calling it.
@@ -192,7 +217,8 @@ const desktopProvider = {
 type Provider =
   | ReturnType<typeof MicrosoftEntraID>
   | ReturnType<typeof GitHub>
-  | typeof desktopProvider;
+  | typeof desktopProvider
+  | typeof trialProvider;
 
 /**
  * The ways to sign in, in the order the sign-in page shows them.
@@ -224,6 +250,7 @@ function providers(): Provider[] {
       })
     );
   }
+  if (trialConfigured) list.push(trialProvider);
   return list;
 }
 
