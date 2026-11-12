@@ -94,7 +94,6 @@ export type DesktopDriftSchema = {
   /** The website's id for the connection: a copy on this computer has it as its site id. */
   connectionId: number;
   connectionName: string;
-  environment: string;
   schema: string;
   label: string | null;
   /** How often the website checks it, in minutes; 0 is by hand only. */

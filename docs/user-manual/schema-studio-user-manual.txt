@@ -42,7 +42,7 @@ Schema Studio is a web-based tool for PostgreSQL schema management. It lets you:
 All work belongs to an organization. Each organization has its own people,
 roles, saved connections and scripts, and its address is the first part of the
 address of every screen. Inside it you can have multiple PostgreSQL connections
-(dev, staging, production) and compare/sync between any two.
+and compare/sync between any two.
 
 AI assistance is optional. It can summarise a comparison, review a run before
 you deploy it, explain a drift, draft SQL from plain words and answer
@@ -137,22 +137,19 @@ ADDING A CONNECTION
      first connection"). A drawer titled "Add connection" opens. Under "Quick
      start", "Local Postgres" and "Hosted (Neon · Supabase · RDS)" fill in a
      name and the SSL mode each one needs.
-  3. Give it a "Friendly name", for example "production", "staging" or
-     "dev local"
-  4. Set the Environment: Unlabelled, Dev, Staging or Production. You can also
-     tick "Mark as production". This is only a label, but it is the label that
-     drives the production warnings and the approval you'll meet before a
-     deploy, so it is worth setting.
-  5. Enter the connection details, either way round:
+  3. Give it a "Friendly name", for example "shop live", "shop staging" or
+     "dev local". The name is only for people to read: the app treats every
+     connection the same way, whatever it is called.
+  4. Enter the connection details, either way round:
      • Connection string: paste a postgres:// URI
      • Fields: Host, Port (usually 5432), Database, User, Password
-  6. Pick the SSL mode:
+  5. Pick the SSL mode:
      • Off — no encryption. Normal for a localhost loopback connection.
      • Require — encrypts the link but accepts whatever certificate the server
        presents. This is what hosted Postgres (Supabase, Neon, RDS) needs.
      • Verify full — also checks the certificate chain and hostname. Fails
        against a self-signed certificate.
-  7. Choose who may run migrations here:
+  6. Choose who may run migrations here:
      • Anyone whose role may run deployments (the default)
      • Admins only: people with the Admin role itself. A role an admin made
        does not count, whatever it is allowed to do.
@@ -162,27 +159,24 @@ ADDING A CONNECTION
      It can only narrow who may run migrations here, never let anyone else
      in. Anyone who may edit the connection can make it stricter. Making
      it looser again (read-only to anything else, or admins only back to
-     the default) needs "Approve production runs", which out of the box
+     the default) needs "Approve runs", which out of the box
      only an Admin has. Comparing, generating scripts, previewing and exporting are
      unaffected by it: it only decides who may make this app WRITE to this
      database. A reference or model schema you never want written to is the
      read-only case.
-  8. Optionally name an Application table — a table on this database with an
+  7. Optionally name an Application table, which is a table on this database with an
      `application_name` column. Deploy reads it to decide whether a script
      marked `-- Applies-to: billing` may run here.
-  9. Under "Test connection", click "Test now" to verify the connection works.
+  8. Under "Test connection", click "Test now" to verify the connection works.
      Then click "Save connection" at the bottom of the drawer ("Cancel" closes
      it without saving).
 
 Once saved, the connection is listed in a table. You can:
   • Test it again with "Test" on its row (verify credentials are still valid)
   • View its last-tested timestamp
-  • Edit it with "Edit" on its row, including its environment label. The
-    drawer's button then reads "Save changes". A schema you track through
-    this connection inherits that label when you start tracking it, and can be
-    relabelled afterwards on its own detail page.
-  • Tick "Group by environment", or filter the list (All, Local, Remote,
-    SSL on)
+  • Edit it with "Edit" on its row. The drawer's button then reads "Save
+    changes".
+  • Filter the list (All, Local, Remote, SSL on)
   • Delete it (removes it from the app, not the actual database). It asks you
     to confirm first.
 
@@ -239,24 +233,22 @@ TRACKING A SCHEMA
   3. Pick a Connection ("Select a connection…")
   4. The app reads that database and lists its schemas. Pick a Schema
      ("Select a schema…").
-  5. The Environment starts as the connection's ("Inherited from the
-     connection"). Change it if this schema is a different one ("Set for this
-     schema"). You can also type a "Label (optional)".
+  5. You can also type a "Label (optional)", a few words of your own to tell
+     this schema apart.
   6. Click "Track schema" ("Cancel" closes the dialog). A baseline snapshot is
      taken straight away and recorded as version v1.0.0.
 
 Once tracked, the schema appears as a card showing:
   • Schema name, its connection and database, and its label if it has one
   • Drift status: Drifted, In sync, Unreachable or Not checked
-  • Its environment
   • Its lineage version. This is Schema Studio's own counter for the tracked
     schema. It is separate from the script versions that Deploy shows.
   • What the last drift check found, or "No drift check yet."
 
 Each card has buttons: "Open", "Check drift", "Compare", a button to stop
 tracking, and "Review drift" when the schema has drifted. Above the cards,
-"Refresh" reads the list again, and the filter chips (All, Production,
-Drifted, In sync, Unreachable, Not checked) narrow it.
+"Refresh" reads the list again, and the filter chips (All, Drifted, In sync,
+Unreachable, Not checked) narrow it.
 
 VIEWING SCHEMA DETAILS
 ---------------------
@@ -264,7 +256,6 @@ Click "Open" on a schema card to open its detail page. You'll see:
   • Its drift state, with "Check drift now" (or "Re-check drift"), and
     "Review drift" when it has drifted
   • Counts of what is in the schema, taken from its newest snapshot
-  • Its environment, which you can change here
   • Lineage: the history of its versions, each with its snapshot and its
     migration script where one is stored
   • "Compare with another database", which opens Compare with this schema as
@@ -478,13 +469,14 @@ REPLAYING VERSIONS
      one. A button above the list replays every version in the list, in one
      transaction.
   3. Pressing one opens the "Replay" dialog. Nothing has run yet. It shows
-     "What runs, in order", the Target it runs on, and a tick box for each
-     thing you must have read first: breaking migrations, statements that
-     delete rows, and a drift check that did not pass.
+     "What runs, in order", the Target it runs on, and a warning for each
+     risk worth reading first: breaking migrations, statements that delete
+     rows, and a drift check that did not pass. A warning does not stop the
+     run.
   4. Click "Dry run" to rehearse it (the scripts run and are then rolled back,
-     so nothing is written), or the "Replay" button to do it for real. On a
-     production Target the Replay button says so, and both a replay and its
-     dry run need an approval (see WHO MAY APPLY in section 10).
+     so nothing is written), or the "Replay" button to do it for real. If
+     your role may not run on the Target, the dialog offers "Ask for
+     approval" instead (see WHO MAY APPLY in section 10).
   5. Each version's stored SQL is executed against the Target in order
   6. A new ledger entry is added to the Target's script_patch table
 
@@ -749,19 +741,17 @@ and Verify.
      versions up to that row, and "Run all" picks every pending version.
      These buttons only choose the range. Nothing runs yet.
   6. Read the "Pre-flight checklist". It covers, among other things, that the
-     target can be reached, that you may run on it, its environment, the
-     applications it is used by, that no script holds a transaction statement,
+     target can be reached, that you may run on it, the applications it is
+     used by, that no script holds a transaction statement,
      the approval, the ledger table and the drift check.
-  7. Tick the boxes the page asks for. There is one for a production target,
-     one for breaking migrations, one for statements that delete rows, and
-     one when the drift check did not pass.
+  7. Read the warnings the page shows. There is one for breaking migrations,
+     one for statements that delete rows, and one when the drift check did
+     not pass. They are there to be read, and none of them stops the run.
   8. Click the "Dry run" button to rehearse: the scripts run against the
-     target and are then rolled back, so nothing is written. A dry run
-     never needs an approval. It stops any statement that takes longer
-     than five minutes.
+     target and are then rolled back, so nothing is written. It stops any
+     statement that takes longer than five minutes.
   9. Click the "Deploy" button to run for real. Both buttons name the range of
-     versions, and Deploy adds "to production" on a production target. After
-     a clean rehearsal the Run step offers "Deploy for real".
+     versions. After a clean rehearsal the Run step offers "Deploy for real".
  10. The Run step shows how each migration went. If the run stopped, nothing
      was applied; you can go "Back to Pre-flight" or press "Run again".
  11. The Verify step shows "What was applied" and a "Verify diff", with links
@@ -810,9 +800,9 @@ deployments, admins only, or nobody (see "Who may run migrations here" under
 Connections). When either one stops you, Deploy says which, next to the buttons
 it switches off.
 
-Out of the box that is all: if your role allows a run, you just do it,
-production included, and an Admin can always run. A Target labelled
-production only asks you to tick its risks first.
+That is all: if your role allows a run, you just do it, on any connection,
+and an Admin can always run. The page shows what the run risks as warnings to
+read, and nothing has to be ticked.
 
 If your role may not run on the Target (or the connection is for admins
 only), Deploy and Version Sync offer "Ask for approval" instead. An Admin
@@ -820,14 +810,11 @@ approves that exact run, and then you can run it once, within 7 days. Only
 you can use that approval, a dry run is not offered without it, and a
 read-only connection is never opened this way.
 
-An admin can switch on the organization's two-person rule (Organization tab,
-section 11). While it is on, a real run on a production Target needs an
-approval for that exact run, from a second person. Asking for one needs
-"Request a production approval" (out of the box, Editor and Admin), and giving
-one needs "Approve production runs" (out of the box, Admin only, but an admin
-can give it to another role). Nobody can approve their own request. An
-approval covers one run of the SQL it was given, for up to 7 days: change the
-SQL, or wait longer, and it needs approving again. A dry run never needs one.
+Asking needs "Ask for a run to be approved" (out of the box, Editor and
+Admin), and approving needs "Approve runs" (out of the box, Admin only, but
+an admin can give it to another role). Nobody can approve their own request.
+An approval covers one run of the SQL it was given, for up to 7 days: change
+the SQL, or wait longer, and it needs approving again.
 
 BEST PRACTICES
 --------------
@@ -846,7 +833,7 @@ BEST PRACTICES
 The Admin page, titled "People and the organization", has up to five tabs:
   • Users: who is in this organization, and which role each person has
   • Roles & permissions: what each role may do
-  • Organization: its name, its two-person rule, and deleting it
+  • Organization: its name, and deleting it
   • GitHub: the repository where the organization's scripts are kept
   • AI: whether the organization uses AI assistance, and for what
 
@@ -958,7 +945,7 @@ At a glance answers the four things people ask about a role first:
   • Changes things: can it change anything at all, rather than only look?
   • Runs migrations: a yes reads "Yes, where the connection allows", because
     each connection can still say no in its own setting (section 3)
-  • Approves production: can it approve production runs?
+  • Approves runs: can it approve a run somebody else asked for?
   • Manages people: can it invite people, change their role or remove them?
 
 Under that is what the role may do, as plain sentences with a tick box each,
@@ -967,7 +954,7 @@ Each feature's see or open line comes first, and the lines that need it are
 indented under it. Three kinds of line carry a tag, because they need more
 care:
   • Writes to a database (red): Apply or revert migrations
-  • Production (red): Approve production runs
+  • Approves runs (red): Approve runs
   • Live database (amber): Cancel a stuck query on a live database, and
     Measure a query on a live database
 A few lines have a short note under them as well (see LINES THAT NEED A WORD
@@ -1023,15 +1010,15 @@ Refusals and access requests name a line exactly as it reads here.
   Deploy
     V  See deployments
     E  Apply or revert migrations
-    V  See production approvals
-    E  Request a production approval
-    A  Approve production runs
+    V  See approval requests
+    E  Ask for a run to be approved
+    A  Approve runs
   Version Sync
     V  Open Version Sync
   Drift
     V  See tracked schemas and their drift
     E  Track a schema
-    E  Change schedules, environments and baselines, or acknowledge drift
+    E  Change schedules and baselines, or acknowledge drift
     E  Stop tracking a schema
     E  Run a drift check
   Performance
@@ -1063,9 +1050,8 @@ LINES THAT NEED A WORD MORE
   • Apply or revert migrations covers applying, reverting and replaying
     migrations, and promoting in Version Sync. The Target connection's own
     setting still applies on top (section 3).
-  • Approve production runs can be given to another role. Even then, nobody
-    may approve a request they made themselves while the organization's
-    two-person rule is on.
+  • Approve runs can be given to another role. Even then, nobody may approve
+    a request they made themselves.
   • A drift check can be run with either Run a drift check or Apply or revert
     migrations, because Deploy runs one straight after each migration.
   • Comparison sets: saving under a new name needs Save a new comparison set,
@@ -1118,14 +1104,9 @@ there, and the server ignores it.
 
 THE ORGANIZATION TAB
 --------------------
-Only the Admin role sees this tab. It has three parts:
+Only the Admin role sees this tab. It has two parts:
   • Name: rename the organization. Its address (the part after the site name)
     stays the same, so saved links keep working.
-  • Two-person rule: off for every new organization, so whoever's role allows
-    a production deploy or rollback just does it. While it is on, a
-    production deploy or rollback waits for someone other than the person who
-    asked. Switching it off asks you to confirm first. Both switches are
-    listed under Recent changes.
   • Delete this organization: type its name to confirm. It deletes the
     organization's connections, scripts, approvals, invitations and change
     log, and takes everyone out of it. Their accounts stay, and so do scripts

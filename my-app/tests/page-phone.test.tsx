@@ -94,7 +94,6 @@ function schema(id: number, name: string, status: string | null, summary: string
     connectionId: 2,
     schemaName: name,
     label: null,
-    environment: "prod",
     createdAt: WHEN,
     connectionName: `Connection ${id}`,
     connectionHost: FAKE_HOST,
@@ -246,7 +245,6 @@ describe("the Drift tab", () => {
             trackedSchemaId: 4,
             schemaName: "moved",
             label: null,
-            environment: "prod",
             connection: { host: FAKE_HOST },
             expected: { version: "1.0.0", seq: 1, snapshotId: 1 },
             state: "unreachable",
@@ -280,7 +278,6 @@ describe("the Drift tab", () => {
             trackedSchemaId: 4,
             schemaName: "moved",
             label: null,
-            environment: "prod",
             connection: null,
             expected: { version: "1.0.0", seq: 1, snapshotId: 1 },
             state: "drifted",
@@ -321,7 +318,6 @@ describe("the Drift tab", () => {
             trackedSchemaId: 4,
             schemaName: "moved",
             label: null,
-            environment: "prod",
             connection: null,
             expected: { version: "1.0.0", seq: 1, snapshotId: 1 },
             state: "drifted",
@@ -567,7 +563,7 @@ describe("the Approvals tab", () => {
           match: "/api/deploy/approvals/5",
           method: "POST",
           status: 403,
-          body: { error: "A second person has to approve this." },
+          body: { error: "An Admin has to approve this run." },
         },
       ],
       { runsToApprove: [run()] }
@@ -575,7 +571,7 @@ describe("the Approvals tab", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     await screen.findByText(/ALTER TABLE orders/);
     fireEvent.click(screen.getByRole("button", { name: "Approve this run" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("A second person has to approve this.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("An Admin has to approve this run.");
   });
 
   test("a rollback reads as a rollback, with its breaking count", async () => {

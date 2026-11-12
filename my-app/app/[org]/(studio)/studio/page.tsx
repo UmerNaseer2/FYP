@@ -13,16 +13,8 @@ import {
   ConfirmDialog,
   Label,
   Input,
-  EnvironmentPill,
   type PillTone,
 } from "@/components/ui";
-import {
-  ENVIRONMENTS,
-  ENVIRONMENT_META,
-  isProduction,
-  toEnvironment,
-  type Environment,
-} from "@/lib/environments";
 import { Select } from "@/components/ui/Select";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { PageHeader } from "@/components/studio/PageHeader";
@@ -66,9 +58,6 @@ type TrackedSchema = {
   connectionId: number;
   schemaName: string;
   label: string | null;
-  // dev / staging / prod. Optional because a response written before the column
-  // existed simply omits it; read it through toEnvironment(), never directly.
-  environment?: string | null;
   createdAt: string;
   connectionName: string | null;
   connectionHost: string | null;
@@ -93,7 +82,6 @@ type ConnectionRow = {
   host: string;
   database_name: string;
   type: string;
-  environment?: string | null;
 };
 
 /** What a building's height stands for. */
@@ -167,9 +155,6 @@ export default function DashboardPage() {
   const [listPhase, setListPhase] = useState<"loading" | "ready" | "error">("loading");
   const [checkingId, setCheckingId] = useState<number | null>(null);
   const [cardError, setCardError] = useState<{ id: number; msg: string } | null>(null);
-  // "all", or one environment. Filtering the grid is how you answer "what is
-  // actually in production right now?" without reading every card.
-  const [envFilter, setEnvFilter] = useState<"all" | Environment>("all");
   // The building whose details are on screen. Null means the first one.
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [heightBy, setHeightBy] = useState<HeightBy>("versions");
@@ -429,13 +414,7 @@ export default function DashboardPage() {
 
   // ── Derived: summary counts + hero-first ordering ──────────────────────────
   const total = items.length;
-  const envCount = (environment: Environment) =>
-    items.filter((i) => toEnvironment(i.environment) === environment).length;
-
-  const visible =
-    envFilter === "all"
-      ? items
-      : items.filter((i) => toEnvironment(i.environment) === envFilter);
+  const visible = items;
 
   // The tiles count what is on screen, so they agree with the grid under it.
   const drifted = visible.filter((i) => i.driftStatus === "drifted").length;
@@ -448,13 +427,12 @@ export default function DashboardPage() {
   // account for every row: drifted + in sync + unreachable + not checked
   // is always the tracked count.
   const notChecked = visible.length - drifted - inSync - unreachable;
-  const prodShown = visible.filter((i) => isProduction(toEnvironment(i.environment))).length;
   const sorted = [...visible].sort(
     (a, b) => sortPriority(a.driftStatus) - sortPriority(b.driftStatus)
   );
 
   // The building on show: the one picked, or the first if that one has gone
-  // (untracked, or hidden by the environment filter).
+  // (untracked).
   const selected = sorted.find((i) => i.id === selectedId) ?? sorted[0] ?? null;
   const needsYou = sorted.filter(
     (i) => i.driftStatus === "drifted" || i.driftStatus === "unreachable"
@@ -475,7 +453,7 @@ export default function DashboardPage() {
       status: item.driftStatus ?? "unchecked",
       value: heightBy === "versions" ? item.migrationCount : (tables ?? null),
       label:
-        `${item.schemaName}, ${ENVIRONMENT_META[toEnvironment(item.environment)].label}, ` +
+        `${item.schemaName}, ` +
         `${driftMeta(item.driftStatus).label}, ${amount}`,
     };
   });
@@ -585,30 +563,6 @@ export default function DashboardPage() {
         <>
           <section className="sk-stage" aria-label="The skyline">
             <div className="sk-top">
-              {/* Counts are over everything tracked, so they stay put while
-                  you move between environments. */}
-              <div className="sk-envs" role="group" aria-label="Environment">
-                <button
-                  type="button"
-                  aria-pressed={envFilter === "all"}
-                  onClick={() => setEnvFilter("all")}
-                >
-                  All <span>{total}</span>
-                </button>
-                {/* Only labels in use. No label is not a group worth a chip. */}
-                {ENVIRONMENTS.filter(
-                  (e) => e !== "unset" && (envCount(e) > 0 || envFilter === e)
-                ).map((environment) => (
-                  <button
-                    key={environment}
-                    type="button"
-                    aria-pressed={envFilter === environment}
-                    onClick={() => setEnvFilter(environment)}
-                  >
-                    {ENVIRONMENT_META[environment].label} <span>{envCount(environment)}</span>
-                  </button>
-                ))}
-              </div>
               <div className="sk-seg" role="radiogroup" aria-label="Height shows">
                 <span aria-hidden="true">Height shows</span>
                 <button
@@ -629,16 +583,6 @@ export default function DashboardPage() {
                 </button>
               </div>
             </div>
-
-            {sorted.length === 0 && (
-              <div className="sk-none">
-                <h2>Nothing tracked in {ENVIRONMENT_META[envFilter as Environment].label}</h2>
-                <p>Every tracked schema is in another environment.</p>
-                <Button variant="secondary" onClick={() => setEnvFilter("all")}>
-                  Show all environments
-                </Button>
-              </div>
-            )}
 
             {sorted.length > 0 && selected && (
               <>
@@ -693,7 +637,6 @@ export default function DashboardPage() {
                       <thead>
                         <tr>
                           <th scope="col">Schema</th>
-                          <th scope="col">Environment</th>
                           <th scope="col">Last check found</th>
                           <th scope="col">Versions</th>
                           {heightBy === "tables" && <th scope="col">Tables</th>}
@@ -711,7 +654,6 @@ export default function DashboardPage() {
                                 {item.schemaName}
                               </button>
                             </td>
-                            <td>{ENVIRONMENT_META[toEnvironment(item.environment)].label}</td>
                             <td>{driftMeta(item.driftStatus).label}</td>
                             <td>{item.migrationCount}</td>
                             {heightBy === "tables" && <td>{tablesText(tableCounts[item.id])}</td>}
@@ -729,8 +671,7 @@ export default function DashboardPage() {
               city can never disagree. Drifted, in sync, unreachable and not
               checked always add up to the first one. */}
           <div className="sk-vit">
-            <Vital label={envFilter === "all" ? "Tracked" : "Showing"} value={visible.length} />
-            <Vital label="Production" value={prodShown} tone={prodShown > 0 ? "break" : undefined} />
+            <Vital label="Tracked" value={visible.length} />
             <Vital label="Drifted" value={drifted} tone={drifted > 0 ? "drift" : undefined} />
             <Vital label="In sync" value={inSync} tone={inSync > 0 ? "sync" : undefined} />
             <Vital
@@ -865,8 +806,7 @@ export default function DashboardPage() {
           <div className="flex items-center gap-1.5 mb-1">
             <Label>Label (optional)</Label>
             <HelpHint label="Label">
-              A friendly name to show on its card. Production warnings come from the Environment
-              setting above, not from this label.
+              A friendly name to show on its card.
             </HelpHint>
           </div>
           <Input
@@ -904,12 +844,6 @@ export default function DashboardPage() {
             <span className="mono">{untrackTarget?.schemaName}</span>{" "}
             and its captured snapshots, lineage, and drift history will be
             removed. This can&apos;t be undone.
-            {untrackTarget && isProduction(toEnvironment(untrackTarget.environment)) && (
-              <span className="block mt-2" style={{ color: "var(--break)" }}>
-                This schema is labelled production. Untracking leaves the live database
-                untouched, but you lose every baseline you could compare it against.
-              </span>
-            )}
           </>
         }
         confirmLabel="Stop tracking"
@@ -1223,7 +1157,6 @@ function Inspector({
 }) {
   const orgPath = useOrgHref();
   const meta = driftMeta(item.driftStatus);
-  const environment = toEnvironment(item.environment);
   const connectionGone = item.connectionName === null;
   // Where the schema lives. Shown under the label rather than replaced by it,
   // because a label says nothing about which database this is.
@@ -1238,7 +1171,6 @@ function Inspector({
           <i aria-hidden="true" />
           {meta.label}
         </span>
-        <EnvironmentPill environment={environment} />
         {connectionGone && <span className="sk-chip">no connection</span>}
       </div>
 

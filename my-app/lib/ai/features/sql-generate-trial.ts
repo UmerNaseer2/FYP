@@ -1,8 +1,8 @@
 // SERVER-ONLY: tries a generated script, then its rollback, on the target
 // database, inside one transaction that is always rolled back.
 //
-// The route only builds this hook when the caller may run scripts on the
-// target and it is labelled Dev or Staging (see app/api/scripts/generate). The
+// The route only builds this hook when the caller's role may run scripts on
+// the target (see app/api/scripts/generate). The
 // session is set up the way a deploy sets it up: a lock wait cap, the target
 // schema alone on the search path, strings read the standard way. A time cap
 // is added, so a slow script cannot hold its locks for long. PostgreSQL applies

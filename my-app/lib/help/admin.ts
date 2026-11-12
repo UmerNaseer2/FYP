@@ -13,7 +13,7 @@ export const adminHelp: HelpTopic = {
     "On Roles & permissions, pick a role or press New role, turn on what it may do, then press Save changes.",
     "On Users, give each person a role with the role picker. The change applies straight away.",
     "Under the list of users, make an invitation, then copy its link and send it yourself. The app sends no email.",
-    "On Organization, rename the organization or switch its two-person rule for production deploys.",
+    "On Organization, rename the organization.",
     "On GitHub, save the repository and the access token for where the organization's scripts are kept.",
     "On AI, switch AI assistance on if you want it, then switch single features on or off.",
     "Check your work under Recent changes, at the bottom of Roles & permissions. It lists who changed what.",
@@ -33,7 +33,7 @@ export const adminHelp: HelpTopic = {
     {
       term: "At a glance",
       meaning:
-        "Four quick answers about a role: whether it changes things, runs migrations, approves production and manages people.",
+        "Four quick answers about a role: whether it changes things, runs migrations, approves runs and manages people.",
     },
     {
       term: "Rank rule",
@@ -51,11 +51,6 @@ export const adminHelp: HelpTopic = {
       meaning:
         "A link that lets someone join. One made for an email address works once, within 7 days, for that address only. " +
         "An open link lets anyone who has it join as a Viewer for 1, 7 or 30 days.",
-    },
-    {
-      term: "Two-person rule",
-      meaning:
-        "Off unless an admin switches it on. While it is on, a production deploy or rollback waits for someone other than the person who asked.",
     },
     {
       term: "Access token",
@@ -155,7 +150,6 @@ export const adminHelp: HelpTopic = {
       title: "Organization tab",
       body: [
         "Name: the address stays the same when the name changes, so saved links keep working.",
-        "Two-person rule: off to start with, so anyone whose role allows a run just does it. While it is on, real runs on production need a second person's approval.",
         "Delete this organization: type its name to confirm. It can't be undone. People's accounts stay, and so do scripts already in GitHub.",
       ],
     },

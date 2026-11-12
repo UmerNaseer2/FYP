@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
-import { approvalsOn, findOpenApproval, runFingerprint } from "@/lib/approvals-db";
+import { findOpenApproval, runFingerprint } from "@/lib/approvals-db";
 import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { isProduction, toEnvironment } from "@/lib/environments";
 import { GITHUB_UNCONFIGURED_CODE } from "@/lib/github-registry";
 import { findTrackedSchema } from "@/lib/lineage-db";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
@@ -48,7 +47,7 @@ import { POST as preflight } from "@/app/api/scripts/preflight/route";
  * ours, with no host or other detail, because they can reach a phone's log.
  */
 
-type Connection = { database_name: string; environment: string | null; execute_role: string | null };
+type Connection = { database_name: string; execute_role: string | null };
 
 function refuse(status: number, error: string): NextResponse {
   return NextResponse.json({ ok: false, error }, { status });
@@ -59,7 +58,7 @@ async function readConnection(connectionId: number, orgId: number): Promise<Conn
   try {
     await syncMetadataTables();
     const result = await pool.query<Connection>(
-      "SELECT database_name, environment, execute_role FROM connections WHERE id = $1 AND org_id = $2",
+      "SELECT database_name, execute_role FROM connections WHERE id = $1 AND org_id = $2",
       [connectionId, orgId],
     );
     return result.rows[0] ?? refuse(404, "No saved connection has that id.");
@@ -167,11 +166,12 @@ export async function POST(request: NextRequest) {
     console.error("Phone deploy — failed to read the tracked schema:", error instanceof Error ? error.message : error);
     return refuse(503, "Could not read how that schema is tracked.");
   }
-  // The connection's label is the only one. A second person is needed only on
-  // production, and only when the organization has approvals switched on.
-  const environment = toEnvironment(connection.environment);
-  const production = isProduction(environment);
-  const approvalNeeded = production && approvalsOn(principal);
+  const executeRole = toExecuteRole(connection.execute_role);
+  // Both things that let someone run: their role, and the connection's own rule.
+  const mayRun = canExecute(
+    { isAdmin: principal.role === ADMIN_ROLE, mayDeploy: hasPermission(principal, "deploy:run") },
+    executeRole,
+  );
 
   const target = { connectionId: id, schemaName, scriptName, targetVersion: targetVersion as string | null };
   const draft =
@@ -180,7 +180,9 @@ export async function POST(request: NextRequest) {
       : draftRollback(target, family, ledger);
 
   let approval: "approved" | "pending" | null = null;
-  if (approvalNeeded && draft.problem === null) {
+  // Somebody who may not run it themselves needs their own request for
+  // exactly this run to be approved first.
+  if (!mayRun && executeRole !== "none" && draft.problem === null) {
     try {
       approval = await findOpenApproval({
         orgId: principal.orgId,
@@ -188,6 +190,7 @@ export async function POST(request: NextRequest) {
         schemaName,
         scripts: draft.scripts,
         action,
+        requestedBy: principal.email,
       });
     } catch (error) {
       console.error("Phone deploy — failed to read the approval queue:", error instanceof Error ? error.message : error);
@@ -195,15 +198,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const executeRole = toExecuteRole(connection.execute_role);
-  const mayRun = hasPermission(principal, "deploy:run");
   const { next, blockedReason } = nextStep(draft.problem, {
-    approvalNeeded,
     approval,
     readOnly: executeRole === "none",
-    // Both things that let someone run: their role, and the connection's own rule.
-    mayRun: canExecute({ isAdmin: principal.role === ADMIN_ROLE, mayDeploy: mayRun }, executeRole),
-    mayAsk: hasPermission(principal, "approvals:create"),
+    mayRun,
   });
 
   return NextResponse.json({
@@ -212,11 +210,10 @@ export async function POST(request: NextRequest) {
     schemaName,
     scriptName,
     targetVersion,
-    environment,
     partial: registry.partial,
     fingerprint: runFingerprint(draft.scripts, action),
     scripts: draft.scripts,
-    risks: { production, ...draft.risks },
+    risks: draft.risks,
     next,
     blockedReason,
     run: next === "run" || next === "run-approved" ? draft.run : null,

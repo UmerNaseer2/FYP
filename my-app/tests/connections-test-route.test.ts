@@ -109,7 +109,6 @@ function fieldsEdit(over: Record<string, unknown> = {}) {
     type: "PostgreSQL",
     ssl: true,
     ssl_mode: "require",
-    environment: "dev",
     application_table: "",
     execute_role: "default",
     connection_string: "",

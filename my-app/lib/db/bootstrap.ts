@@ -2,7 +2,6 @@ import { sequelize, metadataPool, type MetadataClient } from "./sequelize";
 // Importing the models also registers every one of them with `sequelize`,
 // which is what sync() below creates.
 import { AI_CALL_OUTCOMES, Organization } from "./models";
-import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { THRESHOLD_KEYS } from "../perf-thresholds";
@@ -162,7 +161,7 @@ function sqlList(values: readonly string[]): string {
  * Add a CHECK that `column` holds one of `values`, and widen it on a database
  * whose list is shorter.
  *
- * Every list here comes from a TypeScript constant (the environments, the
+ * Every list here comes from a TypeScript constant (the
  * drift sources, the threshold keys, the kinds of change the role log knows),
  * so a value is never valid in the code and refused by the database. Those
  * lists grow. addCheckConstraint leaves a constraint that is already there
@@ -234,15 +233,6 @@ async function addConstraints(): Promise<void> {
     "connections_ssl_mode_check",
     "ssl_mode IN ('disable', 'require', 'verify-full')"
   );
-  // The environment list comes from the TypeScript union in lib/environments,
-  // so a new environment can never be valid in one and refused by the other.
-  await addListCheck("connections", "connections_environment_check", "environment", ENVIRONMENTS);
-  await addListCheck(
-    "tracked_schemas",
-    "tracked_schemas_environment_check",
-    "environment",
-    ENVIRONMENTS
-  );
   await addListCheck("drift_events", "drift_events_source_check", "source", DRIFT_SOURCE_VALUES);
   // A cadence the scheduler cannot act on is a schema nobody is watching, so
   // the floor is enforced here rather than trusted to every writer.
@@ -275,12 +265,12 @@ async function addConstraints(): Promise<void> {
     "access_requests_status_check",
     "status IN ('pending', 'allowed', 'declined', 'done', 'withdrawn')"
   );
-  // The two-person rule, in the database.
+  // Nobody approves their own ask, in the database.
   //
   // A route that forgets to compare the two emails cannot create a
   // self-approved row by accident; it gets an error instead. The one exception
   // is flagged, not hidden: self_approved is set only while the auth bypass is
-  // on, when the app has exactly one principal and the rule is unsatisfiable.
+  // on, when the app has exactly one person and nobody else could decide.
   // An audit can then tell the two apart by reading one column.
   await addCheckConstraint(
     "deploy_approvals",
@@ -583,22 +573,18 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(`ALTER TABLE agent_links ADD COLUMN IF NOT EXISTS caller_hash TEXT`);
   // On a linked desktop, the website role that caps what its person may do there (lib/site-role.ts).
   await metadataPool.query(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS site_role JSONB`);
-  // Whether production runs wait for a second person. A new column, off, in
-  // place of the old two_person_rule (on by default), so every organization
-  // starts with approvals off and an Admin switches them on if they want them.
+  // Connections and tracked schemas once carried a dev, staging or production
+  // label, and an organization had a switch that made production runs wait
+  // for a second person. Both are gone: roles and approvals decide everything.
+  // sync() never drops a column, so the old ones are dropped here. Dropping a
+  // column drops the CHECK on it too.
+  await metadataPool.query(`ALTER TABLE connections DROP COLUMN IF EXISTS environment`);
+  await metadataPool.query(`ALTER TABLE tracked_schemas DROP COLUMN IF EXISTS environment`);
+  await metadataPool.query(`ALTER TABLE agent_connections DROP COLUMN IF EXISTS environment`);
   await metadataPool.query(
-    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS require_approvals BOOLEAN NOT NULL DEFAULT false`
-  );
-
-  // `environment` is the typed dev / staging / prod label. It is deliberately
-  // NOT guessed from the row's name: the whole point is that the label is data
-  // the app can trust, and a regex over "Prod — RDS" is not that. Rows created
-  // before this column arrive as 'unset', and the UI asks for a label.
-  await metadataPool.query(
-    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
-  );
-  await metadataPool.query(
-    `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
+    `ALTER TABLE organizations
+       DROP COLUMN IF EXISTS require_approvals,
+       DROP COLUMN IF EXISTS two_person_rule`
   );
 
   // How often the scheduler re-checks a tracked schema. Rows created before

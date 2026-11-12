@@ -34,19 +34,17 @@
 .sk-stage button:focus-visible, .sk-stage a:focus-visible, .sk-stage summary:focus-visible { outline: 3px solid var(--sky-ink); outline-offset: 2px; }
 
 .sk-top { display: flex; gap: 10px 14px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
-.sk-envs, .sk-seg {
+.sk-seg {
   display: flex; align-items: center; gap: 4px; padding: 4px; max-width: 100%; overflow-x: auto;
   border-radius: var(--r-pill); background: var(--sk-glass);
 }
-.sk-envs button, .sk-seg button {
+.sk-seg button {
   display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 14px;
   border: 0; border-radius: var(--r-pill); background: transparent; cursor: pointer;
   font: 600 13px/18px var(--sans); color: var(--sky-ink-2); white-space: nowrap;
   transition: background var(--dur-2), color var(--dur-2);
 }
-.sk-envs button span { font: 12px/18px var(--mono); }
-.sk-envs button:hover, .sk-seg button:hover { background: var(--sk-glass); }
-.sk-envs button[aria-pressed="true"] { background: var(--sky-ink); color: var(--sky-bg); }
+.sk-seg button:hover { background: var(--sk-glass); }
 .sk-seg > span { padding: 0 6px 0 10px; font: 700 11px/1 var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--sky-ink-2); white-space: nowrap; }
 .sk-seg button[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
 
@@ -110,11 +108,6 @@
 .sk-tb th { background: var(--sky-bg-2); color: var(--sky-ink); font-weight: 600; }
 .sk-tb td button { min-height: 44px; border: 0; background: transparent; cursor: pointer; color: var(--sky-ink); font: 500 13px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
 
-/* An environment with nothing tracked in it. */
-.sk-none { display: grid; gap: 10px; justify-items: start; margin-top: 12px; padding: 22px; border-radius: 20px; background: var(--sk-glass); border: 1px solid var(--sk-line); }
-.sk-none h2 { font: 800 24px/1.1 var(--display); letter-spacing: -.02em; margin: 0; color: var(--sky-ink); }
-.sk-none p { margin: 0; color: var(--sky-ink-2); }
-.sk-none .btn { min-height: 44px; }
 
 /* ---------- needs you ---------- */
 .sk-need { padding: 18px 20px; min-width: 0; }
@@ -172,7 +165,7 @@
   .sk-stage { padding: 12px; }
   .sk-vit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sk-v b { font-size: 28px; line-height: 34px; }
-  .sk-envs button, .sk-seg button { min-height: 44px; }
+  .sk-seg button { min-height: 44px; }
   .sk-seg > span { display: none; }
   .sk-nr { grid-template-columns: 10px minmax(0, 1fr); }
   .sk-nr-go { grid-column: 2; }
@@ -182,5 +175,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sk-b, .sk-ins > * { animation: none; }
-  .sk-envs button, .sk-seg button, .sk-nr { transition: none; }
+  .sk-seg button, .sk-nr { transition: none; }
 }

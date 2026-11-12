@@ -1,6 +1,6 @@
 /**
  * /api/admin/organization (app/api/admin/organization/route.ts): reading,
- * renaming, switching the two-person rule, and deleting the caller's own
+ * renaming and deleting the caller's own
  * organization.
  *
  * What the database does with each change is lib/orgs-db.ts's business, and
@@ -70,7 +70,7 @@ describe("GET", () => {
   test("asks for Organization: Read and says what the tab shows", async () => {
     expect(await answer(await GET())).toEqual([
       200,
-      { name: TEST_ORG.name, slug: TEST_ORG.slug, twoPersonRule: true, canDelete: false },
+      { name: TEST_ORG.name, slug: TEST_ORG.slug, canDelete: false },
     ]);
     expect(mockAskedFor).toEqual([["organization:read"]]);
   });
@@ -96,33 +96,29 @@ describe("GET", () => {
 });
 
 describe("PATCH", () => {
-  const saved = { id: 7, name: "Acme", slug: TEST_ORG.slug, twoPersonRule: false };
+  const saved = { id: 7, name: "Acme", slug: TEST_ORG.slug };
 
-  test("asks for Organization: Update, saves a clean name and the rule, and answers what was kept", async () => {
+  test("asks for Organization: Update, saves a clean name, and answers what was kept", async () => {
     mockOrgsDb.updateOrganization.mockResolvedValue({ kind: "ok", organization: saved });
 
-    const sent = send("PATCH", JSON.stringify({ name: "  Acme  ", twoPersonRule: false }));
+    const sent = send("PATCH", JSON.stringify({ name: "  Acme  " }));
     expect(await answer(await PATCH(sent))).toEqual([
       200,
-      { name: "Acme", slug: TEST_ORG.slug, twoPersonRule: false },
+      { name: "Acme", slug: TEST_ORG.slug },
     ]);
     expect(mockAskedFor).toEqual([["organization:update"]]);
     expect(mockOrgsDb.updateOrganization.mock.calls).toEqual([
-      [TEST_ORG.id, { name: "Acme", twoPersonRule: false }, "umer@x"],
+      [TEST_ORG.id, { name: "Acme" }, "umer@x"],
     ]);
   });
 
   test.each<[string, string, unknown]>([
     ["a body that is not JSON", "{", { error: "Expected a JSON body." }],
     ["an array", "[]", { error: "Expected a JSON body." }],
-    ["nothing to change", "{}", { error: "Say what to change: the name, the two-person rule, or both." }],
+    ["nothing to change", "{}", { error: "Say what to change: the name." }],
     ["an empty name", JSON.stringify({ name: "   " }), { error: orgNameProblem(""), field: "name" }],
     ["a name that is not text", JSON.stringify({ name: 5 }), { error: orgNameProblem(""), field: "name" }],
-    [
-      "a rule that is not true or false",
-      JSON.stringify({ twoPersonRule: "off" }),
-      { error: "Say whether the two-person rule is on (true) or off (false).", field: "twoPersonRule" },
-    ],
+    ["an old setting and no name", JSON.stringify({ twoPersonRule: true }), { error: "Say what to change: the name." }],
   ])("refuses %s before the database is reached", async (_, body, refusal) => {
     expect(await answer(await PATCH(send("PATCH", body)))).toEqual([400, refusal]);
     expect(mockOrgsDb.updateOrganization).not.toHaveBeenCalled();
@@ -135,7 +131,7 @@ describe("PATCH", () => {
 
     const logged = jest.spyOn(console, "error").mockImplementation(() => {});
     mockOrgsDb.updateOrganization.mockRejectedValueOnce(new Error("boom"));
-    expect(await answer(await PATCH(send("PATCH", JSON.stringify({ twoPersonRule: true }))))).toEqual([
+    expect(await answer(await PATCH(send("PATCH", JSON.stringify({ name: "Acme" }))))).toEqual([
       503,
       { error: `Could not save the change.${TRY_AGAIN}` },
     ]);

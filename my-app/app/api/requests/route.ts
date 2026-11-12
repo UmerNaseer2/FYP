@@ -33,7 +33,7 @@ import { hasPermission, isAdminOnly, isPermissionKey } from "@/lib/permissions";
  * ask and read their own; see lib/access-requests.ts for what else they get.
  */
 
-/** The production runs waiting on this person leave out their own unless they may decide those. */
+/** The runs waiting on this person leave out their own unless they may decide those. */
 function ownRunsLeftOut(principal: Principal): string | null {
   return mayDecideOwn(principal) ? null : principal.email;
 }

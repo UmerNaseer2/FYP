@@ -61,7 +61,7 @@ type Feature = { icon: ReactNode; title: string; body: string };
 const FEATURES: Feature[] = [
   {
     icon: <CompareIcon size={18} />,
-    title: "Compare across environments",
+    title: "Compare your databases",
     body:
       "Line up dev, staging and prod side by side: tables, columns, indexes, constraints, views " +
       "and more. Get the SQL that brings one in line with another.",
@@ -78,8 +78,8 @@ const FEATURES: Feature[] = [
     title: "Deploy and roll back",
     body:
       "Check a migration for risks and rehearse it with a dry run before it runs, then roll back " +
-      "to an earlier version if you need to. By default, production deploys wait for a second " +
-      "person to approve them.",
+      "to an earlier version if you need to. Someone whose role may not run it asks for approval " +
+      "of that exact run.",
   },
   {
     icon: <UsersIcon size={18} />,
@@ -98,16 +98,16 @@ const FEATURES: Feature[] = [
     title: "Desktop app and phone approvals",
     body:
       "Run Schema Studio as an app on Ubuntu 20.04 or newer. Pair your phone with it to approve " +
-      "production deploys with a passkey and to get drift alerts.",
+      "the runs people ask for with a passkey and to get drift alerts.",
   },
 ];
 
 /**
- * The hero's example: one schema in three environments. Made up, and the card
+ * The hero's example: one schema in three databases. Made up, and the card
  * says so. The status words and pill colors are the dashboard's own, and the
  * versions are spelled the way Deploy prints them.
  */
-const EXAMPLE_ENVIRONMENTS = [
+const EXAMPLE_DATABASES = [
   { name: "Dev", version: "v2.4.0", tone: "pill-sync", status: "In sync" },
   { name: "Staging", version: "v2.4.0", tone: "pill-drift", status: "Drifted" },
   { name: "Prod", version: "v2.3.0", tone: "pill-pending", status: "Outdated" },
@@ -117,7 +117,7 @@ const EXAMPLE_ENVIRONMENTS = [
 const STEPS = [
   {
     title: "Compare",
-    body: "Pick two environments. Every table, column, index and constraint that differs is listed side by side.",
+    body: "Pick two databases. Every table, column, index and constraint that differs is listed side by side.",
   },
   {
     title: "Script",
@@ -126,7 +126,7 @@ const STEPS = [
   {
     title: "Ship",
     body:
-      "Rehearse it with a dry run, then deploy. By default production waits for a second person, " +
+      "Rehearse it with a dry run, then deploy. Your role decides whether you may run it, " +
       "and you can roll back to an earlier version.",
   },
 ];
@@ -181,9 +181,9 @@ export function LandingPage({
                 ))}
               </h1>
               <p className="lp-sub lp-in" style={delay(560)}>
-                Schema Studio compares your database schemas across environments, tells you when one
-                changes behind your back, and by default deploys the fix to production only after a
-                second person signs off.
+                Schema Studio compares your database schemas, tells you when one changes behind
+                your back, and deploys the fix. Roles decide who may run it, and anyone else asks
+                an Admin to approve that exact run.
               </p>
               <div className="lp-cta lp-in" style={delay(640)}>
                 <Link href={createAccountHref} className="btn btn-primary btn-lg">
@@ -215,19 +215,19 @@ export function LandingPage({
               )}
             </div>
 
-            <figure className="card lp-stage" aria-label="Example: one schema in three environments">
+            <figure className="card lp-stage" aria-label="Example: one schema in three databases">
               <div className="lp-dh">
                 <b>finance</b>
                 <span className="pill pill-neutral">Example</span>
               </div>
               <ul className="lp-envs">
-                {EXAMPLE_ENVIRONMENTS.map((env, index) => (
-                  <li key={env.name} style={delay(420 + index * 90)}>
-                    <b>{env.name}</b>
-                    <code>{env.version}</code>
-                    <span className={`pill ${env.tone}`}>
+                {EXAMPLE_DATABASES.map((db, index) => (
+                  <li key={db.name} style={delay(420 + index * 90)}>
+                    <b>{db.name}</b>
+                    <code>{db.version}</code>
+                    <span className={`pill ${db.tone}`}>
                       <span className="dot" />
-                      {env.status}
+                      {db.status}
                     </span>
                   </li>
                 ))}
@@ -251,7 +251,7 @@ export function LandingPage({
               <figcaption className="lp-cap">
                 <span className="lp-lock">
                   <LockIcon size={14} />
-                  Production deploys wait for a second person by default.
+                  A run your role does not allow waits for an Admin.
                 </span>
                 <span className="pill pill-pending">1 approval needed</span>
               </figcaption>

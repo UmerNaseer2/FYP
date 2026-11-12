@@ -81,7 +81,7 @@ things specifically:
 **2. Data-loss and destructive-operation safety.** `app/api/scripts/apply/route.ts`
 is 1,244 lines and runs arbitrary DDL against a customer database. It has a
 safe-mode default, an "allow data loss" arm, a transaction around the whole
-queue, advisory locks, a dry-run path, a production two-person approval with a
+queue, advisory locks, a dry-run path, an approval of one exact run with a
 single-use run fingerprint, and a ledger. **Try to find the path through it that
 loses data or leaves a target half-migrated.** Review `scripts/revert` alongside
 it, since they share the ledger and the approval mechanics.

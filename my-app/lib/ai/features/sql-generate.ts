@@ -11,9 +11,9 @@
 //   - nothing that acts on the server rather than the schema: roles, databases,
 //     tablespaces, settings, COPY, file and sleep functions, dynamic EXECUTE;
 //   - no table the schema does not have, no other schema named;
-//   - then, when the caller may run scripts on this target and it is labelled
-//     Dev or Staging, the script and its rollback are tried on the database in
-//     a transaction that is always rolled back (see sql-generate-trial.ts).
+//   - then, when the caller's role may run scripts on this target, the script
+//     and its rollback are tried on the database in a transaction that is
+//     always rolled back (see sql-generate-trial.ts).
 // A problem goes back to the model to fix, twice at most. The grade (breaking,
 // additive, patch) and the risks always come from the engine, never the model.
 // Nothing is saved: the editor gets a draft, and the person saves it.

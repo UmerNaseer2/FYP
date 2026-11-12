@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/auth-guard";
 /**
  * GET /api/connections/computers
  * Every computer linked in this organization and the connections kept only on
- * it, by name and environment, so everyone who can read connections sees them
+ * it, by name, so everyone who can read connections sees them
  * listed under the org. Their passwords never leave the computer, and only
  * its owner can compare through it (GET /api/computers).
  */

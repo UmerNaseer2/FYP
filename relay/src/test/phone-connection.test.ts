@@ -77,7 +77,7 @@ const ONLINE = writeControl({ type: "online" });
 const OFFLINE = writeControl({ type: "offline" });
 
 const HELLO: HelloResult = { signedIn: true, role: "Admin", canCompare: true, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0" };
-const CONNECTIONS: ConnectionList = { connections: [{ id: 1, name: "Shop", environment: "prod", database: "shop" }] };
+const CONNECTIONS: ConnectionList = { connections: [{ id: 1, name: "Shop", database: "shop" }] };
 const NOT_SHARED = "That connection is not shared with phones. Share it in Schema Studio's Settings on the computer.";
 const WELCOME: OpeningAnswer = { ok: true, name: COMPUTER_NAME };
 

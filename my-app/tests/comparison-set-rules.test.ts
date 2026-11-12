@@ -315,7 +315,6 @@ describe("setOptionLabel", () => {
   const plain = {
     name: "Nightly",
     targetCount: 1,
-    hasProduction: false,
     compareData: false,
     hasMissingConnection: false,
   };
@@ -328,9 +327,6 @@ describe("setOptionLabel", () => {
   });
 
   it("adds each flag on its own, and all of them in a fixed order", () => {
-    expect(setOptionLabel({ ...plain, hasProduction: true }, "never run")).toBe(
-      "Nightly · 1 target · prod · never run",
-    );
     expect(setOptionLabel({ ...plain, compareData: true }, "never run")).toBe(
       "Nightly · 1 target · row data · never run",
     );
@@ -339,9 +335,9 @@ describe("setOptionLabel", () => {
     );
     expect(
       setOptionLabel(
-        { ...plain, targetCount: 2, hasProduction: true, compareData: true, hasMissingConnection: true },
+        { ...plain, targetCount: 2, compareData: true, hasMissingConnection: true },
         "run 5m ago",
       ),
-    ).toBe("Nightly · 2 targets · prod · row data · connection deleted · run 5m ago");
+    ).toBe("Nightly · 2 targets · row data · connection deleted · run 5m ago");
   });
 });

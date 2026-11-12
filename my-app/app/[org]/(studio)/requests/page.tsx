@@ -565,7 +565,7 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
   );
 }
 
-/** A production run that needs someone. Deciding happens on Deploy, with the SQL in view. */
+/** A run that needs someone. Deciding happens on Deploy, with the SQL in view. */
 function RunRow({ run, kind }: { run: ListedApproval; kind: "approve" | "run" }) {
   const { can } = useUser();
   const orgPath = useOrgHref();
@@ -680,7 +680,7 @@ function OwnRequestCard({ request, onChanged }: { request: AccessRequest; onChan
   );
 }
 
-/** A production run you asked for that is waiting, or approved and ready. */
+/** A run you asked for that is waiting, or approved and ready. */
 function OwnRunCard({ run, since }: { run: ListedApproval; since: string | null }) {
   const { label, tone, story } = ownRunStory(run);
   const approved = run.status !== "pending";
@@ -806,7 +806,7 @@ function DoneRequestRow({ request, since }: { request: AccessRequest; since: str
   );
 }
 
-/** A production run of yours that is over: run, rejected, or out of time. */
+/** A run of yours that is over: run, rejected, or out of time. */
 function DoneRunRow({ run, since }: { run: ListedApproval; since: string | null }) {
   const { label, tone, story } = ownRunStory(run);
   return (
@@ -902,7 +902,7 @@ function RequestsBody() {
   // ask for something, and an empty tab would only be in the way.
   const showWaiting = Boolean(data?.canAnswer) || waitingCount > 0;
   // An Admin can do everything, so they have nothing to ask for. Their own
-  // tabs show only when a production run of theirs is listed.
+  // tabs show only when a run of theirs is listed.
   const showOwn = !isAdmin || askedCount + doneCount > 0;
 
   const tabs: PillTab[] = [];
@@ -965,7 +965,7 @@ function RequestsBody() {
               >
                 {waitingCount === 0 && (
                   <EmptyCard title="Nothing is waiting for you">
-                    Requests and production runs that need you will show here.
+                    Requests and runs that need you will show here.
                   </EmptyCard>
                 )}
                 {inbox.map((request) => (

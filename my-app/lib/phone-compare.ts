@@ -29,7 +29,6 @@ import { buildDiffDocument, type ChangeRow } from "./compare-export";
 import { countedChanges } from "./compare-export-format";
 import type { ComparisonHistoryView, OutcomeView, SourceView } from "./compare-run";
 import { MAX_COMPARISON_TARGETS } from "./comparison-set-rules";
-import { toEnvironment, type Environment } from "./environments";
 
 // ---------------------------------------------------------------------------
 // The request and the answer, as desktop/src/shared/remote/rpc.ts has them
@@ -47,7 +46,6 @@ export type ComparedSide = {
   connectionId: number | null;
   /** The connection's name and database, as Compare shows them. Never its host. */
   name: string;
-  environment: Environment;
   /** Exactly the name that was compared, so the phone can ask for it again. */
   schema: string;
 };
@@ -229,7 +227,7 @@ export function readCompareSummary(value: unknown): CompareSummary | null {
 
 function readSide(value: unknown): ComparedSide | null {
   if (!isRecord(value)) return null;
-  const { connectionId, name, environment, schema } = value;
+  const { connectionId, name, schema } = value;
   if (connectionId !== null && !(typeof connectionId === "number" && Number.isSafeInteger(connectionId))) {
     return null;
   }
@@ -238,7 +236,6 @@ function readSide(value: unknown): ComparedSide | null {
   return {
     connectionId,
     name: clean(name, MAX_NAME_LENGTH),
-    environment: toEnvironment(environment),
     schema,
   };
 }
@@ -349,7 +346,7 @@ export function phoneCompareQuery(request: PhoneCompareRequest): URLSearchParams
 export type PhoneCompareInput = {
   source: Pick<
     SourceView,
-    "connectionId" | "displayName" | "environment" | "schema" | "schemaOptions" | "missingMessage"
+    "connectionId" | "displayName" | "schema" | "schemaOptions" | "missingMessage"
   >;
   sourceError: string | null;
   outcomes: PhoneOutcome[];
@@ -360,7 +357,6 @@ export type PhoneOutcome = Pick<
   OutcomeView,
   | "connectionId"
   | "displayName"
-  | "environment"
   | "schema"
   | "sameAsSource"
   | "failure"
@@ -387,13 +383,11 @@ export function summarizeForPhone(screen: PhoneCompareInput): CompareSummary {
 function sideOf(view: {
   connectionId: number | null;
   displayName: string;
-  environment: Environment;
   schema: string;
 }): ComparedSide {
   return {
     connectionId: view.connectionId,
     name: clean(view.displayName, MAX_NAME_LENGTH),
-    environment: view.environment,
     // Not cleaned: the phone sends it back to ask again.
     schema: view.schema,
   };

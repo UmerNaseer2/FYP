@@ -51,7 +51,6 @@ const CHECK = { status: "drifted", summary: "1 table added", checkedAt: AT, sour
 const ROW = {
   connection_id: 31,
   connection_name: "Shop",
-  environment: "prod",
   schema_name: "public",
   label: "Shop tables",
   interval_minutes: 60,
@@ -133,7 +132,6 @@ describe("listOwnDrift", () => {
       {
         connectionId: 31,
         connectionName: "Shop",
-        environment: "prod",
         schema: "public",
         label: "Shop tables",
         intervalMinutes: 60,
@@ -205,7 +203,7 @@ describe("GET /api/agent/sync/drift", () => {
 describe("tracking a schema on a desktop's copy of a website connection", () => {
   it("is refused: the website tracks it, and nothing is dialled", async () => {
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [{ name: "Shop", host: "db.example.com", type: "PostgreSQL", environment: "prod", site_id: 31 }],
+      rows: [{ name: "Shop", host: "db.example.com", type: "PostgreSQL", site_id: 31 }],
     });
     const response = await track(
       new NextRequest("http://localhost:3000/api/lineage/track", {
@@ -223,7 +221,7 @@ describe("tracking a schema on a desktop's copy of a website connection", () => 
 
 describe("the Drift page's list on a desktop", () => {
   it("marks a schema whose connection is a copy of the website's, and only that one", async () => {
-    const base = { id: 1, connection_id: 5, schema_name: "public", environment: "dev", drift_check_interval_minutes: 0 };
+    const base = { id: 1, connection_id: 5, schema_name: "public", drift_check_interval_minutes: 0 };
     mockPoolQuery.mockResolvedValueOnce({
       rows: [
         { ...base, connection_on_website: true },

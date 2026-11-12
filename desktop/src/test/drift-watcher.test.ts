@@ -459,7 +459,6 @@ CREATE TABLE public.tracked_schemas (
   connection_id integer NOT NULL,
   schema_name text NOT NULL,
   label text,
-  environment text NOT NULL,
   drift_check_interval_minutes integer NOT NULL,
   last_drift_check_at timestamptz,
   created_at timestamptz DEFAULT now(),
@@ -507,8 +506,8 @@ async function addSchema(schema: {
   }
   // Checked by hand only, so that the server's scheduler would never try to reach it.
   const [tracked] = await rows<{ id: number }>(
-    `INSERT INTO public.tracked_schemas (org_id, connection_id, schema_name, label, environment, drift_check_interval_minutes)
-     VALUES ($1, $2, $3, $4, 'production', 0) RETURNING id`,
+    `INSERT INTO public.tracked_schemas (org_id, connection_id, schema_name, label, drift_check_interval_minutes)
+     VALUES ($1, $2, $3, $4, 0) RETURNING id`,
     [orgId, connectionId, schema.name, schema.label],
   );
   return tracked.id;

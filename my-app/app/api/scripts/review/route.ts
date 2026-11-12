@@ -44,7 +44,7 @@ function readScripts(value: unknown): ReviewScript[] | null {
  * now. Reading them takes no lock a deploy would notice. Nothing is changed
  * and nothing is recorded but the AI call itself: a review is not a run.
  *
- * Needs Read on Deploy or on production approvals (whoever may see the run, or
+ * Needs Read on Deploy or on Approvals (whoever may see the run, or
  * the approval request for it, may read its review), and "Use AI assistance".
  */
 export async function POST(request: NextRequest) {

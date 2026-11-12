@@ -33,11 +33,9 @@
 .cn-search:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .cn-search input { flex:1; min-width:0; border:0; outline:0; background:transparent; color:var(--ink); font:inherit; font-size:14px; }
 .cn-search input::placeholder { color:var(--ink-3); opacity:1; }
-.cn-group { display:flex; align-items:center; gap:8px; min-height:40px; font-size:13px; color:var(--ink-2); cursor:pointer; }
 
 /* The card grid */
 .cn-group-block { margin-top:20px; }
-.cn-group-head { display:flex; align-items:center; gap:10px; margin:0 0 10px; font-size:12.5px; font-weight:500; color:var(--ink-3); }
 .cn-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:16px; }
 .cn-card { display:flex; flex-direction:column; gap:10px; min-width:0; padding:20px 22px;
            background:var(--surface); border-radius:var(--r-xl); box-shadow:var(--lift);
@@ -152,7 +150,7 @@
   .cn-main { padding:20px 16px 40px; }
   .cn-grid { grid-template-columns:minmax(0, 1fr); }
   .cn-filters__tools, .cn-search { width:100%; }
-  .cn-search, .cn-group { min-height:44px; }
+  .cn-search { min-height:44px; }
   .cn-filters .pill { min-height:44px; }
   .cn-card { padding:18px; }
   .cn-page .cn-card__acts .btn, .cn-page .cn-tap { min-height:44px; }

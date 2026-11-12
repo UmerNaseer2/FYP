@@ -1,18 +1,19 @@
 /** @jest-environment jsdom */
 
 /**
- * Version Sync's replay check, on the production approval it shows there.
+ * Version Sync's replay check, on the approval it shows there.
  *
- * The panel is the last thing a reader looks at before pressing Replay on a
- * live database, and it used to be able to say "Approved by a second person"
- * off the back of an answer that was not about this target at all. The server
- * would still have refused the run — its own claim is scoped by connection and
- * schema — so what the defect cost was the truth of the screen: you were told
- * to press the button and then turned down.
+ * Somebody whose role may not replay asks an Admin to approve one exact
+ * replay, and the panel is the last thing they look at before pressing
+ * Replay. It used to be able to say a run was approved off the back of an
+ * answer that was not about this target at all. The server would still have
+ * refused the run, since its own claim is scoped by connection and schema, so
+ * what the defect cost was the truth of the screen: you were told to press
+ * the button and then turned down.
  *
  * Driving it needs the whole page, because the panel lives inside the replay
- * dialog and the dialog only opens once both ledgers are picked and read; the
- * approvals are only read at all when the Target is production.
+ * dialog and the dialog only opens once both ledgers are picked and read. The
+ * approvals are read only for somebody who has to ask, or who may answer.
  */
 
 import "@testing-library/jest-dom";
@@ -21,7 +22,6 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
-import { OrgProvider } from "@/components/OrgProvider";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
@@ -43,14 +43,12 @@ const CONNECTIONS = [
     name: "Staging",
     host: "staging.internal",
     database_name: "shop",
-    environment: "staging",
   },
   {
     id: 2,
     name: "Live",
     host: "live.internal",
     database_name: "shop",
-    environment: "prod",
   },
 ];
 
@@ -71,8 +69,7 @@ function entry(version: string, appliedAt: string) {
 }
 
 // Staging is one version ahead of Live, and that version is additive, so the
-// replay check opens with no breaking or data-loss gate in the way — the
-// approval is the only thing between the reader and the Replay button.
+// replay check opens with no breaking or data-loss warning on it.
 const SOURCE_LEDGER = [entry("1.0.0", "2026-01-01T00:00:00Z"), entry("2.0.0", "2026-02-01T00:00:00Z")];
 const TARGET_LEDGER = [entry("1.0.0", "2026-01-01T00:00:00Z")];
 
@@ -99,6 +96,7 @@ function approval(runHash: string, over: Partial<ApprovalRow> = {}): ApprovalRow
     migration_count: 1,
     breaking_count: 0,
     requested_by: "someone.else@example.com",
+    run_by_requester: true,
     requested_at: "2026-02-02T00:00:00Z",
     status: "approved",
     decided_by: "reviewer@example.com",
@@ -133,8 +131,8 @@ function baseRoutes(): FetchRoute[] {
       match: "/api/lineage/lookup",
       body: (url: string) =>
         url.includes("connectionId=2")
-          ? { tracked: true, environment: "prod", driftStatus: "in_sync" }
-          : { tracked: true, environment: "staging", driftStatus: "in_sync" },
+          ? { tracked: true, driftStatus: "in_sync" }
+          : { tracked: true, driftStatus: "in_sync" },
     },
   ];
 }
@@ -152,17 +150,9 @@ function pick(box: string, option: string | RegExp) {
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/**
- * Pick Staging → Live, which puts the one version Live is missing on screen,
- * in an organization with the two-person rule switched on (it is off by
- * default), since most of what is below is about production approvals.
- */
+/** Pick Staging, then Live, which puts the one version Live is missing on screen. */
 async function pickStagingToLive() {
-  render(
-    <OrgProvider slug="test-org" name="Test Org" twoPersonRule>
-      <VersionSyncPage />
-    </OrgProvider>
-  );
+  render(<VersionSyncPage />);
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "Source connection" })).toBeEnabled()
   );
@@ -221,8 +211,54 @@ describe("the page header", () => {
   });
 });
 
-describe("the replay check's production approval", () => {
-  it("reads the approval that covers this exact run", async () => {
+/** The address setUser("viewer") signs in with. */
+const ME = "viewer@example.com";
+
+const PENDING = { status: "pending", decided_by: null, decided_at: null } as const;
+
+describe("the replay check's approval, for somebody who has to ask", () => {
+  beforeEach(() => setUser("viewer"));
+
+  it("reads their own approval that covers this exact replay", async () => {
+    const hash = await runFingerprint();
+    setRoutes([
+      ...baseRoutes(),
+      {
+        match: /\/api\/deploy\/approvals\?/,
+        method: "GET",
+        body: { approvals: [approval(hash, { requested_by: ME })] },
+      },
+    ]);
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("Approved for you, once")).toBeInTheDocument();
+    expect(screen.getByText(/reviewer@example.com/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeEnabled());
+    // A dry run runs the SQL too, so it stays shut for somebody who may only
+    // run with an approval.
+    expect(screen.getByRole("button", { name: "Dry run" })).toBeDisabled();
+  });
+
+  it("keeps Replay shut until an Admin has said yes", async () => {
+    const hash = await runFingerprint();
+    setRoutes([
+      ...baseRoutes(),
+      {
+        match: /\/api\/deploy\/approvals\?/,
+        method: "GET",
+        body: { approvals: [approval(hash, { requested_by: ME, ...PENDING })] },
+      },
+    ]);
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("Waiting for an Admin")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeDisabled();
+  });
+
+  it("does not count an approval somebody else asked for", async () => {
+    // The route lets a person spend only the approval they asked for.
     const hash = await runFingerprint();
     setRoutes([
       ...baseRoutes(),
@@ -231,8 +267,8 @@ describe("the replay check's production approval", () => {
 
     await openReplayCheck();
 
-    expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
-    expect(screen.getByText(/reviewer@example.com/)).toBeInTheDocument();
+    expect(await screen.findByText("Needs an Admin's approval")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeDisabled();
   });
 
   it("says the approval state is unknown when the list cannot be read", async () => {
@@ -248,28 +284,43 @@ describe("the replay check's production approval", () => {
 
     await openReplayCheck();
 
-    // Not the same as "there are none": an empty list would read as "Needs a
-    // second person", which claims the gate was checked.
+    // Not the same as "there are none": an empty list would read as "Needs an
+    // Admin's approval", which claims the list was checked.
     expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
     expect(screen.getByText("The approvals table is unreachable.")).toBeInTheDocument();
   });
+});
 
-  it("stops repeating an old answer once a re-read of the approvals fails", async () => {
+describe("the replay check's approval, for somebody who may answer", () => {
+  it("shows no approval panel when nobody has asked for this replay", async () => {
+    setRoutes([
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [] } },
+    ]);
+
+    await openReplayCheck();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeEnabled());
+    expect(screen.queryByText(/Needs an/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("stops repeating an old ask once a re-read of the approvals fails", async () => {
     const hash = await runFingerprint();
     const readRoute = (route: FetchRoute): FetchRoute[] => [...baseRoutes(), route, DECIDE];
     setRoutes(
       readRoute({
         match: /\/api\/deploy\/approvals\?/,
         method: "GET",
-        body: { approvals: [approval(hash, { status: "pending", decided_by: null, decided_at: null })] },
+        body: { approvals: [approval(hash, PENDING)] },
       })
     );
 
     await openReplayCheck();
-    expect(await screen.findByText("Waiting for a second person")).toBeInTheDocument();
+    expect(await screen.findByText("Waiting for your answer")).toBeInTheDocument();
 
     // The approvals go out of reach between the decision and the re-read that
-    // follows it — the one moment where a stale list is guaranteed to exist.
+    // follows it, the one moment where a stale list is guaranteed to exist.
     setRoutes(
       readRoute({
         match: /\/api\/deploy\/approvals\?/,
@@ -281,19 +332,18 @@ describe("the replay check's production approval", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
 
     // The defect: the rows were kept when the read that should have replaced
-    // them failed, and `unreadable` asks for an empty list — so the panel went
-    // on answering from the last list it managed to read. Here that reads as
-    // "still waiting"; with an approved row it read as "Approved by a second
-    // person", and the reader was sent to press Replay on a production
-    // database off the back of an answer nothing had confirmed.
-    expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
-    expect(screen.queryByText("Waiting for a second person")).not.toBeInTheDocument();
+    // them failed, so the panel went on showing an ask that had just been
+    // answered, from the last list it managed to read.
+    await waitFor(() =>
+      expect(screen.queryByText("Waiting for your answer")).not.toBeInTheDocument()
+    );
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
   });
 
   it("does not keep answering from the old list while it is being re-read", async () => {
     const hash = await runFingerprint();
     // What the table would say, as the decision changes it underneath.
-    let row = approval(hash, { status: "pending", decided_by: null, decided_at: null });
+    let row = approval(hash, PENDING);
     setRoutes([
       ...baseRoutes(),
       { match: /\/api\/deploy\/approvals\?/, method: "GET", body: () => ({ approvals: [row] }) },
@@ -301,24 +351,26 @@ describe("the replay check's production approval", () => {
     ]);
 
     await openReplayCheck();
-    await screen.findByText("Waiting for a second person");
+    await screen.findByText("Waiting for your answer");
 
-    // The decision lands, and the re-read that follows it is held — so the
-    // moment between "decided" and "read back" is one the test can look at
-    // rather than one that passes too quickly to assert on.
+    // The decision lands, and the re-read that follows it is held, so the
+    // moment between "decided" and "read back" is one the test can look at.
     row = approval(hash);
     const releaseReread = holdNext("/api/deploy/approvals", "GET");
     fireEvent.click(screen.getByRole("button", { name: "Approve this run" }));
 
     // Until that answer comes back the panel has nothing current to say, and
-    // the list it is holding is the one the decision has just invalidated.
-    // Repeating it would show the reader a request still waiting for them
-    // moments after they cleared it themselves.
+    // the list it is holding is the one the decision has just made old.
     expect(await screen.findByText("Reading the approvals for this target…")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve this run" })).not.toBeInTheDocument();
 
     releaseReread();
-    expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
+    // The ask is answered, so there is nothing left to show a panel for.
+    await waitFor(() =>
+      expect(screen.queryByText("Reading the approvals for this target…")).not.toBeInTheDocument()
+    );
+    expect(screen.getByText("Run approved.")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for your answer")).not.toBeInTheDocument();
   });
 });
 
@@ -332,33 +384,30 @@ describe("the number beside Requests on the rail", () => {
 
   it("is told when a decision is made here", async () => {
     const hash = await runFingerprint();
-    let row = approval(hash, { status: "pending", decided_by: null, decided_at: null });
+    let row = approval(hash, PENDING);
     setRoutes([
       ...baseRoutes(),
       { match: /\/api\/deploy\/approvals\?/, method: "GET", body: () => ({ approvals: [row] }) },
       DECIDE,
     ]);
     await openReplayCheck();
-    await screen.findByText("Waiting for a second person");
+    await screen.findByText("Waiting for your answer");
     expect(heard).not.toHaveBeenCalled();
 
     row = approval(hash);
     fireEvent.click(screen.getByRole("button", { name: "Approve this run" }));
-    expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
+    expect(await screen.findByText("Run approved.")).toBeInTheDocument();
     expect(heard).toHaveBeenCalled();
   });
 
   it("is told when a replay has run here", async () => {
-    const hash = await runFingerprint();
     setRoutes([
       ...baseRoutes(),
-      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [approval(hash)] } },
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [] } },
       { match: "/api/scripts/apply", method: "POST", body: { success: true, results: [] } },
     ]);
     await openReplayCheck();
-    await screen.findByText("Approved by a second person");
-    screen.getAllByRole("checkbox").forEach((box) => fireEvent.click(box));
-    const replay = await screen.findByRole("button", { name: "Replay 1 version on production" });
+    const replay = await screen.findByRole("button", { name: "Replay 1 version" });
     await waitFor(() => expect(replay).toBeEnabled());
     expect(heard).not.toHaveBeenCalled();
 
@@ -390,7 +439,8 @@ describe("what the replay check says about deleting rows", () => {
 
     expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
     expect(screen.getByText(/This replay contains TRUNCATE\. Those take rows out of a live table/)).toBeInTheDocument();
-    expect(screen.getByText("I have read these statements and know which rows they delete.")).toBeInTheDocument();
+    // The warning only tells: there is no box to tick.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("says SQL it could not read may delete rows, not that it does", async () => {
@@ -404,11 +454,9 @@ describe("what the replay check says about deleting rows", () => {
 
     expect(await screen.findByText("1 migration may delete rows")).toBeInTheDocument();
     expect(screen.getByText(/Part of the SQL could not be read: an EXECUTE inside a DO block/)).toBeInTheDocument();
-    expect(screen.getByText("I have read this SQL and know whether it deletes rows.")).toBeInTheDocument();
 
     expect(screen.queryByText(/Those take rows out of a live table/)).not.toBeInTheDocument();
     expect(screen.queryByText(/migration deletes rows/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/know which rows they delete/)).not.toBeInTheDocument();
   });
 });
 
@@ -429,33 +477,32 @@ describe("who may replay", () => {
     expect(await screen.findByRole("button", { name: /^Run v2\.0\.0/ })).toBeInTheDocument();
   });
 
-  it("does not ask for approvals a role may not read, and keeps Replay on production shut", async () => {
-    // A role an admin made that may replay but not read approvals. No route
-    // here answers /api/deploy/approvals, so asking for it would fail the
-    // test outright; and the panel must say "unknown" rather than read the
-    // list it never fetched as an empty one.
+  it("does not read approvals for a role that may replay by itself and may not answer", async () => {
+    // No route here answers /api/deploy/approvals, so asking for it would
+    // fail the test outright.
     setCustomRole("deployer", "Deployer", ["version_sync:read", "deploy:read", "deploy:run"]);
     setRoutes(baseRoutes());
 
     await openReplayCheck();
 
-    expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        `Your role (Deployer) can't see production approvals. Ask an admin to turn on "See production approvals" for this role.`
-      )
-    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Dry run" })).toBeEnabled();
+    expect(screen.queryByText("Approval state unknown")).not.toBeInTheDocument();
     expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
+  });
 
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I understand, and I mean to replay 1 version against production.",
-      })
-    );
-    // A rehearsal needs no approval, so only Replay waits.
-    expect(await screen.findByText("Replay needs the approval above. A dry run does not.")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Dry run" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Replay 1 version on production" })).toBeDisabled();
+  it("keeps Replay shut for a role that has to ask but may not read approvals", async () => {
+    // The panel must say "unknown" rather than read the list it never
+    // fetched as an empty one.
+    setCustomRole("reader", "Reader", ["version_sync:read", "deploy:read"]);
+    setRoutes(baseRoutes());
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
+    expect(screen.getByText(/^Your role \(Reader\) can't see approval requests\./)).toBeInTheDocument();
+    expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
+    expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeDisabled();
   });
 });
 

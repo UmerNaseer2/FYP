@@ -43,7 +43,6 @@ function tracked(over: Partial<TrackedSchemaListItem> & { id: number }): Tracked
     connectionId: 1,
     schemaName: `schema_${over.id}`,
     label: null,
-    environment: "dev",
     createdAt: "2026-01-01T00:00:00.000Z",
     connectionName: "Local Postgres",
     connectionHost: "localhost",
@@ -108,7 +107,6 @@ function detail(over: Partial<DriftDetailView> & { trackedSchemaId: number }): D
   return {
     schemaName: `schema_${over.trackedSchemaId}`,
     label: null,
-    environment: "dev",
     connection: {
       id: 1,
       name: "Local Postgres",
@@ -383,21 +381,6 @@ describe("where the report on screen came from", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Author a migration/ })).not.toBeInTheDocument();
   });
-
-  it("warns before the resolution buttons when the schema is production", async () => {
-    setRoutes(
-      routesFor(
-        [tracked({ id: 1, environment: "prod" })],
-        detail({ trackedSchemaId: 1, environment: "prod" })
-      )
-    );
-    render(<DriftPage />);
-
-    // Said whatever the drift state is: the buttons below can rewrite this
-    // schema's baseline, and on production that accepts an outside change as
-    // the new truth.
-    expect(await screen.findByText("This is a production schema.")).toBeInTheDocument();
-  });
 });
 
 describe("the schema picker after a fix", () => {
@@ -525,8 +508,8 @@ describe("drift checked on the other side of the sync", () => {
               online: false,
               lastSeenAt: AT,
               connections: [
-                { id: 1, name: "Home shop", environment: "dev", shared: false, drift: [watched] },
-                { id: 2, name: "Nothing watched", environment: "dev", shared: false, drift: [] },
+                { id: 1, name: "Home shop", shared: false, drift: [watched] },
+                { id: 2, name: "Nothing watched", shared: false, drift: [] },
               ],
             },
             { id: 5, name: "Quiet desktop", online: true, lastSeenAt: AT, connections: [] },
@@ -564,7 +547,7 @@ describe("drift checked on the other side of the sync", () => {
       online: true,
       syncedAt: Date.parse(AT),
       allowed: true,
-      schemas: [{ connectionId: 31, connectionName: "Shop", environment: "prod", ...watched, label: "Shop tables" }],
+      schemas: [{ connectionId: 31, connectionName: "Shop", ...watched, label: "Shop tables" }],
     });
     setSearchParams("tab=detail&schema=1");
     setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));

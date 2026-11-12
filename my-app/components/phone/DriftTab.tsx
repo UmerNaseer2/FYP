@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Button, Card, EmptyState, EnvironmentPill } from "@/components/ui";
+import { Button, Card, EmptyState } from "@/components/ui";
 import { DriftIcon } from "@/components/ui/icons";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
@@ -213,7 +213,6 @@ export default function DriftTab() {
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[14px] font-semibold">{row.label ?? row.schemaName}</span>
-                <EnvironmentPill environment={row.environment} />
               </div>
               <div className="text-[13px] mt-0.5" style={{ color: "var(--text-2)" }}>
                 {row.connectionName}

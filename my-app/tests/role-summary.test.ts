@@ -151,7 +151,7 @@ describe("glance", () => {
     expect(glance("viewer", VIEWER).map((row) => row.label)).toEqual([
       "Changes things",
       "Runs migrations",
-      "Approves production",
+      "Approves runs",
       "Manages people",
     ]);
   });
@@ -171,7 +171,7 @@ describe("glance", () => {
     expect(people[3]).toBe("Yes");
   });
 
-  it("counts approving production apart from seeing the approvals", () => {
+  it("counts approving runs apart from seeing the approvals", () => {
     expect(answers("qa_lead", ["approvals:read"])[2]).toBe("No");
     expect(answers("qa_lead", ["approvals:read", "approvals:approve"])[2]).toBe("Yes");
   });
@@ -258,8 +258,8 @@ describe("changeSentences", () => {
 
   it("keeps a line with commas of its own in one piece", () => {
     expect(changeSentences("Editor", [], ["drift:read", "drift:update", "drift:run"])).toEqual([
-      "Editor will be able to see tracked schemas and their drift; change schedules, " +
-        "environments and baselines, or acknowledge drift; and run a drift check.",
+      "Editor will be able to see tracked schemas and their drift; change schedules " +
+        "and baselines, or acknowledge drift; and run a drift check.",
     ]);
   });
 });

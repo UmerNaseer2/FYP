@@ -56,14 +56,12 @@ export const TRIAL_RESET_COOLDOWN_MS = 30_000;
 const KEPT_ON_RESET = ["organization_github", "organization_ai"] as const;
 
 /**
- * What the trial's one connection is called, and its label. It holds every
- * stage at once, one schema each, so it has no environment label of its own:
- * it is a normal connection, with no production ticks and no approvals. It
- * runs for whoever's role may run migrations, the same as any new connection.
+ * What the trial's one connection is called. It holds every stage at once,
+ * one schema each, and runs for whoever's role may run migrations, the same
+ * as any new connection.
  */
 const TRIAL_CONNECTION = {
   name: "University demo",
-  environment: "unset",
   executeRole: DEFAULT_EXECUTE_ROLE,
 } as const;
 
@@ -300,8 +298,8 @@ async function addTrialConnection(client: MetadataClient, orgId: number): Promis
   await client.query(
     `INSERT INTO connections
        (name, host, port, database_name, type, username, password, connection_string,
-        ssl, ssl_mode, environment, execute_role, org_id, version, updated_at, updated_by)
-     VALUES ($1, $2, $3, $4, 'PostgreSQL', $5, $6, NULL, $7, $8, $9, $10, $11, 1, now(), $12)`,
+        ssl, ssl_mode, execute_role, org_id, version, updated_at, updated_by)
+     VALUES ($1, $2, $3, $4, 'PostgreSQL', $5, $6, NULL, $7, $8, $9, $10, 1, now(), $11)`,
     [
       TRIAL_CONNECTION.name,
       db.host,
@@ -311,7 +309,6 @@ async function addTrialConnection(client: MetadataClient, orgId: number): Promis
       encryptSecret(db.password) ?? "",
       db.sslMode !== "disable",
       db.sslMode,
-      TRIAL_CONNECTION.environment,
       TRIAL_CONNECTION.executeRole,
       orgId,
       "the trial",

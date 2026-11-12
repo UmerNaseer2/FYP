@@ -33,8 +33,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ tracked: true, ...head });
   } catch (error) {
     // "Not tracked" is a real answer, and the Deploy screen acts on it: it
-    // skips the drift pre-check and shows the target as having no environment
-    // label. Saying it because the query failed turns a dead metadata database
+    // skips the drift pre-check. Saying it because the query failed turns a dead metadata database
     // into a green light.
     console.error("Lineage lookup error:", error);
     return NextResponse.json(

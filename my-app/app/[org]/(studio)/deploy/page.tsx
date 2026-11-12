@@ -52,15 +52,9 @@ import { changeNoteSummary, readChangeNote } from "@/lib/change-note";
 import type { DeployAttemptRow } from "@/lib/deploy-attempts";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
-import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { permissionLabel, refusalMessage } from "@/lib/permissions";
-import {
-  isProduction,
-  toEnvironment,
-  type Environment,
-} from "@/lib/environments";
 import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
 import {
   listVersions,
@@ -84,11 +78,11 @@ import {
   type TimelineStatus,
 } from "@/lib/version-timeline";
 import { useUser } from "@/hooks/useUser";
-import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { MigrationReviewPanel } from "@/components/studio/MigrationReviewPanel";
 import { RunTimeline } from "./RunTimeline";
-import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
+import { RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { PageHeader } from "@/components/studio/PageHeader";
@@ -101,11 +95,10 @@ import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
 //
 // This is the Pass-6 reskin of the deploy panel that used to live inside the
-// legacy /scripts page. The page previews the run and asks for a tick on each
-// risk it finds; the server does not take its word for any of it.
-// /api/scripts/apply reads the same risks again (lib/deploy-risk) and refuses
-// a run that is out of order, has a risk left unticked, or needs an approval
-// it does not have. The flow:
+// legacy /scripts page. The page previews the run and warns about each risk
+// it finds; the server does not take its word for any of it.
+// /api/scripts/apply refuses a run that is out of order, or that needs an
+// approval it does not have. The flow:
 //   • GitHub is the source of truth for migration scripts (/api/github/pull).
 //   • /api/scripts/preflight reads the target DB's script_patch ledger and
 //     returns the current version + applied history.
@@ -171,8 +164,6 @@ type Connection = {
   port: number;
   database_name: string;
   type: string;
-  /** dev / staging / prod, or "unset" when nobody has labelled it. */
-  environment: Environment;
   /** Who may run migrations here: none, editor or admin. See lib/connection-access.ts. */
   execute_role?: string | null;
 };
@@ -347,10 +338,10 @@ type RevertResponse = {
   /**
    * Other families' versions applied after the oldest version this rollback
    * undoes, as the server counted them. Sent with a dry run's result and with
-   * the refusal that asks for the other-scripts tick.
+   * a refusal.
    */
   otherScripts?: OtherScriptEntry[];
-  /** Production, and nobody else has approved this exact rollback yet. */
+  /** The caller may only run this with an approval, and none covers this exact rollback yet. */
   needsApproval?: boolean;
   /** The COMMIT did not report back, so nobody knows whether it happened. */
   outcomeUnknown?: boolean;
@@ -649,11 +640,8 @@ function MigRow({
   /**
    * The statements this row will run. When given, the row opens to show them.
    *
-   * The checklist beside this list asks the reader to tick "I have read the
-   * breaking migrations and know what they remove" — an attestation about SQL
-   * that, until this existed, appeared nowhere on the page and had no link out
-   * to it. A tick box in front of text nobody can read is not a safety gate,
-   * it is a formality, so the text is here.
+   * The checklist beside this list warns about breaking migrations. A warning
+   * about text nobody can read is not much help, so the text is here.
    */
   sql?: string;
   /** Start expanded. Used for the breaking ones, which are the point. */
@@ -925,13 +913,6 @@ const UNREAD_SQL_SENTENCE =
   "Part of the SQL could not be read: an EXECUTE inside a DO block runs SQL " +
   "that is put together while it runs. It may delete rows. ";
 
-/** The tick under a row-loss box. Nobody can know "which rows" for SQL that could not be read. */
-function rowLossAck(sure: boolean): string {
-  return sure
-    ? "I have read these statements and know which rows they delete."
-    : "I have read this SQL and know whether it deletes rows.";
-}
-
 /** One rollback's line in the row-loss box above a rollback. */
 function rollbackLossSentence(version: string, kinds: ReadonlyArray<string>): string {
   const { named, unread } = rowLossKinds(kinds);
@@ -944,23 +925,15 @@ function rollbackLossSentence(version: string, kinds: ReadonlyArray<string>): st
   );
 }
 
-function approvalRequestedToast(bypass: boolean, mayApprove: boolean, askToRun = false): string {
-  if (askToRun) return "Asked for approval. Once an Admin says yes, you can run it";
-  if (!bypass) return "Approval requested — someone else has to clear it";
-  return mayApprove
-    ? "Approval requested — with the auth bypass on, you clear it yourself"
-    : 'Approval requested. Switch "View as" back to Admin to clear it';
-}
+const APPROVAL_REQUESTED_TOAST = "Asked for approval. Once an Admin says yes, you can run it";
 
 function DeployBody() {
   // Who is looking, and what their role may do here. The approval panel needs
-  // to know whether to offer Request and Approve at all (each is a box an
-  // admin ticks for a role on the Admin screen), and whether this is the same
-  // person who asked for the run (nobody clears their own).
+  // to know whether to offer Approve at all (a box an admin ticks for a role
+  // on the Admin screen), and whether this is the same person who asked for
+  // the run (nobody approves their own).
   const { user, roleLabel, isAdmin, bypass, can, loading: sessionLoading } = useUser();
   const orgPath = useOrgHref();
-  // Whether production runs here wait for a second person (the Organization tab).
-  const twoPersonRule = useOrg()?.twoPersonRule ?? false;
   const mayReadApprovals = can("approvals:read");
   // Said at the top of the page, as Dashboard and Connections do, so a role
   // that may only look finds out before picking a target rather than after.
@@ -968,7 +941,6 @@ function DeployBody() {
   // same permission.
   const runRefusal =
     sessionLoading || can("deploy:run") ? null : refusalMessage(roleLabel, "deploy:run");
-  const mayRequestApproval = can("approvals:create");
   // A link from the Requests page names the run it is about, so the reader lands
   // on that target with it checked. Each part is used when its list arrives, and
   // one no list holds is ignored, because the link may be old. Choosing anything
@@ -1031,23 +1003,14 @@ function DeployBody() {
    * the target can reach.
    */
   const [attempts, setAttempts] = useState<DeployAttemptRow[]>([]);
-  // Where a "Run …" button takes the reader: the run panel, at its first
-  // unticked box or else its Deploy button. And where "Roll back to here…" in
+  // Where a "Run …" button takes the reader: the run panel, at its Deploy
+  // button. And where "Roll back to here…" in
   // the version timeline takes them: the Roll back card.
   const runPanelRef = useRef<HTMLDivElement>(null);
   const deployButtonRef = useRef<HTMLButtonElement>(null);
   const rollbackCardRef = useRef<HTMLDivElement>(null);
 
-  // Ticked in the ProductionGate. One per destructive action, never shared.
-  const [deployAcknowledged, setDeployAcknowledged] = useState(false);
-
-  // Ticked beside the risk they belong to, never shared with each other or
-  // with the production tick — three different things to have read.
-  const [breakingAcknowledged, setBreakingAcknowledged] = useState(false);
-  const [dataLossAcknowledged, setDataLossAcknowledged] = useState(false);
-  const [driftAcknowledged, setDriftAcknowledged] = useState(false);
-
-  // ── Deploy approvals (the two-person rule) ───────────────────────────────
+  // ── Deploy approvals ─────────────────────────────────────────────────────
   // runHash identifies the exact batch on screen. It is compared against the
   // run_fingerprint of the rows below, so the panel can only ever call a run
   // approved when the approved SQL is the SQL that would run.
@@ -1072,9 +1035,8 @@ function DeployBody() {
   const [driftResult, setDriftResult] = useState<DriftResult | null>(null);
   const [driftError, setDriftError] = useState<string | null>(null);
   // The last drift result on record for this target, as the lineage lookup
-  // reported it before this check ran. The apply route holds a run to that
-  // record, so when this check fails the drift tick is still asked for (see
-  // driftGateStatus).
+  // reported it before this check ran. When this check fails the drift
+  // warning is still shown from that record (see driftGateStatus).
   const [storedDriftStatus, setStoredDriftStatus] = useState<DriftResult["status"] | null>(null);
 
   // ── Roll back to (undo the newest applied versions of this family) ──────
@@ -1111,10 +1073,6 @@ function DeployBody() {
     key: string;
     list: OtherScriptEntry[];
   } | null>(null);
-  // One tick per risk, never shared with the deploy's ticks.
-  const [rollbackProdAck, setRollbackProdAck] = useState(false);
-  const [rollbackDataLossAck, setRollbackDataLossAck] = useState(false);
-  const [rollbackOtherAck, setRollbackOtherAck] = useState(false);
   // The rollback's own approval: the fingerprint of the rollback SQL on
   // screen, and the note and errors of its request and decisions.
   const [rollbackHash, setRollbackHash] = useState<string | null>(null);
@@ -1245,12 +1203,6 @@ function DeployBody() {
     [connections, connectionId]
   );
 
-  // What we warn about: the connection's label, the only one there is. Only
-  // Production asks anything. Its risk boxes need ticking, and a real run waits
-  // for a second person only when the organization has approvals switched on.
-  const targetEnvironment = toEnvironment(activeConn?.environment);
-  const targetIsProduction = isProduction(targetEnvironment);
-
   // The selected target's execution setting, and whether this caller clears it.
   //
   // useUser reads the role out of the same session the API routes read it out
@@ -1280,19 +1232,26 @@ function DeployBody() {
   // approve one exact run (or rollback), and then run it once. Never on a
   // read-only connection, and never as a dry run: the routes refuse both.
   const askToRun = !sessionLoading && !mayExecuteOnTarget && !targetIsReadOnly;
-  // A real run waits for an approval when this person may only run with one,
-  // and on production when the organization has approvals switched on.
-  const approvalNeeded = askToRun || (targetIsProduction && twoPersonRule && !bypass);
-  // Which approvals this person's run may use, the same rule as the server's
-  // (WHOSE_APPROVAL in lib/approvals-db): somebody asking to run spends only
-  // their own one-off, and anybody else only ordinary approvals.
+  // The approvals are read for somebody who has to ask, and for somebody who
+  // may answer. Anybody else just runs, so there is nothing to show them.
+  const approvalsWanted = askToRun || (!sessionLoading && mayApprove);
+  // Which approvals this person's run may use, the same rule as the server's:
+  // somebody asking to run spends only their own one-off. Nobody else needs
+  // an approval at all.
   const viewerEmailLower = (user?.email ?? "").toLowerCase();
   const usableApproval = useCallback(
     (a: ApprovalRow) =>
-      askToRun
-        ? a.run_by_requester === true && a.requested_by.toLowerCase() === viewerEmailLower
-        : a.run_by_requester !== true,
+      askToRun && a.run_by_requester === true && a.requested_by.toLowerCase() === viewerEmailLower,
     [askToRun, viewerEmailLower]
+  );
+  // Somebody else's ask that this person may answer.
+  const answerableAsk = useCallback(
+    (a: ApprovalRow) =>
+      mayApprove &&
+      a.status === "pending" &&
+      a.run_by_requester === true &&
+      a.requested_by.toLowerCase() !== viewerEmailLower,
+    [mayApprove, viewerEmailLower]
   );
 
   // Scope the pulled scripts to the selected connection's database. GitHub now
@@ -1504,7 +1463,7 @@ function DeployBody() {
   );
 
   // One string for "this exact plan": the target, the family, and every step
-  // with the SQL that undoes it. The ticks, a dry run's result and the
+  // with the SQL that undoes it. A dry run's result and the
   // server's list of other scripts each belong to one plan.
   const rollbackKey = useMemo(
     () =>
@@ -1583,11 +1542,19 @@ function DeployBody() {
   const approvedRollback = rollbackApprovals.find((a) => a.status === "approved") ?? null;
   const pendingRollback = rollbackApprovals.find((a) => a.status === "pending") ?? null;
   const latestRollback = rollbackApprovals[0] ?? null;
+  // Somebody else asking to run exactly this rollback, for the person who may answer.
+  const rollbackAsk = useMemo(
+    () =>
+      rollbackHash
+        ? approvals.find(
+            (a) => a.action === "revert" && a.run_fingerprint === rollbackHash && answerableAsk(a)
+          ) ?? null
+        : null,
+    [approvals, rollbackHash, answerableAsk]
+  );
 
-  // What stops both rollback buttons. The server asks for the production tick
-  // on a dry run too, because a dry run runs every statement against the
-  // real target before undoing them. The row-loss tick is asked only on
-  // production; elsewhere the warning is shown and nothing more.
+  // What stops both rollback buttons. The warnings about lost rows and other
+  // scripts are shown and stop nothing.
   const rollbackBlocked =
     !rollbackReady ||
     // A target this caller may not execute against refuses a rollback for the
@@ -1596,15 +1563,10 @@ function DeployBody() {
     // Unless they may ask for one: then the approval below is what stops it.
     (!mayExecuteOnTarget && !askToRun) ||
     rollbackBusy !== null ||
-    isDeploying ||
-    (targetIsProduction && !rollbackProdAck) ||
-    (targetIsProduction && rollbackDataLoss.length > 0 && !rollbackDataLossAck);
-  // What additionally stops the real rollback: the approval (production with
-  // approvals on, never for a dry run) and, on production, the other scripts.
-  const rollbackRunBlocked =
-    rollbackBlocked ||
-    (approvalNeeded && !approvedRollback) ||
-    (targetIsProduction && rollbackOthers.length > 0 && !rollbackOtherAck);
+    isDeploying;
+  // What additionally stops the real rollback: the approval, for somebody who
+  // may only run with one.
+  const rollbackRunBlocked = rollbackBlocked || (askToRun && !approvedRollback);
   // The line under the buttons: the first reason they are disabled, or what
   // pressing will do. Same order as the checks above.
   const rollbackHint = !rollbackReady
@@ -1615,17 +1577,10 @@ function DeployBody() {
       ? `Rolling back on this connection ${executeBlockedWhy}`
     : isDeploying
       ? "A deploy is running on this target — wait for it to finish"
-      : (targetIsProduction && !rollbackProdAck) ||
-          (targetIsProduction && rollbackDataLoss.length > 0 && !rollbackDataLossAck)
-        ? "Tick every box above to enable this"
-        : askToRun && !approvedRollback
-          ? "Your role may not roll back here by itself, so this waits for an Admin to approve it. " +
-            "A dry run is not open to you here"
-        : approvalNeeded && !approvedRollback
-          ? "Rolling back on production needs an approval. The dry run does not"
-          : targetIsProduction && rollbackOthers.length > 0 && !rollbackOtherAck
-            ? "Tick the box about the other scripts to roll back — a dry run does not need it"
-            : "The rollback runs in one transaction — every version above or none";
+      : askToRun && !approvedRollback
+        ? "Your role may not roll back here by itself, so this waits for an Admin to approve it. " +
+          "A dry run is not open to you here"
+        : "The rollback runs in one transaction — every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
   // (see rollbackError) is shown whatever the plan.
   const rollbackErrorShown =
@@ -1712,28 +1667,26 @@ function DeployBody() {
     setRollbackApprovalNote("");
   }, [connectionId, schema, scriptGroup]);
 
-  // The ticks and the approval error belong to one exact plan. The rollback
+  // The approval error belongs to one exact plan. The rollback
   // error carries its own plan instead (see rollbackError), because some have
   // to stay on screen after the plan changes: an outcome nobody knows, and a
   // refusal caused by an out-of-date list of applied versions (the page reads
   // the ledger again, which changes the plan).
   useEffect(() => {
-    setRollbackProdAck(false);
-    setRollbackDataLossAck(false);
-    setRollbackOtherAck(false);
     setRollbackApprovalError(null);
   }, [rollbackKey]);
 
   // The fingerprint of the rollback on screen, hashed the way the server
   // hashes it (rollbackFingerprintBody over the steps, newest first, each
   // version spelled as the ledger spells it), so the approval panel can tell
-  // whether an approval covers exactly this rollback. Production only, and
-  // only when every step has SQL: an approval covers the SQL that runs.
+  // whether an approval covers exactly this rollback. Only for somebody who
+  // asks or answers, and only when every step has SQL: an approval covers the
+  // SQL that runs.
   useEffect(() => {
     // Cleared first, so the previous plan's hash never matches for a moment.
     setRollbackHash(null);
     setRollbackHashError(null);
-    if (!approvalNeeded || !rollbackReady) return;
+    if (!approvalsWanted || !rollbackReady) return;
     const body = rollbackFingerprintBody(
       rollbackSteps.map((step) => ({
         scriptName: scriptGroup.trim(),
@@ -1756,7 +1709,7 @@ function DeployBody() {
     return () => {
       cancelled = true;
     };
-  }, [approvalNeeded, rollbackReady, rollbackSteps, scriptGroup]);
+  }, [approvalsWanted, rollbackReady, rollbackSteps, scriptGroup]);
 
   // The runs the AI review reads, spelled the way the approval request spells
   // them, so the review and an approval are about the same scripts.
@@ -1774,23 +1727,6 @@ function DeployBody() {
       })),
     [rollbackSteps, scriptGroup]
   );
-
-  // An acknowledgement is for one exact batch against one exact target. Change
-  // any part of what would run and it has to be given again — otherwise a tick
-  // meant for two patch migrations on dev could carry over to a breaking one on
-  // production. targetVersion is in here because it decides how far the run
-  // goes, not just where. selectionBody is the run itself, the string the
-  // approval hash and the rehearsal pin are taken from: it also changes when
-  // the start of the run moves under the same target version (a rollback
-  // re-reads the ledger and the run grows back over what it undid) or when
-  // anything in the run changes on a re-pull. It is a string, so a re-read
-  // that finds the same run leaves the ticks alone.
-  useEffect(() => {
-    setDeployAcknowledged(false);
-    setBreakingAcknowledged(false);
-    setDataLossAcknowledged(false);
-    setDriftAcknowledged(false);
-  }, [connectionId, schema, scriptGroup, targetVersion, selectionBody]);
 
   // The last of a link from the Requests page: its script, then the same read of
   // the target that "Check database" does, which is what the reader came to see.
@@ -1826,9 +1762,7 @@ function DeployBody() {
   }, [pendingScripts, stage]);
 
   // What the chosen batch risks, from one reading of its SQL. The same helper
-  // (lib/deploy-risk) decides what the apply route refuses without a tick and
-  // the breaking count an approver is shown, so every box this page asks for
-  // is a box the server asks for too. Each migration is read with the
+  // (lib/deploy-risk) gives the breaking count an approver is shown. Each migration is read with the
   // change_type runBatch sends with it, exactly as the server will read it.
   const runRisk = useMemo(
     () =>
@@ -1896,9 +1830,8 @@ function DeployBody() {
   // contract and delete nothing — so a run that cannot possibly commit used to
   // arrive here with a clean checklist.
   //
-  // Warned about, not gated. The run is one transaction, so a failure here
-  // leaves the target exactly as it was; making the user tick a box to proceed
-  // would spend a confirmation on the one outcome that costs nothing.
+  // Warned about quietly. The run is one transaction, so a failure here
+  // leaves the target exactly as it was.
   const mightFailScripts = runRisk.mightFail;
   const mightFailKinds = useMemo(
     () => [...new Set(mightFailScripts.flatMap((entry) => entry.kinds))].join(", "),
@@ -1952,15 +1885,15 @@ function DeployBody() {
     // a new array, and the hash of the same text is the same hash.
   }, [scriptsUpToTarget.length, selectionBody]);
 
-  // Approvals are only read for a production target, because production is the
-  // only place the server asks for one. Fetching them elsewhere would put a
-  // panel on screen that gates nothing.
+  // Approvals are only read for somebody who has to ask for one, or who may
+  // answer one. Fetching them for anybody else would put a panel on screen
+  // that gates nothing.
   //
   // Nor for a role that may not see them. The route would refuse anyway, and
   // saying why up front reads better than a 403. The panel then calls the
   // state unknown rather than "nothing requested yet", which is the truth.
   useEffect(() => {
-    if (!approvalNeeded || !connectionId || !schema || !scriptGroup) {
+    if (!approvalsWanted || !connectionId || !schema || !scriptGroup) {
       setApprovals([]);
       setApprovalsReadError(null);
       return;
@@ -2001,7 +1934,7 @@ function DeployBody() {
       cancelled = true;
     };
   }, [
-    approvalNeeded,
+    approvalsWanted,
     connectionId,
     schema,
     scriptGroup,
@@ -2031,9 +1964,19 @@ function DeployBody() {
   const approvedRun = runApprovals.find((a) => a.status === "approved") ?? null;
   const pendingRun = runApprovals.find((a) => a.status === "pending") ?? null;
   const latestRun = runApprovals[0] ?? null;
+  // Somebody else asking to run exactly this batch, for the person who may answer.
+  const runAsk = useMemo(
+    () =>
+      runHash
+        ? approvals.find(
+            (a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash && answerableAsk(a)
+          ) ?? null
+        : null,
+    [approvals, runHash, answerableAsk]
+  );
   // The newest approved, unspent deploy approval for this target that is not
   // for this selection: approved for another range, or for SQL that has
-  // changed since. The approval panel names it, so "Needs a second person"
+  // changed since. The approval panel names it, so "Needs an Admin's approval"
   // never sits beside an approval without saying why it does not count.
   const otherApproval = useMemo(
     () =>
@@ -2072,14 +2015,11 @@ function DeployBody() {
   // so the same preconditions apply to both.
   // A drift result that is not "in sync" means the target is not the database
   // these migrations were written against. That is a reason to stop and look,
-  // not a reason to forbid the run outright — so it is a tick, like production.
+  // not a reason to forbid the run, so it is a warning.
   //
-  // Which drift result the tick answers for, or null when none needs one. A
+  // Which drift result the warning is about, or null when there is none. A
   // check that finished speaks for itself (it is also the new record). A check
-  // that failed this time falls back to the last result on record: the apply
-  // route holds a run to that same record and refuses without the tick when it
-  // says drifted or unreachable, so the page asks for the tick too rather than
-  // send a run the server will turn away.
+  // that failed this time falls back to the last result on record.
   const driftGateStatus: "drifted" | "unreachable" | null =
     driftPhase === "ready" && driftResult !== null && driftResult.status !== "in_sync"
       ? driftResult.status
@@ -2087,30 +2027,11 @@ function DeployBody() {
           (storedDriftStatus === "drifted" || storedDriftStatus === "unreachable")
         ? storedDriftStatus
         : null;
-  // True when the tick is about the record because this check failed.
+  // True when the warning is about the record because this check failed.
   const driftGateFromRecord = driftGateStatus !== null && driftPhase === "error";
-  const driftBlocks = driftGateStatus !== null;
-  // A drift check that is still running holds both runs back. Its result
-  // replaces the record the apply route holds a run to, and until it lands
-  // this page cannot show the tick that record may ask for, so a run sent now
-  // could be refused over a warning the reader never saw.
+  // A drift check that is still running holds both runs back, so a run never
+  // starts before the reader has seen the warning its result may bring.
   const driftChecking = driftPhase === "loading";
-  // Every box the reader has to tick, in one place.
-  //
-  // It is one name rather than a repeated expression because it is read twice —
-  // once to disable the buttons, once to write the line under them saying why
-  // they are disabled — and those two lists had already drifted apart: the
-  // data-loss box disabled the button while the line under it went on
-  // announcing that all migrations run in one transaction, leaving the reader
-  // with a dead button and no reason for it.
-  // Only production asks for ticks. Elsewhere the same warnings are shown and
-  // the reader is trusted to have read them.
-  const unacknowledgedGates =
-    targetIsProduction &&
-    (!deployAcknowledged ||
-      (breakingCount > 0 && !breakingAcknowledged) ||
-      (dataLossScripts.length > 0 && !dataLossAcknowledged) ||
-      (driftBlocks && !driftAcknowledged));
   const runBlocked =
     scriptsUpToTarget.length === 0 ||
     // Dry runs included, because the route refuses those too: a rehearsal
@@ -2124,11 +2045,9 @@ function DeployBody() {
     isDeploying ||
     // A rollback in flight is changing the same ledger.
     rollbackBusy !== null ||
-    driftChecking ||
-    unacknowledgedGates;
-  // A real deploy on production also waits for a second person, when the
-  // organization has approvals switched on. A dry run never does.
-  const deployBlocked = runBlocked || (approvalNeeded && !approvedRun);
+    driftChecking;
+  // A real deploy by somebody who may only run with an approval waits for it.
+  const deployBlocked = runBlocked || (askToRun && !approvedRun);
   // A rehearsal runs the SQL too, and an approval never covers one, so
   // somebody who may run here only with an approval may not rehearse.
   const dryRunBlocked = runBlocked || askToRun;
@@ -2147,8 +2066,7 @@ function DeployBody() {
   const deployLabel =
     selectionCount === 0
       ? "Deploy"
-      : `Deploy ${selectionRange}${selectionCount > 1 ? ` (${selectionCount})` : ""}` +
-        (targetIsProduction ? " to production" : "");
+      : `Deploy ${selectionRange}${selectionCount > 1 ? ` (${selectionCount})` : ""}`;
   const dryRunLabel = selectionCount === 0 ? "Dry run" : `Dry run ${selectionRange}`;
   // The version the selection ends at, for "Deploy to" and the summary.
   const selectionLastLabel =
@@ -2164,10 +2082,6 @@ function DeployBody() {
   const rehearsalChange = selectionChange(rehearsedBody, runScripts, scriptsUpToTarget, selectionBody);
   const repeatChange = selectionChange(runBody, runScripts, scriptsUpToTarget, selectionBody);
   const [ranName, nowName] = nameTwoRuns(runVersions, selectionVersions);
-  // Pre-flight boxes still to tick for the selection, said on the Run stage
-  // too, whose buttons they hold back. (While the drift check runs, those
-  // buttons say so themselves.)
-  const untickedOnPreflight = unacknowledgedGates && !driftChecking;
   // The pending rows in the selection, marked in the list by the script
   // itself rather than by comparing versions, so the list cannot mark a row
   // the run would leave out.
@@ -2360,11 +2274,6 @@ function DeployBody() {
               : []
           ),
           dryRun,
-          acknowledgeProduction: rollbackProdAck,
-          acknowledgeOtherScripts: rollbackOtherAck,
-          // The revert route reads the same rows-deleting statements from the
-          // same rollback SQL, and refuses without this tick, dry runs included.
-          acknowledgeDataLoss: rollbackDataLossAck,
         }),
       });
       // Read as text first: an error page from a proxy is not JSON, and
@@ -2471,7 +2380,8 @@ function DeployBody() {
   // After a rollback, one whose outcome is unknown, or a refusal caused by an
   // out-of-date ledger: read the ledger and the live schema again, so the
   // page shows the target as it now is, and read the approvals again (a
-  // production rollback spends one). Resolves true when the ledger was read.
+  // rollback somebody asked to run spends one). Resolves true when the ledger
+  // was read.
   async function refreshAfterRollback(): Promise<boolean> {
     setApprovalReloadKey((reload) => reload + 1);
     // Both checks start now, while this is still the target on screen, so a
@@ -2481,7 +2391,7 @@ function DeployBody() {
   }
 
   // ── Approvals ────────────────────────────────────────────────────────────
-  // Ask for a second person's sign-off on exactly the batch on screen. The
+  // Ask an Admin to approve exactly the batch on screen. The
   // server hashes the SQL again from this request body rather than trusting a
   // fingerprint the browser sends, so a tampered request cannot approve one set
   // of migrations and run another.
@@ -2518,8 +2428,7 @@ function DeployBody() {
         return;
       }
       setApprovalNote("");
-      // Under the auth bypass the one principal clears its own request.
-      showToast(approvalRequestedToast(bypass, mayApprove, askToRun));
+      showToast(APPROVAL_REQUESTED_TOAST);
     } catch {
       setApprovalError("Network error requesting the approval.");
     } finally {
@@ -2565,8 +2474,7 @@ function DeployBody() {
         return;
       }
       setRollbackApprovalNote("");
-      // Under the auth bypass the one principal clears its own request.
-      showToast(approvalRequestedToast(bypass, mayApprove));
+      showToast(APPROVAL_REQUESTED_TOAST);
     } catch {
       setRollbackApprovalError("Network error requesting the approval.");
     } finally {
@@ -2575,7 +2483,7 @@ function DeployBody() {
     }
   }
 
-  // The second person's half. A 409 here means someone decided it first; their
+  // The approver's half. A 409 here means someone decided it first; their
   // decision stands, and the reload below puts it on screen. `action` says
   // which panel asked, so its note is sent and any error lands in it.
   async function handleDecideApproval(
@@ -2622,10 +2530,6 @@ function DeployBody() {
     setDriftResult(null);
     setDriftError(null);
     setStoredDriftStatus(null);
-    // An acknowledgement belongs to one drift result. Dropping it here means a
-    // fresh check always has to be read again, rather than inheriting a tick
-    // given for a report that no longer exists.
-    setDriftAcknowledged(false);
   }
 
   // Phase 6 drift pre-check. If the chosen target (connection + schema) is
@@ -2646,7 +2550,6 @@ function DeployBody() {
     setDriftError(null);
     setDriftResult(null);
     setStoredDriftStatus(null);
-    setDriftAcknowledged(false);
     try {
       const lookupRes = await apiFetch(
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
@@ -2654,8 +2557,8 @@ function DeployBody() {
       );
       if (!current()) return;
       // A failed lookup must not read as "not tracked" — that answer skips the
-      // drift pre-check and leaves the environment label unset, so a dead
-      // metadata database would quietly remove both warnings.
+      // drift pre-check, so a dead metadata database would quietly remove the
+      // warning.
       if (!lookupRes.ok) {
         setDriftPhase("error");
         return;
@@ -2663,7 +2566,6 @@ function DeployBody() {
       const lookup = (await lookupRes.json()) as {
         tracked?: boolean;
         trackedSchemaId?: number;
-        environment?: string;
         /** The last drift result on record, which the apply route holds a run to. */
         driftStatus?: DriftResult["status"] | null;
       };
@@ -2741,22 +2643,13 @@ function DeployBody() {
   // The last version in the run. "" selects nothing, which is what unticking
   // the first pending row means — there is no earlier row to end at.
   function selectRun(version: string) {
-    if (version !== targetVersion) {
-      // The acknowledgement effect's rule: a tick is for one batch. Cleared
-      // here too, in the same render as the new selection, so the focus below
-      // finds these boxes already unticked instead of racing the effect.
-      setDeployAcknowledged(false);
-      setBreakingAcknowledged(false);
-      setDataLossAcknowledged(false);
-      setDriftAcknowledged(false);
-    }
     setTargetVersion(version);
     // After React has drawn the new selection's gates.
     window.requestAnimationFrame(focusNextStep);
   }
 
-  // The run panel's first box still to tick, else its Deploy button when it
-  // can be pressed, else the panel itself.
+  // The run panel's Deploy button when it can be pressed, else the panel
+  // itself.
   function focusNextStep() {
     const panel = runPanelRef.current;
     if (!panel) return;
@@ -2771,7 +2664,7 @@ function DeployBody() {
 
   // "Roll back to here…" in the version timeline: pick that version in the
   // Roll back card and open its planner. The card then works as it always
-  // does (preview, ticks, approval); nothing runs from the timeline.
+  // does (preview, approval); nothing runs from the timeline.
   function rollBackTo(row: TimelineRow) {
     const option = rollbackOptions.find(
       (candidate) => candidate.value !== BEFORE_FIRST && timelineKey(candidate.value) === row.key
@@ -2862,13 +2755,6 @@ function DeployBody() {
           connectionId: Number(connectionId),
           schemaName: schema || "public",
           dryRun,
-          acknowledgeProduction: deployAcknowledged,
-          // The other three ticks. The route reads the same risks from the
-          // same SQL (lib/deploy-risk) and refuses a run with a risk nobody
-          // ticked, so each box on this page is also a rule on the server.
-          acknowledgeBreaking: breakingAcknowledged,
-          acknowledgeDataLoss: dataLossAcknowledged,
-          acknowledgeDrift: driftAcknowledged,
           scripts: batch.map((script) => ({
             script_name: script.script_name,
             sql_content: script.sql_content,
@@ -3215,7 +3101,6 @@ function DeployBody() {
                 )}
                 {activeConn && (
                   <div className="dp-field-notes">
-                    <EnvironmentPill environment={targetEnvironment} />
                     <ExecuteRolePill role={targetExecuteRole} />
                     {targetIsReadOnly && (
                       <span className="help dp-bad-text">
@@ -3363,7 +3248,6 @@ function DeployBody() {
                     <span>{preflightResult.schema}</span>
                     <span className="dp-at">@</span>
                     <span className="dp-conn">{activeConn.name}</span>
-                    <EnvironmentPill environment={targetEnvironment} />
                     <span className="pill pill-sync"><span className="dot" />reachable</span>
                   </div>
                   <div className="dp-where-host">
@@ -3432,10 +3316,10 @@ function DeployBody() {
               {/* Roll back: undo the newest applied versions of this family,
                   newest first, in one transaction. The preview is what the
                   revert route will run (planRollback shares its rule), and
-                  the panel asks for what the route asks for: the production
-                  tick, a tick for rollbacks that delete rows, a tick for other
-                  scripts applied since, and on production a second person's
-                  approval of this exact rollback SQL. */}
+                  the panel warns about rollbacks that delete rows and about
+                  other scripts applied since. Somebody whose role may not
+                  roll back here asks an Admin to approve this exact rollback
+                  SQL. */}
               {/* The list of every attempt, failed and refused ones too, now
                   sits in the timeline card at the top, which always shows. */}
               {(appliedNewestFirst.length > 0 ||
@@ -3448,7 +3332,7 @@ function DeployBody() {
                       <HelpHint label="Roll back">
                         Pick a version to go back to. Every applied version above it is
                         undone, newest first, in one transaction: all of them or none.
-                        Outside production it runs as soon as you press the button.
+                        It runs as soon as you press the button, when your role may run it.
                       </HelpHint>
                     </h2>
                     {appliedNewestFirst.length > 0 && (
@@ -3578,18 +3462,6 @@ function DeployBody() {
                         })}
                       </div>
 
-                      {targetIsProduction && (
-                        <ProductionGate
-                          kind="rollback"
-                          what={
-                            rollbackTarget
-                              ? `roll back ${scriptGroup} to ${vLabel(rollbackTarget)}`
-                              : `roll back every version of ${scriptGroup}`
-                          }
-                          acknowledged={rollbackProdAck}
-                          onAcknowledge={setRollbackProdAck}
-                        />
-                      )}
                       {rollbackDataLoss.length > 0 && (
                         <RiskGate
                           tone="break"
@@ -3611,9 +3483,6 @@ function DeployBody() {
                                 "back: it rebuilds structure, not data. Have a backup you " +
                                 "can restore from before running this.")
                           }
-                          ack={targetIsProduction ? rowLossAck(rollbackLossSure) : undefined}
-                          acknowledged={rollbackDataLossAck}
-                          onAcknowledge={setRollbackDataLossAck}
                         />
                       )}
                       {rollbackOthers.length > 0 && rollbackOldest && (
@@ -3626,9 +3495,6 @@ function DeployBody() {
                             "undoes. They may use what the rollback removes, and a DROP " +
                             "... CASCADE takes their objects with it."
                           }
-                          ack={targetIsProduction ? "I have checked these scripts and mean to roll back anyway." : undefined}
-                          acknowledged={rollbackOtherAck}
-                          onAcknowledge={setRollbackOtherAck}
                         >
                           <ul className="mono text-[12px] space-y-0.5">
                             {rollbackOthers.slice(0, 10).map((other) => (
@@ -3660,33 +3526,44 @@ function DeployBody() {
                           resetKey={rollbackKey}
                         />
                       )}
-                      {approvalNeeded && (
-                        <ApprovalPanel
-                          action="revert"
-                          migrationCount={rollbackReady ? rollbackSteps.length : 0}
-                          targetVersion={rollbackOldest ?? ""}
-                          versionsLabel={listVersions(rollbackSteps.map((step) => step.version))}
-                          hashReady={rollbackHash !== null}
-                          hashError={rollbackHashError}
-                          loading={approvalsLoading}
-                          error={rollbackApprovalError ?? approvalsReadError}
-                          unreadable={approvalsReadError !== null && approvals.length === 0}
-                          busy={approvalBusy}
-                          approved={approvedRollback}
-                          pending={pendingRollback}
-                          latest={latestRollback}
-                          viewerEmail={user?.email ?? ""}
-                          roleLabel={roleLabel}
-                          mayRequest={mayRequestApproval}
-                          askToRun={askToRun}
-                          mayApprove={mayApprove}
-                          bypass={bypass}
-                          twoPersonRule={twoPersonRule}
-                          note={rollbackApprovalNote}
-                          onNoteChange={setRollbackApprovalNote}
-                          onRequest={handleRequestRollbackApproval}
-                          onDecide={(id, decision) => void handleDecideApproval(id, decision, "revert")}
-                        />
+                      {/* The asker's own panel, and the answer panel for
+                          somebody else's ask of this exact rollback. */}
+                      {[
+                        askToRun
+                          ? { key: "own", own: true, approved: approvedRollback, pending: pendingRollback, latest: latestRollback }
+                          : null,
+                        rollbackAsk
+                          ? { key: "ask", own: false, approved: null, pending: rollbackAsk, latest: rollbackAsk }
+                          : null,
+                      ].map(
+                        (panel) =>
+                          panel && (
+                            <ApprovalPanel
+                              key={panel.key}
+                              action="revert"
+                              migrationCount={rollbackReady ? rollbackSteps.length : 0}
+                              targetVersion={rollbackOldest ?? ""}
+                              versionsLabel={listVersions(rollbackSteps.map((step) => step.version))}
+                              hashReady={rollbackHash !== null}
+                              hashError={rollbackHashError}
+                              loading={approvalsLoading}
+                              error={rollbackApprovalError ?? approvalsReadError}
+                              unreadable={approvalsReadError !== null && approvals.length === 0}
+                              busy={approvalBusy}
+                              approved={panel.approved}
+                              pending={panel.pending}
+                              latest={panel.latest}
+                              viewerEmail={user?.email ?? ""}
+                              roleLabel={roleLabel}
+                              askToRun={panel.own}
+                              mayApprove={mayApprove}
+                              bypass={bypass}
+                              note={rollbackApprovalNote}
+                              onNoteChange={setRollbackApprovalNote}
+                              onRequest={handleRequestRollbackApproval}
+                              onDecide={(id, decision) => void handleDecideApproval(id, decision, "revert")}
+                            />
+                          )
                       )}
 
                       {rollbackErrorShown && <pre className="dp-err">{rollbackErrorShown}</pre>}
@@ -3978,16 +3855,6 @@ function DeployBody() {
                         ) : targetExecuteRole === "admin" ? (
                           <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
                         ) : null}
-                        {targetIsProduction ? (
-                          <ChecklistItem ok={deployAcknowledged}>
-                            Environment · production —{" "}
-                            {deployAcknowledged ? "confirmed" : "needs an explicit confirmation"}
-                          </ChecklistItem>
-                        ) : targetEnvironment === "unset" ? null : (
-                          <ChecklistItem ok>
-                            Environment · {targetEnvironment}
-                          </ChecklistItem>
-                        )}
                         <ChecklistItem ok>
                           Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
                         </ChecklistItem>
@@ -4026,15 +3893,15 @@ function DeployBody() {
                             : "No transaction-control in SQL"}
                         </ChecklistItem>
                         {breakingCount > 0 ? (
-                          <ChecklistItem ok={breakingAcknowledged}>
+                          // `info`: a warning to read, which stops nothing.
+                          <ChecklistItem info>
                             {/* Counted as describeChangeType counts: marked
                                 breaking, or containing SQL that is always
                                 breaking whatever the mark says. */}
                             Breaking changes · {breakingCount}
                             {louderCount > 0
                               ? `, including ${louderCount} marked less than breaking whose SQL is always breaking`
-                              : ""}{" "}
-                            {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
+                              : ""}
                           </ChecklistItem>
                         ) : (
                           <ChecklistItem ok>
@@ -4042,13 +3909,12 @@ function DeployBody() {
                           </ChecklistItem>
                         )}
                         {dataLossScripts.length > 0 ? (
-                          <ChecklistItem ok={dataLossAcknowledged}>
+                          <ChecklistItem info>
                             {dataLossSure
                               ? `Deletes rows · ${dataLossKinds}${dataLoss.unread ? ", and part of the SQL could not be read" : ""}`
                               : "May delete rows · part of the SQL could not be read"}{" "}
                             in{" "}
-                            {countOf(dataLossScripts.length, "script")}{" "}
-                            {dataLossAcknowledged ? "· acknowledged" : "· needs acknowledging"}
+                            {countOf(dataLossScripts.length, "script")}
                           </ChecklistItem>
                         ) : (
                           <ChecklistItem ok>No statement found that deletes rows</ChecklistItem>
@@ -4073,22 +3939,17 @@ function DeployBody() {
                             transaction · not undone by a rollback
                           </ChecklistItem>
                         )}
-                        {approvalNeeded &&
+                        {askToRun &&
                           (approvalsReadError && !approvedRun ? (
                             // "not requested yet" would be a reading of a list
                             // this page never managed to read.
                             <ChecklistItem info>Approval · could not be read</ChecklistItem>
                           ) : (
                             <ChecklistItem ok={Boolean(approvedRun)}>
-                              {/* Under the auth bypass the one principal clears its
-                                  own request, and the row says so (self_approved). */}
                               {approvedRun
-                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}` +
-                                  (approvedRun.self_approved ? " · self-approved under the auth bypass" : "")
+                                ? `Approved by ${approvedRun.decided_by ?? "an Admin"}`
                                 : pendingRun
-                                  ? bypass && mayApprove
-                                    ? "Approval requested · waiting for you to clear it"
-                                    : "Approval requested · waiting for a second person"
+                                  ? "Approval requested · waiting for an Admin"
                                   : "Approval · not requested yet"}
                             </ChecklistItem>
                           ))}
@@ -4111,10 +3972,9 @@ function DeployBody() {
                         )}
                         {driftPhase === "error" &&
                           (driftGateFromRecord ? (
-                            <ChecklistItem ok={driftAcknowledged}>
+                            <ChecklistItem ok={false}>
                               Drift check · check failed, and the last check on record found
                               the target {driftGateStatus === "drifted" ? "drifted" : "unreachable"}
-                              {driftAcknowledged ? " · acknowledged" : ""}
                             </ChecklistItem>
                           ) : (
                             <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
@@ -4128,15 +3988,9 @@ function DeployBody() {
                               ) : null}
                             </ChecklistItem>
                           ) : driftResult.status === "drifted" ? (
-                            <ChecklistItem ok={driftAcknowledged}>
-                              Drift check · live schema has drifted
-                              {driftAcknowledged ? " · acknowledged" : ""}
-                            </ChecklistItem>
+                            <ChecklistItem ok={false}>Drift check · live schema has drifted</ChecklistItem>
                           ) : (
-                            <ChecklistItem ok={driftAcknowledged}>
-                              Drift check · target unreachable
-                              {driftAcknowledged ? " · acknowledged" : ""}
-                            </ChecklistItem>
+                            <ChecklistItem ok={false}>Drift check · target unreachable</ChecklistItem>
                           )
                         )}
                         {driftPhase === "idle" && (
@@ -4151,7 +4005,6 @@ function DeployBody() {
                     <div className="card dp-card dp-run" ref={runPanelRef} tabIndex={-1}>
                       <div className="dp-card-top">
                         <h2 className="dp-h">Run it</h2>
-                        <EnvironmentPill environment={targetEnvironment} />
                       </div>
                       <div className="dp-route mt-3">
                         <span className="dp-chip">{currentLabel}</span>
@@ -4192,13 +4045,6 @@ function DeployBody() {
                       </dl>
 
                       <div className="dp-gates">
-                        {targetIsProduction && (
-                          <ProductionGate
-                            what={`run ${scriptsUpToTarget.length} migration${scriptsUpToTarget.length === 1 ? "" : "s"}`}
-                            acknowledged={deployAcknowledged}
-                            onAcknowledge={setDeployAcknowledged}
-                          />
-                        )}
                         {breakingCount > 0 && (
                           <RiskGate
                             tone="break"
@@ -4206,8 +4052,8 @@ function DeployBody() {
                             body={
                               // "Breaking" grades a contract break, not data loss —
                               // a rename is breaking and loses nothing. The rows
-                              // question belongs to the deletes-rows gate below,
-                              // which asks its own tick and names its own backup.
+                              // question belongs to the deletes-rows warning below,
+                              // which names its own backup.
                               "A breaking migration drops or rewrites structure that is " +
                               "already there. Anything reading the old shape — an app, a " +
                               "view, a report — stops working the moment this commits. The " +
@@ -4222,13 +4068,6 @@ function DeployBody() {
                                     "have a statement that is always breaking, so they are " +
                                     "counted here.")
                             }
-                            ack={
-                              targetIsProduction
-                                ? `I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`
-                                : undefined
-                            }
-                            acknowledged={breakingAcknowledged}
-                            onAcknowledge={setBreakingAcknowledged}
                           />
                         )}
                         {dataLossScripts.length > 0 && (
@@ -4261,16 +4100,12 @@ function DeployBody() {
                                     "the only warning they get. ") +
                               "Have a backup you can restore from before running this."
                             }
-                            ack={targetIsProduction ? rowLossAck(dataLossSure) : undefined}
-                            acknowledged={dataLossAcknowledged}
-                            onAcknowledge={setDataLossAcknowledged}
                           />
                         )}
                         {mightFailScripts.length > 0 && (
-                          // No tick. See the mightFailScripts comment above: the
-                          // whole run is one transaction, so this is the risk
-                          // that costs nothing when it happens, and a gate here
-                          // would teach the reader to tick past the two that do.
+                          // A quieter line. See the mightFailScripts comment above:
+                          // the whole run is one transaction, so this is the risk
+                          // that costs nothing when it happens.
                           <div className="warn-inline">
                             <span className="ico">
                               <AlertTriangleIcon size={14} />
@@ -4335,8 +4170,7 @@ function DeployBody() {
                                   (driftGateStatus === "drifted"
                                     ? "different from the snapshot these migrations were written against. "
                                     : "unreachable. ") +
-                                  "The server holds a run to that last result. Press Check " +
-                                  "database to run the drift check again, or tick below to run anyway."
+                                  "Press Check database to run the drift check again before you run this."
                                 : driftGateStatus === "drifted"
                                   ? "The live schema no longer matches the snapshot these " +
                                     "migrations were written against, so a migration may hit " +
@@ -4346,17 +4180,6 @@ function DeployBody() {
                                     "here has confirmed what state it is in. The run will " +
                                     "still connect — this only means it starts unverified."
                             }
-                            ack={
-                              !targetIsProduction
-                                ? undefined
-                                : driftGateFromRecord
-                                  ? "I mean to run without a drift check that passed."
-                                  : driftGateStatus === "drifted"
-                                    ? "I have read the drift and mean to run anyway."
-                                    : "I mean to run without a drift check."
-                            }
-                            acknowledged={driftAcknowledged}
-                            onAcknowledge={setDriftAcknowledged}
                           />
                         )}
                         {connectionId && scriptsUpToTarget.length > 0 && (
@@ -4368,36 +4191,45 @@ function DeployBody() {
                             resetKey={`${connectionId}|${schema}|${selectionBody}`}
                           />
                         )}
-                        {approvalNeeded && (
-                          <ApprovalPanel
-                            migrationCount={scriptsUpToTarget.length}
-                            targetVersion={targetVersion}
-                            hashReady={runHash !== null}
-                            hashError={hashError}
-                            loading={approvalsLoading}
-                            error={approvalError ?? approvalsReadError}
-                            unreadable={approvalsReadError !== null && approvals.length === 0}
-                            busy={approvalBusy}
-                            approved={approvedRun}
-                            pending={pendingRun}
-                            latest={latestRun}
-                            viewerEmail={user?.email ?? ""}
-                            roleLabel={roleLabel}
-                            mayRequest={mayRequestApproval}
-                          askToRun={askToRun}
-                            mayApprove={mayApprove}
-                            bypass={bypass}
-                            twoPersonRule={twoPersonRule}
-                            note={approvalNote}
-                            onNoteChange={setApprovalNote}
-                            onRequest={handleRequestApproval}
-                            onDecide={(id, decision) => void handleDecideApproval(id, decision, "deploy")}
-                            otherApproval={otherApproval}
-                            onSelectOther={
-                              otherApprovalVersion ? () => selectRun(otherApprovalVersion) : undefined
-                            }
-                            runButton={deployLabel}
-                          />
+                        {/* The asker's own panel, and the answer panel for
+                            somebody else's ask of this exact run. */}
+                        {[
+                          askToRun
+                            ? { key: "own", own: true, approved: approvedRun, pending: pendingRun, latest: latestRun }
+                            : null,
+                          runAsk ? { key: "ask", own: false, approved: null, pending: runAsk, latest: runAsk } : null,
+                        ].map(
+                          (panel) =>
+                            panel && (
+                              <ApprovalPanel
+                                key={panel.key}
+                                migrationCount={scriptsUpToTarget.length}
+                                targetVersion={targetVersion}
+                                hashReady={runHash !== null}
+                                hashError={hashError}
+                                loading={approvalsLoading}
+                                error={approvalError ?? approvalsReadError}
+                                unreadable={approvalsReadError !== null && approvals.length === 0}
+                                busy={approvalBusy}
+                                approved={panel.approved}
+                                pending={panel.pending}
+                                latest={panel.latest}
+                                viewerEmail={user?.email ?? ""}
+                                roleLabel={roleLabel}
+                                askToRun={panel.own}
+                                mayApprove={mayApprove}
+                                bypass={bypass}
+                                note={approvalNote}
+                                onNoteChange={setApprovalNote}
+                                onRequest={handleRequestApproval}
+                                onDecide={(id, decision) => void handleDecideApproval(id, decision, "deploy")}
+                                otherApproval={panel.own ? otherApproval : null}
+                                onSelectOther={
+                                  otherApprovalVersion ? () => selectRun(otherApprovalVersion) : undefined
+                                }
+                                runButton={deployLabel}
+                              />
+                            )
                         )}
                       </div>
 
@@ -4409,7 +4241,7 @@ function DeployBody() {
                         </p>
                         {/* A rehearsal writes nothing, but it really runs the SQL,
                             including any statement that takes a heavy lock, so it
-                            sits behind the same production confirmation. */}
+                            needs the same permission as a real run. */}
                         <button
                           type="button"
                           className="btn btn-secondary"
@@ -4428,7 +4260,7 @@ function DeployBody() {
                         </p>
                         <button
                           type="button"
-                          className={`btn btn-lg ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                          className="btn btn-lg btn-primary"
                           disabled={deployBlocked}
                           onClick={() => handleRun(false)}
                           ref={deployButtonRef}
@@ -4457,13 +4289,9 @@ function DeployBody() {
                             "the checklist, then pull again"
                           : driftChecking
                             ? "Checking the target for drift first — these unlock when the check finishes"
-                          : unacknowledgedGates
-                            ? "Tick every box above to enable this"
                             : askToRun && !approvedRun
                               ? "Your role may not run migrations here by itself, so the deploy waits " +
                                 "for an Admin to approve it. A dry run is not open to you here"
-                            : approvalNeeded && !approvedRun
-                              ? "Deploy on production needs an approval. A dry run does not"
                               : enumAdditions.length > 0
                               ? "All migrations run in one transaction — all of them or " +
                                 "none, apart from the enum values noted above"
@@ -4529,8 +4357,6 @@ function DeployBody() {
                 </p>
               </div>
               <div className="dp-pills">
-              {/* Which database this is landing on, while it is landing. */}
-              <EnvironmentPill environment={targetEnvironment} />
                 {runIsDryRun && (
                   <span className="pill pill-neutral">
                     <span className="dot" />
@@ -4668,12 +4494,10 @@ function DeployBody() {
                     ledgerRereadFailed
                   )}
               </p>
-                {approvalNeeded && !approvedRun && (
+                {askToRun && !approvedRun && (
                   <div className="dp-warn-text">
-                    {/* Names no approver: under the auth bypass you clear it
-                        yourself, and the Pre-flight panel says which it is. */}
                     A clean rehearsal is not an approval. Go back to Pre-flight to
-                    request approval for the real run.
+                    ask for approval of the real run.
                   </div>
                 )}
                 {/* Deploy for real deploys the selection, not the batch above,
@@ -4688,16 +4512,10 @@ function DeployBody() {
                         : `You rehearsed ${runRange}, but nothing is selected to deploy now. Go back to Pre-flight to see what is pending.`}
                   </div>
                 )}
-                {rehearsalChange === null && untickedOnPreflight && (
-                  <div className="dp-warn-text">
-                    Pre-flight has boxes that are not ticked for this run. Go back to
-                    Pre-flight to tick them.
-                  </div>
-                )}
               <div className="dp-row">
               <button
                 type="button"
-                className={`btn ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                className="btn btn-primary"
                 disabled={deployBlocked || rehearsalChange !== null}
                 onClick={() => handleRun(false)}
               >
@@ -4771,26 +4589,11 @@ function DeployBody() {
                         : `Nothing is selected to run now, so this ${runIsDryRun ? "rehearsal" : "run"} cannot be repeated from here. Go back to Pre-flight to see what is pending.`}
                   </div>
                 )}
-                {repeatChange === null && untickedOnPreflight && (
+                {repeatChange === null && !driftChecking && !runIsDryRun && askToRun && !approvedRun && (
                   <div className="dp-warn-text">
-                    Pre-flight has boxes that are not ticked for this run. Go back to
-                    Pre-flight to tick them.
+                    This deploy needs an Admin&apos;s approval first. Go back to Pre-flight to ask for one.
                   </div>
                 )}
-                {repeatChange === null &&
-                  !untickedOnPreflight &&
-                  !driftChecking &&
-                  !runIsDryRun &&
-                  approvalNeeded &&
-                  !approvedRun && (
-                    <div className="dp-warn-text">
-                      {/* Names no approver: under the auth bypass you clear it
-                          yourself, and the Pre-flight panel says which it is. */}
-                      {askToRun
-                        ? "This deploy needs an Admin's approval first. Go back to Pre-flight to ask for one."
-                        : "Deploy on production needs an approval. Go back to Pre-flight to request one."}
-                    </div>
-                  )}
               <div className="dp-row">
               <button
                 type="button"

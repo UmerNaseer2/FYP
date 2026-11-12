@@ -10,9 +10,8 @@ import {
 } from "@/lib/approvals-db";
 
 /**
- * Approve or reject one deploy or rollback request — the second half of the
- * two-person rule. The row's `action` says which one it is; the rule is the
- * same for both.
+ * Approve or reject one deploy or rollback request. The row's `action` says
+ * which one it is; the rule is the same for both.
  *
  * Two things make this a real gate rather than a second checkbox:
  *
@@ -23,12 +22,11 @@ import {
  *     AND as a CHECK constraint on the table, because a rule enforced only in
  *     application code is one refactor away from not being enforced at all.
  *
- * There are two documented exceptions (mayDecideOwn in lib/approvals-db). With
- * NEXT_PUBLIC_AUTH_BYPASS on there is exactly one principal, so "a second
- * person" cannot exist and the whole path would be untestable. And an Admin
- * may switch their organization's two-person rule off on the Organization tab,
- * for a team of one. Either way the row records that it happened, in
- * `self_approved`, rather than quietly looking like a real two-person approval.
+ * There is one documented exception (mayDecideOwn in lib/approvals-db). With
+ * NEXT_PUBLIC_AUTH_BYPASS on there is exactly one principal, so nobody else
+ * could decide and the whole path would be untestable. The row records that
+ * it happened, in `self_approved`, so it never looks like an approval
+ * somebody else gave.
  *
  * A paired phone decides through here too, by way of the desktop app's phone
  * link (desktop/src/main/phone-approvals.ts). It sends two more fields, and

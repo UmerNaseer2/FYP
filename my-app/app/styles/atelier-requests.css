@@ -65,7 +65,7 @@
 }
 .rq-error svg { flex: none; margin-top: 2px; }
 
-/* ---------- where a production run of yours has got to ---------- */
+/* ---------- where a run you asked for has got to ---------- */
 .rq-steps {
   display: flex; align-items: center; flex-wrap: wrap; row-gap: 8px;
   list-style: none; padding: 0; margin: 0;

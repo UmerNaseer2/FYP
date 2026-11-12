@@ -23,10 +23,8 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // statements only, so jest.mock("@/...") would not resolve.
 // The caller: an editor on a new install, whose role may run deployments. A
 // test sets mockBypass to play the auth bypass's one principal instead, the
-// full admin that answers for everyone while sign-in is off, and mockRuleOff
-// an editor in an organization whose two-person rule is switched off.
+// full admin that answers for everyone while sign-in is off.
 let mockBypass = false;
-let mockRuleOff = false;
 jest.mock("../lib/auth-guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
@@ -34,13 +32,12 @@ jest.mock("../lib/auth-guard", () => {
       ok: true,
       principal: mockBypass
         ? bypassAdminPrincipal()
-        : principalFor("editor", { email: "a@test", orgTwoPersonRule: !mockRuleOff }),
+        : principalFor("editor", { email: "a@test" }),
     }),
   };
 });
 afterEach(() => {
   mockBypass = false;
-  mockRuleOff = false;
 });
 
 // The metadata database: only the saved-connection lookup reaches it.
@@ -70,7 +67,6 @@ jest.mock("../lib/lineage-db", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
-  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
@@ -112,17 +108,14 @@ const V3: LedgerRow = {
   applied_by: "bob@test",
 };
 
-// Every rollback above is a DROP TABLE, which deletes rows, so the route asks
-// for the data-loss tick. BASE carries it, so each test reaches the check it
-// is about; the "rows the rollback deletes" tests leave it out on purpose.
-const UNTICKED = { connectionId: 7, schemaName: "sales", script_name: "orders_fix" };
-const BASE = { ...UNTICKED, acknowledgeDataLoss: true };
+const BASE = { connectionId: 7, schemaName: "sales", script_name: "orders_fix" };
 
-function connectionRow(environment: string, execute_role?: string) {
+/** A saved connection. "admin" makes it one the editor may roll back on only with an approval of their own. */
+function connectionRow(execute_role?: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment, name: "Sales dev", execute_role,
+    ssl_mode: "disable", name: "Sales dev", execute_role,
   };
 }
 
@@ -270,25 +263,14 @@ describe("credentials", () => {
   });
 });
 
-describe("production", () => {
-  it("refuses without the production acknowledgement, dry run included, before BEGIN", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    for (const dryRun of [false, true]) {
-      const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
-      expect(res.status).toBe(409);
-    }
-    expect(mockClient.queries).toEqual([]);
-  });
-
-  it("needs a second person's approval for a real run, and runs nothing without one", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+describe("approval", () => {
+  it("needs the editor's own approval where their role may not run, and runs nothing without one", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(403);
     expect(res.body.needsApproval).toBe(true);
-    expect(res.body.error).toBe(
-      "Rolling back on production needs a second person's approval. Ask for it in the " +
-        "Approvals panel, then press Roll back again."
-    );
+    expect(res.body.askToRun).toBe(true);
+    expect(res.body.error).toBe(askToRunRefusal("Sales dev", false, true));
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
     expect(mockRelease).not.toHaveBeenCalled();
@@ -296,38 +278,39 @@ describe("production", () => {
   });
 
   it("asks for no approval under the auth bypass", async () => {
-    // With the bypass on there is no second person to ask, so approvals are off.
+    // The bypass's one principal is a full admin, so its role may run anywhere.
     mockBypass = true;
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(200);
     expect(mockClaim).not.toHaveBeenCalled();
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
   });
 
-  it("asks for no approval with the two-person rule off", async () => {
-    mockRuleOff = true;
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(200);
-    expect(mockClaim).not.toHaveBeenCalled();
-    expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
-  });
-
-  it("asks for no tick and no approval off production", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("staging")] });
+  it("asks for no tick and no approval where the role may run", async () => {
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(200);
     expect(mockClaim).not.toHaveBeenCalled();
   });
 
-  it("claims a 'revert' approval for the ledger SQL, newest first, and keeps it spent", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  it("ignores the tick fields an older screen may still send", async () => {
+    const res = await revert({
+      ...BASE,
+      versions: ["3.0.0"],
+      acknowledgeProduction: false,
+      acknowledgeDataLoss: false,
+      acknowledgeOtherScripts: false,
+    });
+    expect(res.status).toBe(200);
+    expect(count(mockClient, "COMMIT")).toBe(1);
+  });
+
+  it("claims the editor's own 'revert' approval for the ledger SQL, newest first, and keeps it spent", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     const res = await revert({
       ...BASE,
       versions: ["2.0.0", "3.0.0"],
-      acknowledgeProduction: true,
       // Ignored: the ledger copy wins.
       registryRollbacks: [{ version: "3.0.0", down_sql: "DROP TABLE registry_t3;" }],
     });
@@ -343,9 +326,8 @@ describe("production", () => {
         { scriptName: "orders_fix", version: "3.0.0", sqlContent: "DROP TABLE t3;" },
         { scriptName: "orders_fix", version: "2.0.0", sqlContent: "DROP TABLE t2;" },
       ],
-      // Somebody who may roll back here spends an ordinary approval, never
-      // another person's one-off.
-      requestedBy: null,
+      // Only the approval this very person asked for.
+      requestedBy: "a@test",
     });
     expect(count(mockClient, "COMMIT")).toBe(1);
     expect(mockRelease).not.toHaveBeenCalled();
@@ -353,17 +335,14 @@ describe("production", () => {
 });
 
 describe("dry run", () => {
-  it("needs no production approval, and spends none", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true, acknowledgeProduction: true });
+  it("needs no approval, and spends none", async () => {
+    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true });
     expect(res.status).toBe(200);
     expect(mockClaim).not.toHaveBeenCalled();
     expect(count(mockClient, "COMMIT")).toBe(0);
   });
 
   it("runs the rollback, reports its NOTICEs, then rolls back", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
       ledger({
         first: [
@@ -373,7 +352,7 @@ describe("dry run", () => {
         ],
       })
     );
-    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true, acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, success: true, dryRun: true, versions: ["3.0.0"] });
     expect(res.body.notices).toEqual([{ version: "3.0.0", message: "drop cascades to view v_orders" }]);
@@ -597,28 +576,16 @@ describe("a batch rollback", () => {
 describe("other script families", () => {
   const others = [{ script_name: "billing_fix", version: "1.1.0", applied_at: "2026-03-15T00:00:00.000Z" }];
 
-  it("refuses a real run on production until they are acknowledged, and asks from the oldest version undone", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 42 });
+  it("runs a real rollback all the same, with nothing to confirm", async () => {
     mockClient = createFakeClient(ledger({ others }));
-    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("other_scripts_after");
-    expect(res.body.otherScripts).toEqual(others);
-    expect(String(res.body.error)).toContain('Other scripts were applied to schema "sales" after v2.0.0 (billing_fix v1.1.0)');
+    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
+    expect(res.status).toBe(200);
+    expect(count(mockClient, "COMMIT")).toBe(1);
     // "After" is decided in SQL from the ledger ids being undone, never from a
     // timestamp that went through a JS Date (milliseconds, not microseconds).
     const later = queriesMatching(mockClient, /script_name <> \$1/)[0];
     expect(later.values).toEqual(["orders_fix", [3, 2]]);
     expect(later.text).toContain("other.applied_at = oldest.applied_at AND other.id > oldest.id");
-    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
-  });
-
-  it("proceeds once acknowledged", async () => {
-    mockClient = createFakeClient(ledger({ others }));
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeOtherScripts: true });
-    expect(res.status).toBe(200);
-    expect(count(mockClient, "COMMIT")).toBe(1);
   });
 
   it("lists them in a dry run without refusing", async () => {
@@ -630,80 +597,25 @@ describe("other script families", () => {
 });
 
 describe("rows the rollback deletes", () => {
-  it("refuses on production until they are ticked, dry run included, before any rollback SQL runs", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 42 });
+  it("runs with nothing to confirm, dry run included", async () => {
     for (const dryRun of [false, true]) {
       mockClient = createFakeClient(ledger());
-      const res = await revert({ ...UNTICKED, versions: ["3.0.0"], dryRun, acknowledgeProduction: true });
-      expect(res.status).toBe(409);
-      expect(res.body).toMatchObject({
-        ok: false,
-        success: false,
-        code: "data_loss",
-        needsAcknowledgement: ["data_loss"],
-        dataLoss: [{ version: "3.0.0", kinds: ["DROP TABLE"] }],
-      });
-      expect(res.body.error).toBe(
-        'Rolling back v3.0.0 of "orders_fix" deletes rows (v3.0.0 runs DROP TABLE), and deploying ' +
-          "again brings back the structure, not the rows. Nothing was rolled back. Tick the box " +
-          `about deleted rows, then ${dryRun ? "start the dry run" : "roll back"} again.`
-      );
-      expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
-      expect(queriesMatching(mockClient, /DELETE FROM/)).toHaveLength(0);
-      expect(count(mockClient, "ROLLBACK")).toBe(1);
-      expect(count(mockClient, "COMMIT")).toBe(0);
+      const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
+      expect(res.status).toBe(200);
+      expect(res.body.needsAcknowledgement).toBeUndefined();
+      expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
     }
-  });
-
-  it("names only the rollbacks that delete rows", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 42 });
-    mockClient = createFakeClient(
-      ledger({ rows: [V1, V2, { ...V3, down_sql: "CREATE TABLE t3_restored (id int);" }] })
-    );
-    const res = await revert({ ...UNTICKED, versions: ["2.0.0", "3.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(409);
-    expect(res.body.dataLoss).toEqual([{ version: "2.0.0", kinds: ["DROP TABLE"] }]);
-    expect(String(res.body.error)).toContain('Rolling back v2.0.0 of "orders_fix" deletes rows');
-  });
-
-  it("claims no production approval while the tick is missing", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 42 });
-    const res = await revert({ ...UNTICKED, versions: ["3.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("data_loss");
-    expect(mockClaim).not.toHaveBeenCalled();
-    expect(mockRelease).not.toHaveBeenCalled();
-  });
-
-  it("asks for no tick off production, even when rows go", async () => {
-    mockClient = createFakeClient(ledger());
-    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
-    expect(res.status).toBe(200);
-  });
-
-  it("asks for no tick when no rollback deletes rows, a commented-out DROP included", async () => {
-    mockClient = createFakeClient(
-      ledger({
-        rows: [V1, V2, { ...V3, down_sql: "-- DROP TABLE t3;\nCREATE TABLE t3_restored (id int);" }],
-      })
-    );
-    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
-    expect(res.status).toBe(200);
-    expect(count(mockClient, "COMMIT")).toBe(1);
   });
 });
 
 describe("failures", () => {
   it("rolls everything back when a rollback fails, and gives the approval back", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
       ledger({ first: [{ match: /^DROP TABLE t2;$/, error: { message: 'table "t2" does not exist' } }] })
     );
-    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"], acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
     expect(res.status).toBe(500);
     expect(String(res.body.error)).toBe(
       "The rollback of v2.0.0 failed, so nothing was changed - every version in this rollback is " +
@@ -716,12 +628,12 @@ describe("failures", () => {
   });
 
   it("says the outcome is unknown when COMMIT fails, and keeps the approval spent", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
       ledger({ first: [{ match: /^COMMIT$/, error: { message: "Connection terminated unexpectedly" } }] })
     );
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(500);
     expect(res.body.outcomeUnknown).toBe(true);
     expect(String(res.body.error)).toContain("if v3.0.0 shows as pending, the rollback went through");
@@ -735,7 +647,7 @@ describe("failures", () => {
   });
 
   it("says the outcome is unknown when a down script ends the transaction", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     // txid_current answers "100" before the down script and "101" after it,
     // which is what a COMMIT inside the script that lib/sql-guard missed
@@ -749,7 +661,7 @@ describe("failures", () => {
         ],
       })
     );
-    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"], acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
     expect(res.status).toBe(500);
     expect(res.body.outcomeUnknown).toBe(true);
     expect(String(res.body.error)).toContain("ended the rollback's transaction");
@@ -764,7 +676,7 @@ describe("failures", () => {
   });
 
   it("says the server undid the rollback when it refuses the COMMIT", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     // A DEFERRABLE constraint is checked at the COMMIT: the server refuses,
     // rolls the transaction back itself, and names what went wrong. Nothing
@@ -784,7 +696,7 @@ describe("failures", () => {
         ],
       })
     );
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(500);
     expect(res.body.outcomeUnknown).toBeUndefined();
     expect(String(res.body.error)).toContain("nothing was changed");
@@ -808,7 +720,7 @@ describe("per-connection execution setting", () => {
   // setting refuses it, with the same sentence.
 
   it("refuses a read-only connection, dry run included, before BEGIN", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("none")] });
     for (const dryRun of [false, true]) {
       const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
       expect(res.status).toBe(403);
@@ -821,7 +733,7 @@ describe("per-connection execution setting", () => {
     // An editor may not roll back here by themselves, but may ask an Admin
     // for this one rollback. The route reads the ledger to know which exact
     // rollback that is, finds no approval of theirs, and changes nothing.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(403);
     expect(res.body.askToRun).toBe(true);
@@ -836,7 +748,7 @@ describe("per-connection execution setting", () => {
   });
 
   it("refuses that editor a dry run there outright, before BEGIN", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true });
     expect(res.status).toBe(403);
     expect(res.body.askToRun).toBe(true);
@@ -845,18 +757,8 @@ describe("per-connection execution setting", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
-  it("is checked before the production acknowledgement, not after", async () => {
-    // Ordering matters for the message, not the outcome: both refuse. A
-    // read-only production connection that answered "tick the box" would send
-    // the operator to find an approval for a run that could never happen.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod", "none")] });
-    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
-    expect(res.status).toBe(403);
-    expect(String(res.body.error)).toContain("read-only");
-  });
-
   it("lets the default setting through, so old rows keep working", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", undefined)] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow(undefined)] });
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(200);
   });
@@ -872,7 +774,7 @@ describe("another organization's connection", () => {
     // The saved row is in the next organization along, and the stand-in
     // answers the way the lookup's WHERE clause would, so only a lookup that
     // left the caller's organization out would find it.
-    const theirs = { ...connectionRow("prod"), id: 7, org_id: TEST_ORG.id + 1 };
+    const theirs = { ...connectionRow("admin"), id: 7, org_id: TEST_ORG.id + 1 };
     mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
       const [text, values = []] = args as [string, unknown[]?];
       const holds = (column: string, value: unknown) => {
@@ -885,7 +787,7 @@ describe("another organization's connection", () => {
     });
     mockClaim.mockResolvedValue({ id: 42 });
 
-    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("No saved connection found with id 7.");
     expect(JSON.stringify(res.body)).not.toContain("Sales dev");
@@ -896,53 +798,6 @@ describe("another organization's connection", () => {
     expect(mockBuildPgConfig).not.toHaveBeenCalled();
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
-  });
-});
-
-// Saving the production database again as a "dev" connection would skip the
-// rollback's approval as surely as relabelling it (lib/environment-guard).
-describe("a dev connection that reaches a production database", () => {
-  function savedAlsoAs(twin: Record<string, unknown> | Error) {
-    mockBuildPgConfig.mockImplementation((input) => {
-      const { host, port, database } = input as Record<string, unknown>;
-      return { host, port, database };
-    });
-    mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
-      if (/environment = 'prod'/.test(String(args[0]))) {
-        if (twin instanceof Error) throw twin;
-        return { rows: [twin] };
-      }
-      return { rows: [connectionRow("dev")] };
-    });
-  }
-  const twinRow = (over: Record<string, unknown> = {}) => ({
-    id: 8, ...connectionRow("prod"), name: "Sales (prod)", host: "DB.test", ...over,
-  });
-
-  afterEach(() => {
-    mockBuildPgConfig.mockImplementation(() => ({}));
-  });
-
-  it("refuses the rollback and opens nothing on the target", async () => {
-    savedAlsoAs(twinRow());
-    const res = await revert({ ...BASE, versions: ["3.0.0"] });
-    expect(res.status).toBe(409);
-    expect(res.body.environment).toBe("prod");
-    expect(res.body.error).toMatch(/"Sales \(prod\)", reaches the same database/);
-    expect(queryTexts(mockClient)).toEqual([]);
-    expect(mockClaim).not.toHaveBeenCalled();
-  });
-
-  it("runs when the production connection reaches another database", async () => {
-    savedAlsoAs(twinRow({ database_name: "billing" }));
-    expect((await revert({ ...BASE, versions: ["3.0.0"] })).status).toBe(200);
-  });
-
-  it("refuses with 503 when the lookup fails", async () => {
-    savedAlsoAs(new Error("metadata database went away"));
-    const res = await revert({ ...BASE, versions: ["3.0.0"] });
-    expect(res.status).toBe(503);
-    expect(queryTexts(mockClient)).toEqual([]);
   });
 });
 
@@ -1067,20 +922,13 @@ describe("the audit trail", () => {
     expect(body.outcomeUnknown).toBe(true);
   });
 
-  it("marks a 503 given before the target was touched, so it is not read as a failed run", async () => {
-    // The twin check (approvals on, a dev connection) cannot reach the metadata DB.
-    mockBuildPgConfig.mockImplementation((input) => {
-      const { host, port, database } = input as Record<string, unknown>;
-      return { host, port, database };
-    });
-    mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
-      if (/environment = 'prod'/.test(String(args[0]))) throw new Error("metadata database went away");
-      return { rows: [connectionRow("dev")] };
-    });
+  it("marks a 500 given before the target was touched, so it is not read as a failed run", async () => {
+    // The saved connection cannot be read: the metadata database went away.
+    mockPoolQuery.mockRejectedValue(new Error("metadata database went away"));
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
-    mockBuildPgConfig.mockImplementation(() => ({}));
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(500);
     expect(res.body.nothingRan).toBe(true);
     expect(recorded()[2].nothingRan).toBe(true);
+    expect(mockClient.queries).toEqual([]);
   });
 });

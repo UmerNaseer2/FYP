@@ -63,6 +63,12 @@ function lowerFirst(text: string): string {
  */
 function sentenceFor(change: RoleChange): string {
   const role = roleName(change);
+  // An old row from a setting that has since been removed. The kind is not in
+  // the type any more, and without this line the row would read as a role
+  // being given to someone.
+  if ((change.kind as string) === "two-person-rule") {
+    return "changed an approval setting that the app no longer has";
+  }
   switch (change.kind) {
     case "create-role":
       // detail is "Copied from Editor", or null for a role made empty.
@@ -101,10 +107,6 @@ function sentenceFor(change: RoleChange): string {
       return change.detail
         ? `renamed the organization from ${change.detail} to ${change.subject ?? "a new name"}`
         : `renamed the organization to ${change.subject ?? "a new name"}`;
-    case "two-person-rule":
-      return change.detail === "off"
-        ? "switched the two-person rule off, so production runs no longer need an approval"
-        : "switched the two-person rule on, so production deploys wait for a second person";
     case "github-settings": {
       // subject is the repository as owner/name, and detail what was saved.
       const repository = change.subject ?? "a repository";

@@ -11,7 +11,7 @@ export const deployHelp: HelpTopic = {
     "On Pre-flight, pick the connection, the schema and the script group, then press Check database.",
     "Read Applied to target, the version timeline and the list of pending migrations.",
     "Choose how far to go. Tick a version, press its Run button, or press Run all. This only picks the range. Nothing runs yet.",
-    "Read the Pre-flight checklist. On a production target, tick every box the page asks for.",
+    "Read the Pre-flight checklist. It warns you about breaking changes, deleted rows and drift. The warnings do not stop a run.",
     "Press Dry run to rehearse. The scripts run on the target and are then rolled back, so nothing is written.",
     "Press Deploy to run for real. The Run step shows how each migration went.",
     "On Verify, read what was applied, then record it on Version Sync or watch the database on Drift.",
@@ -69,7 +69,7 @@ export const deployHelp: HelpTopic = {
     },
     {
       problem: "Deploy and Dry run are switched off.",
-      fix: "Read the line under the two buttons. It names the first thing in the way: an unticked box, a missing approval, a read-only connection, your role, or a drift check that is still running.",
+      fix: "Read the line under the two buttons. It names the first thing in the way: a missing approval, a read-only connection, your role, or a drift check that is still running.",
     },
     {
       problem: "I cannot untick a version in the middle of the list.",
@@ -94,15 +94,15 @@ export const deployHelp: HelpTopic = {
       body: [
         "On Pre-flight, press Plan a rollback and pick the version to go back to. Every applied version above it is undone, newest first, in one transaction.",
         "A rollback restores structure, not rows. Deleted rows do not come back, so keep a backup. One rollback undoes at most 50 versions. To go further back, run it and then roll back again.",
-        "Dry run the rollback rehearses it without changing anything. A rollback runs as soon as you press its button, unless the target is production and your organization has the two-person rule on, or your role needs an Admin's approval for it.",
+        "Dry run the rollback rehearses it without changing anything. A rollback runs as soon as you press its button, unless your role needs an Admin's approval for it.",
       ],
     },
     {
       title: "Approvals",
       body: [
-        "Only while an admin has the two-person rule on: a target labelled production needs an approval from a second person for each real run and each rollback. Dry runs never need one. Nobody can approve their own request. With the rule off, nobody needs an approval at all.",
+        "Your role decides what you may do. If it allows a run or a rollback on the connection, you just do it, and an Admin always may. Nobody else needs to approve it.",
         "An approval covers one run of the exact SQL it was given, for up to 7 days. Change the SQL, or wait longer, and it needs approving again. A dry run does not need it or use it up.",
-        "If your role may not run migrations or roll back on the connection, Deploy offers Ask for approval instead, on any target. An Admin approves that exact run, and then you can run it once, within 7 days. Only you can use that approval. There is no dry run without it, and a read-only connection is never opened this way.",
+        "If your role may not run migrations or roll back on the connection, Deploy offers Ask for approval instead. An Admin approves that exact run, and then you can run it once, within 7 days. Only you can use that approval, and nobody can approve their own request. There is no dry run without it, and a read-only connection is never opened this way.",
         "The note you type with a request is shown to whoever approves it. The note typed with a decision is stored with the approval and shown in the audit log.",
       ],
     },

@@ -544,8 +544,7 @@ details.table > summary .muted {
 }
 
 /* A label on a line of its own in a card is as wide as its words. */
-.card > .tag,
-.card > .badge {
+.card > .tag {
   align-self: flex-start;
 }
 
@@ -649,8 +648,7 @@ input[type="checkbox"] {
 
 /* Labels */
 
-.tag,
-.badge {
+.tag {
   display: inline-flex;
   align-items: center;
   padding: 2px 10px;
@@ -675,33 +673,6 @@ input[type="checkbox"] {
 
 .tag + .tag {
   margin-left: 6px;
-}
-
-.badge {
-  flex: none;
-}
-
-/* The environments, colored as the web app colors them: an unlabeled one looks unfinished, production looks like a warning. */
-.env-unset {
-  border-color: var(--line-strong);
-  border-style: dashed;
-  background: none;
-  color: var(--text-2);
-}
-
-.env-dev {
-  background: var(--wait-soft);
-  color: var(--wait);
-}
-
-.env-staging {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.env-prod {
-  background: var(--bad-soft);
-  color: var(--bad);
 }
 
 /* Messages */
@@ -1079,7 +1050,7 @@ dl.card {
   }
 }
 
-/* The live status screen. A tone colors a tag or a count by what it means, as the environments do. */
+/* The live status screen. A tone colors a tag or a count by what it means. */
 .tag.tone-good {
   background: var(--good-soft);
   color: var(--good);

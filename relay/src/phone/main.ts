@@ -17,7 +17,7 @@
 import { approvalsDue, DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from "./approvals.js";
 import { readTypedCode, type CodeOutcome } from "./code-entry.js";
 import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type RpcErrorCode } from "./connection.js";
-import { CANCEL_LOST_TEXT, mayCancel, mayControl, RUN_LOST_TEXT, signedTicks, stepOf, UPDATE_TEXT } from "./deploy.js";
+import { CANCEL_LOST_TEXT, mayCancel, mayControl, RUN_LOST_TEXT, stepOf, UPDATE_TEXT } from "./deploy.js";
 import { append, button, el, notice } from "./dom.js";
 import { defaultPhoneName, retryText } from "./format.js";
 import { forgetPairedComputer, loadLastSeen, loadPairedComputer, saveLastSeen, savePairedComputer } from "./idb-store.js";
@@ -32,7 +32,7 @@ import {
 } from "./screens.js";
 import type { PairedComputer } from "./store.js";
 import { approvalChallenge, approvalFingerprint, type ApprovalAction, type ApprovalDecision, type ApprovalScript } from "../shared/remote/approval.js";
-import { cancelChallenge, deployChallenge, type ControlTick, type DeployStep } from "../shared/remote/control.js";
+import { cancelChallenge, deployChallenge, type DeployStep } from "../shared/remote/control.js";
 import { fromBase64Url, sameBytes, toBase64Url, type Bytes } from "../shared/remote/bytes.js";
 import { generateKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { cleanDeviceName, PAIRING_LIFETIME_MS, type PairingCode } from "../shared/remote/pairing.js";
@@ -107,14 +107,13 @@ let alerts: { prepared: Load<AlertsSetup> | null; working: boolean; problem: str
 let alertsToken = 0;
 let driftActions: DriftActions = { running: null, confirming: null, result: null };
 let driftActionsToken = 0;
-type StartKeys = { credentialId: Bytes; challenge: Bytes; fingerprint: string; step: DeployStep; ticks: ControlTick[] };
+type StartKeys = { credentialId: Bytes; challenge: Bytes; fingerprint: string; step: DeployStep };
 type CancelKeys = { credentialId: Bytes; challenge: Bytes };
 let starting: { prepared: Load<StartKeys> | null; working: true | null; problem: string | null; result: DeployStartStatus | null } = { prepared: null, working: null, problem: null, result: null };
 let startingToken = 0;
 let startingTimer: number | undefined;
 /** Which run the boxes and the challenge are for. */
 let startingFor: string | null = null;
-let ticked = new Set<ControlTick>();
 let cancelling: { pid: number | null; queryStart: string | null; prepared: Load<CancelKeys> | null; working: true | null; problem: string | null; result: CancelResult["status"] | null } = { pid: null, queryStart: null, prepared: null, working: null, problem: null, result: null };
 let cancellingToken = 0;
 let cancellingTimer: number | undefined;
@@ -161,7 +160,6 @@ const actions: Actions = {
   checkDrift: (connectionId, id) => void runDriftAction("check", connectionId, id),
   askAcknowledge,
   acknowledgeDrift: (connectionId, id) => void runDriftAction("acknowledge", connectionId, id),
-  toggleTick,
   startRun: () => void startRun(),
   askCancel,
   cancelQuery: () => void cancelQuery(),
@@ -1719,7 +1717,7 @@ function deployFamilyNodes(target: Extract<Route, { screen: "deploy-family" }>):
 }
 
 function planView(plan: PlanView["plan"], hash: PlanView["hash"]): PlanView {
-  return { plan, hash, ticked, starting, setup, passkeys: passkeysSupported() };
+  return { plan, hash, starting, setup, passkeys: passkeysSupported() };
 }
 
 function deployPlanNodes(current: Session, target: Extract<Route, { screen: "deploy-plan" }>): Node[] {
@@ -1733,13 +1731,12 @@ function deployPlanNodes(current: Session, target: Extract<Route, { screen: "dep
   const plan = value(load);
   const hash = plan === null ? undefined : fingerprintOf(plan);
   if (plan !== null) {
-    // A changed run is a new question: its boxes start empty, and a challenge for the old one is no use.
+    // A changed run is a new question: a challenge for the old one is no use.
     const shape = JSON.stringify([plan.fingerprint, plan.next, plan.risks]);
     if (shape !== startingFor && starting.working === null) {
       const { problem } = starting;
       resetStarting();
       starting = { ...starting, problem };
-      ticked = new Set();
       startingFor = shape;
     }
     const step = stepOf(plan.next);
@@ -1758,14 +1755,7 @@ function resetStarting(): void {
 
 function resetPlan(): void {
   resetStarting();
-  ticked = new Set();
   startingFor = null;
-}
-
-function toggleTick(tick: ControlTick, on: boolean): void {
-  if (on) ticked.add(tick);
-  else ticked.delete(tick);
-  render();
 }
 
 /** Fetches the one-time number and works out what to sign before the tap, since a browser lets a page use a passkey only straight after one. */
@@ -1779,9 +1769,9 @@ async function prepareStart(owner: Session, target: Extract<Route, { screen: "de
     const nonce = fromBase64Url(begun.nonce);
     const credentialId = fromBase64Url(begun.credentialId);
     if (nonce === null || credentialId === null) throw new Problem(UNREADABLE_CHALLENGE);
-    const ticks = signedTicks(plan);
-    const challenge = await deployChallenge(nonce, { connectionId: target.connectionId, schemaName: target.schema, scriptName: target.script, action: target.action, targetVersion: target.version, fingerprint: plan.fingerprint, step, ticks });
-    prepared = { status: "loaded", value: { credentialId, challenge, fingerprint: plan.fingerprint, step, ticks } };
+    // No ticked risks: the list is still part of what is signed, and always empty.
+    const challenge = await deployChallenge(nonce, { connectionId: target.connectionId, schemaName: target.schema, scriptName: target.script, action: target.action, targetVersion: target.version, fingerprint: plan.fingerprint, step, ticks: [] });
+    prepared = { status: "loaded", value: { credentialId, challenge, fingerprint: plan.fingerprint, step } };
   } catch (error) {
     gone = error instanceof RpcError && CONTROL_GONE.has(error.code);
     prepared = error instanceof RpcError && error.code === "lost" ? null : { status: "failed", message: errorText(error) };
@@ -1824,7 +1814,8 @@ async function startRun(): Promise<void> {
         targetVersion: target.version,
         fingerprint: keys.fingerprint,
         step: keys.step,
-        ticks: keys.ticks,
+        // Sent empty, so a computer whose app is older still reads the request.
+        ticks: [],
         assertion: assertionOf(credential),
       },
     });

@@ -68,12 +68,6 @@
     connected: "Connected to the relay.",
     replaced: "Another Schema Studio signed in to the relay as this computer, so this one let it take over.",
   };
-  // The same names as the web app's (my-app/lib/environments.ts). An unlabelled connection shows its database alone.
-  const ENVIRONMENTS: Record<Exclude<PhoneConnection["environment"], "unset">, string> = {
-    dev: "Dev",
-    staging: "Staging",
-    prod: "Production",
-  };
   const SVG = "http://www.w3.org/2000/svg";
 
   function element<T extends HTMLElement>(id: string): T {
@@ -402,7 +396,7 @@
     name.textContent = connection.name;
     const detail = document.createElement("span");
     detail.className = "hint";
-    detail.textContent = connection.environment === "unset" ? `Database ${connection.database}` : `${ENVIRONMENTS[connection.environment]}, database ${connection.database}`;
+    detail.textContent = `Database ${connection.database}`;
     text.append(name, detail);
     row.append(box, text);
 

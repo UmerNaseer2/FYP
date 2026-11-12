@@ -70,7 +70,6 @@ export type WebsiteDriftSchema = {
   /** The website's id for the connection: a copy here has it as its site id. */
   connectionId: number;
   connectionName: string;
-  environment: string;
   schema: string;
   label: string | null;
   /** How often the website checks it, in minutes; 0 is by hand only. */
@@ -343,7 +342,7 @@ export type PhonePairing =
 export type SetRelayResult = { ok: true; relayOrigin: string } | { ok: false; message: string };
 
 /** A saved connection that phones may be allowed to see. Never its host, user name or password. */
-export type PhoneConnection = { id: number; name: string; environment: "unset" | "dev" | "staging" | "prod"; database: string };
+export type PhoneConnection = { id: number; name: string; database: string };
 
 /** The saved connections, for the Phone section to choose from, or why they could not be listed. */
 export type PhoneConnections = { ok: true; connections: PhoneConnection[] } | { ok: false; message: string };

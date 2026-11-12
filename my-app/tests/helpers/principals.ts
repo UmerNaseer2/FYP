@@ -31,7 +31,6 @@ export const TEST_ORG = {
   slug: "swinburne-fyp",
   name: "Swinburne FYP",
   isDefault: true,
-  twoPersonRule: true,
 } as const;
 
 /**
@@ -55,7 +54,6 @@ export function principalFor(role: BuiltInRole, over: Partial<Principal> = {}): 
     orgSlug: TEST_ORG.slug,
     orgName: TEST_ORG.name,
     orgIsDefault: TEST_ORG.isDefault,
-    orgTwoPersonRule: TEST_ORG.twoPersonRule,
     ...over,
   };
 }

@@ -533,8 +533,8 @@ describeWithDatabase("setting up the metadata tables on a real database", () => 
     // is the statement that came back as a 500 on a real Supabase project.
     async function tryTrackingStatement(): Promise<void> {
       await db.query(
-        `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label, environment)
-         SELECT org_id, id, 'shop', 'shop', 'dev' FROM connections WHERE false
+        `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label)
+         SELECT org_id, id, 'shop', 'shop' FROM connections WHERE false
          ON CONFLICT (connection_id, schema_name) DO NOTHING`
       );
     }

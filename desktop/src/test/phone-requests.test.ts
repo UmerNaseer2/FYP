@@ -316,12 +316,11 @@ const READ_SCHEMA: Request = { id: 8, method: "schema.read", params: { connectio
 
 /** A comparison as POST /api/compare/phone answers with one. */
 const SUMMARY: CompareSummary = {
-  source: { connectionId: 1, name: "Dev", environment: "dev", schema: "public", error: null },
+  source: { connectionId: 1, name: "Dev", schema: "public", error: null },
   targets: [
     {
       connectionId: 2,
       name: "Prod",
-      environment: "prod",
       schema: "public",
       status: "compared",
       error: null,
@@ -404,9 +403,9 @@ test("lists the shared connections only, in the app's order, with only what a ph
   const app = fakeApp({
     "GET /api/connections/phone": ok({
       connections: [
-        { id: 5, name: "Billing", environment: "prod", database: "billing", host: HOST },
-        { id: 2, name: "Orders", environment: "staging", database: "orders", host: HOST },
-        { id: 9, name: "Search", environment: "dev", database: "search", host: HOST, port: 5432 },
+        { id: 5, name: "Billing", database: "billing", host: HOST },
+        { id: 2, name: "Orders", database: "orders", host: HOST },
+        { id: 9, name: "Search", database: "search", host: HOST, port: 5432 },
       ],
     }),
   });
@@ -417,8 +416,8 @@ test("lists the shared connections only, in the app's order, with only what a ph
     ok: true,
     result: {
       connections: [
-        { id: 5, name: "Billing", environment: "prod", database: "billing" },
-        { id: 9, name: "Search", environment: "dev", database: "search" },
+        { id: 5, name: "Billing", database: "billing" },
+        { id: 9, name: "Search", database: "search" },
       ],
     },
   });
@@ -428,7 +427,7 @@ test("lists the shared connections only, in the app's order, with only what a ph
 
 test("fails the list when the app describes a shared connection wrongly, and ignores the ones not shared", async () => {
   newLogLines();
-  const wrong = fakeApp({ "GET /api/connections/phone": ok({ connections: [{ id: 1, name: "A", environment: "qa", database: "a" }] }) });
+  const wrong = fakeApp({ "GET /api/connections/phone": ok({ connections: [{ id: 1, name: "A", database: 7 }] }) });
   assert.deepEqual(await answer({ id: 6, method: "connections.list" }, wrong.call), refused(6, "failed"));
   assert.match(newLogLines(), /answered with a connection the phone link cannot read/);
 
@@ -438,13 +437,13 @@ test("fails the list when the app describes a shared connection wrongly, and ign
 
   const unshared = fakeApp({
     "GET /api/connections/phone": ok({
-      connections: [{ id: 1, name: "A", environment: "dev", database: "a" }, { id: 4, environment: "qa" }, "not a connection", null],
+      connections: [{ id: 1, name: "A", database: "a" }, { id: 4, database: 7 }, "not a connection", null],
     }),
   });
   assert.deepEqual(await answer({ id: 8, method: "connections.list" }, unshared.call, { shared: [1] }), {
     id: 8,
     ok: true,
-    result: { connections: [{ id: 1, name: "A", environment: "dev", database: "a" }] },
+    result: { connections: [{ id: 1, name: "A", database: "a" }] },
   });
 });
 
@@ -562,7 +561,6 @@ const TRACKED = [
     connectionId: 2,
     schemaName: "sales",
     label: null,
-    environment: "dev",
     connectionHost: HOST,
     driftStatus: "drifted",
     driftSummary: `Could not reach ${HOST}`,

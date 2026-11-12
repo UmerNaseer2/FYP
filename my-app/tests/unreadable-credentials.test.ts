@@ -96,7 +96,6 @@ const ROW = {
   connection_string: null,
   ssl: false,
   ssl_mode: "disable",
-  environment: "dev",
 };
 
 let guard: GitHubGuard;
@@ -244,10 +243,10 @@ describe("Compare", () => {
     ssl_mode: "disable",
   };
   const SOURCE = {
-    ...BASE_CONNECTION, id: 1, name: "Source", host: "src.test", database_name: "src_db", environment: "dev",
+    ...BASE_CONNECTION, id: 1, name: "Source", host: "src.test", database_name: "src_db",
   };
   const TARGET = {
-    ...BASE_CONNECTION, id: 2, name: "Target", host: "tgt.test", database_name: "tgt_db", environment: "staging",
+    ...BASE_CONNECTION, id: 2, name: "Target", host: "tgt.test", database_name: "tgt_db",
   };
 
   /** Both connections saved; only the one on `unreadableHost` can't be read. */

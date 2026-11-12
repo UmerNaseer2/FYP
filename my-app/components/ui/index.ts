@@ -2,7 +2,6 @@
 export { Button } from "./Button";
 export { Pill } from "./Pill";
 export type { PillTone } from "./Pill";
-export { EnvironmentPill } from "./EnvironmentPill";
 export { ExecuteRolePill } from "./ExecuteRolePill";
 export { FilterPill } from "./FilterPill";
 export { Card } from "./Card";

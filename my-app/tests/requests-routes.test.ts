@@ -39,8 +39,7 @@ jest.mock("../lib/approvals-db", () => ({
   listRunsReadyToRun: jest.fn(),
   listRunsToApprove: jest.fn(),
   // The real rule, because which runs a person sees depends on it.
-  mayDecideOwn: (principal: { bypass: boolean; orgTwoPersonRule: boolean }) =>
-    principal.bypass || !principal.orgTwoPersonRule,
+  mayDecideOwn: (principal: { bypass: boolean }) => principal.bypass,
 }));
 
 // Alerts are looked at in tests/push-alerts.test.ts. Here only: are they sent?
@@ -179,14 +178,14 @@ describe("GET /api/requests?only=counts", () => {
     expect(body.counts.waiting).toBe(expected);
   });
 
-  it("leaves your own run out of what you can approve while the two-person rule is on", async () => {
+  it("leaves your own run out of what you can approve", async () => {
     mockGate = as("admin");
     await GET(getRequest("?only=counts"));
     expect(runs.countRunsToApprove).toHaveBeenCalledWith(TEST_ORG.id, "admin@test");
   });
 
-  it("keeps your own run in when the two-person rule is off", async () => {
-    mockGate = as("admin", { orgTwoPersonRule: false });
+  it("keeps your own run in under the bypass, which may decide its own", async () => {
+    mockGate = as("admin", { bypass: true });
     await GET(getRequest("?only=counts"));
     expect(runs.countRunsToApprove).toHaveBeenCalledWith(TEST_ORG.id, null);
   });

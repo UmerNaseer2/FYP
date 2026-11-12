@@ -3,7 +3,7 @@
  * (lib/agent-rules.ts says why they exist).
  *
  * Kept here: a hash of each computer's token and of each link's device code, so
- * a copy of this database lets nobody act as a computer. The name and environment
+ * a copy of this database lets nobody act as a computer. The name
  * of the connections a computer shares, and never a host, a user or a password.
  * Questions and answers for as long as they are useful, which sweepAgentRows ends.
  *
@@ -234,17 +234,16 @@ export async function replaceAgentConnections(agentId: number, connections: Comp
     ]);
     if (connections.length > 0) {
       await client.query(
-        `INSERT INTO agent_connections (agent_id, local_id, name, environment, shared, drift)
-         SELECT $1::int, u.id, u.name, u.environment, u.shared, u.drift::jsonb
-           FROM unnest($2::int[], $3::text[], $4::text[], $5::boolean[], $6::text[]) AS u(id, name, environment, shared, drift)
+        `INSERT INTO agent_connections (agent_id, local_id, name, shared, drift)
+         SELECT $1::int, u.id, u.name, u.shared, u.drift::jsonb
+           FROM unnest($2::int[], $3::text[], $4::boolean[], $5::text[]) AS u(id, name, shared, drift)
          ON CONFLICT (agent_id, local_id)
-         DO UPDATE SET name = EXCLUDED.name, environment = EXCLUDED.environment, shared = EXCLUDED.shared,
+         DO UPDATE SET name = EXCLUDED.name, shared = EXCLUDED.shared,
                        drift = EXCLUDED.drift`,
         [
           agentId,
           connections.map((connection) => connection.id),
           connections.map((connection) => connection.name),
-          connections.map((connection) => connection.environment),
           connections.map((connection) => connection.shared !== false),
           connections.map((connection) => (connection.drift === undefined ? null : JSON.stringify(connection.drift))),
         ]
@@ -335,7 +334,7 @@ export async function listComputers(orgId: number, profileId: number, everything
     `SELECT a.id, a.name, a.last_seen_at,
             COALESCE(a.last_seen_at > now() - make_interval(secs => $3), false) AS online,
             COALESCE(
-              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment,
+              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name,
                                                  'shared', c.shared, 'drift', COALESCE(c.drift, '[]'::jsonb))
                                ORDER BY c.name, c.local_id)
                  FROM agent_connections c WHERE c.agent_id = a.id AND ($4 OR c.shared)),
@@ -365,15 +364,15 @@ export type OrgComputer = {
   mine: boolean;
   online: boolean;
   lastSeenAt: string | null;
-  /** The connections kept only on that computer, by name and environment. Nothing else leaves it. */
-  connections: { id: number; name: string; environment: string }[];
+  /** The connections kept only on that computer, by name. Nothing else leaves it. */
+  connections: { id: number; name: string }[];
 };
 
 /**
  * Every computer linked in this organization, with the connections only it
  * holds. Everyone who can read connections sees these by name, so a laptop's
  * databases are listed for the org the same way the server's local ones are.
- * Names and environments only: comparing through a computer stays its
+ * Names only: comparing through a computer stays its
  * owner's (listComputers). Unlinking it is its owner's too (removeComputer),
  * and an Admin's (removeOrgComputer).
  */
@@ -393,7 +392,7 @@ export async function listOrgComputers(orgId: number, profileId: number | null):
             COALESCE(a.profile_id = $2, false) AS mine,
             COALESCE(a.last_seen_at > now() - make_interval(secs => $3), false) AS online,
             COALESCE(
-              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment)
+              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name)
                                ORDER BY c.name, c.local_id)
                  FROM agent_connections c WHERE c.agent_id = a.id),
               '[]'

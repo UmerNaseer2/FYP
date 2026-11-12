@@ -35,7 +35,6 @@ jest.mock("../lib/version-db", () => ({
                 connection_id: 3,
                 schema_name: "public",
                 id: 7,
-                environment: "dev",
                 head_version: "1.3.0",
                 drift_status: "in_sync",
               },

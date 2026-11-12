@@ -1,6 +1,6 @@
 /*
  * One database page, Atelier design.
- * A drift card beside the big numbers, then the environment, then the lineage.
+ * A drift card beside the big numbers, then the lineage.
  * Every class here starts with sc- and every colour is a token from globals.css.
  */
 
@@ -156,17 +156,6 @@
   font-size: 12.5px;
   color: var(--text-3);
 }
-
-/* ── Environment ──────────────────────────────────────────────────────── */
-.sc-env {
-  padding: 18px 20px;
-  display: grid;
-  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-.sc-env .warn-inline { font-size: 12.5px; color: var(--text-2); }
-.sc-env__ico { color: var(--break); }
 
 /* ── Lineage ──────────────────────────────────────────────────────────── */
 .sc-snc { padding: 24px 26px; }
@@ -326,7 +315,6 @@
   .sc-snc { padding: 18px 16px; }
   .sc-num { padding: 14px 16px; }
   .sc-nums { gap: 12px; }
-  .sc-env { grid-template-columns: minmax(0, 1fr); padding: 16px; }
   .sc-when { margin-left: 0; flex-basis: 100%; }
   .sc-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* Tap targets at least 44px tall. */

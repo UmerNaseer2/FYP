@@ -50,7 +50,7 @@ const USER_NAME = "fake-user-name";
 const PASSWORD = ["not", "a", "real", "password"].join("-");
 
 /** A whole row, as GET /api/connections would read it, to show what is left out. */
-function row(id: unknown, name: string, environment: unknown, databaseName = "app") {
+function row(id: unknown, name: string, databaseName = "app") {
   return {
     id,
     name,
@@ -63,7 +63,6 @@ function row(id: unknown, name: string, environment: unknown, databaseName = "ap
     connection_string: `postgres://${USER_NAME}:${PASSWORD}@${HOST}/${databaseName}`,
     ssl: false,
     ssl_mode: null,
-    environment,
   };
 }
 
@@ -92,14 +91,14 @@ test("answers with the gate's refusal, and reads nothing", async () => {
 });
 
 test("answers with what Compare's pickers show, never the host, the user name or the password", async () => {
-  mockRows = [row(2, "Dev", "dev"), row(1, "Prod", "prod", "shop")];
+  mockRows = [row(2, "Dev"), row(1, "Prod", "shop")];
   const response = await GET();
   expect(response.status).toBe(200);
   const body = await response.json();
   expect(body).toEqual({
     connections: [
-      { id: 2, name: "Dev", environment: "dev", database: "app" },
-      { id: 1, name: "Prod", environment: "prod", database: "shop" },
+      { id: 2, name: "Dev", database: "app" },
+      { id: 1, name: "Prod", database: "shop" },
     ],
   });
   const text = JSON.stringify(body);
@@ -121,13 +120,12 @@ test("asks for the caller's organization's connections only", async () => {
   expect(mockValues[0]).toEqual([TEST_ORG.id]);
 });
 
-test("reads each environment the way the app does, and each number as a number", async () => {
-  mockRows = [row("7", "A", " Staging "), row(8, "B", null), row(9, "C", "qa")];
+test("reads each number as a number, and sends no label", async () => {
+  mockRows = [{ ...row("7", "A"), environment: "staging" }, row(8, "B")];
   const body = await (await GET()).json();
   expect(body.connections).toEqual([
-    { id: 7, name: "A", environment: "staging", database: "app" },
-    { id: 8, name: "B", environment: "unset", database: "app" },
-    { id: 9, name: "C", environment: "unset", database: "app" },
+    { id: 7, name: "A", database: "app" },
+    { id: 8, name: "B", database: "app" },
   ]);
 });
 

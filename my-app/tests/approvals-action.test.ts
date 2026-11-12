@@ -93,10 +93,10 @@ describe("decisionBlockReason", () => {
 
   it("refuses a self-approval with copy that says which kind it is", () => {
     expect(decisionBlockReason(approval("revert"), "A@test", false)).toBe(
-      "You asked for this rollback, so you cannot approve it. A rollback on production needs a second person."
+      "You asked for this rollback, so somebody else has to approve it."
     );
     expect(decisionBlockReason(approval("deploy"), "a@test", false)).toBe(
-      "You asked for this deploy, so you cannot approve it. A production run needs a second person."
+      "You asked for this run, so somebody else has to approve it."
     );
   });
 
@@ -111,10 +111,9 @@ describe("decisionBlockReason", () => {
 });
 
 describe("mayDecideOwn", () => {
-  it("allows a self-approval only under the bypass or with the two-person rule off", () => {
-    expect(mayDecideOwn({ bypass: false, orgTwoPersonRule: true })).toBe(false);
-    expect(mayDecideOwn({ bypass: true, orgTwoPersonRule: true })).toBe(true);
-    expect(mayDecideOwn({ bypass: false, orgTwoPersonRule: false })).toBe(true);
+  it("allows a self-approval only under the bypass", () => {
+    expect(mayDecideOwn({ bypass: false })).toBe(false);
+    expect(mayDecideOwn({ bypass: true })).toBe(true);
   });
 });
 
@@ -230,10 +229,10 @@ describe("POST /api/deploy/approvals", () => {
   };
 
   // The route first looks the connection up, to see whose run this would be.
-  // Here it is one an editor may run on, so the request is an ordinary one.
+  // Here it is one only an Admin may run on, so the editor has to ask.
   // A test that is refused before the database never uses this answer.
   beforeEach(() => {
-    mockPoolQuery.mockResolvedValueOnce({ rows: [{ name: "Sales dev", execute_role: "editor" }] });
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ name: "Sales dev", execute_role: "admin" }] });
   });
 
   /** Answer the dedupe read and the INSERT, then send the request. */

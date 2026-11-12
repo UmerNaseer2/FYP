@@ -64,11 +64,11 @@ export type PhoneFamilyChoices = {
 /** Which step comes next for this person, on this run. */
 export type PhoneNextStep =
   | "run"
-  /** Production, and somebody has approved exactly this run. */
+  /** Their role may not run it, and somebody has approved exactly this run for them. */
   | "run-approved"
-  /** Production, and nobody has been asked yet. */
+  /** Their role may not run it, and they have not asked yet. */
   | "ask-approval"
-  /** Production, and the request for exactly this run has not been decided. */
+  /** Their request for exactly this run has not been decided. */
   | "waiting"
   | "blocked";
 
@@ -82,7 +82,6 @@ export type PhoneBlockedReason =
   | "role";
 
 export type PhoneRisks = {
-  production: boolean;
   /** "users_migration v2.0.0" labels. */
   breaking: string[];
   dataLoss: string[];
@@ -96,9 +95,9 @@ export type PhoneRisks = {
 export type PhoneRunDraft = {
   /** In the order they run, as approval fingerprints want them. */
   scripts: { scriptName: string; version: string; sqlContent: string }[];
-  risks: Omit<PhoneRisks, "production">;
+  risks: PhoneRisks;
   problem: PhoneBlockedReason | null;
-  /** What to POST to run it, without the acknowledgements somebody has to give. */
+  /** What to POST to run it. */
   run: { path: "/api/scripts/apply" | "/api/scripts/revert"; body: Record<string, unknown> };
   /** What to POST to /api/deploy/approvals to ask for it. */
   approvalRequest: Record<string, unknown>;
@@ -316,29 +315,27 @@ export function draftRollback(
 /**
  * What this person can do next with a run.
  *
- * Asking needs no acknowledgements and no right to run, because a request
- * changes nothing but a row in the queue. The one difference from the Deploy
- * screen: a connection nobody may run on blocks asking too. An approval could
- * never be spent there, and a phone should say so rather than send a request
- * that can go nowhere.
+ * Somebody whose role may run it just runs it. Anybody else asks for approval
+ * of this exact run, waits for the decision, and runs it once it is approved.
+ * Asking needs no right to run, because a request changes nothing but a row
+ * in the queue. A connection nobody may run on blocks asking too: an approval
+ * could never be spent there, and a phone should say so instead of sending a
+ * request that can go nowhere.
  */
 export function nextStep(
   problem: PhoneBlockedReason | null,
   who: {
-    /** Production with the organization's approvals switched on. */
-    approvalNeeded: boolean;
-    /** The request for exactly this run, when there is one. */
+    /** This person's own request for exactly this run, when there is one. */
     approval: "approved" | "pending" | null;
     readOnly: boolean;
     mayRun: boolean;
-    mayAsk: boolean;
   },
 ): { next: PhoneNextStep; blockedReason: PhoneBlockedReason | null } {
   const blocked = (blockedReason: PhoneBlockedReason) => ({ next: "blocked" as const, blockedReason });
   if (problem !== null) return blocked(problem);
   if (who.readOnly) return blocked("read-only");
-  if (!who.approvalNeeded) return who.mayRun ? { next: "run", blockedReason: null } : blocked("role");
-  if (who.approval === "approved") return who.mayRun ? { next: "run-approved", blockedReason: null } : blocked("role");
+  if (who.mayRun) return { next: "run", blockedReason: null };
+  if (who.approval === "approved") return { next: "run-approved", blockedReason: null };
   if (who.approval === "pending") return { next: "waiting", blockedReason: null };
-  return who.mayAsk ? { next: "ask-approval", blockedReason: null } : blocked("role");
+  return { next: "ask-approval", blockedReason: null };
 }

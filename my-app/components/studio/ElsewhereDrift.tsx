@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { EnvironmentPill, Pill, type PillTone } from "@/components/ui";
+import { Pill, type PillTone } from "@/components/ui";
 import { DriftIcon, MonitorIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
@@ -9,7 +9,6 @@ import { useUser } from "@/hooks/useUser";
 import { apiFetch } from "@/lib/api-fetch";
 import { getDesktopBridge, type DesktopWebsiteDrift } from "@/lib/desktop-bridge";
 import { describeCadence } from "@/lib/drift-schedule";
-import { toEnvironment } from "@/lib/environments";
 import { utcStamp } from "@/lib/format-date";
 import { timeAgo } from "@/lib/time-ago";
 // Types only, so nothing from the server side comes into the page.
@@ -36,7 +35,6 @@ const ASK_EVERY_MS = 60_000;
 type Row = {
   key: string;
   connectionName: string;
-  environment: string;
   schema: string;
   label: string | null;
   intervalMinutes: number;
@@ -103,7 +101,6 @@ function CheckedByWebsite() {
   const rows: Row[] = drift.schemas.map((s) => ({
     key: `${s.connectionId}:${s.schema}`,
     connectionName: s.connectionName,
-    environment: s.environment,
     schema: s.schema,
     label: s.label,
     intervalMinutes: s.intervalMinutes,
@@ -155,7 +152,6 @@ function readPlaces(body: unknown): Place[] {
         rows.push({
           key: `${connection.id}:${s.schema}`,
           connectionName: connection.name,
-          environment: connection.environment,
           schema: s.schema,
           label: s.label,
           intervalMinutes: s.intervalMinutes,
@@ -280,7 +276,6 @@ function RowList({ rows, label }: { rows: Row[]; label: string }) {
                 {row.label ? ` (${row.schema})` : ""}
               </span>
             </span>
-            <EnvironmentPill environment={toEnvironment(row.environment)} />
             <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-2)" }}>
               {row.latest?.summary || ""}
             </span>

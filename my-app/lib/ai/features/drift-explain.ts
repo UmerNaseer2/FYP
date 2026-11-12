@@ -183,7 +183,7 @@ export function buildDriftScripts(
     [
       `Adopt drift: the changes made on the live ${schema}, written as the next version after ${baseline}.`,
       "Do not run this on the drifted database: it already has these changes.",
-      "Save it in the registry so the other environments get the same changes, then re-baseline this schema.",
+      "Save it in the registry so the other databases get the same changes, then re-baseline this schema.",
       "Drops are commented out. Uncomment them to adopt the drops as well.",
     ],
     `Adopt drift on ${schema} into the registry`

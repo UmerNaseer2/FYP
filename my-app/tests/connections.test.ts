@@ -128,7 +128,6 @@ describe("validateConnection — field form", () => {
     if (!result.ok) return;
     expect(result.value.port).toBe(5432);
     expect(result.value.ssl_mode).toBe("disable");
-    expect(result.value.environment).toBe("unset");
   });
 
   it("refuses an unknown ssl_mode instead of saving it as no TLS", () => {
@@ -169,20 +168,12 @@ describe("validateConnection — field form", () => {
     expect(edited.ok).toBe(true);
   });
 
-  it("refuses to narrow an unrecognised environment silently", () => {
-    // "production" stored as "unset" would be the LOWEST rank, so the user
-    // would believe they had labelled a live database and never be warned.
-    const result = validateConnection({ ...good, environment: "production" });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.errors.environment).toContain("production");
-  });
-
-  it("accepts a real environment", () => {
-    const result = validateConnection({ ...good, environment: "prod" });
+  it("ignores a label an older screen still sends", () => {
+    const old = { ...good, environment: "production" };
+    const result = validateConnection(old);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.environment).toBe("prod");
+    expect(result.value).not.toHaveProperty("environment");
   });
 
   it("names every missing field at once", () => {

@@ -20,8 +20,8 @@
  *    link uses, and a new connection is not shared until someone says so.
  *  - Answers come from this computer's own server, as whoever is signed in here,
  *    so a role that may not compare is refused the same way as on this computer.
- *  - The site learns a connection's name and environment, and never its host,
- *    user, password or database name.
+ *  - The site learns a connection's name, and never its host, user, password
+ *    or database name.
  *  - A refusal is one word. A local error's text can name a host, so it stays in
  *    this computer's log and the site hears "failed".
  *  - Only an answer of 401 ends the link. A site that is down or slow never does,
@@ -134,7 +134,7 @@ export type CloudAgentOptions = {
  * computer, with the drift results of the schemas tracked on it. The drift
  * goes to the site as this computer's server gave it; the site checks it.
  */
-export type OwnConnection = { id: number; name: string; environment: string; drift?: readonly unknown[] };
+export type OwnConnection = { id: number; name: string; drift?: readonly unknown[] };
 
 /**
  * This computer's own server's side of the two-way sync
@@ -161,10 +161,10 @@ export function readOwnConnections(body: unknown): OwnConnection[] {
   if (!isRecord(body) || !Array.isArray(body.connections)) throw new Error("This computer's list of connections could not be read.");
   return body.connections.flatMap((row): OwnConnection[] => {
     if (!isRecord(row)) return [];
-    const { id, name, environment, drift } = row;
+    const { id, name, drift } = row;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return [];
-    if (typeof name !== "string" || typeof environment !== "string") return [];
-    const own: OwnConnection = { id, name: name.slice(0, 200), environment: environment.slice(0, 50) };
+    if (typeof name !== "string") return [];
+    const own: OwnConnection = { id, name: name.slice(0, 200) };
     if (Array.isArray(drift)) own.drift = drift.slice(0, MOST_DRIFT_SCHEMAS);
     return [own];
   });
@@ -306,7 +306,7 @@ function readDriftCheck(value: unknown): DriftCheck | null {
 
 function readWebsiteDriftSchema(value: unknown): WebsiteDriftSchema | null {
   if (!isRecord(value)) return null;
-  const { connectionId, connectionName, environment, schema, label, intervalMinutes, lastCheckedAt, checks } = value;
+  const { connectionId, connectionName, schema, label, intervalMinutes, lastCheckedAt, checks } = value;
   if (typeof connectionId !== "number" || !Number.isSafeInteger(connectionId) || connectionId <= 0) return null;
   const name = textOf(connectionName, 200);
   const schemaName = textOf(schema, 128);
@@ -314,7 +314,6 @@ function readWebsiteDriftSchema(value: unknown): WebsiteDriftSchema | null {
   return {
     connectionId,
     connectionName: name,
-    environment: textOf(environment, 50) ?? "",
     schema: schemaName,
     label: textOf(label, 200) || null,
     intervalMinutes:
@@ -820,10 +819,9 @@ export class CloudAgent {
     const shared = new Set(this.options.sharedConnectionIds());
     const own = await sync.local();
     this.ownCount = own.length;
-    return own.map(({ id, name, environment, drift }) => ({
+    return own.map(({ id, name, drift }) => ({
       id,
       name,
-      environment,
       shared: shared.has(id),
       // Each schema's newest results, so the site can show them on its Drift page.
       ...(drift === undefined ? {} : { drift }),
@@ -1109,7 +1107,7 @@ export class CloudAgent {
     }
   }
 
-  /** Tells the site which connections are shared here. Only their names and environments, and nothing else. */
+  /** Tells the site which connections are shared here. Only their names, and nothing else. */
   private async publish(run: number): Promise<void> {
     const link = this.link;
     if (link === null || run !== this.run) return;
@@ -1151,10 +1149,10 @@ export class CloudAgent {
   }
 
   /** Nothing to ask when nothing is shared, so unsharing everything reaches the site even with nobody signed in here. */
-  private async sharedConnections(ids: readonly number[]): Promise<{ id: number; name: string; environment: string }[]> {
+  private async sharedConnections(ids: readonly number[]): Promise<{ id: number; name: string }[]> {
     if (ids.length === 0) return [];
     const signal = AbortSignal.any([AbortSignal.timeout(SITE_LIMIT_MS), this.stopping.signal]);
     const list = await listConnections({ call: this.options.call, sharedConnectionIds: this.options.sharedConnectionIds }, signal);
-    return list.connections.map(({ id, name, environment }) => ({ id, name, environment }));
+    return list.connections.map(({ id, name }) => ({ id, name }));
   }
 }

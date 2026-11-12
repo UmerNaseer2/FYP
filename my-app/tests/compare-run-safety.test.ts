@@ -30,7 +30,6 @@ const connections = [
     connection_string: null,
     ssl: false,
     ssl_mode: null,
-    environment: "development",
   },
   {
     id: 2,
@@ -44,7 +43,6 @@ const connections = [
     connection_string: null,
     ssl: false,
     ssl_mode: null,
-    environment: "staging",
   },
   {
     id: 3,
@@ -58,7 +56,6 @@ const connections = [
     connection_string: null,
     ssl: false,
     ssl_mode: null,
-    environment: "staging",
   },
 ];
 

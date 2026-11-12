@@ -63,7 +63,7 @@ let POST: RouteModule["POST"];
 const CONNECTION = {
   host: "db.test", port: 5432, database_name: "sales", username: "app",
   password: "not-a-real-password", connection_string: null, ssl: false,
-  ssl_mode: "disable", environment: "dev",
+  ssl_mode: "disable",
 };
 
 /** A run of one script, named after nothing in particular. */

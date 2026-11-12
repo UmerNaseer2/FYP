@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  allTicked,
   BLOCKED_TEXT,
   cancelResultText,
   deployButtonText,
@@ -20,7 +19,6 @@ import {
   riskRows,
   rollbackButtonText,
   runText,
-  signedTicks,
   startStatusText,
   startStatusTone,
   stepButton,
@@ -28,15 +26,14 @@ import {
   stepText,
   whereText,
 } from "../phone/deploy.js";
-import type { ControlTick, RunRisks } from "../shared/remote/control.js";
+import type { RunRisks } from "../shared/remote/control.js";
 import type { DeployBlockedReason, DeployNext, LiveControl, LiveSession } from "../shared/remote/rpc.js";
 
 const NOW = Date.UTC(2026, 10, 1, 12);
 
-const NO_RISKS: RunRisks = { production: false, breaking: [], dataLoss: [], otherScripts: [], drift: null };
+const NO_RISKS: RunRisks = { breaking: [], dataLoss: [], otherScripts: [], drift: null };
 
 const ALL_RISKS: RunRisks = {
-  production: true,
   breaking: ["users v2"],
   dataLoss: ["users v3"],
   otherScripts: ["orders v1"],
@@ -83,41 +80,26 @@ test("control is on offer only with Allow control on and a role that may do some
   assert.equal(mayControl(null), false);
 });
 
-test("every risk gets one row, in the order of the ticks, with the scripts it is about", () => {
+test("every risk gets one warning, always in the same order, with the scripts it is about", () => {
   assert.deepEqual(riskRows(NO_RISKS), []);
   const rows = riskRows(ALL_RISKS);
-  assert.deepEqual(rows.map((row) => row.tick), ["production", "breaking", "data-loss", "other-scripts", "drift"]);
-  assert.deepEqual(rows[1]?.labels, ["users v2"]);
-  assert.deepEqual(rows[2]?.labels, ["users v3"]);
-  assert.deepEqual(rows[3]?.labels, ["orders v1"]);
-  assert.match(rows[4]?.text ?? "", /changed outside Schema Studio/);
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows[0]?.labels, ["users v2"]);
+  assert.deepEqual(rows[1]?.labels, ["users v3"]);
+  assert.deepEqual(rows[2]?.labels, ["orders v1"]);
+  assert.match(rows[3]?.text ?? "", /changed outside Schema Studio/);
   assert.match(riskRows({ ...NO_RISKS, drift: "unreachable" })[0]?.text ?? "", /could not reach/);
 });
 
-test("a run signs its ticks, while a request and anything else sign none", () => {
-  const steps: [DeployNext, "run" | "ask" | null, number][] = [
-    ["run", "run", 5],
-    ["run-approved", "run", 5],
-    ["ask-approval", "ask", 0],
-    ["waiting", null, 0],
-    ["blocked", null, 0],
+test("a run and an approved run are signed as a run, a request as an ask, and anything else is not signed", () => {
+  const steps: [DeployNext, "run" | "ask" | null][] = [
+    ["run", "run"],
+    ["run-approved", "run"],
+    ["ask-approval", "ask"],
+    ["waiting", null],
+    ["blocked", null],
   ];
-  for (const [next, step, ticks] of steps) {
-    assert.equal(stepOf(next), step, next);
-    assert.equal(signedTicks({ next, risks: ALL_RISKS }).length, ticks, next);
-  }
-});
-
-test("the passkey button waits for every box a run signs, and a request has none to wait for", () => {
-  const risks: RunRisks = { ...NO_RISKS, production: true, dataLoss: ["users v3"] };
-  const ticked = new Set<ControlTick>();
-  assert.equal(allTicked({ next: "run-approved", risks }, ticked), false);
-  ticked.add("production");
-  assert.equal(allTicked({ next: "run-approved", risks }, ticked), false);
-  ticked.add("data-loss");
-  assert.equal(allTicked({ next: "run-approved", risks }, ticked), true);
-  assert.equal(allTicked({ next: "ask-approval", risks }, new Set()), true);
-  assert.equal(allTicked({ next: "run", risks: NO_RISKS }, new Set()), true);
+  for (const [next, step] of steps) assert.equal(stepOf(next), step, next);
 });
 
 test("the passkey button is named for what it does, and only a step that can be taken has one", () => {
@@ -155,7 +137,7 @@ test("every step says what signing does, or why there is nothing to sign", () =>
 test("a start's result is honest about what is known", () => {
   assert.equal(startStatusText("done", "deploy"), "Deployed.");
   assert.equal(startStatusText("done", "revert"), "Rolled back.");
-  assert.match(startStatusText("sent-for-approval", "deploy"), /Someone else/);
+  assert.match(startStatusText("sent-for-approval", "deploy"), /An Admin has to approve/);
   assert.match(startStatusText("running", "deploy"), /Still running/);
   assert.match(startStatusText("not-applied", "revert"), /nothing changed/);
   assert.match(startStatusText("unknown", "deploy"), /Check the database/);

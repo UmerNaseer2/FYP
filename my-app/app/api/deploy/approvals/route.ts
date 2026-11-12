@@ -15,7 +15,7 @@ import { MAX_ROLLBACK_VERSIONS } from "@/lib/rollback-plan";
 import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
 
 /**
- * Ask for, and read, approval to run a deploy or a rollback on production.
+ * Ask for, and read, approval to run one exact deploy or rollback.
  *
  * The decision half lives in ./[id]/route.ts, because approving is a different
  * action by a different person and deserves its own gate.
@@ -96,13 +96,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Two kinds of asking, both open to anyone who may see deployments:
-  //  - somebody who may not run this here by themselves (their role cannot
-  //    run migrations, or the connection is for Admins only) asks an Admin
-  //    for this one run, which only they can then spend;
-  //  - somebody who may run it asks for the second person the organization's
-  //    approvals rule wants, which takes "Approvals: Create".
-  // Which one is decided below, once the connection is known.
+  // Open to anyone who may see deployments. Somebody who may not run this
+  // here by themselves (their role cannot run migrations, or the connection
+  // is for Admins only) asks an Admin for this one run, which only they can
+  // then spend. Somebody whose role may run it needs no approval, so their
+  // ask is refused below, once the connection is known.
   const gate = await requirePermission("deploy:read");
   if (!gate.ok) return gate.response;
 
@@ -161,7 +159,7 @@ export async function POST(request: NextRequest) {
   }
   // The revert route refuses a rollback of more than MAX_ROLLBACK_VERSIONS
   // versions, so an approval for one could never be spent. Refuse it here,
-  // before a second person spends time approving it.
+  // before somebody spends time approving it.
   if (action === "revert" && body.scripts.length > MAX_ROLLBACK_VERSIONS) {
     return NextResponse.json(
       {
@@ -191,7 +189,6 @@ export async function POST(request: NextRequest) {
 
   // Whose run this is to be. A read-only connection runs nothing for anybody,
   // so nobody can ask to run on it.
-  let runByRequester: boolean;
   try {
     await syncMetadataTables();
     const found = await pool.query<{ name: string | null; execute_role: string | null }>(
@@ -212,13 +209,12 @@ export async function POST(request: NextRequest) {
       { isAdmin: gate.principal.role === ADMIN_ROLE, mayDeploy: hasPermission(gate.principal, "deploy:run") },
       required
     );
-    if (mayRunHere && !hasPermission(gate.principal, "approvals:create")) {
+    if (mayRunHere) {
       return NextResponse.json(
-        { error: 'Your role may not ask for approvals ("Approvals: Create"). Ask an Admin for it.' },
-        { status: 403 }
+        { error: `Your role may run on ${shown}, so this needs no approval. Run it from the screen you are on.` },
+        { status: 409 }
       );
     }
-    runByRequester = !mayRunHere;
   } catch (error) {
     console.error("Approvals — connection lookup failed:", error);
     return NextResponse.json({ error: "Could not record the approval request." }, { status: 500 });
@@ -243,7 +239,7 @@ export async function POST(request: NextRequest) {
       requestedBy: gate.principal.email,
       note,
       action,
-      runByRequester,
+      runByRequester: true,
     });
     if (!approval) {
       // Another organization's connection reads as missing, the same answer a

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
-import { toEnvironment } from "@/lib/environments";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 
 /**
@@ -12,7 +11,7 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
  * shared with phones.
  *
  * It answers with what Compare's pickers show and nothing more: the number,
- * the name, the environment and the database's name. Never the host, the user
+ * the name and the database's name. Never the host, the user
  * name or the password, which GET /api/connections sends the Connections
  * screen. Only PostgreSQL connections, in the order Compare lists them,
  * because those are the ones a comparison or a schema read can use. Only the
@@ -27,11 +26,10 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    // Shared DDL (lib/version-db) guarantees the `environment` column exists.
     await syncMetadataTables();
     const result = await pool.query(
       `
-      SELECT id, name, database_name, environment
+      SELECT id, name, database_name
       FROM connections
       WHERE type = 'PostgreSQL' AND org_id = $1
       ORDER BY name ASC
@@ -44,7 +42,6 @@ export async function GET() {
         // A bigint id arrives from pg as a string of digits.
         id: Number(row.id),
         name: row.name,
-        environment: toEnvironment(row.environment),
         database: row.database_name,
       })),
     });

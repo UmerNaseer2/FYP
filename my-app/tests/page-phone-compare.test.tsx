@@ -42,21 +42,20 @@ const LAPTOP: Computer = {
   online: true,
   lastSeenAt: WHEN,
   connections: [
-    { id: 1, name: "Bookshop dev", environment: "dev" },
-    { id: 2, name: "Bookshop plain", environment: "unset" },
+    { id: 1, name: "Bookshop dev" },
+    { id: 2, name: "Bookshop plain" },
   ],
 };
 
 const ON_SITE = [
-  { id: 21, name: "Site dev", environment: "dev", database: "shop" },
-  { id: 22, name: "Site prod", environment: "prod", database: "shop" },
+  { id: 21, name: "Site dev", database: "shop" },
+  { id: 22, name: "Site prod", database: "shop" },
 ];
 
 function target(over: Partial<TargetSummary> = {}): TargetSummary {
   return {
     connectionId: 2,
     name: "Bookshop plain",
-    environment: "unset",
     schema: "archive",
     status: "compared",
     error: null,
@@ -72,7 +71,7 @@ function target(over: Partial<TargetSummary> = {}): TargetSummary {
 
 function summary(...targets: TargetSummary[]): CompareSummary {
   return {
-    source: { connectionId: 1, name: "Bookshop dev", environment: "dev", schema: "shop", error: null },
+    source: { connectionId: 1, name: "Bookshop dev", schema: "shop", error: null },
     targets: targets.length === 0 ? [target()] : targets,
   };
 }
@@ -218,7 +217,7 @@ describe("comparing on this site", () => {
     expect(screen.getByText(/open Schema Studio there, go to Settings and link it/)).toBeInTheDocument();
     expect(screen.queryByText(PRIVACY)).not.toBeInTheDocument();
 
-    await chooseSides("Site dev, Dev", "Site prod, Production");
+    await chooseSides("Site dev", "Site prod");
     fireEvent.click(compareButton());
 
     expect(await screen.findByText("No differences")).toBeInTheDocument();
@@ -233,9 +232,9 @@ describe("comparing on this site", () => {
     setRoutes(usual(siteRoutes()));
     await openTab();
     expect(compareButton()).toBeDisabled();
-    await choose("Source connection", "Site dev, Dev");
+    await choose("Source connection", "Site dev");
     await choose("Source schema", "shop");
-    await choose("Target connection", "Site prod, Production");
+    await choose("Target connection", "Site prod");
     expect(compareButton()).toBeDisabled();
     await choose("Target schema", "archive");
     expect(compareButton()).toBeEnabled();
@@ -265,7 +264,7 @@ describe("comparing on this site", () => {
       ])
     );
     await openTab();
-    await choose("Source connection", "Site dev, Dev");
+    await choose("Source connection", "Site dev");
     expect(await screen.findByText(NO_SCHEMAS)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(FAKE_HOST);
   });
@@ -273,7 +272,7 @@ describe("comparing on this site", () => {
   test("a schema list that failed can be read again", async () => {
     setRoutes(usual([{ match: "connectionId=21", status: 500, body: {} }]));
     await openTab();
-    await choose("Source connection", "Site dev, Dev");
+    await choose("Source connection", "Site dev");
     await screen.findByText(NO_SCHEMAS);
     setRoutes(usual(siteRoutes()));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -286,7 +285,7 @@ describe("comparing on this site", () => {
       usual([...siteRoutes(), { match: "/api/compare/phone", method: "POST", status: 500, body: {} }])
     );
     await openTab();
-    await chooseSides("Site dev, Dev", "Site prod, Production");
+    await chooseSides("Site dev", "Site prod");
     fireEvent.click(compareButton());
     expect(await screen.findByText("Could not compare those schemas.")).toBeInTheDocument();
     expect(compareButton()).toBeEnabled();
@@ -298,7 +297,7 @@ describe("comparing on this site", () => {
       usual([...siteRoutes(), { match: "/api/compare/phone", method: "POST", networkError: true }])
     );
     await openTab();
-    await chooseSides("Site dev, Dev", "Site prod, Production");
+    await chooseSides("Site dev", "Site prod");
     fireEvent.click(compareButton());
     expect(await screen.findByText(OFFLINE)).toBeInTheDocument();
   });
@@ -313,7 +312,7 @@ describe("comparing on a computer", () => {
   test("asks only the computer, with both kinds of question, and shows what comes back", async () => {
     setRoutes(usual(computerRoutes()));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
 
     expect(await screen.findByText("No differences", {}, AFTER_A_POLL)).toBeInTheDocument();
@@ -360,7 +359,7 @@ describe("comparing on a computer", () => {
     const unlinked = { match: /\/api\/computers\/4$/, method: "DELETE", body: { ok: true } };
     setRoutes(usual([unlinked, ...computerRoutes()]));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     await screen.findByText("No differences", {}, AFTER_A_POLL);
 
@@ -404,7 +403,7 @@ describe("comparing on a computer", () => {
   test("says it is waiting, keeps asking, then shows the answer", async () => {
     setRoutes(usual(computerRoutes({ status: "waiting" })));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
 
     const note = await screen.findByRole("status");
@@ -424,7 +423,7 @@ describe("comparing on a computer", () => {
       usual(computerRoutes({ status: "failed", error: "The computer could not reach that database." }))
     );
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     expect(
       await screen.findByText("The computer could not reach that database.", {}, AFTER_A_POLL)
@@ -437,7 +436,7 @@ describe("comparing on a computer", () => {
       usual([{ match: /\/api\/computers\/jobs$/, method: "POST", status: 409, body: { error: OFF_SENTENCE } }])
     );
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     expect(await screen.findByText(OFF_SENTENCE)).toBeInTheDocument();
 
     setRoutes(usual(computerRoutes()));
@@ -449,7 +448,7 @@ describe("comparing on a computer", () => {
   test("a question that cannot be left, with no signal, says so", async () => {
     setRoutes(usual([{ match: /\/api\/computers\/jobs$/, method: "POST", networkError: true }]));
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     expect(await screen.findByText(OFFLINE)).toBeInTheDocument();
   });
 
@@ -461,7 +460,7 @@ describe("comparing on a computer", () => {
       ])
     );
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     await waitFor(() => expect(called(`/jobs/${COMPARE_JOB}`).length).toBe(1));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -480,7 +479,7 @@ describe("comparing on a computer", () => {
       ])
     );
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     expect(await screen.findByText(gone)).toBeInTheDocument();
   });
@@ -488,7 +487,7 @@ describe("comparing on a computer", () => {
   test("changing a choice clears the answer", async () => {
     setRoutes(usual(computerRoutes()));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     await screen.findByText("No differences", {}, AFTER_A_POLL);
 
@@ -499,7 +498,7 @@ describe("comparing on a computer", () => {
   test("an answer that arrives after a choice changed is dropped", async () => {
     setRoutes(usual(computerRoutes()));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     const release = holdNext(`/jobs/${COMPARE_JOB}`, "GET");
     fireEvent.click(compareButton());
     await waitFor(() => expect(called(`/jobs/${COMPARE_JOB}`).length).toBe(1));
@@ -517,7 +516,7 @@ describe("comparing on a computer", () => {
   test("leaving the tab stops the asking", async () => {
     setRoutes(usual(computerRoutes({ status: "waiting" })));
     await pickLaptop();
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     await waitFor(() => expect(called(`/jobs/${COMPARE_JOB}`).length).toBe(1));
 
@@ -529,7 +528,7 @@ describe("comparing on a computer", () => {
   test("moving to another place clears every choice, and offers that place's connections", async () => {
     setRoutes(usual([...computerRoutes(), ...siteRoutes()]));
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     await choose("Source schema", "shop");
 
     await choose("Compare on", "This site's connections");
@@ -538,14 +537,14 @@ describe("comparing on a computer", () => {
     );
     expect(screen.getByRole("combobox", { name: "Source schema" })).toBeDisabled();
     fireEvent.click(screen.getByRole("combobox", { name: "Source connection" }));
-    expect(screen.getByRole("option", { name: "Site dev, Dev" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "Bookshop dev, Dev" })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Site dev" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Bookshop dev" })).not.toBeInTheDocument();
   });
 
   test("another source connection clears its schema, which may not be there", async () => {
     setRoutes(usual(computerRoutes()));
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     await choose("Source schema", "shop");
     expect(screen.getByRole("combobox", { name: "Source schema" })).toHaveTextContent("shop");
 
@@ -560,12 +559,12 @@ describe("comparing on a computer", () => {
         ...computerRoutes(),
         {
           match: "/api/connections/phone",
-          body: { connections: [{ id: 1, name: "Same id", environment: "unset", database: "shop" }] },
+          body: { connections: [{ id: 1, name: "Same id", database: "shop" }] },
         },
       ])
     );
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     await choose("Source schema", "shop");
 
     await choose("Compare on", "This site's connections");
@@ -581,12 +580,12 @@ describe("comparing on a computer", () => {
         ...computerRoutes(),
         {
           match: "/api/connections/phone",
-          body: { connections: [{ id: 1, name: "Same id", environment: "unset", database: "shop" }] },
+          body: { connections: [{ id: 1, name: "Same id", database: "shop" }] },
         },
       ])
     );
     await pickLaptop();
-    await choose("Source connection", "Bookshop dev, Dev");
+    await choose("Source connection", "Bookshop dev");
     await choose("Source schema", "shop");
 
     setRoutes(
@@ -594,7 +593,7 @@ describe("comparing on a computer", () => {
         [
           {
             match: "/api/connections/phone",
-            body: { connections: [{ id: 1, name: "Same id", environment: "unset", database: "shop" }] },
+            body: { connections: [{ id: 1, name: "Same id", database: "shop" }] },
           },
         ],
         []
@@ -637,7 +636,7 @@ describe("comparing on a computer", () => {
     setRoutes(usual([{ match: /\/api\/computers$/, status: 500, body: {} }, ...siteRoutes()]));
     await openTab();
     expect(screen.getByText("Could not list your computers.")).toBeInTheDocument();
-    await choose("Source connection", "Site dev, Dev");
+    await choose("Source connection", "Site dev");
     await choose("Source schema", "shop");
   });
 });
@@ -646,7 +645,7 @@ describe("what a comparison shows", () => {
   async function showOnSite(result: CompareSummary) {
     setRoutes(usual([...siteRoutes(), { match: "/api/compare/phone", method: "POST", body: result }]));
     await openTab();
-    await chooseSides("Site dev, Dev", "Site prod, Production");
+    await chooseSides("Site dev", "Site prod");
     fireEvent.click(compareButton());
     await screen.findByText(/Compared with/);
   }
@@ -745,7 +744,7 @@ describe("what a comparison shows", () => {
     );
     await openTab();
     await choose("Compare on", "Work laptop");
-    await chooseSides("Bookshop dev, Dev", "Bookshop plain");
+    await chooseSides("Bookshop dev", "Bookshop plain");
     fireEvent.click(compareButton());
     expect(
       await screen.findByText(

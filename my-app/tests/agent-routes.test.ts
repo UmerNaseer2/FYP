@@ -264,27 +264,22 @@ describe("POST /api/agent/jobs/[id]", () => {
 describe("PUT /api/agent/connections", () => {
   const put = (body: unknown) => putConnections(fromComputer("PUT", "/api/agent/connections", body));
 
-  it("keeps names and environments, nothing else it was sent", async () => {
+  it("keeps names, nothing else it was sent, and ignores a label an older desktop sends", async () => {
     const response = await put({
       connections: [{ id: 1, name: " Book\nshop ", environment: "prod", host: "db.example.test", password: "nope" }],
     });
     expect(await response.json()).toEqual({ ok: true });
     expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [
-      { id: 1, name: "Book shop", environment: "prod", shared: true },
+      { id: 1, name: "Book shop", shared: true },
     ]);
   });
 
   it("keeps the shared flag a newer desktop sends, and reads a missing one as shared", async () => {
     await put({ connections: [{ id: 1, name: "x", shared: false }, { id: 2, name: "y" }] });
     expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [
-      { id: 1, name: "x", environment: "unset", shared: false },
-      { id: 2, name: "y", environment: "unset", shared: true },
+      { id: 1, name: "x", shared: false },
+      { id: 2, name: "y", shared: true },
     ]);
-  });
-
-  it("turns an environment it does not know into none", async () => {
-    await put({ connections: [{ id: 1, name: "x", environment: "moon" }] });
-    expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [{ id: 1, name: "x", environment: "unset", shared: true }]);
   });
 
   it("keeps the drift results a newer desktop sends, tidied, and none for an older one", async () => {
@@ -300,12 +295,11 @@ describe("PUT /api/agent/connections", () => {
       {
         id: 1,
         name: "x",
-        environment: "unset",
         shared: true,
         drift: [{ schema: "public", label: null, intervalMinutes: 60, lastCheckedAt: null, checks: [check] }],
       },
-      { id: 2, name: "y", environment: "unset", shared: true },
-      { id: 3, name: "z", environment: "unset", shared: true, drift: [] },
+      { id: 2, name: "y", shared: true },
+      { id: 3, name: "z", shared: true, drift: [] },
     ]);
   });
 

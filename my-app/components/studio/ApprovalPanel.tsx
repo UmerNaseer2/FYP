@@ -1,7 +1,7 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// The two-person rule on screen (ApprovalPanel), and the browser-side hash
+// Asking for approval of one exact run, on screen (ApprovalPanel), and the browser-side hash
 // that tells it whether an approval covers the run on screen (sha256Hex).
 // They lived in the Deploy page; they live here so Version Sync's replay
 // dialog reads and requests approvals with the same panel and the same hash.
@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 import { CheckIcon, UsersIcon, XIcon } from "@/components/ui/icons";
 import { utcStamp } from "@/lib/format-date";
-import { permissionLabel, refusalMessage } from "@/lib/permissions";
+import { permissionLabel } from "@/lib/permissions";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { versionKey } from "@/lib/script-status";
@@ -21,12 +21,12 @@ function ApprovalHint() {
   return (
     <HelpHint label="Approval">
       An approval covers one run of this exact SQL. Change the SQL and it needs
-      approving again. A dry run on production needs it too, and does not use it up.
+      approving again.
     </HelpHint>
   );
 }
 
-// ── Deploy approvals (the two-person rule) ─────────────────────────────────
+// ── Deploy approvals ───────────────────────────────────────────────────────
 // One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
 // Mirrors DeployApproval in lib/approvals-db, which cannot be imported here —
 // that module opens a database pool, and this file runs in the browser.
@@ -83,13 +83,17 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 /**
- * The two-person rule, on screen.
+ * An ask for approval, on screen.
  *
- * The gate itself is the apply route's: it claims an approval row before it
- * runs anything, so nothing here can talk a production deploy into starting.
- * What this panel does is make the state readable — who asked, who cleared it,
- * and whether the approval still covers the SQL currently selected — and give
- * the two people the buttons for their halves of it.
+ * Somebody whose role may not run on a target asks for approval of one exact
+ * run, and an Admin (or whoever may approve) answers. The gate itself is the
+ * apply route's: it claims an approval row before it runs anything, so
+ * nothing here can talk a run into starting. This panel makes the state
+ * readable (who asked, who approved it, and whether the approval still
+ * covers the SQL currently selected) and gives each side its buttons.
+ *
+ * With `askToRun` it is the asker's panel. Without it, it is the answer
+ * panel: the page passes somebody else's waiting ask as `pending`.
  *
  * An approval is pinned to a fingerprint of the exact SQL. That is why the
  * panel says "these N migrations" rather than "this deploy": change one
@@ -112,11 +116,9 @@ export function ApprovalPanel({
   latest,
   viewerEmail,
   roleLabel,
-  mayRequest,
   askToRun = false,
   mayApprove,
   bypass,
-  twoPersonRule = false,
   note,
   onNoteChange,
   onRequest,
@@ -155,24 +157,16 @@ export function ApprovalPanel({
   viewerEmail: string;
   /** The viewer's role as people read it, for the lines that say what it may not do. */
   roleLabel: string;
-  /** The role may ask for an approval ("Approvals: Create"). */
-  mayRequest: boolean;
   /**
    * The viewer may not run this by themselves (their role, or the
    * connection's "who may run"), so the approval is them asking an Admin for
-   * this one run. They may always ask, whatever "Approvals: Create" says, and
-   * never answer their own request.
+   * this one run. They may always ask, and never answer their own request.
+   * When false, this is the answer panel for somebody else's ask.
    */
   askToRun?: boolean;
   /** The role may clear one ("Approvals: Approve"). Admins always may. */
   mayApprove: boolean;
   bypass: boolean;
-  /**
-   * The organization's two-person rule (the Organization tab). While it is off,
-   * people may clear their own requests and the row records a self-approval.
-   * Off unless said otherwise, the way every new organization starts.
-   */
-  twoPersonRule?: boolean;
   note: string;
   onNoteChange: (value: string) => void;
   onRequest: () => void;
@@ -181,7 +175,7 @@ export function ApprovalPanel({
    * Deploy only: the newest approved, unspent approval for this target whose
    * fingerprint is not this run's (it was approved for another range, or for
    * SQL that has changed since). Shown only while `approved` is null, so the
-   * panel never says "Needs a second person" next to an approval without
+   * panel never says an approval is needed next to an approval without
    * saying why that approval does not count.
    */
   otherApproval?: ApprovalRow | null;
@@ -236,7 +230,7 @@ export function ApprovalPanel({
   }
 
   // An unreadable list is not an empty one — the same rule this page already
-  // states for connections. Falling through to "Needs a second person" reports
+  // states for connections. Falling through to "Needs an approval" reports
   // the approval state as read when nothing managed to read it.
   if (unreadable) {
     return (
@@ -263,61 +257,27 @@ export function ApprovalPanel({
     );
   }
 
-  // Why this person may not decide this request. The same rule runs server-side
-  // and again as a CHECK constraint on the table — this copy exists so the
-  // button is not offered in the first place, not to enforce anything.
-  // The two-person rule only matters outside the bypass, which has its own
-  // wording below.
-  const ruleOff = !bypass && !twoPersonRule && !askToRun;
+  // Nobody answers their own ask. The same rule runs on the server and again
+  // as a CHECK constraint on the table. This copy exists so the button is not
+  // offered in the first place, not to enforce anything.
   const mine = pending !== null && pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
-  const selfDecision = mine && !bypass && !ruleOff;
-
-  // Under the auth bypass everyone is the same principal, so the person who
-  // asked is also the only one who can clear it — the server allows that and
-  // marks the row self_approved. "Someone else has to clear them" above an
-  // Approve button offered to the requester would contradict itself, and so
-  // would "Needs a second person" before anything has been requested.
-  //
-  // Not while View as has them looking at the app as a role that may not
-  // approve: then clearing it means switching back, and the lines below say so.
-  const soleApprover = bypass && mayApprove && !askToRun;
-  const bypassSelf = mine && soleApprover;
-  // With the rule off there may well be a second person, but there needn't be,
-  // so the requester who may approve is offered the button too.
-  const ruleOffSelf = mine && ruleOff && mayApprove;
   const what = action === "revert" ? "rollback" : "run";
   const pendingWhy = askToRun
     ? ` Your role may not do this ${what} by itself, so an Admin has to approve it. ` +
       `Once they do, you can run it once, within 7 days.`
-    : bypassSelf
-    ? action === "revert"
-      ? " With the auth bypass on there is only one principal, so you clear these " +
-        "rollbacks yourself, and the row records it as a self-approval."
-      : " With the auth bypass on there is only one principal, so you clear these " +
-        "migrations yourself, and the row records it as a self-approval."
-    : ruleOffSelf
-      ? ` The two-person rule is off in this organization, so you can clear these ${
-          action === "revert" ? "rollbacks" : "migrations"
-        } yourself, and the row records it as a self-approval.`
-    : action === "revert"
-      ? " Someone else has to read these rollbacks and clear them before the " +
-        "rollback can run."
-      : " Someone else has to read these migrations and clear them before the " +
-        "run can start.";
+    : mine
+      ? ""
+      : ` Their role may not do this ${what} by itself. Read the SQL above, then approve or reject it.`;
 
   // What this role may not do here. Under the auth bypass the way round it is
   // View as rather than an admin: whoever is testing already is the admin,
   // looking at the app as another role.
   const switchBack = 'Switch "View as" back to Admin to do that.';
   const approveRefusal =
-    `Your role (${roleLabel}) can't clear a production ` +
-    `${action === "revert" ? "rollback" : "run"}. ` +
+    `Your role (${roleLabel}) can't approve a ${what}. ` +
     (bypass
       ? switchBack
       : `Ask an admin to turn on "${permissionLabel("approvals:approve")}" for this role.`);
-  const requestRefusal = bypass
-    ? `Your role (${roleLabel}) can't request a production approval. ${switchBack}`
-    : refusalMessage(roleLabel, "approvals:create");
 
   const tone = approved ? "ok" : pending ? "wait" : "no";
 
@@ -342,11 +302,6 @@ export function ApprovalPanel({
       <div className="appr__head">
         {approved ? <CheckIcon size={15} className="ico" /> : <UsersIcon size={15} className="ico" />}
         <span>
-          {/* A self-approval is only possible under the auth bypass or with
-              the two-person rule off. Calling it "a second person" would
-              contradict the line below that says so. Then nobody else needs
-              to be waited for either, so the waiting and needed states do not
-              name one. */}
           {askToRun
             ? approved
               ? "Approved for you, once"
@@ -354,18 +309,12 @@ export function ApprovalPanel({
                 ? "Waiting for an Admin"
                 : "Needs an Admin's approval"
             : approved
-            ? approved.self_approved
-              ? bypass
-                ? "Self-approved under the auth bypass"
-                : "Self-approved (two-person rule off)"
-              : "Approved by a second person"
-            : pending
-              ? bypassSelf || ruleOffSelf
-                ? "Waiting for your approval"
-                : "Waiting for a second person"
-              : soleApprover || ruleOff
-                ? "Needs an approval"
-                : "Needs a second person"}
+              ? "Approved"
+              : pending
+                ? mine
+                  ? "Waiting for somebody else"
+                  : "Waiting for your answer"
+                : "Needs an approval"}
         </span>
         <ApprovalHint />
       </div>
@@ -413,28 +362,18 @@ export function ApprovalPanel({
             <p className="appr__meta">
               Admins see it on their Requests page, and you see their answer here.
             </p>
-          ) : !mayApprove ? (
-            // Someone who has just asked needs no telling that they can't answer
-            // themselves, only where the people who can will see it.
-            mine && !bypass ? (
-              <p className="appr__meta">
-                Anyone who can approve it sees it on their Requests page.
-              </p>
-            ) : (
-              <p className="appr__meta">
-                {approveRefusal}
-                <AskAdmin permission="approvals:approve" />
-              </p>
-            )
-          ) : selfDecision ? (
+          ) : mine ? (
             // The server's own words (decisionBlockReason in lib/approvals-db),
             // so this line and the refusal it would give read the same.
             <p className="appr__meta">
               {action === "revert"
-                ? "You asked for this rollback, so you cannot approve it. " +
-                  "A rollback on production needs a second person."
-                : "You asked for this deploy, so you cannot approve it. " +
-                  "A production run needs a second person."}
+                ? "You asked for this rollback, so somebody else has to approve it."
+                : "You asked for this run, so somebody else has to approve it."}
+            </p>
+          ) : !mayApprove ? (
+            <p className="appr__meta">
+              {approveRefusal}
+              <AskAdmin permission="approvals:approve" />
             </p>
           ) : (
             <>
@@ -479,29 +418,14 @@ export function ApprovalPanel({
                   action === "revert" ? "roll back" : "run migrations"
                 } on this connection by itself. Ask an Admin to approve this exact ${what}. ` +
                 `Once they do, you can run it once, within 7 days. If the SQL changes, it needs approving again.`
-              : ruleOff && mayApprove
-              ? `This target is labelled production, so the ${
-                  action === "revert" ? "rollback" : "run"
-                } needs an approval. The two-person rule is off in this organization, so you can request it and then clear it yourself.`
-              : soleApprover
-              ? action === "revert"
-                ? "This target is labelled production, so the rollback needs an " +
-                  "approval. With the auth bypass on there is only one principal, so " +
-                  "you request it and then clear it yourself."
-                : "This target is labelled production, so the run needs an approval. " +
-                  "With the auth bypass on there is only one principal, so you " +
-                  "request it and then clear it yourself."
-              : action === "revert"
-                ? "This target is labelled production, so the rollback needs an " +
-                  "approval from someone other than you."
-                : "This target is labelled production, so the run needs an approval " +
-                  "from someone other than you."}
+              : `Somebody whose role may not do this ${what} by itself can ask for approval of it. ` +
+                `Nobody has asked for this exact ${what}.`}
             {latest?.status === "rejected" ? (
               <>
                 {" "}
                 The last request for this exact SQL was rejected by{" "}
                 {latest.decided_by ?? "someone"}
-                {latest.note ? ` — "${latest.note}"` : ""}.
+                {latest.note ? `, with the note "${latest.note}"` : ""}.
               </>
             ) : latest?.status === "used" ? (
               <>
@@ -512,12 +436,12 @@ export function ApprovalPanel({
               </>
             ) : null}
           </p>
-          {mayRequest || askToRun ? (
+          {askToRun && (
             <>
               <input
                 className="input mt-2"
                 style={{ fontSize: "12px" }}
-                aria-label="Note for the record — shown to whoever approves this"
+                aria-label="Note for the record, shown to whoever approves this"
                 placeholder="Optional note for the approver"
                 value={note}
                 onChange={(event) => onNoteChange(event.target.value)}
@@ -530,29 +454,16 @@ export function ApprovalPanel({
                   onClick={onRequest}
                 >
                   <UsersIcon size={13} />
-                  {askToRun
-                    ? latest
-                      ? "Ask for approval again"
-                      : "Ask for approval"
-                    : latest
-                      ? "Request approval again"
-                      : "Request approval"}
+                  {latest ? "Ask for approval again" : "Ask for approval"}
                 </button>
               </div>
             </>
-          ) : (
-            // No note box either: it would only be sent with a request this
-            // role cannot make.
-            <p className="appr__meta">
-              {requestRefusal}
-              <AskAdmin permission="approvals:create" />
-            </p>
           )}
         </>
       )}
 
       {/* An approval that is on the list but clears a different run. Without
-          this line the panel says "Needs a second person" while the approver
+          this line the panel says an approval is needed while the approver
           insists they approved it. Deploy only: a rollback's approval covers
           one fixed set of versions, so there is no other range to pick. */}
       {!approved && action === "deploy" && otherApproval ? (

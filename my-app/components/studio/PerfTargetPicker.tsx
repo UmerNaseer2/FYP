@@ -3,9 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Select } from "@/components/ui/Select";
-import { EnvironmentPill } from "@/components/ui";
 import { AlertCircleIcon } from "@/components/ui/icons";
-import { toEnvironment } from "@/lib/environments";
 import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
@@ -37,7 +35,6 @@ type ConnectionRow = {
   name: string;
   database_name: string;
   type: string;
-  environment?: string | null;
 };
 
 /** Where one of the two fetches has got to. */
@@ -228,7 +225,6 @@ export function PerfTargetPicker({
               <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
                 Connection
               </span>
-              <EnvironmentPill environment={toEnvironment(picked?.environment)} />
             </div>
             <Select
               value={connectionId}

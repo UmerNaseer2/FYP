@@ -9,13 +9,12 @@ import {
 export type { ApprovalScript };
 
 /**
- * Deploy approvals — the two-person rule for production runs.
+ * Deploy approvals: asking somebody else to approve one exact run.
  *
- * Before this existed, a production deploy was gated by a checkbox the same
- * person ticked a second before pressing Deploy. That is a speed bump, not a
- * control: it asks the operator to confirm what they already decided. A real
- * gate needs a SECOND person, and it needs to be enforced where the run
- * actually happens — in the apply route, not in a disabled button.
+ * Somebody whose role does not let them run a deploy or a rollback can ask
+ * for one exact run to be approved. A real gate needs somebody else to decide, and it
+ * needs to be enforced where the run actually happens: in the apply route,
+ * not in a disabled button.
  *
  * The shape of the rule:
  *
@@ -31,16 +30,16 @@ export type { ApprovalScript };
  * SQL. Edit a migration after approval and the fingerprint stops matching, so
  * the approval no longer authorises anything — which is the whole point. An
  * approval that could be re-used against different SQL would be worse than no
- * approval, because it would carry a second person's name.
+ * approval, because it would carry the approver's name.
  *
  * An approval also stops being good after a while. The fingerprint pins WHAT
  * was approved, but not WHEN: an approval given a month ago was a judgement
- * about a database as it stood a month ago, and the second person is not there
+ * about a database as it stood a month ago, and the approver is not there
  * to be asked whether it still holds. So a decision carries an expiry, and a
  * claim ignores a row past it — the run is simply unapproved again, and asking
  * costs one more click. See APPROVAL_VALID_HOURS.
  *
- * Rollbacks on production follow the same rule through the same table. The
+ * Rollbacks follow the same rule through the same table. The
  * `action` column says which route may spend a row ("deploy" for the apply
  * route, "revert" for the revert route), and a rollback's fingerprint is built
  * under a different header (rollbackFingerprintBody), so an approval for one
@@ -113,7 +112,7 @@ export type DeployApproval = {
  *
  * Long enough that a deploy planned for "after the weekend" still goes ahead
  * without asking twice, short enough that a month-old yes does not quietly
- * unlock a production run. An expired approval is not an error state — the run
+ * unlock a run. An expired approval is not an error state — the run
  * just reads as unapproved, exactly as it did before anybody looked at it.
  */
 export const APPROVAL_VALID_HOURS = 24 * 7;
@@ -127,7 +126,7 @@ const UNEXPIRED = `(expires_at IS NULL OR expires_at > now())`;
  * An approval names a connection by its id only. Without this, someone who may
  * edit connections could get SQL approved for connection 7, then point
  * connection 7 at another database and run the approved SQL there, and no
- * second person would ever have seen that target. So an approval given before
+ * approver would ever have seen that target. So an approval given before
  * the connection's last saved edit no longer counts, and the run has to be
  * asked for again. Any saved edit does it, a rename too: simple, and on the
  * safe side.
@@ -354,9 +353,8 @@ export function decisionBlockReason(
   if (approval.status !== "pending") {
     return `This request is already ${approval.status}.`;
   }
-  // Somebody asking for a run they may not do themselves never answers it,
-  // whatever the organization's rules: that would be giving themselves the
-  // permission they asked for.
+  // Somebody asking for a run they may not do themselves never answers it:
+  // that would be giving themselves the permission they asked for.
   if (approval.run_by_requester && approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
     return approval.action === "revert"
       ? "You asked for this rollback, so somebody else has to approve it."
@@ -365,10 +363,8 @@ export function decisionBlockReason(
   if (selfAllowed) return null;
   if (approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
     return approval.action === "revert"
-      ? "You asked for this rollback, so you cannot approve it. " +
-          "A rollback on production needs a second person."
-      : "You asked for this deploy, so you cannot approve it. " +
-          "A production run needs a second person.";
+      ? "You asked for this rollback, so somebody else has to approve it."
+      : "You asked for this run, so somebody else has to approve it.";
   }
   return null;
 }
@@ -451,7 +447,7 @@ export async function listPendingApprovals(orgId: number): Promise<PendingApprov
 }
 
 /**
- * A production request with the name of its connection, for the Requests page.
+ * A request with the name of its connection, for the Requests page.
  * The name comes from a subquery because COLUMNS are unprefixed, so a join would
  * make `id` ambiguous.
  */
@@ -465,7 +461,7 @@ const LISTED_COLUMNS = `${COLUMNS},
 /** `leaveOut` drops one person's own, for someone who may not decide those. */
 const NOT_FROM = `($2::text IS NULL OR lower(requested_by) <> lower($2::text))`;
 
-/** Runs waiting for a second person, oldest first. */
+/** Runs waiting for somebody to approve them, oldest first. */
 export async function listRunsToApprove(
   orgId: number,
   leaveOut: string | null
@@ -517,7 +513,7 @@ export async function countRunsReadyToRun(orgId: number): Promise<number> {
   return result.rows[0]?.count ?? 0;
 }
 
-/** The production runs this person asked for, newest first. */
+/** The runs this person asked for, newest first. */
 export async function listOwnRuns(orgId: number, email: string): Promise<ListedApproval[]> {
   await syncMetadataTables();
   const result = await pool.query<ListedApproval>(
@@ -674,7 +670,7 @@ export async function claimApproval(input: {
 /**
  * Hand a claimed approval back after a run that did not commit.
  *
- * The transaction rolled back, so nothing was deployed and the second person's
+ * The transaction rolled back, so nothing was deployed and the approver's
  * decision still stands for the same SQL — making them approve it again would
  * be asking them to re-read what they already read. If the operator edits a
  * migration before retrying, the fingerprint changes and this row stops
@@ -690,28 +686,13 @@ export async function releaseApproval(orgId: number, id: number): Promise<void> 
 }
 
 /**
- * Whether this person may decide a request they made themselves. Two cases:
+ * Whether this person may decide a request they made themselves. Only in the
+ * demo, with sign-in switched off: it has exactly one person, so nobody else
+ * could decide. Everywhere else you cannot approve your own ask.
  *
- * - The demo, with sign-in switched off, has exactly one principal, so a
- *   second person cannot exist.
- * - An organization whose Admin switched its two-person rule off (the
- *   Organization tab). The rule is on for every new organization.
- *
- * Either way the row records it, in `self_approved`, rather than looking like
- * a two-person approval, and deciding still needs Approvals: Approve.
+ * The row records it, in `self_approved`, rather than looking like an
+ * approval somebody else gave, and deciding still needs Approvals: Approve.
  */
-export function mayDecideOwn(principal: { bypass: boolean; orgTwoPersonRule: boolean }): boolean {
-  return principal.bypass || !principal.orgTwoPersonRule;
-}
-
-/**
- * Whether approvals are on for this person's organization: the two-person
- * rule is on and sign-in is real. When they are off, a production run asks
- * for its tick and nothing more, and the rules that only exist to stop
- * someone getting round an approval (the Production-twin check, Admin-only
- * unlabelling) step aside too. Asking someone to approve their own request
- * protected nothing.
- */
-export function approvalsOn(principal: { bypass: boolean; orgTwoPersonRule: boolean }): boolean {
-  return !mayDecideOwn(principal);
+export function mayDecideOwn(principal: { bypass: boolean }): boolean {
+  return principal.bypass;
 }

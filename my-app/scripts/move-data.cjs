@@ -388,12 +388,26 @@ async function readOrganization(source, org, memberIds) {
   return read;
 }
 
+/**
+ * Columns the app no longer has. An old database, or an old backup, may still
+ * carry them. They are left behind, not copied and not counted as a
+ * difference between the two databases.
+ */
+const DROPPED_COLUMNS = {
+  connections: ["environment"],
+  tracked_schemas: ["environment"],
+  agent_connections: ["environment"],
+  organizations: ["require_approvals", "two_person_rule"],
+};
+
 /** The new database must be able to hold everything the old one has. */
 async function checkColumns(source, target) {
   const found = new Map();
   for (const table of [...SPECIAL_TABLES, ...ORG_TABLES.map((step) => step.name)]) {
     const here = await columnsOf(target, table);
-    const there = await source.columns(table);
+    const dropped = DROPPED_COLUMNS[table] ?? [];
+    const every = await source.columns(table);
+    const there = every === null ? null : every.filter((name) => !dropped.includes(name));
     if (here.length === 0) {
       throw new MoveError(
         "The new database does not have this app's tables yet. Open the new site once, then try again."

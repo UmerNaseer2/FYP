@@ -1,5 +1,4 @@
 import { hasPostgresScheme, parsePostgresUri } from "./parse-uri";
-import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
 import { toExecuteRole, type ExecuteRole } from "./connection-access";
 import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "./local-secrets";
 import {
@@ -75,7 +74,6 @@ export type ConnectionDraft = {
   password?: unknown;
   connection_string?: unknown;
   ssl_mode?: unknown;
-  environment?: unknown;
   application_table?: unknown;
   execute_role?: unknown;
 };
@@ -91,7 +89,6 @@ export type NormalisedConnection = {
   password: string;
   connection_string: string;
   ssl_mode: SslMode;
-  environment: Environment;
   /** The client's ApplicationTable, or null when this connection names none. */
   application_table: string | null;
   /** Which role may run migrations here. See lib/connection-access.ts. */
@@ -280,17 +277,6 @@ export function validateConnection(
   const connection_string = String(draft.connection_string ?? "").trim();
   const rawType = String(draft.type ?? "PostgreSQL").trim();
   const ssl_mode = toSslMode(draft.ssl_mode);
-  // An omitted environment is the normal case for an older client, and "unset"
-  // is a truthful answer to "which environment is this?".
-  //
-  // A value that was sent but is not one of ours is a different thing, and it
-  // is not narrowed quietly. "production" instead of "prod" would be stored as
-  // "unset" — the *lowest* rank — so the user would believe they had labelled a
-  // live database and nothing would ever warn them about it. Silence in that
-  // direction is the one failure this whole column exists to prevent.
-  const rawEnvironment = String(draft.environment ?? "").trim();
-  const environment = toEnvironment(rawEnvironment);
-
   // Blank is the ordinary answer and means "this connection names no
   // application table", stored as NULL rather than "". The shape is checked
   // here rather than at deploy time because a typo found now is a message in
@@ -300,7 +286,7 @@ export function validateConnection(
   const application_table = applicationTable === "" ? null : applicationTable;
 
   // Unrecognised text falls back to the default rather than becoming an error,
-  // the same way `environment` does, because this arrives from a fixed <select>
+  // because this arrives from a fixed <select>
   // — a value outside the list means the form was bypassed, not that the user
   // typed something. Falling back to the DEFAULT and not to "none" keeps a
   // bypassed form from being a way to quietly freeze a connection.
@@ -316,11 +302,6 @@ export function validateConnection(
   // An ssl_mode that is not one of ours is refused, never read as "disable".
   const sslProblem = sslModeProblem(draft.ssl_mode);
   if (sslProblem) errors.ssl_mode = sslProblem;
-
-  if (rawEnvironment !== "" && rawEnvironment.toLowerCase() !== environment) {
-    errors.environment =
-      `"${rawEnvironment}" is not an environment. Use one of: ${ENVIRONMENTS.join(", ")}.`;
-  }
 
   if (application_table !== null) {
     const parts = application_table.split(".");
@@ -413,7 +394,6 @@ export function validateConnection(
       password,
       connection_string,
       ssl_mode,
-      environment,
       application_table,
       execute_role,
     },

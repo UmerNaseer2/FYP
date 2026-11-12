@@ -90,7 +90,7 @@ describe("the desktop app tab, on the website", () => {
               name: "Ada's laptop",
               mine: true,
               online: true,
-              connections: [{ id: 9, name: "Local shop", environment: "dev" }],
+              connections: [{ id: 9, name: "Local shop" }],
             }),
             computer({ id: 2, name: "Build box", owner: "Grace Hopper", lastSeenAt: threeHoursAgo }),
           ],

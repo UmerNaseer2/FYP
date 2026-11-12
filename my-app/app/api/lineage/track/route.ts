@@ -8,7 +8,6 @@ import {
   BASELINE_VERSION,
   type TrackedSchemaRow,
 } from "@/lib/lineage-db";
-import { ENVIRONMENTS, toEnvironment, type Environment } from "@/lib/environments";
 import { requestImmediateCheck } from "@/lib/drift-scheduler";
 
 /**
@@ -16,11 +15,7 @@ import { requestImmediateCheck } from "@/lib/drift-scheduler";
  *
  * Start tracking a schema. We capture a baseline snapshot of its live structure
  * and record it as lineage seq 1 (version 1.0.0). Body:
- *   { connectionId: number, schemaName: string, label?: string,
- *     environment?: "unset" | "dev" | "staging" | "prod" }
- *
- * `environment` is optional and only stored. Every page reads the label from
- * the connection, so the app's own client no longer sends it.
+ *   { connectionId: number, schemaName: string, label?: string }
  *
  * Everything happens inside the caller's organization: the connection must be
  * one of its own, and the tracked schema, its baseline snapshot and its first
@@ -37,7 +32,6 @@ export async function POST(request: NextRequest) {
     connectionId?: number;
     schemaName?: string;
     label?: string;
-    environment?: unknown;
   };
   try {
     body = await request.json();
@@ -52,19 +46,6 @@ export async function POST(request: NextRequest) {
     typeof body.label === "string" && body.label.trim().length > 0
       ? body.label.trim()
       : null;
-  // undefined means "inherit from the connection". A value that was sent but
-  // is not one of ours is refused rather than quietly narrowed.
-  const rawEnvironment =
-    body.environment === undefined ? null : String(body.environment).trim().toLowerCase();
-  if (rawEnvironment !== null && !(ENVIRONMENTS as readonly string[]).includes(rawEnvironment)) {
-    return NextResponse.json(
-      { error: `Environment must be one of: ${ENVIRONMENTS.join(", ")}.` },
-      { status: 400 }
-    );
-  }
-  const environmentOverride =
-    rawEnvironment === null ? null : toEnvironment(rawEnvironment);
-
   if (!connectionId || !schemaName) {
     return NextResponse.json(
       { error: "connectionId and schemaName are required." },
@@ -84,17 +65,15 @@ export async function POST(request: NextRequest) {
     connection_string: string | null;
     ssl: boolean;
     ssl_mode: string | null;
-    environment: string | null;
     site_id: number | null;
   };
   try {
-    // ssl_mode and environment are both added lazily; make sure they exist
-    // before selecting them.
+    // ssl_mode is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     // Another organization's connection reads as missing, the same answer a
     // deleted one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query(
-      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment,
+      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode,
               site_id
        FROM connections
        WHERE id = $1 AND org_id = $2`,
@@ -173,8 +152,6 @@ export async function POST(request: NextRequest) {
   try {
     await client.query("BEGIN");
 
-    const environment: Environment =
-      environmentOverride ?? toEnvironment(conn.environment);
     const orgId = gate.principal.orgId;
 
     // Insert the tracked schema, copying its organization from the connection
@@ -184,11 +161,11 @@ export async function POST(request: NextRequest) {
     // constraint makes the insert a no-op instead. Both come back as zero rows,
     // so the check below tells them apart.
     const trackedResult = await client.query<TrackedSchemaRow>(
-      `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label, environment)
-       SELECT org_id, id, $2, $3, $4 FROM connections WHERE id = $1 AND org_id = $5
+      `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label)
+       SELECT org_id, id, $2, $3 FROM connections WHERE id = $1 AND org_id = $4
        ON CONFLICT (connection_id, schema_name) DO NOTHING
-       RETURNING id, connection_id, schema_name, label, environment, created_at`,
-      [connectionId, schemaName, label, environment, orgId]
+       RETURNING id, connection_id, schema_name, label, created_at`,
+      [connectionId, schemaName, label, orgId]
     );
 
     if (trackedResult.rows.length === 0) {

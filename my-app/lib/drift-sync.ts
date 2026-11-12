@@ -17,7 +17,6 @@ import {
   readDriftSchema,
   type WebsiteDriftSchema,
 } from "@/lib/agent-rules";
-import { toEnvironment } from "@/lib/environments";
 
 /** Every schema tracked on this server's own connections, with its newest checks first. */
 export async function listOwnDrift(orgId: number): Promise<WebsiteDriftSchema[]> {
@@ -25,14 +24,13 @@ export async function listOwnDrift(orgId: number): Promise<WebsiteDriftSchema[]>
   const { rows } = await pool.query<{
     connection_id: number;
     connection_name: string;
-    environment: string | null;
     schema_name: string;
     label: string | null;
     interval_minutes: number | null;
     last_checked_at: Date | string | null;
     checks: unknown;
   }>(
-    `SELECT t.connection_id, c.name AS connection_name, c.environment, t.schema_name, t.label,
+    `SELECT t.connection_id, c.name AS connection_name, t.schema_name, t.label,
             t.drift_check_interval_minutes AS interval_minutes, t.last_drift_check_at AS last_checked_at,
             COALESCE((
               SELECT json_agg(json_build_object(
@@ -67,7 +65,6 @@ export async function listOwnDrift(orgId: number): Promise<WebsiteDriftSchema[]>
         ...schema,
         connectionId: Number(row.connection_id),
         connectionName: row.connection_name,
-        environment: toEnvironment(row.environment),
       },
     ];
   });

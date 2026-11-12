@@ -14,9 +14,9 @@ export const versionsyncHelp: HelpTopic = {
     "Wait while the page reads both ledgers. There is no button to start it.",
     "Read Missing on the Target. It lists the versions the Source has and the Target lacks, in the order the Source ran them.",
     "Press a Run button. It replays from the top of the list down to its own row, because a later version may depend on an earlier one. Run all replays the whole list.",
-    "Check the Replay dialog. Nothing has run yet. It shows what runs, in order, and, on a production Target, a tick box for each risk you must read first.",
+    "Check the Replay dialog. Nothing has run yet. It shows what runs, in order, with a warning for each risk you should read first.",
     "Press Dry run to rehearse. The scripts run and are then rolled back, so nothing is written.",
-    "Press Replay to do it for real. On a production Target this also needs an approval when your organization has the two-person rule on. If your role may not run migrations on the Target, ask an Admin to approve that exact replay, and then you can run it once.",
+    "Press Replay to do it for real. If your role may not run migrations on the Target, ask an Admin to approve that exact replay, and then you can run it once.",
   ],
   terms: [
     {
@@ -73,7 +73,7 @@ export const versionsyncHelp: HelpTopic = {
     },
     {
       problem: "Dry run and Replay stay off in the dialog.",
-      fix: "On a production Target, tick every box in the dialog. Both buttons also wait until the Target's tracking record can be read. Replay on a production Target also needs an approval while the two-person rule is on. A dry run never does.",
+      fix: "Both buttons wait until the Target's tracking record can be read. If your role may not run migrations on the Target, Replay also waits until an Admin approves the replay you asked for, and there is no dry run.",
     },
   ],
   sections: [

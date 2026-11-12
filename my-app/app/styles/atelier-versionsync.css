@@ -11,7 +11,6 @@
 .vs-side-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .vs-side-head h2 { font: 700 17px/22px var(--display); color: var(--ink); }
 .vs-side-sub { font-size: 12.5px; color: var(--ink-3); }
-.vs-side-env { margin-left: auto; }
 .vs-swap {
   width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
   background: var(--tint); color: var(--ink-2); border: 1px solid var(--line);

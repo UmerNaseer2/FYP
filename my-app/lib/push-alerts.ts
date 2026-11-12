@@ -107,7 +107,7 @@ const DRIFT_TITLES: Record<DriftAlertKind, string> = {
   reachable: "Database reachable again",
 };
 
-/** What a drift alert says, about a subject such as "orders on Production". */
+/** What a drift alert says, about a subject such as "orders on Sales". */
 export function driftAlertText(
   kind: DriftAlertKind,
   subject: string,
@@ -130,7 +130,7 @@ export function driftAlertText(
   return { title: DRIFT_TITLES[kind], body: bodies[kind] };
 }
 
-/** "orders on Production", or just "orders" when the connection has no name to show. */
+/** "orders on Sales", or just "orders" when the connection has no name to show. */
 export function subjectOf(name: string, connectionName: string | null): string {
   return connectionName === null ? name : `${name} on ${connectionName}`;
 }
@@ -213,7 +213,7 @@ export async function alertDriftChange(orgId: number, run: DriftRun): Promise<vo
   });
 }
 
-/** "orders on Production", for a run on one of this organization's connections. */
+/** "orders on Sales", for a run on one of this organization's connections. */
 async function runSubject(orgId: number, approval: DeployApproval): Promise<string> {
   const found = await pool.query<{ name: string }>(
     "SELECT name FROM connections WHERE id = $1 AND org_id = $2",

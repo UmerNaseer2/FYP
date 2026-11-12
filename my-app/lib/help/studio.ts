@@ -10,7 +10,7 @@ export const studioHelp: HelpTopic = {
     "Save a connection on the Connections page first. Schema Studio can only track a schema on a PostgreSQL server you have saved.",
     "Press Track a schema, pick a Connection, then pick one of its schemas.",
     "Add a Label if you want a friendly name beside the schema, then press Track schema. A baseline snapshot is taken straight away and recorded as v1.0.0.",
-    "Use the environment buttons above the city to show one environment at a time. They appear once a connection has a label. The numbers under the city count what is on screen.",
+    "The numbers under the city count the schemas on screen.",
     "Use Height shows to choose what a building's height means: its recorded versions, or the tables in its latest recorded version.",
     "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.",
     "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.",
@@ -44,11 +44,6 @@ export const studioHelp: HelpTopic = {
         "What the last drift check found: the live schema differs, it matches, the database did not answer, or nobody has checked yet.",
     },
     {
-      term: "Environment",
-      meaning:
-        "The label of the schema's connection: Dev, Staging or Production. It is optional and set on Connections. Only Production changes anything.",
-    },
-    {
       term: "Needs you",
       meaning:
         "The schemas on screen whose last drift check found drift or got no answer. Press one to pick its building.",
@@ -56,7 +51,7 @@ export const studioHelp: HelpTopic = {
     {
       term: "Label",
       meaning:
-        "An optional friendly name shown beside the schema. Production warnings come from the connection's Environment, not from this label.",
+        "An optional friendly name shown beside the schema.",
     },
     {
       term: "Stop tracking",

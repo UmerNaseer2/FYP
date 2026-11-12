@@ -76,7 +76,6 @@ const set = (over: Partial<ComparisonSetOption> = {}): ComparisonSetOption => ({
   id: 7,
   name: "Nightly check",
   targetCount: 1,
-  hasProduction: false,
   compareData: false,
   hasMissingConnection: false,
   lastRunAt: null,
@@ -168,7 +167,6 @@ describe("opening a saved set", () => {
       sets: [
         set({
           targetCount: 2,
-          hasProduction: true,
           compareData: true,
           hasMissingConnection: true,
         }),
@@ -179,7 +177,7 @@ describe("opening a saved set", () => {
 
     expect(
       screen.getByRole("option", {
-        name: "Nightly check · 2 targets · prod · row data · connection deleted · never run",
+        name: "Nightly check · 2 targets · row data · connection deleted · never run",
       })
     ).toBeInTheDocument();
   });

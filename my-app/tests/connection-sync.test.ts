@@ -75,7 +75,6 @@ const SAVED = {
   ssl: true,
   ssl_mode: "verify-full",
   name: "Book shop",
-  environment: "dev",
   version: 3,
   site_id: null as number | null,
 };
@@ -94,7 +93,6 @@ const EDIT = {
   password: "",
   connection_string: "",
   ssl_mode: "verify-full",
-  environment: "dev",
 };
 
 function setUp(over: Partial<typeof SAVED> = {}, writeHits = true) {
@@ -102,7 +100,7 @@ function setUp(over: Partial<typeof SAVED> = {}, writeHits = true) {
   mockPoolQuery.mockReset();
   mockPoolQuery.mockImplementation(async (text: string) => {
     if (/SELECT password, connection_string/.test(text)) return { rows: [saved] };
-    if (/SELECT name, environment, version, site_id/.test(text)) return { rows: [saved] };
+    if (/SELECT name, version, site_id/.test(text)) return { rows: [saved] };
     if (/^\s*UPDATE connections/.test(text) && /RETURNING/.test(text)) {
       return { rows: writeHits ? [{ ...CURRENT, version: saved.version + 1 }] : [] };
     }
@@ -330,7 +328,6 @@ describe("saving through the link", () => {
     username: "app_owner",
     password: "made-up-typed",
     ssl_mode: "require",
-    environment: "dev",
   };
   const add = async (body: unknown) =>
     answer(await addThroughLink(request("http://localhost:3000/api/agent/sync/connections", "POST", body)));
@@ -342,8 +339,8 @@ describe("saving through the link", () => {
     expect(result.body.saved).toBe(true);
     expect(result.body.connection.id).toBe(9);
     const [insert] = ran(/INSERT INTO connections/);
-    expect(insert[1]?.[13]).toBe(TEST_ORG.id);
-    expect(insert[1]?.[14]).toBe("A editor");
+    expect(insert[1]?.[12]).toBe(TEST_ORG.id);
+    expect(insert[1]?.[13]).toBe("A editor");
   });
 
   it("leaves a connection the website cannot reach on the computer, saying why", async () => {

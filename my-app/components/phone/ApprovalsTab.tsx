@@ -124,7 +124,7 @@ function SqlBlock({ copy }: { copy: SqlCopy }) {
 }
 
 /**
- * A production run waiting for a yes or a no. Approving is the same call the
+ * A run somebody asked for, waiting for a yes or a no. Approving is the same call the
  * Deploy page makes, with the fingerprint this card was drawn from, so a yes
  * cannot land on a run that changed after it was read. The SQL opens as soon as
  * someone reaches for Approve, because nobody should approve SQL they cannot see.

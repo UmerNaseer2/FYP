@@ -18,13 +18,8 @@
 import { sha256, type ApprovalAction } from "./approval.js";
 import { toBase64Url, utf8, type Bytes } from "./bytes.js";
 
-/** A risk the person holding the phone said they accept, by ticking its box. */
-export type ControlTick = "production" | "breaking" | "data-loss" | "other-scripts" | "drift";
-export const CONTROL_TICKS: readonly ControlTick[] = ["production", "breaking", "data-loss", "other-scripts", "drift"];
-
-/** What a run could do that somebody should accept first. */
+/** What a run could do, for the person to read before they sign. The phone shows these as plain warnings. */
 export type RunRisks = {
-  production: boolean;
   /** Labels such as "users_migration v2.0.0", of the scripts that could break something. */
   breaking: string[];
   /** Likewise, of the scripts that could lose data. */
@@ -34,17 +29,6 @@ export type RunRisks = {
   /** A deploy only: what the last drift check said, when it should give someone pause. */
   drift: "drifted" | "unreachable" | null;
 };
-
-/** The ticks a run needs, in one fixed order, so the phone and the computer work out the same list. */
-export function ticksFor(risks: RunRisks): ControlTick[] {
-  const ticks: ControlTick[] = [];
-  if (risks.production) ticks.push("production");
-  if (risks.breaking.length > 0) ticks.push("breaking");
-  if (risks.dataLoss.length > 0) ticks.push("data-loss");
-  if (risks.otherScripts.length > 0) ticks.push("other-scripts");
-  if (risks.drift !== null) ticks.push("drift");
-  return ticks;
-}
 
 /** What the signature is for: running it, or asking someone to approve it. */
 export type DeployStep = "run" | "ask";
@@ -59,7 +43,12 @@ export type DeployTarget = {
   /** The fingerprint (approval.ts) of the SQL the person read. */
   fingerprint: string;
   step: DeployStep;
-  ticks: readonly ControlTick[];
+  /**
+   * Always empty now. An older phone app listed the risks its person had
+   * ticked here, and signed them, so the computer puts back whatever such a
+   * phone sent to check its signature. They decide nothing.
+   */
+  ticks: readonly string[];
 };
 
 export type CancelTarget = {

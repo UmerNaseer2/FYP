@@ -53,7 +53,7 @@ jest.mock("../app/api/scripts/preflight/route", () => ({
 
 import { GET, POST } from "../app/api/deploy/phone/route";
 
-const CONNECTION = { database_name: "bookshop", environment: "dev", execute_role: "editor" };
+const CONNECTION = { database_name: "bookshop", execute_role: "editor" };
 
 function file(script_name: string, version: string, sql_content: string, schema_name = "public") {
   return {
@@ -254,7 +254,7 @@ describe("POST: what it refuses", () => {
 
   it("answers 500 when the approval queue cannot be read", async () => {
     const quiet = jest.spyOn(console, "error").mockImplementation(() => undefined);
-    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, environment: "prod" }] });
+    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, execute_role: "admin" }] });
     mockFindOpenApproval.mockRejectedValue(new Error("connect ECONNREFUSED db.example.test:5433"));
     const { status, json } = await plan();
     expect(status).toBe(500);
@@ -283,7 +283,7 @@ describe("POST: where one family stands", () => {
 });
 
 describe("POST: the plan for one run", () => {
-  it("off production: the next step is to run it, with the way to do that", async () => {
+  it("a role that may run here: the next step is to run it, with the way to do that", async () => {
     const { status, json } = await plan();
     expect(status).toBe(200);
     const scripts = [
@@ -296,14 +296,13 @@ describe("POST: the plan for one run", () => {
       schemaName: "public",
       scriptName: "users",
       targetVersion: "1.2.0",
-      environment: "dev",
       partial: false,
       next: "run",
       blockedReason: null,
       approvalRequest: null,
       scripts,
       fingerprint: runFingerprint(scripts, "deploy"),
-      risks: { production: false, otherScripts: [], drift: null },
+      risks: { otherScripts: [], drift: null },
     });
     expect(json.run.path).toBe("/api/scripts/apply");
     expect(json.run.body.scripts.map((script: { version: string }) => script.version)).toEqual(["1.1.0", "1.2.0"]);
@@ -319,16 +318,11 @@ describe("POST: the plan for one run", () => {
     expect(json.fingerprint).not.toBe(runFingerprint(json.scripts, "deploy"));
   });
 
-  it("a role that may only look is told so, and gets no way to run", async () => {
+  it("a role that may only look gets no way to run, only the way to ask", async () => {
     mockGate = { ok: true, principal: principalFor("viewer") } as unknown as Gate;
     const { json } = await plan();
-    expect(json).toMatchObject({ next: "blocked", blockedReason: "role", run: null, approvalRequest: null });
-  });
-
-  it("a connection only an admin may run on blocks an editor", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, execute_role: "admin" }] });
-    const { json } = await plan();
-    expect(json).toMatchObject({ next: "blocked", blockedReason: "role", run: null });
+    expect(json).toMatchObject({ next: "ask-approval", blockedReason: null, run: null });
+    expect(json.approvalRequest).toMatchObject({ action: "deploy", connectionId: 3 });
   });
 
   it("a connection nobody may run on is read-only, to an admin as well", async () => {
@@ -339,7 +333,7 @@ describe("POST: the plan for one run", () => {
   });
 
   it("does not look in the queue for a run that cannot happen", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, environment: "prod" }] });
+    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, execute_role: "admin" }] });
     const { json } = await plan({ ...DEPLOY, targetVersion: "1.0.0" });
     expect(json).toMatchObject({ next: "blocked", blockedReason: "nothing-to-do" });
     expect(mockFindOpenApproval).not.toHaveBeenCalled();
@@ -350,22 +344,21 @@ describe("POST: the plan for one run", () => {
       trackedSchemaId: 9,
       headVersion: "1.0.0",
       driftStatus: "drifted",
-      environment: "dev",
     });
     expect((await plan()).json.risks.drift).toBe("drifted");
     expect((await plan(REVERT)).json.risks.drift).toBe(null);
   });
 });
 
-describe("POST: production", () => {
+describe("POST: a connection only an admin may run on, to an editor", () => {
   beforeEach(() => {
-    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, environment: "prod" }] });
+    mockPoolQuery.mockResolvedValue({ rows: [{ ...CONNECTION, execute_role: "admin" }] });
   });
 
   it("asks for approval first, with the way to ask and no way to run", async () => {
     const { json } = await plan();
-    expect(json).toMatchObject({ next: "ask-approval", blockedReason: null, run: null, environment: "prod" });
-    expect(json.risks.production).toBe(true);
+    expect(json).toMatchObject({ next: "ask-approval", blockedReason: null, run: null });
+    expect(json).not.toHaveProperty("environment");
     expect(json.approvalRequest).toMatchObject({ action: "deploy", connectionId: 3, schemaName: "public" });
     expect(mockFindOpenApproval.mock.calls[0][0]).toMatchObject({
       orgId: TEST_ORG.id,
@@ -387,37 +380,5 @@ describe("POST: production", () => {
     expect(json.next).toBe("run-approved");
     expect(json.run.path).toBe("/api/scripts/apply");
     expect(json.approvalRequest).toBe(null);
-  });
-
-  it("an approved run still needs a role that may run", async () => {
-    mockGate = {
-      ok: true,
-      principal: { ...principalFor("viewer"), permissions: ["deploy:read", "approvals:create"] },
-    } as unknown as Gate;
-    mockFindOpenApproval.mockResolvedValue("approved");
-    const { json } = await plan();
-    expect(json).toMatchObject({ next: "blocked", blockedReason: "role", run: null });
-  });
-
-  it("someone who may run but not ask is told so", async () => {
-    mockGate = {
-      ok: true,
-      principal: { ...principalFor("viewer"), permissions: ["deploy:read", "deploy:run"] },
-    } as unknown as Gate;
-    const { json } = await plan();
-    expect(json).toMatchObject({ next: "blocked", blockedReason: "role", approvalRequest: null });
-  });
-
-  it("only the connection's own label counts, not the one stored on the tracked schema", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [CONNECTION] });
-    mockFindTracked.mockResolvedValue({
-      trackedSchemaId: 9,
-      headVersion: "1.0.0",
-      driftStatus: "in_sync",
-      environment: "prod",
-    });
-    const { json } = await plan();
-    expect(json.environment).toBe(CONNECTION.environment);
-    expect(json.next).not.toBe("ask-approval");
   });
 });

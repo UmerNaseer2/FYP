@@ -4,7 +4,9 @@
 > sentence, grouped under its sidebar screen, instead of a grid of Create, Read,
 > Update and Delete boxes. This script describes the week 7 grid and is kept as
 > a record of that demo. Section 11 of the user manual describes the tab as it
-> is now.
+> is now. Connections no longer carry a Production label either, so part 6
+> below is also a record only: today a person whose role may not run asks for
+> approval of that exact run, and an Admin approves it.
 
 The client asked (feedback F3) for an admin to decide, for each role and each
 feature, which of create, read, update and delete that role may do. This script

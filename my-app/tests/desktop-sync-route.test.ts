@@ -45,7 +45,6 @@ const COPY = {
   password: "made-up-copy-password",
   connection_string: "",
   ssl_mode: "verify-full",
-  environment: "prod",
   application_table: null,
   execute_role: "admin",
   version: 4,
@@ -106,7 +105,7 @@ describe("apply", () => {
     expect(await response.json()).toEqual({ kept: 1, skipped: 0 });
     const [update, remove] = mockPoolQuery.mock.calls;
     expect(update[0]).toMatch(/UPDATE connections SET/);
-    expect(update[0]).toMatch(/WHERE site_id = \$17 AND org_id = \$18/);
+    expect(update[0]).toMatch(/WHERE site_id = \$16 AND org_id = \$17/);
     const values = update[1] as unknown[];
     expect(values).toContain("enc:made-up-copy-password");
     expect(values).not.toContain("made-up-copy-password");
@@ -140,10 +139,9 @@ describe("apply", () => {
   });
 
   it("falls back to the defaults for values it does not know", async () => {
-    await call({ action: "apply", connections: [{ ...COPY, ssl_mode: "sometimes", environment: "moon", execute_role: "king" }] });
+    await call({ action: "apply", connections: [{ ...COPY, ssl_mode: "sometimes", execute_role: "king" }] });
     const values = mockPoolQuery.mock.calls[0][1] as unknown[];
     expect(values).not.toContain("sometimes");
-    expect(values).not.toContain("moon");
     expect(values).not.toContain("king");
   });
 
@@ -183,13 +181,12 @@ describe("apply", () => {
 
 describe("the computer's own connections", () => {
   it("lists them by name only, each with its drift results", async () => {
-    mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop", environment: "dev" }] });
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop" }] });
     mockPoolQuery.mockResolvedValueOnce({
       rows: [
         {
           connection_id: 5,
           connection_name: "Laptop",
-          environment: "dev",
           schema_name: "public",
           label: null,
           interval_minutes: 60,
@@ -206,7 +203,6 @@ describe("the computer's own connections", () => {
         {
           id: 5,
           name: "Laptop",
-          environment: "dev",
           drift: [
             {
               schema: "public",
@@ -229,10 +225,10 @@ describe("the computer's own connections", () => {
 
   it("still lists them when the drift results cannot be read", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
-    mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop", environment: "dev" }] });
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop" }] });
     mockPoolQuery.mockRejectedValueOnce(new Error("made-up failure"));
     const response = await call({ action: "local" });
-    expect(await response.json()).toEqual({ connections: [{ id: 5, name: "Laptop", environment: "dev" }] });
+    expect(await response.json()).toEqual({ connections: [{ id: 5, name: "Laptop" }] });
     warn.mockRestore();
   });
 
@@ -249,7 +245,6 @@ describe("the computer's own connections", () => {
           password: "enc:made-up-local-password",
           connection_string: null,
           ssl_mode: "disable",
-          environment: "dev",
           application_table: null,
           execute_role: "editor",
         },

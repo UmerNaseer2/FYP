@@ -5,9 +5,6 @@ import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
 import { getPoolForConfig } from "@/lib/postgres";
 import type { PoolConfig } from "pg";
 import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { isProduction, toEnvironment } from "@/lib/environments";
-import { configIdentity, findProductionTwin } from "@/lib/environment-guard";
-import { approvalsOn } from "@/lib/approvals-db";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
 import { loadPgTarget, readTargetSnapshot, type PgTargetRow } from "@/lib/ai/pg-target";
 import { aiDepsFor, runAiTask } from "@/lib/ai/run";
@@ -35,12 +32,10 @@ async function readServerMajor(cfg: PoolConfig): Promise<number | null> {
  * the schema does not have, statements that act on the server rather than the
  * schema, data loss nobody asked for, and the grade the deploy screen would give.
  *
- * Then, when the caller may run scripts on this target and it is not labelled
- * Production, the script and its rollback are tried on it inside a transaction
- * that is always rolled back. A failed try goes back to the AI to be fixed.
- * While approvals are on, a database another connection labels Production is
- * not tried either. Nothing is saved: the editor gets the script and
- * the person decides what to do with it.
+ * Then, when the caller's role may run scripts on this target, the script and
+ * its rollback are tried on it inside a transaction that is always rolled
+ * back. A failed try goes back to the AI to be fixed. Nothing is saved: the
+ * editor gets the script and the person decides what to do with it.
  *
  * Needs Read on Scripts and "Use AI assistance".
  */
@@ -86,14 +81,11 @@ export async function POST(request: NextRequest) {
 
   // Whether to try the script, decided before the AI is asked, the same way a
   // deploy decides whether it may run.
-  const trial = await chooseTrial({
+  const trial = chooseTrial({
     who: { isAdmin: gate.principal.role === ADMIN_ROLE, mayDeploy: hasPermission(gate.principal, "deploy:run") },
     row,
-    orgId,
-    connectionId,
     schemaName,
     cfg,
-    approvalsRequired: approvalsOn(gate.principal),
   });
 
   try {
@@ -128,41 +120,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function chooseTrial(options: {
+function chooseTrial(options: {
   who: { isAdmin: boolean; mayDeploy: boolean };
   row: ConnectionRow;
-  orgId: number;
-  connectionId: number;
   schemaName: string;
   cfg: PoolConfig;
-  approvalsRequired: boolean;
-}): Promise<TrialHook | { notTried: string }> {
-  const { who, row, orgId, connectionId, schemaName, cfg, approvalsRequired } = options;
+}): TrialHook | { notTried: string } {
+  const { who, row, schemaName, cfg } = options;
   if (!canExecute(who, toExecuteRole(row.execute_role))) {
     return { notTried: "Your role may not run scripts on this database, so the app did not try this one on it." };
-  }
-  // Tried on anything not labelled Production. The connection's label is the
-  // only one; a tracked schema has none of its own.
-  if (isProduction(toEnvironment(row.environment))) {
-    return {
-      notTried:
-        `${row.name} is labelled Production, so the app does not try AI scripts on it. ` +
-        "Rehearse it with a dry run from the Deploy screen.",
-    };
-  }
-  // A second connection to this database labelled Production counts, but only
-  // when approvals are on (the same rule as a deploy).
-  if (approvalsRequired) {
-    try {
-      const twin = await findProductionTwin(orgId, connectionId, configIdentity(cfg));
-      if (twin) {
-        return {
-          notTried: `Another saved connection, "${twin.name}", labels this database Production, so the app did not try the script on it.`,
-        };
-      }
-    } catch {
-      return { notTried: "The app could not check whether this database is labelled Production elsewhere, so it did not try the script." };
-    }
   }
   return makeTrial(cfg, schemaName);
 }

@@ -10,7 +10,6 @@ export const connectionsHelp: HelpTopic = {
     "Press Add connection. On an empty list the button reads Add your first connection.",
     "Under Quick start, pick Local Postgres or Hosted to fill in a name and the SSL mode each one needs. Hosted leaves the connection string to you.",
     "Type a Friendly name, such as production or dev local. It is the name shown in lists and breadcrumbs.",
-    "If you like, pick an Environment: Dev, Staging or Production. It is optional.",
     "Give the details either way round: paste a postgres:// connection string, or fill in Host, Port, Database, User and Password.",
     "Pick the SSL mode, then choose who may run migrations here.",
     "Press Test now to check that the database answers, then press Save connection.",
@@ -20,11 +19,6 @@ export const connectionsHelp: HelpTopic = {
     {
       term: "Friendly name",
       meaning: "Your own name for the connection. It is shown in lists and breadcrumbs across the app.",
-    },
-    {
-      term: "Environment",
-      meaning:
-        "An optional label: Dev, Staging or Production. Only Production changes anything: runs there ask you to tick the risks first, and need a second person's approval when your organization has the two-person rule on. Every schema tracked through the connection shares its label.",
     },
     {
       term: "Connection string",
@@ -76,12 +70,8 @@ export const connectionsHelp: HelpTopic = {
       fix: "Adding, editing or testing, and deleting are three separate permissions. The note under the page header says which one your role is missing, and lets you ask an Admin for it.",
     },
     {
-      problem: "The page says some connections have no environment.",
-      fix: "Edit each one and pick Dev, Staging or Production. Until then Compare and Deploy cannot warn you that a target is production.",
-    },
-    {
       problem: "I cannot make Who may run migrations here less strict.",
-      fix: "Anyone who may edit the connection can make it stricter. Making it looser again needs the Approve production runs permission, which only an Admin has to begin with.",
+      fix: "Anyone who may edit the connection can make it stricter. Making it looser again needs the Approve runs permission, which only an Admin has to begin with.",
     },
     {
       problem: "A script for one application is refused at deploy time.",
@@ -92,8 +82,8 @@ export const connectionsHelp: HelpTopic = {
     {
       title: "The list",
       body: [
-        "Filter the list with All, Local, Remote, SSL on, or an environment. Tick Group by environment to keep each label together.",
-        "The tiles at the top count the connections, how many are production, how many are healthy and the average time a test took.",
+        "Filter the list with All, Local, Remote or SSL on. The connections are listed by name.",
+        "The line under the page title counts the connections, how many are healthy, failing or untested, and the average time a test took.",
       ],
     },
     {

@@ -598,7 +598,7 @@ describe("moving to another organization", () => {
   // must never stand in for the new one's, not even for a moment.
   function InOrg({ slug }: { slug: string }) {
     return (
-      <OrgContext.Provider value={{ slug, name: slug, twoPersonRule: true }}>
+      <OrgContext.Provider value={{ slug, name: slug }}>
         <Probe />
       </OrgContext.Provider>
     );

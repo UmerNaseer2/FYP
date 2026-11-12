@@ -35,7 +35,6 @@ const ORG = 7;
 const subject = {
   schemaName: "public",
   label: null,
-  environment: "development" as const,
   connection: null,
   driftIntervalMinutes: 15,
 };

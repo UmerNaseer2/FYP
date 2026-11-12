@@ -253,8 +253,8 @@ export function isNameConflict(
 /**
  * A set's line in the "Open a saved set" picker.
  *
- * Everything worth knowing before opening it: how many targets, whether one is
- * production, whether it reads row data, whether a connection it used is gone,
+ * Everything worth knowing before opening it: how many targets, whether it
+ * reads row data, whether a connection it used is gone,
  * and when it last ran. `ranAgoText` is passed in because it depends on the
  * current time, which keeps this function testable.
  */
@@ -262,7 +262,6 @@ export function setOptionLabel(
   option: {
     name: string;
     targetCount: number;
-    hasProduction: boolean;
     compareData: boolean;
     hasMissingConnection: boolean;
   },
@@ -272,7 +271,6 @@ export function setOptionLabel(
     option.name,
     `${option.targetCount} target${option.targetCount === 1 ? "" : "s"}`,
   ];
-  if (option.hasProduction) parts.push("prod");
   if (option.compareData) parts.push("row data");
   if (option.hasMissingConnection) parts.push("connection deleted");
   parts.push(ranAgoText);

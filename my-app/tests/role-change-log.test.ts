@@ -15,8 +15,8 @@
 //   - making, deleting and giving out a role each read as a sentence;
 //   - so do inviting someone, cancelling an invitation and joining by one,
 //     for an address and for a link alike;
-//   - and removing someone, renaming the organization, switching its
-//     two-person rule and changing where its scripts are kept on GitHub.
+//   - and removing someone, renaming the organization and
+//     changing where its scripts are kept on GitHub.
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
 import { describeRoleChanges, type LogEntry } from "@/components/admin/RoleChangeLog";
@@ -113,7 +113,7 @@ describe("a save of a role's lines", () => {
       line({ id: 33, actor: BOB, createdAt: LATER, text: EDITOR, turnedOn: ["Add a connection"] }),
       line({ id: 32, createdAt: LATER, text: EDITOR, turnedOn: ["Edit or test a saved connection"] }),
       line({ id: 31, text: EDITOR, turnedOn: ["Track a schema"] }),
-      line({ id: 30, text: "changed what Viewer can do", turnedOn: ["Change schedules, environments and baselines, or acknowledge drift"] }),
+      line({ id: 30, text: "changed what Viewer can do", turnedOn: ["Change schedules and baselines, or acknowledge drift"] }),
     ]);
   });
 
@@ -275,14 +275,9 @@ describe("someone removed, and the organization changed", () => {
       "renamed the organization from Acme to Acme Labs",
     ],
     [
-      "the two-person rule switched off",
-      { kind: "two-person-rule", detail: "off", ...admin },
-      "switched the two-person rule off, so production runs no longer need an approval",
-    ],
-    [
-      "the two-person rule switched on",
-      { kind: "two-person-rule", detail: "on", ...admin },
-      "switched the two-person rule on, so production deploys wait for a second person",
+      "an old row about a setting that is gone",
+      { kind: "two-person-rule" as RoleChange["kind"], detail: "off", ...admin },
+      "changed an approval setting that the app no longer has",
     ],
     [
       "the GitHub repository changed",

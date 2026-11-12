@@ -72,7 +72,6 @@ export default async function OrganizationLayout({
         <OrgProvider
           slug={principal.orgSlug}
           name={principal.orgName}
-          twoPersonRule={principal.orgTwoPersonRule}
           trial={isTrialOrg(principal.orgSlug)}
         >
           {children}

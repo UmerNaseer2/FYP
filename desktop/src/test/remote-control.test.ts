@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { approvalChallenge } from "../shared/remote/approval.js";
 import { toBase64Url } from "../shared/remote/bytes.js";
-import { CONTROL_TICKS, cancelChallenge, deployChallenge, ticksFor, type CancelTarget, type DeployTarget, type RunRisks } from "../shared/remote/control.js";
+import { cancelChallenge, deployChallenge, type CancelTarget, type DeployTarget } from "../shared/remote/control.js";
 
 const NONCE = new Uint8Array(32).map((_, index) => index * 7);
 const FINGERPRINT = "13ebe903a2fef8fc68e82206f4397b2f2318db3d42c22493f5f6185f6e12eb61";
@@ -22,18 +22,16 @@ const DEPLOY: DeployTarget = {
   targetVersion: "2.0.0",
   fingerprint: FINGERPRINT,
   step: "run",
-  ticks: ["production", "data-loss"],
+  ticks: [],
 };
 const CANCEL: CancelTarget = { connectionId: 7, pid: 4242, queryStart: "2026-10-30T09:59:48.123456Z" };
-
-const NO_RISKS: RunRisks = { production: false, breaking: [], dataLoss: [], otherScripts: [], drift: null };
 
 function sha256Of(fields: readonly unknown[]): Buffer {
   return createHash("sha256").update(JSON.stringify(fields), "utf8").digest();
 }
 
 test("a run's challenge is a SHA-256 of its label, the nonce and every field of the run", async () => {
-  const expected = sha256Of(["schema-studio control v1", Buffer.from(NONCE).toString("base64url"), "run", "deploy", 7, "public", "users_migration", "2.0.0", FINGERPRINT, "run", ["production", "data-loss"]]);
+  const expected = sha256Of(["schema-studio control v1", Buffer.from(NONCE).toString("base64url"), "run", "deploy", 7, "public", "users_migration", "2.0.0", FINGERPRINT, "run", []]);
   assert.deepEqual(Buffer.from(await deployChallenge(NONCE, DEPLOY)), expected);
 });
 
@@ -54,8 +52,8 @@ test("a run's challenge is for one nonce and one run only", async () => {
     await deployChallenge(NONCE, { ...DEPLOY, targetVersion: null }),
     await deployChallenge(NONCE, { ...DEPLOY, fingerprint: OTHER_FINGERPRINT }),
     await deployChallenge(NONCE, { ...DEPLOY, step: "ask" }),
-    await deployChallenge(NONCE, { ...DEPLOY, ticks: ["production"] }),
-    await deployChallenge(NONCE, { ...DEPLOY, ticks: ["data-loss", "production"] }),
+    // What an older phone app signed with its ticked risks is another text.
+    await deployChallenge(NONCE, { ...DEPLOY, ticks: ["data-loss"] }),
   ];
   for (const other of others) assert.notEqual(toBase64Url(other), challenge);
 });
@@ -87,19 +85,4 @@ test("a signature for one kind of thing can serve for no other", async () => {
   assert.notEqual(run, cancel);
   assert.notEqual(run, approval);
   assert.notEqual(cancel, approval);
-});
-
-test("a run with no risks needs no ticks", () => {
-  assert.deepEqual(ticksFor(NO_RISKS), []);
-});
-
-test("each risk needs its own tick, in one fixed order", () => {
-  assert.deepEqual(ticksFor({ ...NO_RISKS, production: true }), ["production"]);
-  assert.deepEqual(ticksFor({ ...NO_RISKS, breaking: ["a v1"] }), ["breaking"]);
-  assert.deepEqual(ticksFor({ ...NO_RISKS, dataLoss: ["a v1"] }), ["data-loss"]);
-  assert.deepEqual(ticksFor({ ...NO_RISKS, otherScripts: ["b v3"] }), ["other-scripts"]);
-  assert.deepEqual(ticksFor({ ...NO_RISKS, drift: "drifted" }), ["drift"]);
-  assert.deepEqual(ticksFor({ ...NO_RISKS, drift: "unreachable" }), ["drift"]);
-  const every: RunRisks = { production: true, breaking: ["a v1"], dataLoss: ["a v1"], otherScripts: ["b v3"], drift: "drifted" };
-  assert.deepEqual(ticksFor(every), CONTROL_TICKS);
 });

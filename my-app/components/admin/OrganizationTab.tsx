@@ -3,7 +3,7 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
-import { Button, Card, ConfirmDialog, Input, Label, Modal, Skeleton } from "@/components/ui";
+import { Button, Card, Input, Label, Modal, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { apiFetch } from "@/lib/api-fetch";
@@ -11,22 +11,16 @@ import { errorFrom, jsonOf } from "@/lib/api-answer";
 import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
 
 /**
- * The Organization tab on the Admin screen: the organization's name, its
- * two-person rule, and deleting it. Only the admin role has the Organization
+ * The Organization tab on the Admin screen: the organization's name, and
+ * deleting it. Only the admin role has the Organization
  * permissions (lib/permissions.ts), and app/api/admin/organization/route.ts checks
  * them again on every request.
  *
  * Renaming keeps the address. Links people saved still work, and the address
  * is shown so nobody expects it to follow the name.
  *
- * The two-person rule is off for every new organization: whoever's role allows
- * a production run just does it. While it is on, a real production run waits
- * for someone other than the person who asked for it. Switching it off again
- * drops approvals altogether, which lowers a safeguard, so it asks first. Both directions go in the change
- * log on the Roles & permissions tab.
- *
  * After a save the page is refreshed from the server, so the rest of the
- * screen (the name in the rail, the deploy pages' wording) catches up.
+ * screen (the name in the rail) catches up.
  *
  * Deleting asks for the name to be typed, because it takes every connection,
  * script, approval and member with it and can't be undone. The route says
@@ -38,7 +32,6 @@ import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
 type Organization = {
   name: string;
   slug: string;
-  twoPersonRule: boolean;
   canDelete: boolean;
 };
 
@@ -48,7 +41,6 @@ function isOrganization(value: unknown): value is Organization {
   return (
     typeof o.name === "string" &&
     typeof o.slug === "string" &&
-    typeof o.twoPersonRule === "boolean" &&
     typeof o.canDelete === "boolean"
   );
 }
@@ -64,9 +56,8 @@ export function OrganizationTab({ active }: { active: boolean }) {
   // The name field, which starts as the saved name once that has loaded.
   const [name, setName] = useState("");
   const [nameProblem, setNameProblem] = useState<string | null>(null);
-  const [saving, setSaving] = useState<"name" | "rule" | null>(null);
+  const [saving, setSaving] = useState<"name" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [confirmRuleOff, setConfirmRuleOff] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const canUpdate = can("organization:update");
@@ -99,8 +90,8 @@ export function OrganizationTab({ active }: { active: boolean }) {
 
   /** Saves one change, and shows the route's reason when it is refused. */
   async function save(
-    what: "name" | "rule",
-    changes: { name?: string; twoPersonRule?: boolean }
+    what: "name",
+    changes: { name?: string }
   ): Promise<void> {
     setSaving(what);
     setActionError(null);
@@ -119,7 +110,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
         else setActionError(reason);
         return;
       }
-      const saved = body as Pick<Organization, "name" | "slug" | "twoPersonRule">;
+      const saved = body as Pick<Organization, "name" | "slug">;
       setOrg((old) => (old ? { ...old, ...saved } : old));
       setName(saved.name);
       router.refresh();
@@ -206,31 +197,6 @@ export function OrganizationTab({ active }: { active: boolean }) {
         </form>
       </Card>
 
-      <Card className="p-4 sm:p-5">
-        <h3 className="ad-h">Two-person rule</h3>
-        <label className="mt-2 flex items-start gap-3 text-[13.5px]">
-          <input
-            type="checkbox"
-            role="switch"
-            className="mt-0.5"
-            checked={org.twoPersonRule}
-            disabled={!canUpdate || saving !== null}
-            onChange={(event) => {
-              if (event.target.checked) void save("rule", { twoPersonRule: true });
-              else setConfirmRuleOff(true);
-            }}
-          />
-          <span>
-            <span className="font-medium">Production deploys wait for a second person</span>
-            <span className="block mt-0.5" style={{ color: "var(--text-2)" }}>
-              {org.twoPersonRule
-                ? "On. Someone other than the person who asked has to approve each real production run. Dry runs never wait."
-                : "Off. Production runs go ahead without an approval. People are still asked to tick the risks first."}
-            </span>
-          </span>
-        </label>
-      </Card>
-
       {org.canDelete && can("organization:delete") && (
         <Card className="ad-dz p-4 sm:p-5">
           <h3 className="ad-h">Delete this organization</h3>
@@ -242,16 +208,6 @@ export function OrganizationTab({ active }: { active: boolean }) {
           </Button>
         </Card>
       )}
-
-      <ConfirmDialog
-        open={confirmRuleOff}
-        onClose={() => setConfirmRuleOff(false)}
-        onConfirm={() => void save("rule", { twoPersonRule: false })}
-        title="Switch the two-person rule off?"
-        description="Production runs will no longer wait for an approval. The switch goes in the change log."
-        confirmLabel="Switch off"
-        destructive
-      />
 
       {/* Its own component, so the typed name starts empty on every opening:
           Modal renders nothing while closed. */}

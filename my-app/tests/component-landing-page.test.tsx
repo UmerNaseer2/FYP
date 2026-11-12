@@ -86,7 +86,7 @@ describe("LandingPage", () => {
     );
     const features = within(screen.getByRole("region", { name: "What it does" }));
     expect(features.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
-      "Compare across environments",
+      "Compare your databases",
       "Scheduled drift checks",
       "Deploy and roll back",
       "Roles and permissions",
@@ -95,19 +95,19 @@ describe("LandingPage", () => {
     ]);
   });
 
-  it("calls the second approver a default, since an organization can switch it off", () => {
+  it("says that roles decide who may run, and that anyone else asks for approval", () => {
     render(<LandingPage {...SIGN_IN} />);
     const features = screen.getByRole("region", { name: "What it does" });
-    expect(features).toHaveTextContent("By default, production deploys wait for a second person");
-    expect(screen.getByText("Production deploys wait for a second person by default.")).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent(/with a second person signing off/);
+    expect(features).toHaveTextContent("Someone whose role may not run it asks for approval of that exact run.");
+    expect(screen.getByText("A run your role does not allow waits for an Admin.")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/second person/);
   });
 
   it("labels the made-up schema in the hero as an example", () => {
     // It shows drift and a waiting deploy, and nobody should read it as the
     // state of a real database.
     render(<LandingPage {...SIGN_IN} />);
-    const example = within(screen.getByRole("figure", { name: "Example: one schema in three environments" }));
+    const example = within(screen.getByRole("figure", { name: "Example: one schema in three databases" }));
     expect(example.getByText("Example")).toBeInTheDocument();
     for (const status of ["In sync", "Drifted", "Outdated"]) {
       expect(example.getByText(status)).toBeInTheDocument();

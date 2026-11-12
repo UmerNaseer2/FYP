@@ -32,7 +32,7 @@ export function capitalise(text: string): string {
  * A list as words: "a", "a and b", "a, b and c". Past `max` items the rest
  * are counted instead: "a, b, c, d and 3 more". When a list of three or more
  * has an item with a comma of its own, semicolons keep the items apart, so
- * "change schedules, environments and baselines, or acknowledge drift" still
+ * "change schedules and baselines, or acknowledge drift" still
  * reads as one item. Two items only ever need the "and".
  */
 export function joinList(items: readonly string[], max = 4): string {
@@ -152,7 +152,7 @@ export function glance(roleName: string, keys: readonly string[]): GlanceRow[] {
   return [
     { label: "Changes things", yes: admin || changesThings(held), detail: null },
     { label: "Runs migrations", yes: has(MIGRATIONS), detail: "where the connection allows" },
-    { label: "Approves production", yes: has(APPROVE), detail: null },
+    { label: "Approves runs", yes: has(APPROVE), detail: null },
     { label: "Manages people", yes: PEOPLE.some((key) => has(key)), detail: null },
   ];
 }

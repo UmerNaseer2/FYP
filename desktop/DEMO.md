@@ -165,9 +165,9 @@ Then, with the phone:
    Acknowledge. Settings lists both under What phones tried to change.
 7. If the phone has no passkey yet, choose Set up passkey for it on the
    computer, then set it up from Live status on the phone. Choose Deploy or
-   roll back, pick a script and a version, read its SQL, tick what it risks,
-   and sign with the passkey. On a production connection the same steps send
-   a request for approval instead. Back on Live status, choose Cancel query on
+   roll back, pick a script and a version, read its SQL and what it risks,
+   and sign with the passkey. If the role signed in on the computer may not
+   run it, the same steps send a request for approval instead. Back on Live status, choose Cancel query on
    a long query and sign. Settings lists each one. Choose Turn off control, and
    the buttons leave the phone within 5 seconds.
 

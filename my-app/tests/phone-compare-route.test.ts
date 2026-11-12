@@ -104,9 +104,9 @@ const USER_NAME = "fake-user-name";
 const PASSWORD = ["not", "a", "real", "password"].join("-");
 
 const CONNECTIONS = [
-  { id: 1, name: "Dev", host: DEV_HOST, environment: "dev" },
-  { id: 2, name: "Staging", host: STAGING_HOST, environment: "staging" },
-  { id: 3, name: "Down", host: DOWN_HOST, environment: "prod" },
+  { id: 1, name: "Dev", host: DEV_HOST },
+  { id: 2, name: "Staging", host: STAGING_HOST },
+  { id: 3, name: "Down", host: DOWN_HOST },
 ].map((connection) => ({
   ...connection,
   port: 5432,
@@ -228,7 +228,6 @@ describe("a compared target", () => {
     expect(answer.source).toEqual({
       connectionId: 1,
       name: "Dev (app)",
-      environment: "dev",
       schema: "public",
       error: null,
     });
@@ -236,7 +235,6 @@ describe("a compared target", () => {
     expect(answer.targets[0]).toMatchObject({
       connectionId: 2,
       name: "Staging (app)",
-      environment: "staging",
       schema: "public",
       status: "compared",
       error: null,

@@ -11,7 +11,7 @@ import { versionText } from "./approvals.js";
 import { countText, hasHiddenCharacters } from "./format.js";
 import { agoText } from "./live.js";
 import type { ApprovalAction } from "../shared/remote/approval.js";
-import { ticksFor, type ControlTick, type DeployStep, type RunRisks } from "../shared/remote/control.js";
+import type { DeployStep, RunRisks } from "../shared/remote/control.js";
 import type {
   CancelResult,
   DeployBlockedReason,
@@ -50,31 +50,24 @@ export function mayControl(control: LiveControl | null): boolean {
   return control !== null && control.allowed && (control.canDeploy || control.canCancel);
 }
 
-/** One box to tick, with what it is about. */
-export type RiskRow = { tick: ControlTick; text: string; labels: readonly string[] };
+/** One warning about a run, with what it is about. */
+export type RiskRow = { text: string; labels: readonly string[] };
 
-/** The risks of a run, one for each tick it needs, in the order of the ticks. */
+/** The risks of a run, as warnings to read, always in the same order. Nothing here has to be ticked, and none of it holds a run back. */
 export function riskRows(risks: RunRisks): RiskRow[] {
-  return ticksFor(risks).map((tick) => {
-    switch (tick) {
-      case "production":
-        return { tick, text: "This runs on production.", labels: [] };
-      case "breaking":
-        return { tick, text: "These scripts could break something:", labels: risks.breaking };
-      case "data-loss":
-        return { tick, text: "These scripts could lose data:", labels: risks.dataLoss };
-      case "other-scripts":
-        return { tick, text: "Other scripts ran after what this undoes:", labels: risks.otherScripts };
-      case "drift":
-        return {
-          tick,
-          text: risks.drift === "unreachable"
-            ? "The last drift check could not reach this database."
-            : "The last drift check found this schema changed outside Schema Studio.",
-          labels: [],
-        };
-    }
-  });
+  const rows: RiskRow[] = [];
+  if (risks.breaking.length > 0) rows.push({ text: "These scripts could break something:", labels: risks.breaking });
+  if (risks.dataLoss.length > 0) rows.push({ text: "These scripts could lose data:", labels: risks.dataLoss });
+  if (risks.otherScripts.length > 0) rows.push({ text: "Other scripts ran after what this undoes:", labels: risks.otherScripts });
+  if (risks.drift !== null) {
+    rows.push({
+      text: risks.drift === "unreachable"
+        ? "The last drift check could not reach this database."
+        : "The last drift check found this schema changed outside Schema Studio.",
+      labels: [],
+    });
+  }
+  return rows;
 }
 
 export const BLOCKED_TEXT: Record<DeployBlockedReason, string> = {
@@ -92,20 +85,6 @@ export function stepOf(next: DeployNext): DeployStep | null {
   return next === "ask-approval" ? "ask" : null;
 }
 
-/**
- * The risks a signature accepts. Asking changes nothing but a row in the queue,
- * so it accepts none: whoever approves it reads them, and whoever runs it after
- * that ticks them.
- */
-export function signedTicks(plan: Pick<DeployPlan, "next" | "risks">): ControlTick[] {
-  return stepOf(plan.next) === "run" ? ticksFor(plan.risks) : [];
-}
-
-/** Whether every box the signature accepts has been ticked. */
-export function allTicked(plan: Pick<DeployPlan, "next" | "risks">, ticked: ReadonlySet<ControlTick>): boolean {
-  return signedTicks(plan).every((tick) => ticked.has(tick));
-}
-
 /** The words on the passkey button, or null when this run has no next step here. */
 export function stepButton(next: DeployNext, action: ApprovalAction): string | null {
   if (next === "run" || next === "run-approved") return action === "revert" ? "Roll back with passkey" : "Deploy with passkey";
@@ -120,7 +99,7 @@ export function stepText(plan: Pick<DeployPlan, "next" | "blockedReason">): stri
     case "run-approved":
       return "This exact run has been approved. Signing with the passkey starts it.";
     case "ask-approval":
-      return "This is production, so someone else has to approve it. Signing with the passkey sends them the request, and nothing changes yet.";
+      return "The role signed in on the computer may not run this, so an Admin has to approve this exact run. Signing with the passkey sends the request, and nothing changes yet.";
     case "waiting":
       return "A request for exactly this run is waiting for someone to decide it.";
     case "blocked":
@@ -134,7 +113,7 @@ export function startStatusText(status: DeployStartStatus, action: ApprovalActio
     case "done":
       return action === "revert" ? "Rolled back." : "Deployed.";
     case "sent-for-approval":
-      return "Sent for approval. Someone else has to approve it before it can run.";
+      return "Sent for approval. An Admin has to approve it before it can run.";
     case "running":
       return "Still running on the computer. Come back to this script to see how it ended.";
     case "not-applied":

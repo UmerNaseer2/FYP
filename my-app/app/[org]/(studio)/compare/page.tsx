@@ -10,7 +10,6 @@ import {
   type CSSProperties,
 } from "react";
 import { useSearchParams } from "next/navigation";
-import { isProduction, toEnvironment, type Environment } from "@/lib/environments";
 import {
   pickSchemaAfterConnectionChange,
   selectionToQuery,
@@ -40,7 +39,6 @@ import { HelpHint } from "@/components/ui/HelpHint";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Select } from "@/components/ui/Select";
-import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import {
   CompareIcon,
   AlertTriangleIcon,
@@ -105,7 +103,6 @@ function SlotPicker({
   selectedConnectionId,
   schemaOptions,
   selectedSchema,
-  environment,
   missingMessage,
   onDirtyChange,
 }: {
@@ -118,7 +115,6 @@ function SlotPicker({
   selectedConnectionId: string;
   schemaOptions: string[];
   selectedSchema: string;
-  environment: Environment;
   /** Why this side has no connection to read, or null when it has one. */
   missingMessage: string | null;
   /** Told whether the picks now differ from what the comparison on screen used. */
@@ -172,13 +168,6 @@ function SlotPicker({
     }
   }
 
-  const picked = connections.find((connection) => String(connection.id) === connectionId);
-  // The server's answer until somebody picks another connection; after that
-  // the picked connection's own label, because the server has not seen it yet.
-  const shownEnvironment =
-    connectionId === selectedConnectionId || !picked
-      ? environment
-      : toEnvironment(picked.environment);
   // A schema the list does not contain, typed into a URL, or kept after a
   // listing failed, still shows, so the box never looks empty while it
   // would submit something.
@@ -188,7 +177,6 @@ function SlotPicker({
     <div className="cp-pick">
       <div className="cp-pick__role">
         <span>{role}</span>
-        <EnvironmentPill environment={shownEnvironment} />
         {/* The pill is one word of jargon. A title alone reaches neither a
             screen reader nor a touch device, so the name goes on the element. */}
         <span
@@ -304,7 +292,6 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
   // "unreachable", which would point the reader at a network that is fine.
   const failed = outcomes.filter((o) => o.failure === "failed").length;
   const sameAsSource = outcomes.filter((o) => o.sameAsSource).length;
-  const production = outcomes.filter((o) => isProduction(o.environment)).length;
 
   return (
     <div className="cp-run-summary">
@@ -337,11 +324,6 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
       {duplicates > 0 && (
         <span className="pill pill-neutral">
           {duplicates} duplicate{duplicates === 1 ? "" : "s"}
-        </span>
-      )}
-      {production > 0 && (
-        <span className="pill pill-break">
-          {production} production
         </span>
       )}
     </div>
@@ -588,10 +570,6 @@ function CompareScreenView({ query }: { query: string }) {
     asked,
   } = screen;
 
-  const productionTargets = outcomes.filter((outcome) =>
-    isProduction(outcome.environment),
-  );
-
   // What the boxes show, versus what the comparison on screen was actually run
   // with. They differ only while a tick is waiting for the next Compare.
   const dataLossBox = pendingDataLoss ?? allowDataLoss;
@@ -694,7 +672,6 @@ function CompareScreenView({ query }: { query: string }) {
                 }
                 schemaOptions={source.schemaOptions}
                 selectedSchema={source.schema}
-                environment={source.environment}
                 missingMessage={source.missingMessage}
                 onDirtyChange={reportDirty}
               />
@@ -744,7 +721,6 @@ function CompareScreenView({ query }: { query: string }) {
                     }
                     schemaOptions={slot.schemaOptions}
                     selectedSchema={slot.schema}
-                    environment={slot.environment}
                     missingMessage={slot.missingMessage}
                     onDirtyChange={reportDirty}
                   />
@@ -895,31 +871,6 @@ function CompareScreenView({ query }: { query: string }) {
       )}
 
       <div className="cp-results">
-        {/* A production target is worth saying once at the top, before the
-            reader scrolls into a workbench with a "push to registry" button
-            in it. */}
-        {productionTargets.length > 0 && (
-          <div className="warn-inline">
-            <span className="ico">
-              <AlertTriangleIcon size={14} />
-            </span>
-            <span>
-              <b>
-                {productionTargets.length === 1
-                  ? "One target is production"
-                  : `${productionTargets.length} targets are production`}
-                :
-              </b>{" "}
-              {productionTargets
-                .map((outcome) => `${outcome.displayName}.${outcome.schema}`)
-                .join(", ")}
-              . Read the generated SQL before you push it. Once it runs on
-              production, a dropped column comes back only from a point-in-time
-              restore of the database, not from this app.
-            </span>
-          </div>
-        )}
-
         {/* A source we cannot read blocks every target, so it is reported once. */}
         {sourceError && (
           <div className="card cp-state cp-state--inline">
@@ -952,7 +903,6 @@ function CompareScreenView({ query }: { query: string }) {
                 <h2 className="cp-h2">
                   {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
                 </h2>
-                <EnvironmentPill environment={outcome.environment} />
                 {outcome.delta ? (
                   <span className="cp-outcome__count">
                     <b>{outcome.delta.total}</b> change
@@ -1017,32 +967,6 @@ function CompareScreenView({ query }: { query: string }) {
                 </div>
               ) : outcome.report && diffDoc ? (
                 <>
-                  {isProduction(outcome.environment) && (
-                    <div className="warn-inline">
-                      <span className="ico">
-                        <AlertTriangleIcon size={14} />
-                      </span>
-                      {/* Nothing on /compare can reach the target database. The
-                          only mutating request here is the push to the GitHub
-                          registry. Saying "rewrites production" put the alarm
-                          one screen too early and made the real one, on Deploy,
-                          look like a repeat. */}
-                      <span>
-                        <b>This target is production.</b> Nothing on this screen
-                        touches it. Push to GitHub writes the SQL to the registry.
-                        Someone still has to run it from Deploy, and when they do it
-                        rewrites{" "}
-                        <span className="mono">
-                          {outcome.displayName}.{outcome.schema}
-                        </span>
-                        {outcome.counts.breaking > 0
-                          ? ` with ${outcome.counts.breaking} breaking statement${
-                              outcome.counts.breaking === 1 ? "" : "s"
-                            }.`
-                          : "."}
-                      </span>
-                    </div>
-                  )}
 
                   {/* Before the diff, because it can change what the diff MEANS:
                       if the target declares the higher version, the script on

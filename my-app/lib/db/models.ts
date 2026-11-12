@@ -7,7 +7,6 @@ import {
   type CreationOptional,
 } from "sequelize";
 import { sequelize } from "./sequelize";
-import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connection-access";
@@ -31,8 +30,6 @@ import { ROLE_CHANGE_KINDS } from "../permissions";
  *     `requested_at` — and the database supplies the default.
  */
 
-/** The environment labels, as Sequelize's ENUM-by-validation sees them. */
-const ENVIRONMENT_VALUES = [...ENVIRONMENTS];
 
 /**
  * "The time this row was written", written into the table as a real default.
@@ -106,18 +103,6 @@ export class Organization extends Model<
   declare slug: string;
   /** What the screens show: "Acme Labs". */
   declare name: string;
-  /**
-   * Whether a production deploy needs a second person to approve it. Off
-   * unless an Admin switches it on: by default whoever's role allows an
-   * action just does it.
-   */
-  declare require_approvals: CreationOptional<boolean>;
-  /**
-   * The old switch, on by default. No longer read: require_approvals took its
-   * place, so every organization started with approvals off. Kept so an older
-   * build pointed at the same database still finds it.
-   */
-  declare two_person_rule: CreationOptional<boolean>;
   /** The desktop app's own organization, kept on that one computer. */
   declare personal: CreationOptional<boolean>;
   /**
@@ -140,8 +125,6 @@ Organization.init(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     slug: { type: DataTypes.TEXT, allowNull: false, unique: true },
     name: { type: DataTypes.TEXT, allowNull: false },
-    require_approvals: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-    two_person_rule: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     personal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     is_default: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     site_role: { type: DataTypes.JSONB, allowNull: true },
@@ -183,7 +166,6 @@ export class Connection extends Model<
   /** Superseded by ssl_mode; kept in step so an older build still reads right. */
   declare ssl: CreationOptional<boolean>;
   declare ssl_mode: CreationOptional<string>;
-  declare environment: CreationOptional<string>;
   /**
    * The table on THIS database that names which applications it hosts, as
    * "schema.table" or a bare table name in the schema being deployed to. Null
@@ -201,10 +183,9 @@ export class Connection extends Model<
    * "admin". See lib/connection-access.ts for the rule and for why "none" is
    * not simply the weakest of the three.
    *
-   * Spec feature 02's "execution permission control": the environment label
-   * next to it only makes the screen shout, and a role on its own says nothing
-   * about which database is on the other end. This is the pair of them —
-   * a person's rank, checked against this particular target.
+   * Spec feature 02's "execution permission control": a role on its own says
+   * nothing about which database is on the other end. This is the pair of
+   * them: a person's rank, checked against this particular target.
    */
   declare execute_role: CreationOptional<string>;
   declare created_at: CreationOptional<Date>;
@@ -260,12 +241,6 @@ Connection.init(
       allowNull: false,
       defaultValue: "disable",
       validate: { isIn: [["disable", "require", "verify-full"]] },
-    },
-    environment: {
-      type: DataTypes.TEXT,
-      allowNull: false,
-      defaultValue: DEFAULT_ENVIRONMENT,
-      validate: { isIn: [ENVIRONMENT_VALUES] },
     },
     application_table: { type: DataTypes.TEXT, allowNull: true },
     execute_role: {
@@ -953,8 +928,8 @@ AgentLinkRow.init(
 );
 
 /**
- * The connections a linked computer shares: a name and an environment, because
- * that is all a person needs to pick one. Never a host, a user or a password,
+ * The connections a linked computer shares: only a name, because that is all
+ * a person needs to pick one. Never a host, a user or a password,
  * which stay on the computer. local_id is the computer's own number for it.
  */
 export class AgentConnectionRow extends Model<
@@ -965,7 +940,6 @@ export class AgentConnectionRow extends Model<
   declare agent_id: number;
   declare local_id: number;
   declare name: string;
-  declare environment: string;
   /**
    * Whether its person picked it for the phone. Only shared ones can be asked
    * about; the rest are listed on the website's Connections page for their owner.
@@ -989,7 +963,6 @@ AgentConnectionRow.init(
     },
     local_id: { type: DataTypes.INTEGER, allowNull: false },
     name: { type: DataTypes.TEXT, allowNull: false },
-    environment: { type: DataTypes.TEXT, allowNull: false },
     shared: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     drift: { type: DataTypes.JSONB, allowNull: true },
   },
@@ -1228,7 +1201,6 @@ export class TrackedSchema extends Model<
   declare connection_id: number;
   declare schema_name: string;
   declare label: CreationOptional<string | null>;
-  declare environment: CreationOptional<string>;
   /**
    * How often the scheduler re-checks this schema for drift, in minutes.
    * 0 means never — the schema is checked only when somebody presses the
@@ -1255,12 +1227,6 @@ TrackedSchema.init(
     connection_id: { type: DataTypes.INTEGER, allowNull: false },
     schema_name: { type: DataTypes.TEXT, allowNull: false },
     label: { type: DataTypes.TEXT, allowNull: true },
-    environment: {
-      type: DataTypes.TEXT,
-      allowNull: false,
-      defaultValue: DEFAULT_ENVIRONMENT,
-      validate: { isIn: [ENVIRONMENT_VALUES] },
-    },
     drift_check_interval_minutes: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -1916,7 +1882,7 @@ ComparisonRun.init(
 );
 
 // ---------------------------------------------------------------------------
-// The production gate.
+// The approval gate.
 // ---------------------------------------------------------------------------
 
 export class DeployApproval extends Model<
@@ -1938,7 +1904,7 @@ export class DeployApproval extends Model<
   declare status: CreationOptional<string>;
   declare decided_by: CreationOptional<string | null>;
   declare decided_at: CreationOptional<Date | null>;
-  /** Set only while the auth bypass is on, when the two-person rule cannot be met. */
+  /** Set only while the auth bypass is on, when nobody else could decide. */
   declare self_approved: CreationOptional<boolean>;
   declare note: CreationOptional<string | null>;
   declare used_at: CreationOptional<Date | null>;
@@ -2011,7 +1977,7 @@ DeployApproval.init(
     sequelize,
     tableName: "deploy_approvals",
     // Finding the approval that covers a run is the hot path — the apply route
-    // does it on every production deploy.
+    // does it for every run that needs an approval.
     indexes: [
       {
         name: "deploy_approvals_target_idx",

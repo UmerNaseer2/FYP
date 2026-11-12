@@ -18,7 +18,7 @@ import { AiTab } from "@/components/admin/AiTab";
 /**
  * The Admin screen: who is in this organization (Users), what each role can do
  * in it (Roles & permissions), the organization itself (Organization: its
- * name, its two-person rule, deleting it), and where its scripts are kept
+ * name, deleting it), and where its scripts are kept
  * (GitHub: the repository and its access token), and whether AI assistance
  * is on (AI). Each tab lives in its own file
  * under components/admin, and this page only decides which tabs to show.

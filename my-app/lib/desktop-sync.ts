@@ -19,7 +19,6 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { checkConnectionTarget } from "@/lib/connection-config";
 import { toSslMode, sslModeUsesTls } from "@/lib/connection-validate";
-import { toEnvironment } from "@/lib/environments";
 import { toExecuteRole } from "@/lib/connection-access";
 import { decryptSecret, encryptSecret } from "@/lib/secret-store";
 import { listOwnDrift } from "@/lib/drift-sync";
@@ -56,7 +55,6 @@ export type SiteCopy = {
   password: string;
   connection_string: string;
   ssl_mode: string;
-  environment: string;
   application_table: string | null;
   execute_role: string;
   version: number;
@@ -120,7 +118,6 @@ export function readSiteCopy(value: unknown): SiteCopy | null {
     password,
     connection_string: connectionString,
     ssl_mode: toSslMode(value.ssl_mode),
-    environment: toEnvironment(value.environment),
     application_table: table,
     execute_role: toExecuteRole(value.execute_role),
     version,
@@ -167,7 +164,6 @@ export async function applySiteCopies(orgId: number, list: SiteCopy[]): Promise<
       encryptSecret(copy.connection_string) || null,
       sslModeUsesTls(toSslMode(copy.ssl_mode)),
       copy.ssl_mode,
-      copy.environment,
       copy.application_table,
       copy.execute_role,
       copy.version,
@@ -179,19 +175,19 @@ export async function applySiteCopies(orgId: number, list: SiteCopy[]): Promise<
     const updated = await pool.query(
       `UPDATE connections SET
          name = $1, host = $2, port = $3, database_name = $4, type = $5, username = $6,
-         password = $7, connection_string = $8, ssl = $9, ssl_mode = $10, environment = $11,
-         application_table = $12, execute_role = $13, version = $14, site_version = $14,
-         updated_at = $15, updated_by = $16
-       WHERE site_id = $17 AND org_id = $18`,
+         password = $7, connection_string = $8, ssl = $9, ssl_mode = $10,
+         application_table = $11, execute_role = $12, version = $13, site_version = $13,
+         updated_at = $14, updated_by = $15
+       WHERE site_id = $16 AND org_id = $17`,
       values
     );
     if (!updated.rowCount) {
       await pool.query(
         `INSERT INTO connections
            (name, host, port, database_name, type, username, password, connection_string,
-            ssl, ssl_mode, environment, application_table, execute_role, version, site_version,
+            ssl, ssl_mode, application_table, execute_role, version, site_version,
             updated_at, updated_by, site_id, org_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16,$17,$18)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16,$17)`,
         values
       );
     }
@@ -204,17 +200,17 @@ export async function applySiteCopies(orgId: number, list: SiteCopy[]): Promise<
   return { kept: kept.length, skipped };
 }
 
-export type OwnConnection = { id: number; name: string; environment: string; drift?: SyncedDriftSchema[] };
+export type OwnConnection = { id: number; name: string; drift?: SyncedDriftSchema[] };
 
 /**
  * This computer's own connections: what the website lists as "On <computer>".
- * Names and environments only, and the drift results of the schemas watched on
+ * Names only, and the drift results of the schemas watched on
  * each, so their owner sees those on the website too.
  */
 export async function listOwnConnections(orgId: number): Promise<OwnConnection[]> {
   await syncMetadataTables();
-  const { rows } = await pool.query<{ id: number; name: string; environment: string }>(
-    `SELECT id, name, environment FROM connections WHERE org_id = $1 AND site_id IS NULL ORDER BY id`,
+  const { rows } = await pool.query<{ id: number; name: string }>(
+    `SELECT id, name FROM connections WHERE org_id = $1 AND site_id IS NULL ORDER BY id`,
     [orgId]
   );
   // The results are extra. A list without them still keeps the website's list of this computer's connections right.
@@ -238,7 +234,7 @@ export async function listOwnConnections(orgId: number): Promise<OwnConnection[]
   }
   return rows.map((row) => {
     const id = Number(row.id);
-    const own: OwnConnection = { id, name: row.name, environment: toEnvironment(row.environment) };
+    const own: OwnConnection = { id, name: row.name };
     if (byConnection !== null) own.drift = byConnection.get(id) ?? [];
     return own;
   });
@@ -261,12 +257,11 @@ export async function exportOwnConnection(orgId: number, id: number): Promise<Re
     password: string | null;
     connection_string: string | null;
     ssl_mode: string;
-    environment: string;
     application_table: string | null;
     execute_role: string;
   }>(
     `SELECT name, host, port, database_name, type, username, password, connection_string,
-            ssl_mode, environment, application_table, execute_role
+            ssl_mode, application_table, execute_role
        FROM connections WHERE id = $1 AND org_id = $2 AND site_id IS NULL`,
     [id, orgId]
   );
@@ -282,7 +277,6 @@ export async function exportOwnConnection(orgId: number, id: number): Promise<Re
     password: decryptSecret(row.password) ?? "",
     connection_string: decryptSecret(row.connection_string) ?? "",
     ssl_mode: row.ssl_mode,
-    environment: row.environment,
     application_table: row.application_table,
     execute_role: row.execute_role,
   };

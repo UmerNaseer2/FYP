@@ -34,7 +34,7 @@
  */
 import { isFingerprint, type ApprovalAction, type ApprovalDecision, type ApprovalScript } from "./approval.js";
 import { fromBase64Url, fromBase64UrlOfLength, utf8, type Bytes } from "./bytes.js";
-import { CONTROL_TICKS, type ControlTick, type DeployStep, type RunRisks } from "./control.js";
+import type { DeployStep, RunRisks } from "./control.js";
 import { hasExactly, objectFields, readJsonObject } from "./json.js";
 
 /** The biggest request a phone may send. The biggest the limits below allow, setting up a passkey (passkey.finish), is under 12 KB. */
@@ -68,10 +68,6 @@ const MAX_QUERY_START_LENGTH = 32;
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 /** How long the computer's public push key is: a P-256 point, written out whole. */
 const PUSH_PUBLIC_KEY_BYTES = 65;
-
-/** A connection's environment, as the app labels it (my-app/lib/environments.ts). */
-export type Environment = "unset" | "dev" | "staging" | "prod";
-const ENVIRONMENTS: readonly Environment[] = ["unset", "dev", "staging", "prod"];
 
 /** A schema in one of the computer's saved connections. */
 export type SchemaRef = {
@@ -218,7 +214,6 @@ export type DeployPlan = {
   schemaName: string;
   scriptName: string;
   targetVersion: string | null;
-  environment: Environment;
   partial: boolean;
   /** The app's fingerprint of `scripts`. The phone works it out again before it lets anyone sign. */
   fingerprint: string;
@@ -231,14 +226,15 @@ export type DeployPlan = {
 };
 
 /**
- * Takes the next step of a run, signed. `ticks` are the risks the person
- * accepted, and the computer passes on no others. Asking for approval needs
- * none, because a request changes nothing but a row in a queue.
+ * Takes the next step of a run, signed. `ticks` is always empty now: the phone
+ * shows a run's risks as plain warnings, with nothing to tick. An older phone
+ * app listed the risks its person had ticked, as part of what it signed, so
+ * the computer still reads them, only to check that signature.
  */
 export type DeployStartParams = DeployPlanParams & {
   fingerprint: string;
   step: DeployStep;
-  ticks: ControlTick[];
+  ticks: string[];
   assertion: PasskeySignature;
 };
 
@@ -279,7 +275,6 @@ export type HelloResult = {
 export type SharedConnection = {
   id: number;
   name: string;
-  environment: Environment;
   /** The database's name on its server. */
   database: string;
 };
@@ -329,7 +324,6 @@ export type ComparedSide = {
   connectionId: number | null;
   /** The name the Compare screen shows for it. */
   name: string;
-  environment: Environment;
   schema: string;
 };
 
@@ -804,7 +798,8 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
     }
     case "deploy.start": {
       const { connectionId, schemaName, scriptName, action, targetVersion, fingerprint, step } = params;
-      if (!hasExactly(params, "connectionId", "schemaName", "scriptName", "action", "targetVersion", "fingerprint", "step", "ticks", "assertion")) return null;
+      const startFields = ["connectionId", "schemaName", "scriptName", "action", "targetVersion", "fingerprint", "step", "assertion"];
+      if (!hasExactly(params, ...startFields) && !hasExactly(params, ...startFields, "ticks")) return null;
       if (!isPositiveInteger(connectionId) || !isSchemaName(schemaName) || !isScriptText(scriptName)) return null;
       if (!isApprovalAction(action) || (targetVersion !== null && !isScriptText(targetVersion))) return null;
       if (!isFingerprint(fingerprint) || (step !== "run" && step !== "ask")) return null;
@@ -995,9 +990,9 @@ function readConnectionList(value: unknown): ConnectionList | null {
 function readSharedConnection(value: unknown): SharedConnection | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { id, name, environment, database } = fields;
-  if (!isPositiveInteger(id) || typeof name !== "string" || !isEnvironment(environment) || typeof database !== "string") return null;
-  return { id, name, environment, database };
+  const { id, name, database } = fields;
+  if (!isPositiveInteger(id) || typeof name !== "string" || typeof database !== "string") return null;
+  return { id, name, database };
 }
 
 function readSchemaList(value: unknown): SchemaList | null {
@@ -1063,9 +1058,9 @@ function readCompareSummary(value: unknown): CompareSummary | null {
 
 /** The fields both sides of a comparison have, from an object that has them. */
 function readComparedSide(fields: Record<string, unknown>): ComparedSide | null {
-  const { connectionId, name, environment, schema } = fields;
-  if (!isPositiveIntegerOrNull(connectionId) || typeof name !== "string" || !isEnvironment(environment) || typeof schema !== "string") return null;
-  return { connectionId, name, environment, schema };
+  const { connectionId, name, schema } = fields;
+  if (!isPositiveIntegerOrNull(connectionId) || typeof name !== "string" || typeof schema !== "string") return null;
+  return { connectionId, name, schema };
 }
 
 function readSourceSummary(value: unknown): SourceSummary | null {
@@ -1181,10 +1176,11 @@ function copyAssertion({ credentialId, authenticatorData, clientDataJSON, signat
   return { credentialId, authenticatorData, clientDataJSON, signature };
 }
 
-/** The risks accepted in a request: words this file knows, each at most once. */
-function readTicks(value: unknown): ControlTick[] | null {
-  const ticks = readEach(value, (item) => (isControlTick(item) ? item : null));
-  return ticks !== null && new Set(ticks).size === ticks.length ? ticks : null;
+/** What an older phone app signed as its ticked risks: a few short words, each at most once. None when the field is left out. */
+function readTicks(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  const ticks = readEach(value, (item) => (typeof item === "string" && /^[a-z-]{1,20}$/.test(item) ? item : null));
+  return ticks !== null && ticks.length <= 8 && new Set(ticks).size === ticks.length ? ticks : null;
 }
 
 function readDeployList(value: unknown): DeployList | null {
@@ -1232,26 +1228,26 @@ function readDeployRun(value: unknown): DeployRun | null {
 function readDeployPlan(value: unknown): DeployPlan | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { action, connectionId, schemaName, scriptName, targetVersion, environment, partial, fingerprint, next, blockedReason, passkey } = fields;
+  const { action, connectionId, schemaName, scriptName, targetVersion, partial, fingerprint, next, blockedReason, passkey } = fields;
   if (!isApprovalAction(action) || !isPositiveInteger(connectionId) || typeof schemaName !== "string" || typeof scriptName !== "string" || !isTextOrNull(targetVersion)) return null;
-  if (!isEnvironment(environment) || typeof partial !== "boolean" || !isFingerprint(fingerprint)) return null;
+  if (typeof partial !== "boolean" || !isFingerprint(fingerprint)) return null;
   if (!isDeployNext(next) || (blockedReason !== null && !isDeployBlockedReason(blockedReason)) || !isPasskeyState(passkey)) return null;
   const scripts = readEach(fields.scripts, readApprovalScript);
   const risks = readRunRisks(fields.risks);
   if (scripts === null || risks === null) return null;
-  return { action, connectionId, schemaName, scriptName, targetVersion, environment, partial, fingerprint, scripts, risks, next, blockedReason, passkey };
+  return { action, connectionId, schemaName, scriptName, targetVersion, partial, fingerprint, scripts, risks, next, blockedReason, passkey };
 }
 
 function readRunRisks(value: unknown): RunRisks | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { production, drift } = fields;
+  const { drift } = fields;
   const breaking = readEach(fields.breaking, readText);
   const dataLoss = readEach(fields.dataLoss, readText);
   const otherScripts = readEach(fields.otherScripts, readText);
-  if (typeof production !== "boolean" || breaking === null || dataLoss === null || otherScripts === null) return null;
+  if (breaking === null || dataLoss === null || otherScripts === null) return null;
   if (drift !== null && drift !== "drifted" && drift !== "unreachable") return null;
-  return { production, breaking, dataLoss, otherScripts, drift };
+  return { breaking, dataLoss, otherScripts, drift };
 }
 
 function readDeployStartResult(value: unknown): DeployStartResult | null {
@@ -1389,7 +1385,6 @@ function oneOf<T extends string>(choices: readonly T[]): (value: unknown) => val
   return (value): value is T => choices.some((choice) => choice === value);
 }
 
-const isEnvironment = oneOf(ENVIRONMENTS);
 const isTargetStatus = oneOf(TARGET_STATUSES);
 const isChangeKind = oneOf(CHANGE_KINDS);
 const isSeverity = oneOf(SEVERITIES);
@@ -1400,7 +1395,6 @@ const isLiveSessionKind = oneOf(LIVE_SESSION_KINDS);
 const isHealthLevel = oneOf(HEALTH_LEVELS);
 const isDriftStatus = oneOf(DRIFT_STATUSES);
 const isLiveProblem = oneOf(LIVE_PROBLEMS);
-const isControlTick = oneOf(CONTROL_TICKS);
 const DEPLOY_REGISTRIES: readonly DeployRegistry[] = ["ok", "unconfigured", "unreachable"];
 const isDeployRegistry = oneOf(DEPLOY_REGISTRIES);
 const DEPLOY_RUN_STATES: readonly DeployRunState[] = ["running", "done", "not-applied", "unknown"];

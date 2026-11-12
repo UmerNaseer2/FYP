@@ -7,14 +7,14 @@ import { deleteOrganization, updateOrganization } from "@/lib/orgs-db";
 /**
  * The caller's organization itself, from the Organization tab on the Admin
  * screen. All three need an Organization permission, which only the admin
- * role has (lib/permissions.ts), so nobody can rename, loosen or delete an
+ * role has (lib/permissions.ts), so nobody can rename or delete an
  * organization from a role an Admin made.
  *
- * GET says its name, its address and whether its two-person rule is on.
+ * GET says its name and its address.
  *
- * PATCH renames it, switches the rule, or both. The address stays as it is
- * (see updateOrganization in lib/orgs-db.ts). Each change goes in the change
- * log on the Roles & permissions tab.
+ * PATCH renames it. The address stays as it is (see updateOrganization in
+ * lib/orgs-db.ts). The change goes in the change log on the Roles &
+ * permissions tab.
  *
  * DELETE deletes it and everything it owns, once the body's `confirm` is its
  * name exactly as it is now. It is refused in two places:
@@ -36,11 +36,10 @@ export async function GET() {
   const gate = await requirePermission("organization:read");
   if (!gate.ok) return gate.response;
 
-  const { orgName, orgSlug, orgTwoPersonRule, orgIsDefault, bypass } = gate.principal;
+  const { orgName, orgSlug, orgIsDefault, bypass } = gate.principal;
   return NextResponse.json({
     name: orgName,
     slug: orgSlug,
-    twoPersonRule: orgTwoPersonRule,
     // So the tab draws no Delete that could only be refused.
     canDelete: !orgIsDefault && !bypass && !onDesktop(),
   });
@@ -55,34 +54,22 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
   }
 
-  const changes: { name?: string; twoPersonRule?: boolean } = {};
+  const changes: { name?: string } = {};
   if (fields.name !== undefined) {
     const name = cleanOrgName(typeof fields.name === "string" ? fields.name : "");
     const problem = orgNameProblem(name);
     if (problem) return NextResponse.json({ error: problem, field: "name" }, { status: 400 });
     changes.name = name;
   }
-  if (fields.twoPersonRule !== undefined) {
-    if (typeof fields.twoPersonRule !== "boolean") {
-      return NextResponse.json(
-        { error: "Say whether the two-person rule is on (true) or off (false).", field: "twoPersonRule" },
-        { status: 400 }
-      );
-    }
-    changes.twoPersonRule = fields.twoPersonRule;
-  }
-  if (changes.name === undefined && changes.twoPersonRule === undefined) {
-    return NextResponse.json(
-      { error: "Say what to change: the name, the two-person rule, or both." },
-      { status: 400 }
-    );
+  if (changes.name === undefined) {
+    return NextResponse.json({ error: "Say what to change: the name." }, { status: 400 });
   }
 
   try {
     const updated = await updateOrganization(gate.principal.orgId, changes, actorFor(gate.principal));
     if (updated.kind === "not-found") return gone();
-    const { name, slug, twoPersonRule } = updated.organization;
-    return NextResponse.json({ name, slug, twoPersonRule });
+    const { name, slug } = updated.organization;
+    return NextResponse.json({ name, slug });
   } catch (error) {
     console.error("Failed to update the organization:", error);
     return unavailable("Could not save the change.");

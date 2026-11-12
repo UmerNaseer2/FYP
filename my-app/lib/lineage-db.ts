@@ -12,7 +12,6 @@ import type { CompareReport } from "./compare-types";
 import { summarizeStructuralSeverity, type ChangeLevel } from "./version-detection";
 import { listSetNamesUsingConnection } from "./comparison-sets";
 import pool, { syncMetadataTables } from "./version-db";
-import { toEnvironment, type Environment } from "./environments";
 import { snapshotFormatGap, type SnapshotFormatGap } from "./snapshot-format";
 import { normalizeDriftInterval } from "./drift-schedule";
 import { toDriftSource, type DriftSource } from "./drift-source";
@@ -53,12 +52,6 @@ export type TrackedSchemaRow = {
   connection_id: number;
   schema_name: string;
   label: string | null;
-  /**
-   * dev / staging / prod for this specific schema. Seeded from the connection
-   * when the schema is first tracked, but stored separately: one server can
-   * legitimately host a staging schema and a production one.
-   */
-  environment: Environment;
   created_at: string;
 };
 
@@ -109,8 +102,6 @@ export type TrackedSchemaHead = {
   headVersion: string | null;
   /** Latest drift result, null until a drift check has run. */
   driftStatus: DriftStatus | null;
-  /** dev / staging / prod — what lets Compare warn before touching this one. */
-  environment: Environment;
 };
 
 /** The (connection, schema) pair a caller wants a lineage head for. */
@@ -145,7 +136,6 @@ export async function findTrackedSchemas(
     connection_id: number;
     schema_name: string;
     id: number;
-    environment: string | null;
     head_version: string | null;
     drift_status: DriftStatus | null;
   }>(
@@ -153,7 +143,6 @@ export async function findTrackedSchemas(
        ts.connection_id,
        ts.schema_name,
        ts.id,
-       c.environment,
        head.version AS head_version,
        drift.status AS drift_status
      FROM unnest($1::int[], $2::text[]) AS want(connection_id, schema_name)
@@ -180,7 +169,6 @@ export async function findTrackedSchemas(
       trackedSchemaId: row.id,
       headVersion: row.head_version,
       driftStatus: row.drift_status,
-      environment: toEnvironment(row.environment),
     });
   }
   return found;
@@ -446,7 +434,6 @@ export type LineageDetail = {
   trackedSchemaId: number;
   schemaName: string;
   label: string | null;
-  environment: Environment;
   createdAt: string;
   connection: LineageConnection | null;
   headSeq: number | null;
@@ -541,7 +528,6 @@ export async function getLineageDetail(
     id: number;
     schema_name: string;
     label: string | null;
-    environment: string | null;
     drift_check_interval_minutes: number | null;
     created_at: string;
     connection_id: number;
@@ -552,7 +538,7 @@ export async function getLineageDetail(
     connection_type: string | null;
   }>(
     `SELECT
-       ts.id, ts.schema_name, ts.label, c.environment, ts.created_at, ts.connection_id,
+       ts.id, ts.schema_name, ts.label, ts.created_at, ts.connection_id,
        ts.drift_check_interval_minutes,
        c.name          AS connection_name,
        c.host          AS connection_host,
@@ -648,7 +634,6 @@ export async function getLineageDetail(
     trackedSchemaId: ts.id,
     schemaName: ts.schema_name,
     label: ts.label,
-    environment: toEnvironment(ts.environment),
     createdAt: ts.created_at,
     connection,
     headSeq: migrations.length > 0 ? migrations[0].seq : null,
@@ -714,7 +699,6 @@ export type ExpectedRef = {
 type DriftSubject = {
   schemaName: string;
   label: string | null;
-  environment: Environment;
   connection: LineageConnection | null;
   /**
    * How often the scheduler re-checks this schema, in minutes; 0 is manual
@@ -780,7 +764,6 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
 type TrackedConnRow = {
   schema_name: string;
   label: string | null;
-  environment: string | null;
   connection_id: number;
   connection_name: string | null;
   host: string | null;
@@ -810,7 +793,7 @@ export async function computeDriftDetail(
   await syncMetadataTables();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
-       ts.schema_name, ts.label, c.environment, ts.connection_id,
+       ts.schema_name, ts.label, ts.connection_id,
        ts.drift_check_interval_minutes,
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
        c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
@@ -836,7 +819,6 @@ export async function computeDriftDetail(
   const subject: DriftSubject = {
     schemaName: t.schema_name,
     label: t.label,
-    environment: toEnvironment(t.environment),
     connection,
     driftIntervalMinutes: normalizeDriftInterval(t.drift_check_interval_minutes),
   };
@@ -962,7 +944,6 @@ export type DriftDetailView = {
   trackedSchemaId: number;
   schemaName: string;
   label: string | null;
-  environment: Environment;
   connection: LineageConnection | null;
   /** The lineage entry the live structure was compared against. */
   expected: ExpectedRef;
@@ -1020,7 +1001,6 @@ export async function getDriftDetail(
     trackedSchemaId,
     schemaName: comp.schemaName,
     label: comp.label,
-    environment: comp.environment,
     connection: comp.connection,
     driftIntervalMinutes: comp.driftIntervalMinutes,
     lastRecorded,
@@ -1149,12 +1129,6 @@ export type TrackedSchemaListItem = {
   connectionId: number;
   schemaName: string;
   label: string | null;
-  /**
-   * dev / staging / prod for this schema. Read through toEnvironment, so rows
-   * written before the column existed come back "unset" rather than looking
-   * like a target somebody has actually vouched for.
-   */
-  environment: Environment;
   createdAt: string;
   /** Null when the underlying connection has been deleted. */
   connectionName: string | null;
@@ -1197,7 +1171,6 @@ type TrackedListRow = {
   connection_id: number;
   schema_name: string;
   label: string | null;
-  environment: string | null;
   drift_check_interval_minutes: number | null;
   created_at: string;
   connection_name: string | null;
@@ -1230,7 +1203,6 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
       ts.connection_id,
       ts.schema_name,
       ts.label,
-      c.environment,
       ts.drift_check_interval_minutes,
       ts.last_drift_check_at,
       ts.created_at,
@@ -1276,7 +1248,6 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
     connectionId: r.connection_id,
     schemaName: r.schema_name,
     label: r.label,
-    environment: toEnvironment(r.environment),
     createdAt: r.created_at,
     connectionName: r.connection_name,
     connectionHost: r.connection_host,

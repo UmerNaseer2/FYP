@@ -89,7 +89,6 @@ const EDIT = {
   password: "",
   connection_string: "",
   ssl_mode: "verify-full",
-  environment: "prod",
 };
 
 function setUp(saved: SavedRow = SAVED) {
@@ -163,10 +162,9 @@ describe("PUT /api/connections — a kept password stays where it was", () => {
   });
 
   it("saves edits that send the saved password to the same place", async () => {
-    // Renaming, relabelling, another database on the same server, stronger TLS.
+    // Renaming, another database on the same server, stronger TLS.
     for (const change of [
       { name: "Production (EU)" },
-      { environment: "staging" },
       { database_name: "reporting" },
       { host: "DB.INTERNAL.EXAMPLE.COM" },
     ]) {
@@ -251,7 +249,6 @@ describe("saving a connection that would dial a blocked host", () => {
     name: "Reporting",
     type: "PostgreSQL",
     ssl_mode: "require",
-    environment: "dev",
   };
 
   it("refuses it on create, and writes nothing", async () => {
@@ -373,14 +370,13 @@ describe("connections inside the caller's organization", () => {
       name: "Reporting",
       type: "PostgreSQL",
       ssl_mode: "require",
-      environment: "dev",
       connection_string: "postgres://app:pw@db.example.com:5432/app",
       org_id: OTHER_ORG,
     });
     expect(result.status).toBe(200);
     const [insert] = statements(/INSERT INTO connections/);
     expect(insert[0]).toMatch(/execute_role, org_id,/);
-    expect(insert[1]?.[13]).toBe(TEST_ORG.id);
+    expect(insert[1]?.[12]).toBe(TEST_ORG.id);
     expect(insert[1]).not.toContain(OTHER_ORG);
   });
 
@@ -445,8 +441,7 @@ describe("connections inside the caller's organization", () => {
 
 // "Who may run migrations here" holds an Editor back from a connection marked
 // admins only or read-only. An Editor who could loosen it would switch it off
-// and run anyway, so loosening needs the permission that approves production
-// deploys. Making it stricter stays open to every editor.
+// and run anyway, so loosening needs the permission that approves runs. Making it stricter stays open to every editor.
 describe("loosening who may run migrations on a connection", () => {
   let infoSpy: jest.SpyInstance;
 
@@ -454,7 +449,7 @@ describe("loosening who may run migrations on a connection", () => {
     mockPoolQuery.mockReset();
     mockPoolQuery.mockImplementation(async (text: string) => {
       if (/SELECT password, connection_string/.test(text)) {
-        return { rows: [{ ...SAVED, name: "Sales", environment: "staging", execute_role }] };
+        return { rows: [{ ...SAVED, name: "Sales", execute_role }] };
       }
       if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Sales" }] };
       return { rows: [], rowCount: 1 };
@@ -514,95 +509,14 @@ describe("loosening who may run migrations on a connection", () => {
   });
 });
 
-// The Production label is what makes a deploy wait for an approval. An editor
-// who could take it off could relabel production "dev", run a script with no
-// approval and put the label back, so taking it off (or deleting a connection
-// that carries it) needs the permission that approves production deploys.
-describe("taking the Production label off a connection", () => {
-  let infoSpy: jest.SpyInstance;
-
-  function setUpLabelled(environment: string) {
-    mockDependents.mockClear();
-    mockPoolQuery.mockReset();
-    mockPoolQuery.mockImplementation(async (text: string) => {
-      if (/SELECT password, connection_string/.test(text)) {
-        return { rows: [{ ...SAVED, name: "Production", environment }] };
-      }
-      if (/SELECT name, environment, version, site_id, password FROM connections/.test(text)) {
-        return { rows: [{ name: "Production", environment }] };
-      }
-      if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Production" }] };
-      return { rows: [], rowCount: 1 };
-    });
-  }
-
-  async function remove(body: Record<string, unknown>) {
-    const request = new NextRequest("http://localhost:3000/api/connections", {
-      method: "DELETE",
-      body: JSON.stringify(body),
-      headers: { "Content-Type": "application/json" },
-    });
-    const response = await DELETE(request);
-    return { status: response.status, body: await response.json() };
-  }
-
-  const deleted = () => mockPoolQuery.mock.calls.some(([text]) => /DELETE FROM connections/.test(text));
-
-  beforeEach(() => {
-    infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
-  });
-  afterEach(() => {
-    mockRole = "editor";
-    infoSpy.mockRestore();
-  });
-
-  it("refuses an editor who relabels a production connection dev, and saves nothing", async () => {
-    setUpLabelled("prod");
-    const result = await put({ ...EDIT, environment: "dev" });
-    expect(result.status).toBe(403);
-    expect(result.body.error).toMatch(/take the Production label off connection "Production"/);
-    expect(updated()).toBe(false);
-  });
-
-  it("refuses staging as much as dev", async () => {
-    setUpLabelled("prod");
-    const result = await put({ ...EDIT, environment: "staging" });
-    expect(result.status).toBe(403);
-    expect(updated()).toBe(false);
-  });
-
-  it("lets an admin take the label off, and logs who did", async () => {
-    mockRole = "admin";
-    setUpLabelled("prod");
-    const result = await put({ ...EDIT, environment: "dev" });
+// Connections carry no label any more. An older screen may still send one.
+describe("a label an older screen still sends", () => {
+  it("is ignored: the edit saves, and the label is not written", async () => {
+    setUp();
+    const result = await put({ ...EDIT, name: "Sales", environment: "dev" });
     expect(result.status).toBe(200);
     expect(updated()).toBe(true);
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/relabelled from prod to dev by admin@test/));
-  });
-
-  it("lets an editor put the label on, or keep it", async () => {
-    setUpLabelled("dev");
-    expect((await put({ ...EDIT, environment: "prod" })).status).toBe(200);
-    setUpLabelled("prod");
-    expect((await put({ ...EDIT, environment: "prod" })).status).toBe(200);
-    expect(infoSpy).not.toHaveBeenCalled();
-  });
-
-  it("refuses an editor who deletes a production connection, and deletes nothing", async () => {
-    setUpLabelled("prod");
-    const result = await remove({ id: 4, confirm: true });
-    expect(result.status).toBe(403);
-    expect(result.body.error).toMatch(/delete connection "Production", which is labelled Production/);
-    expect(deleted()).toBe(false);
-    expect(mockDependents).not.toHaveBeenCalled();
-  });
-
-  it("lets an editor delete a dev connection, and an admin a production one", async () => {
-    setUpLabelled("dev");
-    expect((await remove({ id: 4 })).status).toBe(200);
-    mockRole = "admin";
-    setUpLabelled("prod");
-    expect((await remove({ id: 4 })).status).toBe(200);
-    expect(deleted()).toBe(true);
+    const texts = mockPoolQuery.mock.calls.map(([text]) => String(text));
+    expect(texts.some((text) => /environment/.test(text))).toBe(false);
   });
 });

@@ -95,7 +95,6 @@ const mockConnections = [1, 2].map((id) => ({
   connection_string: null,
   ssl: false,
   ssl_mode: null,
-  environment: id === 1 ? "development" : "staging",
 }));
 
 import { POST } from "@/app/api/compare/route";
@@ -119,7 +118,6 @@ const NIGHTLY = {
       connectionId: 2,
       connectionLabel: "Staging",
       schema: "public",
-      environment: "staging",
     },
   ],
 };

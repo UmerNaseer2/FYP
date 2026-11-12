@@ -3,8 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Card, EmptyState, EnvironmentPill, Skeleton } from "@/components/ui";
-import { isProduction } from "@/lib/environments";
+import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { displayVersion } from "@/lib/version-timeline";
 import {
   AlertTriangleIcon,
@@ -466,7 +465,6 @@ function WatchList({
                 <span className="dr-row__text">
                   <span className="dr-row__name">
                     <span className="dr-row__schema">{item.schemaName}</span>
-                    <EnvironmentPill environment={item.environment} />
                   </span>
                   <span className="dr-row__source">{source}</span>
                   <span className={`dr-row__status dr-row__status--${status.tone}`}>
@@ -602,7 +600,6 @@ function DetailTab({
           <h2 className="dr-case__title">{head.title}</h2>
           <div className="dr-case__where">
             <span className="dr-case__schema">{view.schemaName}</span>
-            <EnvironmentPill environment={view.environment} />
             {view.connection ? (
               <span className="dr-case__host">
                 {view.connection.host}:{view.connection.port}/{view.connection.database}
@@ -649,21 +646,6 @@ function DetailTab({
           )}
         </li>
       </ul>
-
-      {/* Production is worth saying out loud whatever the drift state is: the
-          resolution actions below can rewrite this schema's baseline. */}
-      {isProduction(view.environment) && (
-        <div className="warn-inline">
-          <span className="ico dr-ico--break">
-            <AlertTriangleIcon size={14} />
-          </span>
-          <div className="dr-note">
-            <b>This is a production schema.</b> Re-baselining accepts the live structure as
-            correct. On production that means whatever changed outside this app becomes the new
-            expected state.
-          </div>
-        </div>
-      )}
 
       {/* Only on a desktop. The scheduler here leaves this schema alone (lib/drift-scheduler.ts). */}
       {onWebsite && (

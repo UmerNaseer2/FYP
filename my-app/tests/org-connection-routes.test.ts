@@ -50,7 +50,6 @@ function connection(id: number, orgId: number, name: string, host: string) {
     connection_string: null,
     ssl: false,
     ssl_mode: "disable",
-    environment: "dev",
     application_table: null,
   };
 }

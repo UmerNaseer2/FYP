@@ -11,7 +11,6 @@
  * the phone app can use it.
  */
 import { toDriftSource, type DriftSource } from "./drift-source";
-import type { Environment } from "./environments";
 
 /** Marks a computer's token, so one pasted in the wrong place can be recognized. */
 export const TOKEN_PREFIX = "ssa_";
@@ -43,7 +42,6 @@ export type ComputerConnection = {
   /** The computer's own number for it. It means nothing anywhere else. */
   id: number;
   name: string;
-  environment: Environment;
   /**
    * Picked for the phone. Only a shared one can be asked about from elsewhere;
    * the rest are listed on the website's Connections page for their owner.
@@ -98,7 +96,6 @@ export type SyncedDriftSchema = {
 export type WebsiteDriftSchema = SyncedDriftSchema & {
   connectionId: number;
   connectionName: string;
-  environment: Environment;
 };
 
 /** An ISO time from a string or a Date, or null when it is not one. */

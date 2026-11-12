@@ -62,12 +62,12 @@ export type Screen = (typeof SCREENS)[number];
  * Why a permission deserves a second look before it is turned on. The Roles &
  * permissions tab shows a tag with these words beside it.
  */
-export type Risk = "database" | "live" | "production";
+export type Risk = "database" | "live" | "approval";
 
 export const RISK_LABELS: Record<Risk, string> = {
   database: "Writes to a database",
   live: "Live database",
-  production: "Production",
+  approval: "Approves runs",
 };
 
 /**
@@ -116,7 +116,7 @@ type FeatureSpec = {
  *
  * The `from` values reproduce, exactly, the role checks the routes made before
  * this file existed: viewers could read everything, editors could change
- * things, admins could also approve production runs and manage users.
+ * things, admins could also approve runs and manage users.
  * tests/permissions-equivalence.test.ts holds the routes to that, so turning
  * this system on changed nobody's access.
  *
@@ -197,11 +197,11 @@ export const FEATURES = [
     key: "approvals",
     label: "Approvals",
     screen: "Deploy",
-    description: "The second person a production run needs.",
+    description: "Asking for one exact run to be approved, and approving it.",
     actions: {
-      create: { does: "request a production approval", from: "editor" },
-      read: { does: "see production approvals", from: "viewer" },
-      approve: { does: "approve production runs", from: "admin", risk: "production" },
+      create: { does: "ask for a run to be approved", from: "editor" },
+      read: { does: "see approval requests", from: "viewer" },
+      approve: { does: "approve runs", from: "admin", risk: "approval" },
     },
   },
   {
@@ -209,7 +209,7 @@ export const FEATURES = [
     label: "Version Sync",
     screen: "Version Sync",
     description:
-      "Promoting a schema from one environment to the next. Promoting runs a deployment, so it also needs Apply or revert migrations, under Deploy.",
+      "Promoting a schema from one database to the next. Promoting runs a deployment, so it also needs Apply or revert migrations, under Deploy.",
     actions: {
       read: {
         does: "open Version Sync",
@@ -227,7 +227,7 @@ export const FEATURES = [
       create: { does: "track a schema", from: "editor" },
       read: { does: "see tracked schemas and their drift", from: "viewer" },
       update: {
-        does: "change schedules, environments and baselines, or acknowledge drift",
+        does: "change schedules and baselines, or acknowledge drift",
         from: "editor",
       },
       delete: { does: "stop tracking a schema", from: "editor" },
@@ -301,11 +301,11 @@ export const FEATURES = [
     key: "organization",
     label: "Organization",
     screen: "Admin",
-    description: "The organization's name, its two-person rule for production, and deleting it.",
+    description: "The organization's name, and deleting it.",
     adminOnly: true,
     actions: {
       read: { does: "see the organization's settings", from: "admin" },
-      update: { does: "rename the organization or change its two-person rule", from: "admin" },
+      update: { does: "rename the organization", from: "admin" },
       delete: { does: "delete the organization", from: "admin" },
     },
   },
@@ -644,13 +644,13 @@ export function withToggled(
  * joining by one, and someone being removed. They sit in the same log because
  * each one decides who holds a role, which is what the log is for.
  *
- * The last three are about the organization itself: renaming it, switching
- * its two-person rule, and changing the GitHub repository or token its
- * scripts are kept with. They sit here because this log is the one record of
+ * The last three are about the organization itself: renaming it, changing
+ * the GitHub repository or token its scripts are kept with, and its AI
+ * settings. They sit here because this log is the one record of
  * who changed what in an organization, and each changes what its members see
  * and may do. Their rows name a role only because the column needs one: the
- * admin role for the first two, which only an Admin can do, and the role of
- * whoever saved the GitHub settings for the last.
+ * admin role for a rename, which only an Admin can do, and the role of
+ * whoever saved the settings for the others.
  *
  * The database holds this list as a CHECK (lib/db/bootstrap.ts), which every
  * start widens to match, so a kind can be added here and nowhere else. Taking
@@ -668,7 +668,6 @@ export const ROLE_CHANGE_KINDS = [
   "join",
   "remove",
   "rename-organization",
-  "two-person-rule",
   "github-settings",
   "ai-settings",
 ] as const;

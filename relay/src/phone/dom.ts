@@ -3,8 +3,6 @@
  * HTML, so a name that comes from the computer can never become markup: the
  * app never sets innerHTML.
  */
-import { ENVIRONMENT_LABELS } from "./format.js";
-import type { Environment } from "../shared/remote/rpc.js";
 
 /** An attribute's value: true sets it with no value, and false, null and undefined leave it out. */
 export type AttributeValue = string | number | boolean | null | undefined;
@@ -44,11 +42,6 @@ export function button(label: Child | Child[], onClick: () => void, attributes: 
 /** A screen's title, which the app moves the focus to when the screen opens, so a screen reader reads it out. */
 export function heading(text: string): HTMLHeadingElement {
   return el("h1", { class: "title", id: "title", tabindex: -1 }, text);
-}
-
-/** The label for a connection's environment, colored as the web app colors it. */
-export function envBadge(environment: Environment): HTMLSpanElement {
-  return el("span", { class: `badge env-${environment}` }, ENVIRONMENT_LABELS[environment]);
 }
 
 /** A sentence that stands out from the screen: "bad" for a problem, "info" for anything else. */

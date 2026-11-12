@@ -8,9 +8,9 @@
 // The app already had roles and permissions (lib/permissions) and every route
 // already checked one (lib/auth-guard). What neither could express is that the
 // same person is trusted differently depending on WHICH database is on the
-// other end. An editor who should be free to apply migrations to dev all day is
-// the same editor the moment the target is production, because the role is a
-// property of the person and the environment label is only a warning.
+// other end. An editor who should be free to apply migrations to a test
+// database all day is the same editor the moment the target holds live data,
+// because the role is a property of the person, not of the database.
 //
 // So a connection carries the role required to execute against it, and
 // "nobody" is one of the answers. That is the read-only case in the spec: a
@@ -93,13 +93,16 @@ export function loosensExecuteRole(before: ExecuteRole, after: ExecuteRole): boo
   return STRICTNESS[after] < STRICTNESS[before];
 }
 
+/** The permission that may loosen who may run migrations on a connection. */
+export const LOOSEN_EXECUTE_ROLE_PERMISSION = "approvals:approve" as const;
+
 /**
  * The refusal for someone who may not loosen the setting. Without this rule
  * the person the setting holds back could switch it off and run anyway.
  */
 export function loosenRefusal(connectionName: string, before: ExecuteRole): string {
   return (
-    `Only someone who may approve production deploys (an Admin, unless your organization ` +
+    `Only someone who may approve runs (an Admin, unless your organization ` +
     `changed it) can loosen who may run migrations on "${connectionName}". ` +
     `It is set to "${describeExecuteRole(before)}". You can still make it stricter.`
   );

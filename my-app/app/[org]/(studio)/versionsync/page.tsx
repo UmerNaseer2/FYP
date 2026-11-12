@@ -14,15 +14,14 @@ import {
   RefreshIcon,
   InfoIcon,
 } from "@/components/ui/icons";
-import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { PageHeader } from "@/components/studio/PageHeader";
-import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
+import { RiskGate } from "@/components/studio/RiskGate";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
-import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { useOrgHref } from "@/hooks/useOrg";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { refusalMessage } from "@/lib/permissions";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
@@ -50,11 +49,6 @@ import { EXECUTE_CANNOT_BE_READ, ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-g
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import { countOf } from "@/lib/plural";
 import { utcStamp } from "@/lib/format-date";
-import {
-  isProduction,
-  toEnvironment,
-  type Environment,
-} from "@/lib/environments";
 import { apiFetch } from "@/lib/api-fetch";
 import { VersionLine, type LineStep } from "./VersionLine";
 import "@/app/styles/atelier-versionsync.css";
@@ -69,7 +63,7 @@ import "@/app/styles/atelier-versionsync.css";
 //   - both ledgers side by side, as a Source vs Target timeline.
 // Each row's Run button and Run all open the replay check (ReplayDialog, at the
 // bottom of this file): what the run risks, a dry run, the Target's last drift
-// check, and a production approval where one is needed. Confirming it sends the
+// check, and an approval where one is needed. Confirming it sends the
 // versions to /api/scripts/apply as ONE request, which runs them in ONE
 // transaction. Every run stops before the first version the route would refuse
 // — one with no stored SQL, or one that does not move its script group forward
@@ -80,8 +74,6 @@ type Connection = {
   name: string;
   host: string;
   database_name: string;
-  /** dev / staging / prod, or "unset" when nobody has labelled it. */
-  environment: Environment;
   /** Who may run migrations on it (lib/connection-access). */
   execute_role?: string | null;
 };
@@ -175,12 +167,6 @@ function useLedgerSource() {
 
 type Side = ReturnType<typeof useLedgerSource>;
 
-/** What environment one side points at: its connection's label, as on Deploy. */
-function sideEnvironment(side: Side, connections: Connection[]): Environment {
-  const conn = connections.find((c) => String(c.id) === side.connectionId);
-  return toEnvironment(conn?.environment);
-}
-
 /** How far a replay of some versions, in order, gets before the apply route would refuse one. */
 type Reach = {
   /** The leading versions that can run. */
@@ -232,14 +218,6 @@ function stopSentence(reach: Reach): string {
   );
 }
 
-/** The four ticks the apply route checks, sent with a dry run as well as a real one. */
-type ReplayFlags = {
-  acknowledgeProduction: boolean;
-  acknowledgeBreaking: boolean;
-  acknowledgeDataLoss: boolean;
-  acknowledgeDrift: boolean;
-};
-
 /**
  * Send versions to the apply route as ONE run, which it applies in ONE
  * transaction: every version in it applies, or none does.
@@ -263,14 +241,12 @@ async function sendReplay({
   sourceSchema,
   entries,
   dryRun,
-  flags,
 }: {
   connectionId: string;
   schemaName: string;
   sourceSchema: string;
   entries: LedgerEntry[];
   dryRun: boolean;
-  flags: ReplayFlags;
 }): Promise<ReplayOutcome> {
   let res: Response;
   try {
@@ -281,7 +257,6 @@ async function sendReplay({
         connectionId: Number(connectionId),
         schemaName,
         dryRun,
-        ...flags,
         scripts: entries.map((e) => ({
           script_name: e.scriptName,
           version: e.version,
@@ -379,13 +354,6 @@ export default function VersionSyncPage() {
     return reachOf(diff.missing, target.entries);
   }, [diff, target.entries]);
 
-  // Only the Target is written to, so only the Target's label gates anything.
-  // The Source still shows its own pill, because replaying prod history onto a
-  // dev box is a very different act from the reverse and the pair is worth
-  // reading at a glance.
-  const sourceEnvironment = sideEnvironment(source, connections);
-  const targetEnvironment = sideEnvironment(target, connections);
-  const targetIsProduction = isProduction(targetEnvironment);
   const targetConnection = connections.find((c) => String(c.id) === target.connectionId) ?? null;
   const targetDatabase = targetConnection?.database_name ?? "";
   // Who may replay onto the Target. A role that may not run here by itself
@@ -448,8 +416,8 @@ export default function VersionSyncPage() {
   // runs in ONE transaction. All of them or none: a replay that failed halfway
   // used to leave the earlier versions applied and the Target stranded
   // mid-chain, which is the exact state Version Sync exists to get a schema
-  // out of. `flags` are the ticks given in the replay check.
-  async function runEntries(entries: LedgerEntry[], flags: ReplayFlags) {
+  // out of.
+  async function runEntries(entries: LedgerEntry[]) {
     setApplying(true);
     setApplyError(null);
     setApplyDone("");
@@ -466,7 +434,6 @@ export default function VersionSyncPage() {
       sourceSchema: source.schema,
       entries,
       dryRun: false,
-      flags,
     });
     setProgress("");
     setApplying(false);
@@ -577,7 +544,6 @@ export default function VersionSyncPage() {
                 sub="ahead"
                 connections={connections}
                 loaded={connectionsLoaded}
-                environment={sourceEnvironment}
                 locked={applying}
               />
               <button
@@ -596,7 +562,6 @@ export default function VersionSyncPage() {
                 sub="catch up"
                 connections={connections}
                 loaded={connectionsLoaded}
-                environment={targetEnvironment}
                 locked={applying}
               />
           </div>
@@ -664,7 +629,6 @@ export default function VersionSyncPage() {
                       setApplyError(null);
                       target.retry();
                     },
-                    targetIsProduction,
                     mayRun,
                     askToRun,
                     runRefusal,
@@ -679,16 +643,15 @@ export default function VersionSyncPage() {
       <ReplayDialog
         entries={pendingRun}
         onClose={() => setPendingRun(null)}
-        onReplay={(flags) => {
+        onReplay={() => {
           const run = pendingRun;
           setPendingRun(null);
-          if (run) void runEntries(run, flags);
+          if (run) void runEntries(run);
         }}
         connectionId={target.connectionId}
         schema={target.schema}
         databaseName={targetDatabase}
         sourceSchema={source.schema}
-        pageEnvironment={targetEnvironment}
         diverged={diff?.diverged.length ?? 0}
         askToRun={askToRun}
       />
@@ -698,10 +661,9 @@ export default function VersionSyncPage() {
 
 // ── One side's picker (connection + schema) ──────────────────────────────────
 function SidePicker({
-  side, label, sub, connections, loaded, environment, locked,
+  side, label, sub, connections, loaded, locked,
 }: {
   side: Side; label: string; sub: string; connections: Connection[]; loaded: boolean;
-  environment: Environment;
   /** True while a replay runs: the pair cannot change under it. */
   locked: boolean;
 }) {
@@ -710,7 +672,6 @@ function SidePicker({
       <div className="vs-side-head">
         <h2>{label}</h2>
         <span className="vs-side-sub">{sub}</span>
-        {side.connectionId && <EnvironmentPill environment={environment} className="vs-side-env" />}
       </div>
         {!loaded ? (
           <>
@@ -758,8 +719,6 @@ type ApplyCtl = {
   onRun: (entries: LedgerEntry[]) => void;
   /** Read the Target's ledger again, after any failed run: the list may be out of date. */
   onReread: () => void;
-  /** Draw Run all red when the Target is live, same as Deploy does. */
-  targetIsProduction: boolean;
   /** The role may replay, by itself or with an approval. Without it no row has a Run button. */
   mayRun: boolean;
   /** The role may replay only once an Admin approves that exact replay. */
@@ -966,7 +925,7 @@ function Result({
               </p>
               {showRunAll && (
                 <button
-                  className={`btn ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                  className="btn btn-primary"
                   disabled={apply.applying}
                   title="Replay every version in this list, in one transaction"
                   onClick={() => apply.onRun(missing)}
@@ -1165,20 +1124,18 @@ function Result({
 type TrackingRecord =
   | { state: "loading" }
   | { state: "error"; message: string }
-  | { state: "ready"; environment: Environment; drift: "in_sync" | "drifted" | "unreachable" | null };
+  | { state: "ready"; drift: "in_sync" | "drifted" | "unreachable" | null };
 
 type ReplayDialogProps = {
   /** The versions to replay, in order; null while the dialog is closed. */
   entries: LedgerEntry[] | null;
   onClose: () => void;
-  /** Confirmed: run it, sending these ticks. */
-  onReplay: (flags: ReplayFlags) => void;
+  /** Confirmed: run it. */
+  onReplay: () => void;
   connectionId: string;
   schema: string;
   databaseName: string;
   sourceSchema: string;
-  /** The Target's environment as the page reads it (connection and schema labels). */
-  pageEnvironment: Environment;
   /** How many versions only the Target has. */
   diverged: number;
   /** The viewer may not run here by themselves, only with an Admin's approval of this exact replay. */
@@ -1190,10 +1147,10 @@ type LoadedApprovals = { key: string; rows: ApprovalRow[]; error: string | null 
 
 /**
  * The check a replay goes through before anything runs: what it holds and
- * risks, a dry run, and the ticks and approval the apply route will ask for.
+ * risks, a dry run, and the approval the apply route will ask for.
  *
  * The body is its own component, mounted each time the dialog opens, so no
- * tick, dry-run result or approval note carries over from one run to the next.
+ * dry-run result or approval note carries over from one run to the next.
  */
 function ReplayDialog(props: ReplayDialogProps) {
   const titleId = useId();
@@ -1216,19 +1173,15 @@ function ReplayBody({
   schema,
   databaseName,
   sourceSchema,
-  pageEnvironment,
   diverged,
   askToRun,
 }: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
   const { user, roleLabel, bypass, can } = useUser();
   const orgPath = useOrgHref();
-  // Whether production runs here wait for a second person (the Organization tab).
-  const twoPersonRule = useOrg()?.twoPersonRule ?? false;
   // Each of these is a box an admin ticks for a role on the Admin screen.
   // Without "Approvals: Read" the list is not even asked for: the route would
   // refuse, and the panel says why instead of reporting a 403.
   const mayReadApprovals = can("approvals:read");
-  const mayRequestApproval = can("approvals:create");
   const mayApprove = can("approvals:approve");
   const count = entries.length;
   const first = entries[0];
@@ -1240,9 +1193,8 @@ function ReplayBody({
   const runName = count === 1 ?scriptLabel(first.scriptName, first.version) : countOf(count, "version");
 
   // ── The Target's tracking record ──────────────────────────────────────────
-  // The apply route reads two things from it before it runs anything: whether
-  // the schema is labelled production, and what its last drift check found.
-  // This reads the same record, so the ticks below are the ticks it asks for.
+  // It holds what the Target's last drift check found, which the drift
+  // warning below shows.
   const [record, setRecord] = useState<TrackingRecord>({ state: "loading" });
   const [recordTry, setRecordTry] = useState(0);
   useEffect(() => {
@@ -1255,7 +1207,6 @@ function ReplayBody({
         );
         const data = (await res.json()) as {
           tracked?: boolean;
-          environment?: string;
           driftStatus?: string | null;
           error?: string;
         };
@@ -1264,14 +1215,14 @@ function ReplayBody({
           setRecord({ state: "error", message: data.error ?? `The tracking lookup answered ${res.status}.` });
           return;
         }
-        // An untracked schema has no label of its own and no drift check.
+        // An untracked schema has no drift check.
         const tracked = data.tracked === true;
         const drift =
           tracked &&
           (data.driftStatus === "in_sync" || data.driftStatus === "drifted" || data.driftStatus === "unreachable")
             ? data.driftStatus
             : null;
-        setRecord({ state: "ready", environment: toEnvironment(tracked ? data.environment : undefined), drift });
+        setRecord({ state: "ready", drift });
       } catch {
         if (active) setRecord({ state: "error", message: "Could not reach the server, or could not read its reply." });
       }
@@ -1282,11 +1233,9 @@ function ReplayBody({
   }, [connectionId, schema, recordTry]);
 
   const ready = record.state === "ready";
-  // The connection's label, the only one. A real replay on production waits for
-  // a second person only when the organization has approvals switched on.
-  const production = isProduction(pageEnvironment);
-  // Somebody who may not run here by themselves always needs one, on any label.
-  const approvalNeeded = askToRun || (production && twoPersonRule && !bypass);
+  // Somebody who may not run here by themselves asks for an approval, and
+  // somebody who may approve reads the list to answer such an ask.
+  const approvalsWanted = askToRun || mayApprove;
   const drift = record.state === "ready" && (record.drift === "drifted" || record.drift === "unreachable");
 
   // ── What the run risks (the same reading the route makes) ─────────────────
@@ -1309,27 +1258,7 @@ function ReplayBody({
   const listed = (e: LedgerEntry, list: ReadonlyArray<{ scriptName: string; version: string }>) =>
     list.some((r) => r.scriptName === e.scriptName && r.version === e.version);
 
-  // ── The ticks ─────────────────────────────────────────────────────────────
-  const [prodAck, setProdAck] = useState(false);
-  const [breakingAck, setBreakingAck] = useState(false);
-  const [dataLossAck, setDataLossAck] = useState(false);
-  const [driftAck, setDriftAck] = useState(false);
-  // Only production asks for ticks; elsewhere the warnings are shown and that is all.
-  const unticked =
-    production &&
-    (!prodAck ||
-      (breakingCount > 0 && !breakingAck) ||
-      (dataLossCount > 0 && !dataLossAck) ||
-      (drift && !driftAck));
-  // Each flag is true only for a risk this run has AND a box the reader ticked.
-  const flags: ReplayFlags = {
-    acknowledgeProduction: production && prodAck,
-    acknowledgeBreaking: breakingCount > 0 && breakingAck,
-    acknowledgeDataLoss: dataLossCount > 0 && dataLossAck,
-    acknowledgeDrift: drift && driftAck,
-  };
-
-  // ── Production approval ───────────────────────────────────────────────────
+  // ── Approval ──────────────────────────────────────────────────────────────
   // The route claims an approval by the run's fingerprint: these exact
   // scripts, in this order, on this schema. Worked out here the same way
   // (lib/approval-fingerprint), so the panel can say whether one covers it.
@@ -1390,9 +1319,9 @@ function ReplayBody({
   const [approvalNotice, setApprovalNotice] = useState("");
   const [approvalNote, setApprovalNote] = useState("");
 
-  // "" when the target is not production. Nothing is read then, so no stored
+  // "" when no approval is wanted. Nothing is read then, so no stored
   // key can match and the panel falls back to an empty list on its own.
-  const approvalsKey = approvalNeeded ? `${connectionId} ${schema}` : "";
+  const approvalsKey = approvalsWanted ? `${connectionId} ${schema}` : "";
   const currentApprovals =
     loadedApprovals && loadedApprovals.key === approvalsKey ? loadedApprovals : null;
   const approvals = mayReadApprovals ? (currentApprovals?.rows ?? []) : [];
@@ -1407,12 +1336,12 @@ function ReplayBody({
   // with no reset to forget. `approvalsReloading` covers the other case: a
   // re-read of the SAME target, where the key still matches.
   const approvalsLoading =
-    mayReadApprovals && (approvalsReloading || (production && currentApprovals === null));
+    mayReadApprovals && (approvalsReloading || (approvalsWanted && currentApprovals === null));
 
-  // Only a production run needs one, so only then is the list read, and only
-  // for a role that may see it.
+  // Read only when an approval is wanted, and only for a role that may see
+  // the list.
   useEffect(() => {
-    if (!production || !mayReadApprovals) return;
+    if (!approvalsWanted || !mayReadApprovals) return;
     const asked = `${connectionId} ${schema}`;
     let active = true;
     (async () => {
@@ -1428,7 +1357,7 @@ function ReplayBody({
         } else {
           // Rows go empty on a failure rather than keeping the last good read.
           // That is what makes `unreadable` true, and "Approval state unknown"
-          // is the honest answer for a production gate that could not be read —
+          // is the honest answer for a list that could not be read:
           // showing an older list would report it as read when it was not.
           setLoadedApprovals({
             key: asked,
@@ -1451,7 +1380,7 @@ function ReplayBody({
     return () => {
       active = false;
     };
-  }, [production, connectionId, schema, approvalsTry, mayReadApprovals]);
+  }, [approvalsWanted, connectionId, schema, approvalsTry, mayReadApprovals]);
 
   function reloadApprovals() {
     setApprovalsReloading(true);
@@ -1467,15 +1396,23 @@ function ReplayBody({
           (a) =>
             (a.action ?? "deploy") === "deploy" &&
             a.run_fingerprint === runHash &&
-            // Only the approvals the route would let this viewer spend: their
-            // own one-off when they may not run here, else only ordinary ones.
-            (askToRun
-              ? a.run_by_requester === true && a.requested_by.toLowerCase() === (user?.email ?? "").toLowerCase()
-              : a.run_by_requester !== true)
+            a.run_by_requester === true
         );
-  const approved = runApprovals.find((a) => a.status === "approved") ?? null;
-  const pending = runApprovals.find((a) => a.status === "pending") ?? null;
-  const latest = runApprovals[0] ?? null;
+  const viewerEmailLower = (user?.email ?? "").toLowerCase();
+  // The approvals the route would let this viewer spend: their own one-off
+  // asks, when they may not run here by themselves.
+  const ownApprovals = askToRun
+    ? runApprovals.filter((a) => a.requested_by.toLowerCase() === viewerEmailLower)
+    : [];
+  const approved = ownApprovals.find((a) => a.status === "approved") ?? null;
+  const pending = ownApprovals.find((a) => a.status === "pending") ?? null;
+  const latest = ownApprovals[0] ?? null;
+  // Somebody else's waiting ask for this exact replay, for a viewer who may answer it.
+  const answerableAsk = mayApprove
+    ? (runApprovals.find(
+        (a) => a.status === "pending" && a.requested_by.toLowerCase() !== viewerEmailLower
+      ) ?? null)
+    : null;
 
   async function requestApproval() {
     setApprovalBusy(true);
@@ -1511,19 +1448,7 @@ function ReplayBody({
         return;
       }
       setApprovalNote("");
-      // Under the auth bypass the one principal clears its own request, with
-      // the Approve button the panel shows right under this line. Not while
-      // View as has them looking at the app as a role that may not approve:
-      // then clearing it means switching back to Admin first.
-      setApprovalNotice(
-        askToRun
-          ? "Asked for approval. Once an Admin says yes, you can run it."
-          : !bypass
-          ? "Approval requested — someone else has to clear it."
-          : mayApprove
-            ? "Approval requested — with the auth bypass on, you clear it yourself below."
-            : 'Approval requested. Switch "View as" back to Admin to clear it.'
-      );
+      setApprovalNotice("Asked for approval. Once an Admin says yes, you can run it.");
       reloadApprovals();
     } catch {
       setApprovalError("Network error requesting the approval.");
@@ -1564,7 +1489,7 @@ function ReplayBody({
   async function rehearse() {
     setDryRunning(true);
     setDryResult(null);
-    const result = await sendReplay({ connectionId, schemaName: schema, sourceSchema, entries, dryRun: true, flags });
+    const result = await sendReplay({ connectionId, schemaName: schema, sourceSchema, entries, dryRun: true });
     setDryRunning(false);
     if (result.ok) {
       setDryResult({
@@ -1592,30 +1517,25 @@ function ReplayBody({
   }
 
   // ── What the buttons may do ───────────────────────────────────────────────
-  // The same rule as Deploy: on production every box ticked for both buttons,
-  // and, with approvals on, an approval for exactly this run before Replay.
-  // A dry run never waits for an approval.
-  const runBlocked = !ready || unticked || dryRunning || approvalBusy;
-  const awaitingApproval = approvalNeeded && approved === null;
+  // The same rule as Deploy: somebody who may not run here by themselves
+  // needs an approval for exactly this run before Replay.
+  const runBlocked = !ready || dryRunning || approvalBusy;
+  const awaitingApproval = askToRun && approved === null;
   // A dry run executes the SQL too, so it is not open to somebody who may run
   // here only with an approval.
   const dryRunBlocked = runBlocked || askToRun;
   const replayBlocked = runBlocked || awaitingApproval;
-  const replayLabel = `Replay ${countOf(count, "version")}${production ? " on production" : ""}`;
+  const replayLabel = `Replay ${countOf(count, "version")}`;
   const hint =
     record.state === "loading"
       ? "Both buttons wait for the Target's tracking record."
       : record.state === "error"
         ? "Both buttons stay off until the Target's tracking record can be read."
-        : unticked
-          ? "Tick every box above to turn on Dry run and Replay."
-          : askToRun
-            ? awaitingApproval
-              ? "Replay needs an Admin's approval first. A dry run is not open to you here."
-              : "A dry run is not open to you here. The approved replay is."
-            : awaitingApproval
-              ? "Replay needs the approval above. A dry run does not."
-              : "";
+        : askToRun
+          ? awaitingApproval
+            ? "Replay needs an Admin's approval first. A dry run is not open to you here."
+            : "A dry run is not open to you here. The approved replay is."
+          : "";
 
   const louderSentence =
     louderCount === 0
@@ -1690,7 +1610,7 @@ function ReplayBody({
               <div className="body">
                 <div className="title">{"Could not read the Target's tracking record"}</div>
                 <div className="help mt-0.5">
-                  {`${record.message} Dry run and Replay stay off until it can be read, because the record says whether ${schema} is production and what its last drift check found — the two things the server checks before it runs anything. Nothing has run.`}
+                  {`${record.message} Dry run and Replay stay off until it can be read, because the record says what the last drift check on ${schema} found. Nothing has run.`}
                 </div>
                 <button
                   className="btn btn-secondary btn-sm mt-2"
@@ -1705,14 +1625,6 @@ function ReplayBody({
             </div>
           )}
 
-          {production && (
-            <ProductionGate
-              what={`replay ${countOf(count, "version")}`}
-              acknowledged={prodAck}
-              onAcknowledge={setProdAck}
-            />
-          )}
-
           {breakingCount > 0 && (
             <RiskGate
               tone="break"
@@ -1724,13 +1636,6 @@ function ReplayBody({
                 "will run." +
                 louderSentence
               }
-              ack={
-                production
-                  ? `I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`
-                  : undefined
-              }
-              acknowledged={breakingAck}
-              onAcknowledge={setBreakingAck}
             />
           )}
 
@@ -1755,15 +1660,6 @@ function ReplayBody({
                 unflaggedSentence +
                 "Have a backup you can restore from before running this."
               }
-              ack={
-                !production
-                  ? undefined
-                  : dataLossSure
-                    ? "I have read these statements and know which rows they delete."
-                    : "I have read this SQL and know whether it deletes rows."
-              }
-              acknowledged={dataLossAck}
-              onAcknowledge={setDataLossAck}
             >
               <ul className="prod-gate__body" style={{ paddingLeft: 18, listStyle: "disc" }}>
                 {risk.dataLoss.map((d) => (
@@ -1776,7 +1672,7 @@ function ReplayBody({
           )}
 
           {risk.mightFail.length > 0 && (
-            // No tick: the replay is one transaction, so this is the risk that
+            // A quieter line: the replay is one transaction, so this is the risk that
             // costs nothing when it happens.
             <div className="warn-inline">
               <span className="ico">
@@ -1828,15 +1724,8 @@ function ReplayBody({
                     ? `found ${schema} different from the snapshot it is tracked against`
                     : `could not reach ${schema}`
                 }. ` +
-                (production
-                  ? `The server holds every run on ${schema} to that result, a dry run included, ` +
-                    "until a drift check passes. Run the drift check again on the Drift screen, or " +
-                    "tick below to run anyway."
-                  : "Run the drift check again on the Drift screen if you want to be sure.")
+                "Run the drift check again on the Drift screen if you want to be sure."
               }
-              ack={production ? "I mean to run without a drift check that passed." : undefined}
-              acknowledged={driftAck}
-              onAcknowledge={setDriftAck}
             >
               <p className="prod-gate__body">
                 <Link href={orgPath("/drift")} style={{ textDecoration: "underline" }}>
@@ -1846,32 +1735,41 @@ function ReplayBody({
             </RiskGate>
           )}
 
-          {approvalNeeded && (
-            <ApprovalPanel
-              migrationCount={count}
-              targetVersion={families.length === 1 ? last.version.trim() : ""}
-              hashReady={runHash !== null}
-              hashError={hashError}
-              loading={approvalsLoading}
-              error={approvalError ?? approvalsReadError}
-              unreadable={approvalsReadError !== null && approvals.length === 0}
-              busy={approvalBusy}
-              approved={approved}
-              pending={pending}
-              latest={latest}
-              viewerEmail={user?.email ?? ""}
-              roleLabel={roleLabel}
-              mayRequest={mayRequestApproval}
-              mayApprove={mayApprove}
-              bypass={bypass}
-              twoPersonRule={twoPersonRule}
-              askToRun={askToRun}
-              note={approvalNote}
-              onNoteChange={setApprovalNote}
-              onRequest={() => void requestApproval()}
-              onDecide={(id, decision) => void decide(id, decision)}
-              runButton={replayLabel}
-            />
+          {/* The asker's own panel, and the answer panel for somebody
+              else's ask of this exact replay. */}
+          {[
+            askToRun ? { key: "own", own: true, approved, pending, latest } : null,
+            answerableAsk
+              ? { key: "ask", own: false, approved: null, pending: answerableAsk, latest: answerableAsk }
+              : null,
+          ].map(
+            (panel) =>
+              panel && (
+                <ApprovalPanel
+                  key={panel.key}
+                  migrationCount={count}
+                  targetVersion={families.length === 1 ? last.version.trim() : ""}
+                  hashReady={runHash !== null}
+                  hashError={hashError}
+                  loading={approvalsLoading}
+                  error={approvalError ?? approvalsReadError}
+                  unreadable={approvalsReadError !== null && approvals.length === 0}
+                  busy={approvalBusy}
+                  approved={panel.approved}
+                  pending={panel.pending}
+                  latest={panel.latest}
+                  viewerEmail={user?.email ?? ""}
+                  roleLabel={roleLabel}
+                  mayApprove={mayApprove}
+                  bypass={bypass}
+                  askToRun={panel.own}
+                  note={approvalNote}
+                  onNoteChange={setApprovalNote}
+                  onRequest={() => void requestApproval()}
+                  onDecide={(id, decision) => void decide(id, decision)}
+                  runButton={replayLabel}
+                />
+              )
           )}
           {approvalNotice && (
             <p className="vs-note-good">{approvalNotice}</p>
@@ -1918,9 +1816,9 @@ function ReplayBody({
             )}
           </button>
           <button
-            className={`btn btn-sm ${production ? "btn-destructive" : "btn-primary"}`}
+            className="btn btn-sm btn-primary"
             disabled={replayBlocked}
-            onClick={() => onReplay(flags)}
+            onClick={() => onReplay()}
           >
             {replayLabel}
           </button>

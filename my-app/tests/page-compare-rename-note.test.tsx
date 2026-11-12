@@ -52,7 +52,6 @@ function outcome(report: CompareReport): OutcomeView {
     displayName: "Local Postgres",
     schema: "shop_dev",
     schemaOptions: ["public", "shop_dev"],
-    environment: "dev",
     sameAsSource: false,
     report,
     data: null,
@@ -82,7 +81,7 @@ function outcome(report: CompareReport): OutcomeView {
 function screenWith(report: CompareReport): CompareScreen {
   return {
     kind: "ready",
-    connections: [{ id: 1, name: "Local Postgres", database_name: "shop", environment: "dev" }],
+    connections: [{ id: 1, name: "Local Postgres", database_name: "shop" }],
     canAddTarget: true,
     maxTargets: 4,
     sets: [],
@@ -104,7 +103,6 @@ function screenWith(report: CompareReport): CompareScreen {
       displayName: "Local Postgres",
       schema: "public",
       schemaOptions: ["public", "shop_dev"],
-      environment: "dev",
       detectedVersion: null,
       missingMessage: null,
     },
@@ -116,7 +114,6 @@ function screenWith(report: CompareReport): CompareScreen {
         displayName: "Local Postgres",
         schema: "shop_dev",
         schemaOptions: ["public", "shop_dev"],
-        environment: "dev",
         missingMessage: null,
       },
     ],

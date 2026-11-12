@@ -17,7 +17,7 @@ import {
  *
  * "break" tone for read-only rather than a calm neutral: it is the setting that
  * makes the Deploy button refuse, and somebody scanning for why theirs did
- * should find it at the same glance they find a production label.
+ * should find it at a glance.
  */
 export function ExecuteRolePill({
   role,

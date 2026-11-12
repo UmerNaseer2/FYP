@@ -7,7 +7,7 @@
  * computer refuses once and allows once, and shows its screens at that width.
  * The first phone then checks and acknowledges drift under Allow control, and
  * is refused once it is turned off. With a passkey it then cancels a query,
- * starts a deploy and a rollback, asks for approval on production and runs what
+ * starts a deploy and a rollback, asks for approval and runs what
  * was approved, and is refused again once Allow control is off.
  *
  * The computer is the desktop app's real phone-link code (desktop/out), with
@@ -136,9 +136,9 @@ async function until(test, ms, label) {
 // ---------------------------------------------------------------- the fake web app server
 
 const CONNECTIONS = [
-  { id: 1, name: "Bookshop dev", environment: "dev", database: "bookshop" },
-  { id: 2, name: "Bookshop production", environment: "prod", database: "bookshop" },
-  { id: 3, name: "Bookshop staging", environment: "staging", database: "bookshop" },
+  { id: 1, name: "Bookshop dev", database: "bookshop" },
+  { id: 2, name: "Bookshop live", database: "bookshop" },
+  { id: 3, name: "Bookshop staging", database: "bookshop" },
 ];
 const ME = { role: "admin", roleLabel: "Admin", permissions: ["dashboard:read", "compare:read", "visualizer:read", "drift:read", "deploy:read", "performance:read"] };
 const approver = crypto.randomBytes(32).toString("hex");
@@ -162,10 +162,10 @@ const FAMILIES = [
   { schemaName: "public", scriptName: "mismatch_migration", newestVersion: "3.0.0", versionCount: 3 },
 ];
 
-/** One run's plan, as my-app/app/api/deploy/phone/route.ts answers. Connection 2 is production, where reports_migration has been approved. */
+/** One run's plan, as my-app/app/api/deploy/phone/route.ts answers. On connection 2 the signed-in role may not run, so a run there needs an approval, and reports_migration has one. */
 async function deployPlan({ connectionId, schemaName, scriptName, action, targetVersion }) {
-  const production = connectionId === 2;
-  const next = !production ? "run" : scriptName === "reports_migration" ? "run-approved" : "ask-approval";
+  const mustAsk = connectionId === 2;
+  const next = !mustAsk ? "run" : scriptName === "reports_migration" ? "run-approved" : "ask-approval";
   const scripts = [{ scriptName, version: targetVersion, sqlContent: action === "deploy" ? RUN_SQL : UNDO_SQL }];
   const hashed = scripts.map(({ scriptName: name, version, sqlContent: sql }) => ({ name, version, sql }));
   return {
@@ -174,15 +174,13 @@ async function deployPlan({ connectionId, schemaName, scriptName, action, target
     schemaName,
     scriptName,
     targetVersion,
-    environment: production ? "prod" : "dev",
     partial: false,
     fingerprint: scriptName === "mismatch_migration" ? "0".repeat(64) : await approvalFingerprint(hashed, action),
     scripts,
     risks: {
-      production,
       breaking: [],
-      dataLoss: !production && action === "deploy" ? [`${scriptName} v${targetVersion}`] : [],
-      otherScripts: !production && action === "revert" ? ["users_migration v2.0.0"] : [],
+      dataLoss: !mustAsk && action === "deploy" ? [`${scriptName} v${targetVersion}`] : [],
+      otherScripts: !mustAsk && action === "revert" ? ["users_migration v2.0.0"] : [],
       drift: null,
     },
     next,
@@ -198,9 +196,9 @@ const LIVE_SQL = `SELECT c.id, c.${LIVE_SQL_WORD}, o.total FROM customers c JOIN
 // What the window sees but a phone never should.
 const LIVE_PRIVATE = ["db.internal.example.test", "bookshop_app_user", "10.20.30.40", "PostgreSQL said something private"];
 const TRACKED = [
-  { id: 11, connectionId: 1, schemaName: "public", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "3", driftStatus: "drifted", driftSummary: LIVE_PRIVATE[3], driftCheckedAt: hoursAgo(2), lastCheckedAt: hoursAgo(0.2), driftAcknowledgedAt: null },
-  { id: 12, connectionId: 1, schemaName: "sales", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "7", driftStatus: "in_sync", driftSummary: null, driftCheckedAt: hoursAgo(26), lastCheckedAt: hoursAgo(26), driftAcknowledgedAt: null },
-  { id: 13, connectionId: 2, schemaName: "public", label: null, environment: "prod", connectionHost: LIVE_PRIVATE[0], headVersion: null, driftStatus: null, driftSummary: null, driftCheckedAt: null, lastCheckedAt: null, driftAcknowledgedAt: null },
+  { id: 11, connectionId: 1, schemaName: "public", label: null, connectionHost: LIVE_PRIVATE[0], headVersion: "3", driftStatus: "drifted", driftSummary: LIVE_PRIVATE[3], driftCheckedAt: hoursAgo(2), lastCheckedAt: hoursAgo(0.2), driftAcknowledgedAt: null },
+  { id: 12, connectionId: 1, schemaName: "sales", label: null, connectionHost: LIVE_PRIVATE[0], headVersion: "7", driftStatus: "in_sync", driftSummary: null, driftCheckedAt: hoursAgo(26), lastCheckedAt: hoursAgo(26), driftAcknowledgedAt: null },
+  { id: 13, connectionId: 2, schemaName: "public", label: null, connectionHost: LIVE_PRIVATE[0], headVersion: null, driftStatus: null, driftSummary: null, driftCheckedAt: null, lastCheckedAt: null, driftAcknowledgedAt: null },
 ];
 const liveSession = (fields) => ({ queryStart: QUERY_BEGAN, querySeconds: null, xactSeconds: null, username: LIVE_PRIVATE[1], applicationName: "bookshop-web", clientAddr: LIVE_PRIVATE[2], state: "active", waitingOn: null, query: LIVE_SQL, queryHidden: false, ...fields });
 const activity = () => ({
@@ -284,7 +282,7 @@ function snapshotOf(schema) {
 function compareSummary(body) {
   const side = (ref) => {
     const connection = CONNECTIONS.find((row) => row.id === ref.connectionId);
-    return { connectionId: connection.id, name: connection.name, environment: connection.environment, schema: ref.schema };
+    return { connectionId: connection.id, name: connection.name, schema: ref.schema };
   };
   return {
     source: { ...side(body.source), error: null },
@@ -1257,7 +1255,7 @@ try {
     same(latest(), ["cancel-query", "done"], "the computer logs the cancel");
     await A.shot("cancel-done");
 
-    // Deploy, ticking the risk it runs.
+    // Deploy. The risk it runs is a warning to read, and holds nothing back.
     await A.tap("#open-deploy");
     await A.waitFor(has("#family-0"), "the script families");
     await A.shot("deploy-list");
@@ -1266,18 +1264,16 @@ try {
     expect((await A.text()).includes("On v2.0.0, 1 waiting"), "the script says where it stands");
     await A.shot("deploy-family");
     await A.tap("#deploy-0");
-    await A.waitFor(`${has("#risk-data-loss")} && ${hasText(RUN_SQL)} && ${has("#start-run")}`, "the plan with its SQL and its risk");
+    await A.waitFor(`${hasText("These scripts could lose data:")} && ${hasText(RUN_SQL)} && ${has("#start-run:not([disabled])")}`, "the plan with its SQL and its risk");
     await A.shot("deploy-plan");
-    expect(await A.evaluate(has("#start-run[disabled]")), "the passkey button waits for the risk to be ticked");
+    expect(await A.evaluate(lacks("input[type=checkbox]")), "a risk is a warning to read, with no box");
     same(runs().length, 1, "reading a plan starts nothing");
-    await A.tap("#risk-data-loss");
-    await A.waitFor(has("#start-run:not([disabled])"), "the passkey button");
     await A.tap("#start-run");
     await A.waitFor(hasText("Deployed."), "the deploy's result", 25000);
     same(
       runs().at(-1),
-      { route: "POST /api/scripts/apply", search: "", body: { connectionId: 1, schemaName: "public", scriptName: "orders_migration", targetVersion: "3.0.0", acknowledgeProduction: false, acknowledgeBreaking: false, acknowledgeDataLoss: true, acknowledgeDrift: false } },
-      "the deploy goes through the app's own route, with only the risk that was signed",
+      { route: "POST /api/scripts/apply", search: "", body: { connectionId: 1, schemaName: "public", scriptName: "orders_migration", targetVersion: "3.0.0" } },
+      "the deploy goes through the app's own route, with exactly what the app worked out",
     );
     same(link.view().actions.slice(0, 2).map(({ action, outcome }) => [action, outcome]), [["deploy", "done"], ["deploy", "started"]], "the computer logs the start and how it ended");
     await A.shot("deploy-done");
@@ -1286,15 +1282,13 @@ try {
     await A.tap("#back-to-family");
     await A.waitFor(`${has("#undo-0")} && ${hasText("The last run from a paired device finished")}`, "the script again, with how its last run ended");
     await A.tap("#undo-0");
-    await A.waitFor(`${has("#risk-other-scripts")} && ${hasText(UNDO_SQL)} && ${hasText("users_migration v2.0.0")}`, "the rollback's plan");
-    await A.tap("#risk-other-scripts");
-    await A.waitFor(has("#start-run:not([disabled])"), "the passkey button");
+    await A.waitFor(`${hasText("Other scripts ran after what this undoes:")} && ${hasText(UNDO_SQL)} && ${hasText("users_migration v2.0.0")} && ${has("#start-run:not([disabled])")}`, "the rollback's plan");
     await A.tap("#start-run");
     await A.waitFor(hasText("Rolled back."), "the rollback's result", 25000);
     same(
       runs().at(-1),
-      { route: "POST /api/scripts/revert", search: "", body: { connectionId: 1, schemaName: "public", scriptName: "orders_migration", targetVersion: "1.0.0", acknowledgeProduction: false, acknowledgeOtherScripts: true, acknowledgeDataLoss: false } },
-      "the rollback goes through the app's own route, with only the risk that was signed",
+      { route: "POST /api/scripts/revert", search: "", body: { connectionId: 1, schemaName: "public", scriptName: "orders_migration", targetVersion: "1.0.0" } },
+      "the rollback goes through the app's own route, with exactly what the app worked out",
     );
     same(latest(), ["rollback", "done"], "the computer logs the rollback");
     await A.shot("rollback-done");
@@ -1306,11 +1300,10 @@ try {
     expect(await A.evaluate(lacks("#start-run")), "a plan whose SQL does not match its fingerprint has no passkey button");
     await A.shot("deploy-mismatch");
 
-    // Production: asking changes nothing but the queue, so it takes no ticks.
+    // A run the role may not start: asking changes nothing but the queue.
     await openFamily(2, 0);
     await A.tap("#deploy-0");
-    await A.waitFor(`${hasText("This runs on production.")} && ${has("#start-run:not([disabled])")}`, "a production request, ready to sign");
-    expect(await A.evaluate(lacks("#risk-production")), "asking accepts no risk, so the list has no boxes");
+    await A.waitFor(`${hasText("an Admin has to approve this exact run")} && ${has("#start-run:not([disabled])")}`, "a request for approval, ready to sign");
     await A.shot("deploy-ask");
     const beforeAsk = runs().length;
     await A.tap("#start-run");
@@ -1319,27 +1312,22 @@ try {
     same(latest(), ["deploy", "sent-for-approval"], "the computer logs the request");
     await A.shot("deploy-asked");
 
-    // Once approved, the run still takes production's tick, since the route reads it first.
+    // Once approved, the run is signed and started like any other.
     await openFamily(2, 1);
     await A.tap("#deploy-0");
-    await A.waitFor(`${has("#risk-production")} && ${has("#start-run")}`, "an approved run, ready to tick");
-    expect(await A.evaluate(has("#start-run[disabled]")), "an approved run on production still waits for its tick");
-    await A.tap("#risk-production");
-    await A.waitFor(has("#start-run:not([disabled])"), "the passkey button");
+    await A.waitFor(`${hasText("This exact run has been approved.")} && ${has("#start-run:not([disabled])")}`, "an approved run, ready to sign");
     await A.tap("#start-run");
     await A.waitFor(hasText("Deployed."), "the approved run's result", 25000);
     same(
       runs().at(-1),
-      { route: "POST /api/scripts/apply", search: "", body: { connectionId: 2, schemaName: "public", scriptName: "reports_migration", targetVersion: "3.0.0", acknowledgeProduction: true, acknowledgeBreaking: false, acknowledgeDataLoss: false, acknowledgeDrift: false } },
-      "an approved run on production carries the tick",
+      { route: "POST /api/scripts/apply", search: "", body: { connectionId: 2, schemaName: "public", scriptName: "reports_migration", targetVersion: "3.0.0" } },
+      "an approved run goes through the app's own route",
     );
 
     // Refused once Allow control is off, with the button still on the screen.
     await openFamily(1, 0);
     await A.tap("#deploy-0");
-    await A.waitFor(has("#risk-data-loss"), "the plan");
-    await A.tap("#risk-data-loss");
-    await A.waitFor(has("#start-run:not([disabled])"), "the passkey button");
+    await A.waitFor(has("#start-run:not([disabled])"), "the plan with its passkey button");
     const beforeOff = runs().length;
     link.turnOffControl(key);
     await A.evaluate(`document.querySelector("#start-run").click()`);

@@ -1,5 +1,4 @@
 import pool, { syncMetadataTables } from "./version-db";
-import { toEnvironment, type Environment } from "./environments";
 import { refusalMessage } from "./permissions";
 import {
   isNameConflict,
@@ -55,8 +54,6 @@ export type ComparisonSetTarget = {
    *  connection can still be named on screen ("Prod — RDS", no longer saved). */
   connectionLabel: string;
   schema: string;
-  /** The connection's environment *now*, or "unset" if it is gone. */
-  environment: Environment;
 };
 
 export type ComparisonSet = {
@@ -102,7 +99,6 @@ type TargetRow = {
   connection_label: string | null;
   schema_name: string;
   live_name: string | null;
-  live_environment: string | null;
 };
 
 /**
@@ -154,7 +150,7 @@ const SET_SELECT = `
 
 const TARGET_SELECT = `
   SELECT t.set_id, t.position, t.connection_id, t.connection_label, t.schema_name,
-         c.name AS live_name, c.environment AS live_environment
+         c.name AS live_name
     FROM comparison_set_targets t
     LEFT JOIN connections c ON c.id = t.connection_id AND c.org_id = t.org_id
 `;
@@ -165,7 +161,6 @@ function toTarget(row: TargetRow): ComparisonSetTarget {
     connectionId: row.connection_id,
     connectionLabel: label(row.live_name, row.connection_label),
     schema: row.schema_name,
-    environment: toEnvironment(row.live_environment),
   };
 }
 

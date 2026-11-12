@@ -1017,7 +1017,7 @@ describe("the Roles & permissions tab", () => {
     expect(atAGlance().getAllByRole("term").map((term) => term.textContent)).toEqual([
       "Changes things",
       "Runs migrations",
-      "Approves production",
+      "Approves runs",
       "Manages people",
     ]);
     expect(answers()).toEqual(["No", "No", "No", "No"]);
@@ -1102,7 +1102,7 @@ describe("the Roles & permissions tab", () => {
     ).toBeInTheDocument();
   });
 
-  it("tags the lines that write to a database, touch a live one or approve production", async () => {
+  it("tags the lines that write to a database, touch a live one or approve runs", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
@@ -1111,8 +1111,8 @@ describe("the Roles & permissions tab", () => {
       screen.getByRole("checkbox", { name: "Apply or revert migrations" })
     ).toHaveAccessibleDescription(/Writes to a database/);
     expect(
-      screen.getByRole("checkbox", { name: "Approve production runs" })
-    ).toHaveAccessibleDescription(/Production/);
+      screen.getByRole("checkbox", { name: "Approve runs" })
+    ).toHaveAccessibleDescription(/Approves runs/);
     expect(
       screen.getByRole("checkbox", { name: "Cancel a stuck query on a live database" })
     ).toHaveAccessibleDescription(/Live database/);
@@ -1242,7 +1242,7 @@ describe("the steps at the top of the Roles & permissions tab", () => {
 });
 
 describe("the Organization tab", () => {
-  const ORG = { name: "Test Org", slug: "test-org", twoPersonRule: true, canDelete: true };
+  const ORG = { name: "Test Org", slug: "test-org", canDelete: true };
   const orgGet = (org = ORG): FetchRoute => ({ match: "/api/admin/organization", method: "GET", body: org });
 
   /** Open the page as an admin, then the Organization tab, and wait for it to load. */
@@ -1258,7 +1258,7 @@ describe("the Organization tab", () => {
     await openOrganizationTab(ORG, {
       match: "/api/admin/organization",
       method: "PATCH",
-      body: { name: "Acme", slug: "test-org", twoPersonRule: true },
+      body: { name: "Acme", slug: "test-org" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Help: Organization name" }));
     expect(screen.getByRole("note")).toHaveTextContent(/The address stays \/test-org/);
@@ -1287,33 +1287,6 @@ describe("the Organization tab", () => {
     expect(await screen.findByText("Give the organization a name.")).toBeInTheDocument();
     expect(screen.getByLabelText("Organization name")).toHaveAttribute("aria-invalid", "true");
     expect(routerCalls.refresh).toBe(0);
-  });
-
-  it("asks before switching the two-person rule off, but not before switching it on", async () => {
-    await openOrganizationTab(ORG, {
-      match: "/api/admin/organization",
-      method: "PATCH",
-      body: (_url: string, init?: RequestInit) => ({ ...ORG, ...JSON.parse(String(init?.body)) }),
-    });
-    const rule = screen.getByRole("switch");
-    expect(rule).toBeChecked();
-
-    fireEvent.click(rule);
-    // Cancelling changes nothing and sends nothing.
-    confirmIn("Switch the two-person rule off?", "Cancel");
-    expect(lastCall("PATCH")).toBeUndefined();
-    expect(rule).toBeChecked();
-
-    fireEvent.click(rule);
-    confirmIn("Switch the two-person rule off?", "Switch off");
-    await waitFor(() => expect(rule).not.toBeChecked());
-    expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ twoPersonRule: false });
-    expect(screen.getByText(/Production runs go ahead without an approval/)).toBeInTheDocument();
-
-    fireEvent.click(rule);
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await waitFor(() => expect(rule).toBeChecked());
-    expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ twoPersonRule: true });
   });
 
   it("deletes only once the name is typed exactly, then leaves for /studio", async () => {
@@ -1356,7 +1329,7 @@ describe("the Organization tab", () => {
 
   it("draws no Delete for an organization that can't be deleted", async () => {
     await openOrganizationTab({ ...ORG, canDelete: false });
-    expect(screen.getByRole("switch")).toBeInTheDocument();
+    expect(screen.getByLabelText("Organization name")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete organization" })).not.toBeInTheDocument();
   });
 

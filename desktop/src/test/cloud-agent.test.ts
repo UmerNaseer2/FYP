@@ -81,12 +81,11 @@ const PUBLISH = "PUT /api/agent/connections";
 const SELF = "DELETE /api/agent/self";
 
 const SUMMARY: CompareSummary = {
-  source: { connectionId: 1, name: "Dev", environment: "dev", schema: "public", error: null },
+  source: { connectionId: 1, name: "Dev", schema: "public", error: null },
   targets: [
     {
       connectionId: 2,
       name: "Prod",
-      environment: "prod",
       schema: "public",
       status: "compared",
       error: null,
@@ -236,12 +235,12 @@ class FakeStore implements CloudStore {
   }
 }
 
-type Rows = { id: number; name: string; environment: string; database: string; host?: string }[];
+type Rows = { id: number; name: string; database: string; host?: string }[];
 
 const CONNECTION_ROWS: Rows = [
-  { id: 1, name: "Dev", environment: "dev", database: "shop_dev", host: HOST },
-  { id: 2, name: "Prod", environment: "prod", database: "shop_prod", host: HOST },
-  { id: 3, name: "Not shared", environment: "staging", database: "shop_staging", host: HOST },
+  { id: 1, name: "Dev", database: "shop_dev", host: HOST },
+  { id: 2, name: "Prod", database: "shop_prod", host: HOST },
+  { id: 3, name: "Not shared", database: "shop_staging", host: HOST },
 ];
 
 type AppCall = { method: string; path: string; body: unknown };
@@ -987,14 +986,14 @@ test("stopping drops an answer still being worked out, and stops the asking", as
 
 // ----- The shared list -----
 
-test("the site hears only each shared connection's id, name and environment", async () => {
+test("the site hears only each shared connection's id and name", async () => {
   const { agent, pass, site } = rig({ loaded: SAVED });
   agent.start();
   await pass(0);
   assert.deepEqual(site.of(PUBLISH)[0].body, {
     connections: [
-      { id: 1, name: "Dev", environment: "dev" },
-      { id: 2, name: "Prod", environment: "prod" },
+      { id: 1, name: "Dev" },
+      { id: 2, name: "Prod" },
     ],
   });
   const sent = JSON.stringify(site.calls.map((call) => call.body));
@@ -1017,11 +1016,11 @@ test("the list goes again every 5 minutes, so a renamed connection catches up", 
   await pass(0);
   app.routes["GET /api/connections/phone"] = {
     status: 200,
-    json: { connections: [{ id: 1, name: "Renamed", environment: "staging", database: "shop_dev" }] },
+    json: { connections: [{ id: 1, name: "Renamed", database: "shop_dev" }] },
   };
   await pass(PUBLISH_EVERY_MS);
   assert.equal(site.count(PUBLISH), 2);
-  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 1, name: "Renamed", environment: "staging" }] });
+  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 1, name: "Renamed" }] });
   agent.stop();
 });
 
@@ -1039,7 +1038,7 @@ test("a change to what is shared goes at once, and no change sends nothing", asy
   agent.sharedChanged();
   await settle();
   assert.equal(site.count(PUBLISH), 2);
-  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 1, name: "Dev", environment: "dev" }] });
+  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 1, name: "Dev" }] });
   agent.stop();
 });
 
@@ -1057,7 +1056,7 @@ test("a change while the list is on its way sends the list again after", async (
   slow.release({ status: 200, body: { ok: true } });
   await settle();
   assert.equal(site.count(PUBLISH), 2);
-  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 2, name: "Prod", environment: "prod" }] });
+  assert.deepEqual(site.of(PUBLISH)[1].body, { connections: [{ id: 2, name: "Prod" }] });
   agent.stop();
 });
 
@@ -1169,8 +1168,8 @@ const AT_HOME = { ...OUT_THERE, host: "localhost" };
 
 /** Plays this computer's server's side of the sync. */
 function fakeSync(own: OwnConnection[] = [
-  { id: 1, name: "Dev", environment: "dev" },
-  { id: 3, name: "Laptop", environment: "dev" },
+  { id: 1, name: "Dev" },
+  { id: 3, name: "Laptop" },
 ]) {
   const applied: unknown[][] = [];
   const roles: (SiteRole | null)[] = [];
@@ -1216,8 +1215,8 @@ test("the site's connections come down after a poll, and later asks carry the si
   // The site now hears of every connection here, each marked shared or not, through this computer's own token.
   assert.deepEqual(site.of(PUBLISH).at(-1)?.body, {
     connections: [
-      { id: 1, name: "Dev", environment: "dev", shared: true },
-      { id: 3, name: "Laptop", environment: "dev", shared: false },
+      { id: 1, name: "Dev", shared: true },
+      { id: 3, name: "Laptop", shared: false },
     ],
   });
   assert.equal(site.of(SYNC)[0].init.redirect, "error");
@@ -1237,7 +1236,7 @@ test("a connection added, renamed or deleted here reaches the site's list at the
   const before = site.count(PUBLISH);
   await pass(IDLE_POLL_MS);
   assert.equal(site.count(PUBLISH), before);
-  sync.state.own = [...sync.state.own, { id: 4, name: "Scratch", environment: "dev" }];
+  sync.state.own = [...sync.state.own, { id: 4, name: "Scratch" }];
   await pass(IDLE_POLL_MS);
   assert.equal(site.count(PUBLISH), before + 1);
   assert.equal((site.of(PUBLISH).at(-1)?.body as { connections: unknown[] }).connections.length, 3);
@@ -1260,8 +1259,8 @@ test("a site without the sync keeps everything here, and is asked again only aft
   assert.equal(sync.applied.length, 0);
   // The old list, of shared connections only, still goes.
   assert.deepEqual((site.of(PUBLISH).at(-1)?.body as { connections: unknown[] }).connections, [
-    { id: 1, name: "Dev", environment: "dev" },
-    { id: 2, name: "Prod", environment: "prod" },
+    { id: 1, name: "Dev" },
+    { id: 2, name: "Prod" },
   ]);
   await pass(NO_SYNC_RETRY_MS - 1);
   assert.equal(site.count(SYNC), 1);
@@ -1558,15 +1557,15 @@ test("readOwnConnections keeps only well-formed rows, cut to size, and throws on
   assert.deepEqual(
     readOwnConnections({
       connections: [
-        { id: 1, name: "Dev", environment: "dev", host: "kept out" },
-        { id: "2", name: "Bad", environment: "dev" },
-        { id: 3, name: "x".repeat(300), environment: "prod" },
+        { id: 1, name: "Dev", host: "kept out" },
+        { id: "2", name: "Bad" },
+        { id: 3, name: "x".repeat(300) },
         null,
       ],
     }),
     [
-      { id: 1, name: "Dev", environment: "dev" },
-      { id: 3, name: "x".repeat(200), environment: "prod" },
+      { id: 1, name: "Dev" },
+      { id: 3, name: "x".repeat(200) },
     ],
   );
   assert.throws(() => readOwnConnections({ connections: "all" }));
@@ -1583,7 +1582,6 @@ const CHECK = { status: "drifted", summary: "1 table added", checkedAt: AT, sour
 const SITE_DRIFT = {
   connectionId: 31,
   connectionName: "Shop",
-  environment: "prod",
   schema: "public",
   label: null,
   intervalMinutes: 60,
@@ -1723,14 +1721,14 @@ test("with no link, or no sync, there are no website drift results and nothing i
 test("this computer's own drift results go to the site with its list, and a new result sends the list again", async () => {
   const OWN_DRIFT = [{ schema: "public", label: null, intervalMinutes: 0, lastCheckedAt: AT, checks: [CHECK] }];
   const sync = fakeSync([
-    { id: 1, name: "Dev", environment: "dev", drift: OWN_DRIFT },
-    { id: 3, name: "Laptop", environment: "dev" },
+    { id: 1, name: "Dev", drift: OWN_DRIFT },
+    { id: 3, name: "Laptop" },
   ]);
   const { agent, pass, site } = await syncedWithDrift(sync);
   assert.deepEqual(site.of(PUBLISH).at(-1)?.body, {
     connections: [
-      { id: 1, name: "Dev", environment: "dev", shared: true, drift: OWN_DRIFT },
-      { id: 3, name: "Laptop", environment: "dev", shared: false },
+      { id: 1, name: "Dev", shared: true, drift: OWN_DRIFT },
+      { id: 3, name: "Laptop", shared: false },
     ],
   });
   const before = site.count(PUBLISH);
@@ -1747,16 +1745,16 @@ test("readOwnConnections passes a connection's drift list on, cut to size, and l
   assert.deepEqual(
     readOwnConnections({
       connections: [
-        { id: 1, name: "Dev", environment: "dev", drift: [{ schema: "public" }] },
-        { id: 2, name: "Bad", environment: "dev", drift: "all of it" },
+        { id: 1, name: "Dev", drift: [{ schema: "public" }] },
+        { id: 2, name: "Bad", drift: "all of it" },
       ],
     }),
     [
-      { id: 1, name: "Dev", environment: "dev", drift: [{ schema: "public" }] },
-      { id: 2, name: "Bad", environment: "dev" },
+      { id: 1, name: "Dev", drift: [{ schema: "public" }] },
+      { id: 2, name: "Bad" },
     ],
   );
-  assert.equal(readOwnConnections({ connections: [{ id: 1, name: "Dev", environment: "dev", drift: many }] })[0].drift?.length, MOST_DRIFT_SCHEMAS);
+  assert.equal(readOwnConnections({ connections: [{ id: 1, name: "Dev", drift: many }] })[0].drift?.length, MOST_DRIFT_SCHEMAS);
 });
 
 test("readDriftAnswer keeps only well-formed schemas and checks, cut to size", () => {

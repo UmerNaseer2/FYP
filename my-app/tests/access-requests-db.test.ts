@@ -1,4 +1,4 @@
-// access-requests-db: requests, and the production runs waiting on someone, in a
+// access-requests-db: requests, and the runs waiting on someone, in a
 // real metadata database.
 //
 // tests/requests-routes.test.ts checks what the routes do with each answer the

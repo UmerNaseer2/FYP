@@ -1,5 +1,6 @@
-// POST /api/scripts/apply: the risks it refuses to run without a tick, the
-// forward-only rule, and the level it stores for each migration.
+// POST /api/scripts/apply: who may run, the approval somebody without the
+// permission needs, the forward-only rule, and the level it stores for each
+// migration.
 //
 // Each refusal is checked for what it says and for what it did not do: no
 // connection used, no approval claimed, no BEGIN, no INSERT. The target
@@ -7,7 +8,6 @@
 // real database or GitHub.
 import { NextRequest } from "next/server";
 import { askToRunRefusal } from "@/lib/connection-access";
-import { toEnvironment } from "@/lib/environments";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { TEST_ORG } from "./helpers/principals";
@@ -17,10 +17,8 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // statements only, so jest.mock("@/...") would not resolve.
 // The caller: an editor on a new install, whose role may run deployments. A
 // test sets mockBypass to play the auth bypass's one principal instead, the
-// full admin that answers for everyone while sign-in is off, and mockRuleOff
-// an editor in an organization whose two-person rule is switched off.
+// full admin that answers for everyone while sign-in is off.
 let mockBypass = false;
-let mockRuleOff = false;
 jest.mock("../lib/auth-guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
@@ -28,13 +26,12 @@ jest.mock("../lib/auth-guard", () => {
       ok: true,
       principal: mockBypass
         ? bypassAdminPrincipal()
-        : principalFor("editor", { email: "a@test", orgTwoPersonRule: !mockRuleOff }),
+        : principalFor("editor", { email: "a@test" }),
     }),
   };
 });
 afterEach(() => {
   mockBypass = false;
-  mockRuleOff = false;
 });
 
 // The metadata database: only the saved-connection lookup reaches it.
@@ -62,11 +59,8 @@ jest.mock("../lib/connection-config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 
-// The tracked-schema record: its environment label and the last drift result.
-const mockFindTracked = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
 jest.mock("../lib/lineage-db", () => ({
-  findTrackedSchema: (...args: unknown[]) => mockFindTracked(...args),
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
@@ -84,7 +78,6 @@ jest.mock("../lib/registry-archive", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
-  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   mayDecideOwn: jest.requireActual("../lib/approvals-db").mayDecideOwn,
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
@@ -93,11 +86,11 @@ jest.mock("../lib/approvals-db", () => ({
 type RouteModule = typeof import("../app/api/scripts/apply/route");
 let POST: RouteModule["POST"];
 
-function connectionRow(environment: string, execute_role?: string) {
+function connectionRow(execute_role?: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment, name: "Sales dev", execute_role,
+    ssl_mode: "disable", name: "Sales dev", execute_role,
   };
 }
 
@@ -136,9 +129,6 @@ async function apply(body: Record<string, unknown>): Promise<{ status: number; b
   return { status: res.status, body: JSON.parse(text) as Record<string, unknown> };
 }
 
-/** The same call on a production target, with its one confirmation given. */
-const onProd = (body: Record<string, unknown>) => apply({ acknowledgeProduction: true, ...body });
-
 const count = (client: FakeClient, text: string) => queryTexts(client).filter((t) => t === text).length;
 
 let guard: GitHubGuard;
@@ -153,9 +143,7 @@ beforeAll(async () => {
 beforeEach(() => {
   guard = guardGitHub();
   mockPoolQuery.mockReset();
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev")] });
-  mockFindTracked.mockReset();
-  mockFindTracked.mockResolvedValue(null);
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow()] });
   mockRecordLineage.mockReset();
   mockRecordLineage.mockResolvedValue({ advanced: false });
   mockClaim.mockReset();
@@ -178,91 +166,40 @@ afterEach(() => {
   expect(guard.unexpected).toEqual([]);
 });
 
-describe("a risk with no tick", () => {
-  // Ticks are asked only on production. An approval is there to claim, so a
-  // refusal below is the tick's and nothing else's.
-  beforeEach(() => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 9 });
-  });
-
-  it("asks for no tick off production", async () => {
-    for (const environment of ["unset", "dev", "staging"]) {
-      mockPoolQuery.mockResolvedValue({ rows: [connectionRow(environment)] });
-      mockClient = createFakeClient(target());
-      const res = await apply(DROPS);
-      expect(res.status).toBe(200);
-    }
-  });
-
-  it("refuses a breaking run that deletes rows, dry run included, before touching the target", async () => {
-    for (const dryRun of [false, true]) {
-      mockClient = createFakeClient(target());
-      const res = await onProd({ ...DROPS, dryRun });
-      expect(res.status).toBe(409);
-      expect(res.body.needsAcknowledgement).toEqual(["breaking", "data_loss"]);
-      expect(res.body.results).toEqual([{ script_name: "orders_fix", version: "2.0.0", status: "skipped" }]);
-      expect(res.body.error).toBe(
-        `This ${dryRun ? "dry run" : "deploy"} was refused because a risk in it has no tick: ` +
-          "orders_fix v2.0.0 is breaking; orders_fix v2.0.0 (DROP COLUMN) deletes rows. Nothing ran. " +
-          `Tick the box under each of those warnings, then ${dryRun ? "start the dry run" : "deploy"} again.`
-      );
-      expect(mockClient.queries).toEqual([]);
-    }
-  });
-
-  it("asks only for the tick that is missing, and runs once every tick is there", async () => {
-    const one = await onProd({ ...DROPS, acknowledgeBreaking: true });
-    expect(one.status).toBe(409);
-    expect(one.body.needsAcknowledgement).toEqual(["data_loss"]);
-
-    mockClient = createFakeClient(target());
-    const both = await onProd({ ...DROPS, acknowledgeBreaking: true, acknowledgeDataLoss: true });
-    expect(both.status).toBe(200);
+describe("a risky run", () => {
+  // The screens show the warnings. The route asks for no tick: a role that
+  // may run here runs.
+  it("runs a breaking script that deletes rows, with nothing to confirm", async () => {
+    const res = await apply(DROPS);
+    expect(res.status).toBe(200);
+    expect(res.body.needsAcknowledgement).toBeUndefined();
     expect(count(mockClient, "COMMIT")).toBe(1);
-  });
-
-  it("asks for the data-loss tick alone on a TRUNCATE, which moves no structure", async () => {
-    const res = await onProd({ ...BASE, scripts: [job("1.0.1", "TRUNCATE audit_log;")] });
-    expect(res.status).toBe(409);
-    expect(res.body.needsAcknowledgement).toEqual(["data_loss"]);
-  });
-
-  it("asks for the data-loss tick on a DELETE inside a DO block", async () => {
-    const sql =
-      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM orders WHERE archived) THEN " +
-      "DELETE FROM orders WHERE archived; END IF; END $$;";
-    const res = await onProd({ ...BASE, scripts: [job("1.0.2", sql)] });
-    expect(res.status).toBe(409);
-    expect(res.body.needsAcknowledgement).toEqual(["data_loss"]);
-    expect(mockClient.queries).toEqual([]);
-  });
-
-  it("asks for the breaking tick when the caller sends 'breaking' with a script", async () => {
-    const res = await onProd({ ...BASE, scripts: [job("1.0.0", "CREATE TABLE orders (id int);", { change_type: "breaking" })] });
-    expect(res.status).toBe(409);
-    expect(res.body.needsAcknowledgement).toEqual(["breaking"]);
-  });
-
-  it("refuses on production before the approval is claimed", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const res = await onProd(DROPS);
-    expect(res.status).toBe(409);
-    expect(res.body.needsAcknowledgement).toEqual(["breaking", "data_loss"]);
     expect(mockClaim).not.toHaveBeenCalled();
-    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("ignores the tick fields an older screen may still send", async () => {
+    const res = await apply({
+      ...DROPS,
+      acknowledgeProduction: false,
+      acknowledgeBreaking: false,
+      acknowledgeDataLoss: false,
+      acknowledgeDrift: false,
+    });
+    expect(res.status).toBe(200);
+    expect(count(mockClient, "COMMIT")).toBe(1);
   });
 });
 
 describe("saved credentials this server can't read", () => {
-  it("refuses before the production approval is claimed, so none is left spent", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  it("refuses before the approval is claimed, so none is left spent", async () => {
+    // An editor on an admins-only connection, with an approval there to claim.
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 9 });
     // buildPgConfig throws only when it can't decrypt the saved password.
     mockBuildPgConfig.mockImplementation(() => {
       throw new Error("Unsupported state or unable to authenticate data");
     });
-    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    const res = await apply(SAFE);
     expect(res.status).toBe(500);
     expect(res.body.nothingRan).toBe(true);
     expect(res.body.error).toBe(`Nothing ran. ${UNREADABLE_CREDENTIALS_MESSAGE}`);
@@ -273,57 +210,25 @@ describe("saved credentials this server can't read", () => {
   });
 });
 
-describe("production approval", () => {
-  // A real run on production spends an approval claimed for these exact
-  // scripts. With none to claim, the route refuses before the first write and
-  // says who can clear one. Under the auth bypass there is one principal and it
-  // clears its own request, so "someone other than you" would be untrue.
-  beforeEach(() => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-  });
-
-  it("refuses a real run nothing approves, and asks for someone other than you", async () => {
-    const res = await apply({ ...SAFE, acknowledgeProduction: true });
-    expect(res.status).toBe(403);
-    expect(res.body.needsApproval).toBe(true);
-    expect(res.body.nothingRan).toBe(true);
-    expect(res.body.error).toBe(
-      "This target is labelled production, so the run needs an approval from someone other than " +
-        "you. No approval covers this exact migration, so nothing ran. Request approval for it on " +
-        "the screen you are running it from, or request a new approval if its SQL has changed " +
-        "since the last one."
-    );
-    expect(mockClaim).toHaveBeenCalledTimes(1);
-    // Only an approval given in the caller's organization can be spent.
-    expect(mockClaim.mock.calls[0][0]).toMatchObject({ orgId: TEST_ORG.id, connectionId: 7, requestedBy: null });
-    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+describe("a run by somebody whose role may run here", () => {
+  it("needs no approval, and claims none", async () => {
+    const res = await apply(SAFE);
+    expect(res.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(count(mockClient, "COMMIT")).toBe(1);
   });
 
   it("needs no approval under the auth bypass", async () => {
     mockBypass = true;
-    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
+    const res = await apply(SAFE);
     expect(res.status).toBe(200);
     expect(mockClaim).not.toHaveBeenCalled();
     expect(count(mockClient, "COMMIT")).toBe(1);
   });
 
-  it("needs no approval with the two-person rule off", async () => {
-    mockRuleOff = true;
-    const res = await apply({ ...SAFE, acknowledgeProduction: true });
-    expect(res.status).toBe(200);
-    expect(mockClaim).not.toHaveBeenCalled();
-    expect(count(mockClient, "COMMIT")).toBe(1);
-  });
-
-  it("runs once an approval is claimed", async () => {
-    mockClaim.mockResolvedValue({ id: 9 });
-    const real = await apply({ ...SAFE, acknowledgeProduction: true });
-    expect(real.status).toBe(200);
-    expect(count(mockClient, "COMMIT")).toBe(1);
-  });
-
-  it("rehearses without an approval, and spends none", async () => {
-    const rehearsal = await apply({ ...SAFE, acknowledgeProduction: true, dryRun: true });
+  it("rehearses with a time limit, and spends no approval", async () => {
+    const rehearsal = await apply({ ...SAFE, dryRun: true });
     expect(rehearsal.status).toBe(200);
     expect(rehearsal.body.dryRun).toBe(true);
     expect(count(mockClient, "COMMIT")).toBe(0);
@@ -339,58 +244,10 @@ describe("production approval", () => {
   });
 
   it("sets no time limit on a real run", async () => {
-    mockClaim.mockResolvedValue({ id: 9 });
-    const real = await apply({ ...SAFE, acknowledgeProduction: true });
+    const real = await apply(SAFE);
     expect(real.status).toBe(200);
     expect(queriesMatching(mockClient, /statement_timeout/)).toEqual([]);
     expect(mockRelease).not.toHaveBeenCalled();
-  });
-});
-
-describe("the last drift check", () => {
-  beforeEach(() => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    mockClaim.mockResolvedValue({ id: 9 });
-  });
-
-  it("needs a tick when it found drift or could not reach the target", async () => {
-    for (const driftStatus of ["drifted", "unreachable"] as const) {
-      mockFindTracked.mockResolvedValue({ environment: toEnvironment("dev"), driftStatus });
-      mockClient = createFakeClient(target());
-      const res = await onProd(SAFE);
-      expect(res.status).toBe(409);
-      expect(res.body.needsAcknowledgement).toEqual(["drift"]);
-      expect(String(res.body.error)).toContain(
-        driftStatus === "drifted"
-          ? 'the last drift check found schema "sales" different from its tracked baseline'
-          : 'the last drift check could not reach schema "sales"'
-      );
-      expect(String(res.body.error)).toContain("run the drift check again first.");
-      expect(mockClient.queries).toEqual([]);
-
-      const ticked = await onProd({ ...SAFE, acknowledgeDrift: true });
-      expect(ticked.status).toBe(200);
-    }
-  });
-
-  it("needs no tick when it was clean", async () => {
-    mockFindTracked.mockResolvedValue({ environment: toEnvironment("dev"), driftStatus: "in_sync" });
-    const res = await onProd(SAFE);
-    expect(res.status).toBe(200);
-  });
-
-  it("answers 503 and runs nothing when the tracking record cannot be read", async () => {
-    mockFindTracked.mockRejectedValue(new Error("metadata database is down"));
-    const res = await onProd(SAFE);
-    expect(res.status).toBe(503);
-    expect(res.body.error).toBe(
-      "Could not read this schema's tracking record, so its drift state is " +
-        "unknown. Nothing ran. Try again in a moment; if it keeps failing, check that the app's " +
-        "metadata database is running."
-    );
-    expect(res.body.nothingRan).toBe(true);
-    expect(mockClient.queries).toEqual([]);
-    expect(mockClaim).not.toHaveBeenCalled();
   });
 });
 
@@ -570,8 +427,6 @@ describe("the level stored", () => {
   it("stores the louder of the SQL's level and the caller's, and hands lineage the loudest", async () => {
     const res = await apply({
       ...BASE,
-      acknowledgeBreaking: true,
-      acknowledgeDataLoss: true,
       scripts: [
         // No change_type: the SQL's own level.
         job("1.0.0", "CREATE TABLE a (id int);"),
@@ -635,16 +490,16 @@ describe("an answer given before the first write", () => {
         "failing, check that the app's metadata database is running.",
     },
     {
-      when: "the production approval cannot be checked",
-      body: { ...SAFE, acknowledgeProduction: true },
+      when: "the approval cannot be checked",
+      body: SAFE,
       arrange: () => {
-        mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+        mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
         mockClaim.mockRejectedValue(new Error("metadata database is down"));
       },
       status: 500,
       says:
-        "Could not check the deploy approval for this production target, so nothing ran. Try again " +
-        "in a moment; if it keeps failing, check that the app's metadata database is running.",
+        "Could not check the approval for this run, so nothing ran. Try again in a moment; if it " +
+        "keeps failing, check that the app's metadata database is running.",
     },
     {
       when: "the target turns the connection away",
@@ -694,11 +549,11 @@ describe("an answer given before the first write", () => {
   });
 
   it("says nothingRan on a refusal as well", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
-    const ticks = await onProd(DROPS);
-    expect(ticks.status).toBe(409);
-    expect(ticks.body.nothingRan).toBe(true);
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
+    const unapproved = await apply(SAFE);
+    expect(unapproved.status).toBe(403);
+    expect(unapproved.body.nothingRan).toBe(true);
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow()] });
 
     const order = await apply({
       ...BASE,
@@ -735,11 +590,10 @@ describe("per-connection execution setting", () => {
   // schema", because the role is a property of the person.
 
   it("refuses a read-only connection before opening it, dry run included", async () => {
-    // Dry run included is the whole point of checking here rather than beside
-    // the production gate: a rehearsal really executes the script against the
+    // Dry run included is the whole point of checking here: a rehearsal really executes the script against the
     // target and only then rolls back, so exempting it would make the quiet
     // way to write to a read-only database the one nobody checks.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("none")] });
     for (const dryRun of [false, true]) {
       const res = await apply({ ...SAFE, dryRun });
       expect(res.status).toBe(403);
@@ -752,21 +606,22 @@ describe("per-connection execution setting", () => {
   it("refuses an admins-only connection to an editor until an Admin approves the run for them", async () => {
     // An editor may not run here by themselves, but may ask an Admin for this
     // one run. With no approval of theirs to claim, nothing runs.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     const res = await apply(SAFE);
     expect(res.status).toBe(403);
     expect(res.body.askToRun).toBe(true);
     expect(res.body.needsApproval).toBe(true);
     expect(res.body.error).toBe(askToRunRefusal("Sales dev", false));
-    // Only an approval this very person asked for counts, off production too.
+    // Only an approval this very person asked for counts, in their own
+    // organization.
     expect(mockClaim).toHaveBeenCalledTimes(1);
-    expect(mockClaim.mock.calls[0][0]).toMatchObject({ requestedBy: "a@test", action: "deploy" });
+    expect(mockClaim.mock.calls[0][0]).toMatchObject({ orgId: TEST_ORG.id, connectionId: 7, requestedBy: "a@test", action: "deploy" });
     expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
   });
 
   it("refuses that editor a dry run there outright, claiming nothing", async () => {
     // A rehearsal executes the SQL too, and no approval covers one.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     const res = await apply({ ...SAFE, dryRun: true });
     expect(res.status).toBe(403);
     expect(res.body.askToRun).toBe(true);
@@ -781,7 +636,7 @@ describe("per-connection execution setting", () => {
     // upgrading to this version would stop deploying with no message anybody
     // could act on — so an absent value is pinned here, not just in the unit
     // test for toExecuteRole.
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", undefined)] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow(undefined)] });
     const res = await apply(SAFE);
     expect(res.status).toBe(200);
   });
@@ -797,7 +652,7 @@ describe("another organization's connection", () => {
     // The saved row is in the next organization along, and the stand-in
     // answers the way the lookup's WHERE clause would, so only a lookup that
     // left the caller's organization out would find it.
-    const theirs = { ...connectionRow("prod"), id: 7, org_id: TEST_ORG.id + 1 };
+    const theirs = { ...connectionRow("admin"), id: 7, org_id: TEST_ORG.id + 1 };
     mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
       const [text, values = []] = args as [string, unknown[]?];
       const holds = (column: string, value: unknown) => {
@@ -810,7 +665,7 @@ describe("another organization's connection", () => {
     });
     mockClaim.mockResolvedValue({ id: 9 });
 
-    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    const res = await apply(SAFE);
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("No saved connection found with id 7.");
     expect(JSON.stringify(res.body)).not.toContain("Sales dev");

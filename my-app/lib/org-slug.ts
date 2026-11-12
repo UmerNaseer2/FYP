@@ -4,8 +4,7 @@
  * and ending with a letter or digit.
  *
  * Written once so the CHECK constraint in lib/db/bootstrap.ts and anything in
- * the app that validates a slug agree, the same way ENVIRONMENT_SQL_LIST there
- * is built from lib/environments.
+ * the app that validates a slug agree.
  */
 export const ORG_SLUG_PATTERN = "^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$";
 

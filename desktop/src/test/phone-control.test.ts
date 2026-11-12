@@ -17,7 +17,7 @@ import type { Clock } from "../main/clock";
 import { initLog, logFilePaths } from "../main/log";
 import { PhoneControlActions, START_WAIT_MS } from "../main/phone-control";
 import { Refused, type AppAnswer, type PhoneControl, type PhoneControlRequests, type Refusal } from "../main/phone-requests";
-import { cancelChallenge, deployChallenge, type ControlTick, type DeployStep } from "../shared/remote/control";
+import { cancelChallenge, deployChallenge, type DeployStep } from "../shared/remote/control";
 import type { Bytes } from "../shared/remote/bytes";
 import type { DeployNext, DeployPlanParams, DeployStartParams, PasskeySignature, PasskeyState } from "../shared/remote/rpc";
 
@@ -92,11 +92,10 @@ function planAnswer(changes: Record<string, unknown> = {}, action: "deploy" | "r
       action,
       ...FAMILY,
       targetVersion: action === "deploy" ? "2.0.0" : "1.0.0",
-      environment: "staging",
-      partial: false,
+        partial: false,
       fingerprint: FINGERPRINT,
       scripts: [{ scriptName: FAMILY.scriptName, version: "2.0.0", sqlContent: SQL }],
-      risks: { production: false, breaking: [], dataLoss: [], otherScripts: [], drift: null },
+      risks: { breaking: [], dataLoss: [], otherScripts: [], drift: null },
       next: "run",
       blockedReason: null,
       run: { path, body: { connectionId: 5, schemaName: "sales", dryRun: false, scripts: "what to run" } },
@@ -110,7 +109,7 @@ function askAnswer(changes: Record<string, unknown> = {}, action: "deploy" | "re
   return planAnswer({ next: "ask-approval", run: null, approvalRequest: { action, connectionId: 5, scripts: "what to ask for" }, ...changes }, action);
 }
 
-const RISKS = { production: false, breaking: [], dataLoss: [], otherScripts: [], drift: null };
+const RISKS = { breaking: [], dataLoss: [], otherScripts: [], drift: null };
 
 /** One signed-in computer, with a fake app, a fake passkey check and one paired phone with Allow control on. */
 class Fixture {
@@ -181,7 +180,7 @@ class Fixture {
   }
 }
 
-function start(params: DeployPlanParams = DEPLOY, step: DeployStep = "run", ticks: ControlTick[] = []): DeployStartParams {
+function start(params: DeployPlanParams = DEPLOY, step: DeployStep = "run", ticks: string[] = []): DeployStartParams {
   return { ...params, fingerprint: FINGERPRINT, step, ticks, assertion: SIGNATURE };
 }
 
@@ -297,7 +296,6 @@ test("shows a phone a plan with its SQL and risks, and never what to send to run
     action: "deploy",
     ...FAMILY,
     targetVersion: "2.0.0",
-    environment: "staging",
     partial: false,
     fingerprint: FINGERPRINT,
     scripts: [{ name: FAMILY.scriptName, version: "2.0.0", sql: SQL }],
@@ -321,12 +319,11 @@ test("shows a phone a plan with its SQL and risks, and never what to send to run
   assert.equal(await refusalOf(() => fixture.requests().deployPlan(DEPLOY, SIGNAL)), "unreachable");
 });
 
-test("signs what the phone showed: the action, the family, the version, the SQL's fingerprint, the step and the ticks", async () => {
+test("signs what the phone showed: the action, the family, the version, the SQL's fingerprint and the step", async () => {
   const fixture = new Fixture();
-  const ticks: ControlTick[] = ["production", "drift"];
-  fixture.answers.set(PHONE_ROUTE, planAnswer({ risks: { ...RISKS, production: true, drift: "drifted" }, next: "run-approved" }));
-  await fixture.requests().deployStart(start(DEPLOY, "run", ticks), SIGNAL);
-  assert.deepEqual(fixture.challenge, await deployChallenge(NONCE, { ...DEPLOY, fingerprint: FINGERPRINT, step: "run", ticks }));
+  fixture.answers.set(PHONE_ROUTE, planAnswer({ risks: { ...RISKS, drift: "drifted" }, next: "run-approved" }));
+  await fixture.requests().deployStart(start(), SIGNAL);
+  assert.deepEqual(fixture.challenge, await deployChallenge(NONCE, { ...DEPLOY, fingerprint: FINGERPRINT, step: "run", ticks: [] }));
 
   await fixture.requests().cancelSession(CANCEL_PARAMS, SIGNAL).catch(() => {});
   assert.deepEqual(fixture.challenge, await cancelChallenge(NONCE, CANCEL_PARAMS));
@@ -341,7 +338,6 @@ test("refuses a start in order, leaves its entry, and runs nothing", async () =>
     ["no longer shared", (f) => { f.shared = []; }, "not-shared", "not-shared"],
     ["someone else signed in", (f) => { f.signedIn = OTHER_APPROVER; }, "control-other-person", "other-person"],
     ["other SQL", (f) => { f.answers.set(PHONE_ROUTE, planAnswer({ fingerprint: "cd".repeat(32) })); }, "control-changed", "changed"],
-    ["a new risk", (f) => { f.answers.set(PHONE_ROUTE, planAnswer({ risks: { ...RISKS, dataLoss: ["users_migration v2.0.0"] } })); }, "control-changed", "changed"],
     ["now waiting on someone", (f) => { f.answers.set(PHONE_ROUTE, planAnswer({ next: "waiting", run: null })); }, "control-changed", "changed"],
     ["now blocked", (f) => { f.answers.set(PHONE_ROUTE, planAnswer({ next: "blocked", blockedReason: "role", run: null })); }, "control-changed", "changed"],
     ["now a question for someone else", (f) => { f.answers.set(PHONE_ROUTE, askAnswer()); }, "control-changed", "changed"],
@@ -369,10 +365,10 @@ test("checks the signature before it asks the app anything", async () => {
   assert.deepEqual(fixture.outcomes(), ["passkey-refused", "passkey-refused"]);
 });
 
-test("asks for an approval with what the app worked out, needing no ticks, on the request's signal", async () => {
+test("asks for an approval with what the app worked out, on the request's signal", async () => {
   const fixture = new Fixture();
   const { signal } = new AbortController();
-  fixture.answers.set(PHONE_ROUTE, askAnswer({ risks: { ...RISKS, production: true, dataLoss: ["users_migration v2.0.0"] } }));
+  fixture.answers.set(PHONE_ROUTE, askAnswer({ risks: { ...RISKS, dataLoss: ["users_migration v2.0.0"] } }));
   assert.deepEqual(await fixture.requests().deployStart(start(DEPLOY, "ask"), signal), { status: "sent-for-approval" });
   const asked = fixture.calls.at(-1);
   assert.equal(asked?.route, ASK);
@@ -396,12 +392,12 @@ test("refuses an ask when the plan no longer needs one, or when the app will not
   assert.deepEqual(fixture.outcomes(), ["changed", "changed", "forbidden"]);
 });
 
-test("runs a deploy on a signal of its own, with what the app worked out and only the signed acknowledgements", async () => {
+test("runs a deploy on a signal of its own, with exactly what the app worked out, whatever it risks", async () => {
   const fixture = new Fixture();
   const controller = new AbortController();
-  const ticks: ControlTick[] = ["production", "drift"];
-  fixture.answers.set(PHONE_ROUTE, planAnswer({ risks: { ...RISKS, production: true, drift: "drifted" }, next: "run-approved" }));
-  assert.deepEqual(await fixture.requests().deployStart(start(DEPLOY, "run", ticks), controller.signal), { status: "done" });
+  // Risks are warnings to read. Nothing has to be accepted for the run to start.
+  fixture.answers.set(PHONE_ROUTE, planAnswer({ risks: { breaking: ["users_migration v2.0.0"], dataLoss: ["users_migration v2.0.0"], otherScripts: [], drift: "drifted" }, next: "run-approved" }));
+  assert.deepEqual(await fixture.requests().deployStart(start(), controller.signal), { status: "done" });
 
   const run = fixture.calls.at(-1);
   assert.equal(run?.route, APPLY);
@@ -410,10 +406,6 @@ test("runs a deploy on a signal of its own, with what the app worked out and onl
     schemaName: "sales",
     dryRun: false,
     scripts: "what to run",
-    acknowledgeProduction: true,
-    acknowledgeBreaking: false,
-    acknowledgeDataLoss: false,
-    acknowledgeDrift: true,
   });
   assert.notEqual(run?.signal, controller.signal);
   assert.deepEqual(fixture.routes(), [PHONE_ROUTE, APPLY]);
@@ -422,12 +414,11 @@ test("runs a deploy on a signal of its own, with what the app worked out and onl
   assert.equal(fixture.clock.waiting(), 0);
 });
 
-test("runs a rollback under the names the revert route reads", async () => {
+test("runs a rollback through the revert route", async () => {
   const fixture = new Fixture();
-  const ticks: ControlTick[] = ["production", "other-scripts", "data-loss"];
-  const risks = { ...RISKS, production: true, otherScripts: ["other v1"], dataLoss: ["users_migration v1.0.0"] };
+  const risks = { ...RISKS, otherScripts: ["other v1"], dataLoss: ["users_migration v1.0.0"] };
   fixture.answers.set(PHONE_ROUTE, planAnswer({ risks }, "revert"));
-  assert.deepEqual(await fixture.requests().deployStart(start(REVERT, "run", ticks), SIGNAL), { status: "done" });
+  assert.deepEqual(await fixture.requests().deployStart(start(REVERT), SIGNAL), { status: "done" });
   const run = fixture.calls.at(-1);
   assert.equal(run?.route, REVERT_ROUTE);
   assert.deepEqual(run?.body, {
@@ -435,9 +426,6 @@ test("runs a rollback under the names the revert route reads", async () => {
     schemaName: "sales",
     dryRun: false,
     scripts: "what to run",
-    acknowledgeProduction: true,
-    acknowledgeOtherScripts: true,
-    acknowledgeDataLoss: true,
   });
   assert.equal(fixture.entries[0]?.action, "rollback");
   assert.equal(fixture.entries[0]?.detail, "users_migration to 1.0.0");
@@ -455,16 +443,13 @@ test("says what a run with no version named goes to", async () => {
   assert.equal(back.entries[0]?.detail, "users_migration to before its first version");
 });
 
-test("takes a signed tick for a risk that has gone away, as it changes nothing", async () => {
+test("checks an older phone app's signature with the ticked risks it signed, and passes none of them on", async () => {
   const fixture = new Fixture();
-  assert.deepEqual(await fixture.requests().deployStart(start(DEPLOY, "run", ["data-loss"]), SIGNAL), { status: "done" });
-  assert.equal(objectBody(fixture.calls.at(-1)?.body).acknowledgeDataLoss, true);
+  const ticks = ["production", "data-loss"];
+  assert.deepEqual(await fixture.requests().deployStart(start(DEPLOY, "run", ticks), SIGNAL), { status: "done" });
+  assert.deepEqual(fixture.challenge, await deployChallenge(NONCE, { ...DEPLOY, fingerprint: FINGERPRINT, step: "run", ticks }));
+  assert.deepEqual(fixture.calls.at(-1)?.body, { connectionId: 5, schemaName: "sales", dryRun: false, scripts: "what to run" });
 });
-
-function objectBody(body: unknown): Record<string, unknown> {
-  assert.ok(typeof body === "object" && body !== null);
-  return body as Record<string, unknown>;
-}
 
 test("reads each way a run can end, and never says done or not applied without knowing", async () => {
   const cases: [string, Answerable, "done" | "not-applied" | "unknown" | Refusal, PhoneActionOutcome, string][] = [

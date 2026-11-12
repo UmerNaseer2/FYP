@@ -1,36 +1,25 @@
 /** @jest-environment jsdom */
 
 /**
- * The two-person rule as the operator reads it, and the browser-side hash that
+ * The approval panel as people read it, and the browser-side hash that
  * decides whether an approval covers the run on screen.
  *
- * Nothing in this panel can start a deploy. The gate is the apply route's: it
- * claims an approval row before it runs any SQL, and refuses if none covers the
- * run. What the panel does is *report* — who asked, who cleared it, and whether
- * the approval still covers the SQL currently selected — and a panel that
- * reports wrongly is how a production run gets pressed by somebody who believed
- * a second person had read it. So the tests below are about sentences: which
- * state the panel claims, which button it offers to whom, and which of the
- * near-miss states it refuses to round off into "cleared".
+ * Somebody whose role may not run on a connection asks for approval of one
+ * exact run, and an Admin (or whoever may approve) answers. The panel has two
+ * modes: the asker's (askToRun) and the answer panel for somebody else's ask.
  *
- * The hash has its own block at the end. It is the one thing in this file that
- * is not a sentence, and the only one that can make an approval which genuinely
- * covers a run read as one that does not.
+ * Nothing in this panel can start a deploy. The apply route claims an
+ * approval row before it runs any SQL, and refuses if none covers the run.
+ * What the panel does is report, so the tests below are about sentences:
+ * which state the panel claims and which button it offers to whom.
  *
  * What is NOT here:
- *  - Enforcement. Whether a run can actually start turns on the apply and
- *    revert routes claiming a row, which tests/approvals-action.test.ts and
- *    tests/deploy-safety.test.ts cover against the database calls themselves.
- *    Every button below is offered or withheld; none of them is a gate.
- *  - Working out WHICH row is `approved`, `pending`, `latest` or
- *    `otherApproval`. The panel is handed four rows already sorted; the pages
- *    that sort them (Deploy, Version Sync) are covered by their own suites, and
- *    duplicating that here would test the fixture rather than the panel.
+ *  - Enforcement, which tests/approvals-action.test.ts and
+ *    tests/deploy-safety.test.ts cover.
+ *  - Working out which row is approved, pending or latest. The pages that
+ *    sort them (Deploy, Version Sync) have their own suites.
  *  - What happens after a button is pressed. onRequest and onDecide are the
- *    page's, and the requests they make are covered where they are made.
- *  - The `appr--ok` / `appr--wait` / `appr--no` class, which is colour. The
- *    words carry the state, and a test that pinned the class would pass on a
- *    panel whose sentence said the opposite.
+ *    page's.
  */
 
 import "@testing-library/jest-dom";
@@ -74,16 +63,12 @@ const BASE: PanelProps = {
   latest: null,
   viewerEmail: "me@example.com",
   roleLabel: "Admin",
-  mayRequest: true,
   mayApprove: true,
   bypass: false,
   note: "",
   onNoteChange: () => {},
   onRequest: () => {},
   onDecide: () => {},
-  // The rule is off by default since an organization switches it on; most of
-  // this file is about the panel with the rule on.
-  twoPersonRule: true,
 };
 
 function row(over: Partial<ApprovalRow> = {}): ApprovalRow {
@@ -149,7 +134,7 @@ describe("before there is anything to say", () => {
     expect(panel).toHaveTextContent("Working out which approval covers this run");
     // The approval state is not known yet, and the difference between "not yet"
     // and "there isn't one" is the whole value of the panel.
-    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs an approval")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Request approval/ })).not.toBeInTheDocument();
   });
 
@@ -167,7 +152,7 @@ describe("before there is anything to say", () => {
     const panel = show({ hashError: "This page must be served over https to check approvals." });
 
     expect(panel).toHaveTextContent("This page must be served over https to check approvals.");
-    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs an approval")).not.toBeInTheDocument();
   });
 });
 
@@ -176,13 +161,13 @@ describe("a list nobody could read", () => {
     const panel = show({ unreadable: true, error: "connection refused" });
 
     // The failure that matters is the other direction — an unreadable list
-    // falling through to "Needs a second person" reports the approval state as
+    // falling through to "Needs an approval" reports the approval state as
     // read when nothing read it.
     expect(screen.getByText("Approval state unknown")).toBeInTheDocument();
     expect(panel).toHaveTextContent("this page cannot say whether this run is cleared");
     expect(panel).toHaveTextContent("The server checks again when you press Deploy");
     expect(panel).toHaveTextContent("connection refused");
-    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs an approval")).not.toBeInTheDocument();
     // Requesting one now would post against a list that could not be read, so
     // the reader cannot tell whether they are asking for a second time.
     expect(screen.queryByRole("button", { name: /Request approval/ })).not.toBeInTheDocument();
@@ -205,195 +190,157 @@ describe("a list nobody could read", () => {
   });
 });
 
-describe("the way forward from a refusal", () => {
-  it("offers to ask for the box a role needs to clear a run", async () => {
-    show({ mayApprove: false, roleLabel: "Editor", pending: row() });
 
-    expect(await screen.findByRole("link", { name: "Ask for it" })).toHaveAttribute(
-      "href",
-      "/requests?ask=approvals%3Aapprove"
-    );
+const ASKER = { askToRun: true, mayApprove: false, roleLabel: "Editor" } as const;
+
+describe("somebody whose role may not run this by itself", () => {
+  it("offers to ask an Admin for this exact run", () => {
+    const panel = show(ASKER);
+    expect(panel).toHaveTextContent("Needs an Admin's approval");
+    expect(panel).toHaveTextContent("Your role (Editor) may not run migrations on this connection by itself.");
+    expect(panel).toHaveTextContent("you can run it once, within 7 days");
+    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Ask for approval again" })).not.toBeInTheDocument();
   });
 
-  it("offers to ask for the box a role needs to request a run", async () => {
-    show({ mayRequest: false, roleLabel: "Viewer" });
-
-    expect(await screen.findByRole("link", { name: "Ask for it" })).toHaveAttribute(
-      "href",
-      "/requests?ask=approvals%3Acreate"
-    );
+  it("says rollback when it is a rollback", () => {
+    const panel = show({ ...ASKER, action: "revert", versionsLabel: "v3.0.0" });
+    expect(panel).toHaveTextContent("may not roll back on this connection by itself");
   });
 
-  it("tells the person who asked where their request went, and offers nothing to ask for", () => {
-    // They are not missing a box. The rule says somebody else has to read it.
+  it("waits for an Admin once asked, with no button to answer it themselves", () => {
+    const panel = show({ ...ASKER, pending: row({ requested_by: "me@example.com" }) });
+    expect(panel).toHaveTextContent("Waiting for an Admin");
+    expect(panel).toHaveTextContent("Admins see it on their Requests page");
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
+  });
+
+  it("says the approval is theirs, once", () => {
+    const panel = show({ ...ASKER, approved: row({ status: "approved", decided_by: "boss@example.com" }) });
+    expect(panel).toHaveTextContent("Approved for you, once");
+  });
+
+  it("repeats a rejection and who wrote it, and lets them ask again", () => {
     const panel = show({
-      mayApprove: false,
-      roleLabel: "Release requester",
-      pending: row({ requested_by: "me@example.com" }),
+      ...ASKER,
+      latest: row({ status: "rejected", decided_by: "boss@example.com", note: "wait for the window" }),
     });
 
-    expect(panel).toHaveTextContent("Anyone who can approve it sees it on their Requests page.");
-    expect(panel).not.toHaveTextContent("can't clear");
-    expect(screen.queryByRole("link", { name: "Ask for it" })).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent(
+      'The last request for this exact SQL was rejected by boss@example.com, with the note "wait for the window".'
+    );
+    expect(screen.getByRole("button", { name: "Ask for approval again" })).toBeEnabled();
+  });
+
+  it("says when an approval for this SQL has already been spent", () => {
+    const panel = show({ ...ASKER, latest: row({ status: "used" }) });
+    expect(panel).toHaveTextContent("has already been spent on a run");
+  });
+
+  it("says spent on a rollback when that is what spent it", () => {
+    const panel = show({ ...ASKER, action: "revert", versionsLabel: "v3.0.0", latest: row({ status: "used" }) });
+    expect(panel).toHaveTextContent("has already been spent on a rollback");
+  });
+
+  it("holds the ask button while a request is in flight", () => {
+    show({ ...ASKER, busy: true });
+    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeDisabled();
+  });
+
+  it("labels the note for whoever approves", () => {
+    const typed: string[] = [];
+    show({ ...ASKER, onNoteChange: (value) => typed.push(value) });
+
+    const box = screen.getByLabelText("Note for the record, shown to whoever approves this");
+    expect(box).toHaveValue("");
+    expect(box).toHaveAttribute("placeholder", "Optional note for the approver");
+    fireEvent.change(box, { target: { value: "ticket 412" } });
+    expect(typed).toEqual(["ticket 412"]);
   });
 });
 
-describe("who may clear a request", () => {
-  it("offers both decisions to a second person", () => {
-    const decisions: [number, string][] = [];
-    show({
-      pending: row(),
-      onDecide: (id, decision) => decisions.push([id, decision]),
-    });
+describe("the answer panel, for somebody else's ask", () => {
+  it("offers both decisions to somebody who may approve", () => {
+    const decided: Array<[number, string]> = [];
+    const panel = show({ pending: row(), onDecide: (id, decision) => decided.push([id, decision]) });
 
-    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Waiting for your answer");
+    expect(panel).toHaveTextContent("Requested by asker@example.com");
+    expect(panel).toHaveTextContent("Their role may not do this run by itself.");
     fireEvent.click(screen.getByRole("button", { name: "Approve this run" }));
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-    expect(decisions).toEqual([
+    expect(decided).toEqual([
       [11, "approve"],
       [11, "reject"],
     ]);
   });
 
-  it("withholds them from the person who asked", () => {
+  it("calls it a rollback when it is one", () => {
+    show({ action: "revert", versionsLabel: "v3.0.0", pending: row({ action: "revert" }) });
+    expect(screen.getByRole("button", { name: "Approve this rollback" })).toBeEnabled();
+  });
+
+  it("withholds them from the person who asked, in the server's words", () => {
     const panel = show({ pending: row({ requested_by: "me@example.com" }) });
 
-    expect(panel).toHaveTextContent("You asked for this deploy, so you cannot approve it.");
-    expect(panel).toHaveTextContent("A production run needs a second person.");
-    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent("Waiting for somebody else");
+    expect(panel).toHaveTextContent("You asked for this run, so somebody else has to approve it.");
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
   });
 
   it("treats an address that differs only in case as the same person", () => {
-    // Email local parts are case-insensitive in every mailbox anyone signs in
-    // with here, and the server's own check lowercases both sides. A panel that
-    // compared them raw would hand the requester the Approve button and then
-    // watch the server refuse the decision they were invited to make.
-    show({ pending: row({ requested_by: "Me@Example.COM" }) });
-
-    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
+    show({ pending: row({ requested_by: "ME@Example.com" }) });
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
   });
 
-  it("withholds them from a role that may not approve, and names the box it needs", () => {
-    // "Approvals: Approve" is a box an admin ticks per role on the Admin
-    // screen, so the refusal says which box rather than "needs the admin role":
-    // the admin reading it over someone's shoulder can fix it in one click.
-    const panel = show({ mayApprove: false, roleLabel: "Editor", pending: row() });
-
-    expect(panel).toHaveTextContent(
-      `Your role (Editor) can't clear a production run. Ask an admin to turn on "Approve production runs" for this role.`
-    );
-    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
-    // No note box either: it is only read back off an approval this person
-    // cannot record.
-    expect(screen.queryByLabelText(/Note for the approval record/)).not.toBeInTheDocument();
-  });
-
-  it("calls it a rollback in that refusal when it is one", () => {
+  it("names the rollback in the line the asker gets", () => {
     const panel = show({
       action: "revert",
-      versionsLabel: "v3.0.0 and v2.0.0",
-      mayApprove: false,
-      roleLabel: "Editor",
-      pending: row(),
+      versionsLabel: "v3.0.0",
+      pending: row({ requested_by: "me@example.com", action: "revert" }),
     });
-
-    expect(panel).toHaveTextContent("Your role (Editor) can't clear a production rollback.");
-    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent("You asked for this rollback, so somebody else has to approve it.");
   });
 
-  it("sends a tester viewing as another role back to Admin, not to an admin", () => {
-    // Under the bypass whoever is testing already is the admin, looking at the
-    // app through View as. "Ask an admin" would send them looking for someone
-    // who is themselves, and "Waiting for your approval" would offer them a
-    // decision the role they are viewing as cannot make.
-    const panel = show({
-      bypass: true,
-      mayApprove: false,
-      roleLabel: "Viewer",
-      pending: row({ requested_by: "me@example.com" }),
-    });
+  it("withholds them from a role that may not approve, and names what it needs", () => {
+    const panel = show({ pending: row(), mayApprove: false, roleLabel: "Editor" });
 
-    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
-    expect(panel).toHaveTextContent(
-      `Your role (Viewer) can't clear a production run. Switch "View as" back to Admin to do that.`
-    );
-    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent("Your role (Editor) can't approve a run.");
+    expect(panel).toHaveTextContent("Ask an admin to turn on");
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
   });
 
-  it("lets the one principal under the bypass clear their own request", () => {
-    // With the bypass on everyone is the same principal, so the requester is
-    // also the only possible approver. The server allows it and marks the row
-    // self_approved; refusing here would leave a production deploy that nobody
-    // in the whole install could ever clear.
-    const panel = show({ bypass: true, pending: row({ requested_by: "me@example.com" }) });
+  it("sends a tester viewing as another role back to Admin", () => {
+    const panel = show({ pending: row(), mayApprove: false, roleLabel: "Editor", bypass: true });
 
-    expect(screen.getByText("Waiting for your approval")).toBeInTheDocument();
-    expect(panel).toHaveTextContent("there is only one principal, so you clear these migrations yourself");
-    expect(screen.getByRole("button", { name: "Approve this run" })).toBeEnabled();
-  });
-
-  it("still names a second person under the bypass when someone else asked", () => {
-    // The bypass makes the viewer the sole approver, not the sole requester: a
-    // row written before the bypass was turned on still carries another name.
-    const panel = show({ bypass: true, pending: row({ requested_by: "asker@example.com" }) });
-
-    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
-    expect(panel).toHaveTextContent("Someone else has to read these migrations and clear them");
+    expect(panel).toHaveTextContent('Switch "View as" back to Admin to do that.');
+    expect(panel).not.toHaveTextContent("Ask an admin to turn on");
   });
 
   it("holds both decisions while one is in flight", () => {
-    show({ busy: true, pending: row() });
+    show({ pending: row(), busy: true });
 
     expect(screen.getByRole("button", { name: "Approve this run" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
   });
 
-  it("names the rollback in the refusal a requester gets", () => {
-    const panel = show({
-      action: "revert",
-      versionsLabel: "v3.0.0 and v2.0.0",
-      pending: row({ requested_by: "me@example.com" }),
+  it("offers nothing to ask for when nobody has asked", () => {
+    const panel = show({});
+
+    expect(panel).toHaveTextContent("Needs an approval");
+    expect(panel).toHaveTextContent("Nobody has asked for this exact run.");
+    expect(screen.queryByRole("button", { name: /Ask for approval|Approve|Reject/ })).not.toBeInTheDocument();
+  });
+
+  it("labels the note for the record", () => {
+    const typed: string[] = [];
+    show({ pending: row(), onNoteChange: (value) => typed.push(value) });
+
+    fireEvent.change(screen.getByLabelText("Note for the approval record"), {
+      target: { value: "read it all" },
     });
-
-    expect(panel).toHaveTextContent("You asked for this rollback, so you cannot approve it.");
-    expect(panel).toHaveTextContent("A rollback on production needs a second person.");
-  });
-});
-
-describe("who may ask for one", () => {
-  it("withholds the request from a role that may not make one, and names the box", () => {
-    const panel = show({ mayRequest: false, mayApprove: false, roleLabel: "Viewer" });
-
-    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
-    expect(panel).toHaveTextContent(
-      `Your role (Viewer) can't request a production approval. Ask an admin to turn on "Request a production approval" for this role.`
-    );
-    expect(screen.queryByRole("button", { name: /^Request approval/ })).not.toBeInTheDocument();
-    // The note would only ever be sent along with a request this role cannot make.
-    expect(screen.queryByLabelText(/Note for the record/)).not.toBeInTheDocument();
-  });
-
-  it("does not promise a tester viewing as that role that they clear it themselves", () => {
-    // "You request it and then clear it yourself" is true of the admin under
-    // the bypass, and wrong twice over for the role View as is showing.
-    const panel = show({ bypass: true, mayRequest: false, mayApprove: false, roleLabel: "Viewer" });
-
-    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
-    expect(panel).not.toHaveTextContent("clear it yourself");
-    expect(panel).toHaveTextContent(
-      `Your role (Viewer) can't request a production approval. Switch "View as" back to Admin to do that.`
-    );
-    expect(screen.queryByRole("button", { name: /^Request approval/ })).not.toBeInTheDocument();
-  });
-
-  it("still offers the request to a role that may ask but not approve", () => {
-    // The everyday editor: asks, and waits for somebody else to clear it.
-    show({ mayApprove: false, roleLabel: "Editor" });
-
-    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Request approval" })).toBeEnabled();
+    expect(typed).toEqual(["read it all"]);
   });
 });
 
@@ -407,7 +354,7 @@ describe("what an approval says it covers", () => {
       }),
     });
 
-    expect(screen.getByText("Approved by a second person")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Approved");
     expect(panel).toHaveTextContent("Cleared for exactly these 2 migrations through v1.0.2");
     expect(panel).toHaveTextContent("Edit any of the SQL and this stops applying.");
     expect(panel).toHaveTextContent(
@@ -422,49 +369,7 @@ describe("what an approval says it covers", () => {
     expect(panel).not.toHaveTextContent("1 migration");
   });
 
-  it("does not call a self-approval a second person", () => {
-    // A self-approval is only possible under the bypass or with the
-    // organization's two-person rule off, and the row records it as one.
-    // Reading it back as "Approved by a second person" would state the
-    // opposite of what the audit log holds.
-    const approved = row({ status: "approved", self_approved: true, decided_by: "me@example.com" });
-    const panel = show({ bypass: true, approved });
-
-    expect(screen.getByText("Self-approved under the auth bypass")).toBeInTheDocument();
-    expect(screen.queryByText("Approved by a second person")).not.toBeInTheDocument();
-    expect(panel).not.toHaveTextContent("second person");
-  });
-
-  it("says a self-approval came from the two-person rule being off", () => {
-    const panel = show({
-      twoPersonRule: false,
-      approved: row({ status: "approved", self_approved: true, decided_by: "me@example.com" }),
-    });
-
-    expect(screen.getByText("Self-approved (two-person rule off)")).toBeInTheDocument();
-    expect(panel).not.toHaveTextContent("second person");
-  });
-
-  it("lets the requester clear their own request while the two-person rule is off", () => {
-    const panel = show({ twoPersonRule: false, pending: row({ requested_by: "me@example.com" }) });
-
-    expect(screen.getByText("Waiting for your approval")).toBeInTheDocument();
-    expect(panel).toHaveTextContent("The two-person rule is off in this organization, so you can clear these migrations yourself");
-    expect(screen.getByRole("button", { name: "Approve this run" })).toBeEnabled();
-  });
-
-  it("still waits for a second person while the rule is on, or for someone who may approve", () => {
-    show({ pending: row({ requested_by: "me@example.com" }) });
-    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
-    cleanup();
-
-    show({ twoPersonRule: false, mayApprove: false, pending: row({ requested_by: "me@example.com" }) });
-    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
-  });
-
   it("says when the approval stops covering the run", () => {
-    // Nothing breaks at that moment — the run simply reads as unapproved
-    // again — so the reader has to be told before they plan around it.
     const panel = show({
       approved: row({ status: "approved", expires_at: "2026-09-19T09:00:00.000Z" }),
     });
@@ -480,8 +385,6 @@ describe("what an approval says it covers", () => {
   });
 
   it("names the versions a rollback undoes rather than a count", () => {
-    // A rollback's approval covers the rollback SQL of specific versions, and
-    // "2 migrations" would be both the wrong noun and the wrong direction.
     const panel = show({
       action: "revert",
       versionsLabel: "v3.0.0 and v2.0.0",
@@ -504,11 +407,11 @@ describe("an approval that covers something else", () => {
     row({ id: 22, status: "approved", target_version: "2.0.0", migration_count: 3, ...over });
 
   it("says what changed when the approval is for this very target", () => {
-    // Without this line the panel says "Needs a second person" while the
+    // Without this line the panel says "Needs an approval" while the
     // approver insists they approved it — and they did, before the SQL moved.
     const panel = show({ otherApproval: other({ target_version: "1.0.2" }) });
 
-    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
+    expect(screen.getByText("Needs an approval")).toBeInTheDocument();
     expect(panel).toHaveTextContent("Approved for a different selection: through v1.0.2 (3 migrations)");
     expect(panel).toHaveTextContent("has changed since it was approved");
     // There is nothing to select: it is already the selected range.
@@ -558,91 +461,6 @@ describe("an approval that covers something else", () => {
   });
 });
 
-describe("what the reader is told about earlier attempts", () => {
-  it("repeats a rejection and who wrote it", () => {
-    const panel = show({
-      latest: row({ status: "rejected", decided_by: "boss@example.com", note: "wait for the window" }),
-    });
-
-    expect(panel).toHaveTextContent(
-      'The last request for this exact SQL was rejected by boss@example.com — "wait for the window".'
-    );
-    // Asking again is allowed; the button says which it is, so nobody requests
-    // a second time believing it is the first.
-    expect(screen.getByRole("button", { name: "Request approval again" })).toBeEnabled();
-  });
-
-  it("says when an approval for this SQL has already been spent", () => {
-    // The row is approved and the run is not: an approval is good for one run,
-    // and without this the panel reads as though nobody ever cleared it.
-    const panel = show({ latest: row({ status: "used" }) });
-
-    expect(panel).toHaveTextContent("has already been spent on a run");
-  });
-
-  it("says spent on a rollback when that is what spent it", () => {
-    const panel = show({ action: "revert", versionsLabel: "v3.0.0", latest: row({ status: "used" }) });
-
-    expect(panel).toHaveTextContent("has already been spent on a rollback");
-  });
-
-  it("calls it the first request when there has been none", () => {
-    show({});
-
-    expect(screen.getByRole("button", { name: "Request approval" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "Request approval again" })).not.toBeInTheDocument();
-  });
-
-  it("asks for an approval, not a second person, when the viewer is the only one", () => {
-    const panel = show({ bypass: true });
-
-    expect(screen.getByText("Needs an approval")).toBeInTheDocument();
-    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
-    expect(panel).toHaveTextContent("you request it and then clear it yourself");
-  });
-
-  it("speaks for the bypass, not the organization's rule, when both apply", () => {
-    // In the demo the bypass is the reason anyone may clear their own run, so
-    // the panel names it even if the organization's rule is off as well.
-    const panel = show({ bypass: true, twoPersonRule: false });
-
-    expect(panel).toHaveTextContent("With the auth bypass on there is only one principal");
-    expect(panel).not.toHaveTextContent("The two-person rule is off");
-  });
-});
-
-describe("the note", () => {
-  it("is labelled for the approver when the requester writes it", () => {
-    const typed: string[] = [];
-    show({ onNoteChange: (value) => typed.push(value) });
-
-    const box = screen.getByLabelText("Note for the record — shown to whoever approves this");
-    fireEvent.change(box, { target: { value: "ticket 412" } });
-    expect(typed).toEqual(["ticket 412"]);
-  });
-
-  it("is labelled for the record when the approver writes it", () => {
-    const typed: string[] = [];
-    show({ pending: row(), onNoteChange: (value) => typed.push(value) });
-
-    fireEvent.change(screen.getByLabelText("Note for the approval record"), {
-      target: { value: "read it all" },
-    });
-    expect(typed).toEqual(["read it all"]);
-  });
-
-  it("shows a placeholder and a real value apart", () => {
-    // A placeholder vanishes on the first keystroke and is never stored; this
-    // note is read back later as audit copy, so the box must not look filled in
-    // when it is empty.
-    show({ note: "" });
-
-    const box = screen.getByLabelText("Note for the record — shown to whoever approves this");
-    expect(box).toHaveValue("");
-    expect(box).toHaveAttribute("placeholder", "Optional note for the approver");
-  });
-});
-
 describe("the hash the panel matches an approval by", () => {
   const RUN: ApprovalScript[] = [
     { scriptName: "invoices", version: "1.0.1", sqlContent: "ALTER TABLE invoices ADD COLUMN due_date date;" },
@@ -654,7 +472,7 @@ describe("the hash the panel matches an approval by", () => {
     // failure nothing else would catch: the server hashes with node:crypto and
     // this panel with the Web Crypto API. If those ever disagreed, every
     // approval would be recorded under one hex and looked up under another, so
-    // a genuinely approved production run would read as unapproved for ever —
+    // a genuinely approved run would read as unapproved for ever —
     // and the page suites would not notice, because they hash both sides of
     // their own fixtures with this same function.
     await expect(sha256Hex(fingerprintBody(RUN))).resolves.toBe(runFingerprint(RUN, "deploy"));
@@ -681,31 +499,3 @@ describe("the hash the panel matches an approval by", () => {
   });
 });
 
-describe("somebody whose role may not run this by itself", () => {
-  const ASKER = { askToRun: true, mayRequest: false, mayApprove: false, roleLabel: "Editor" } as const;
-
-  it("offers to ask an Admin for this exact run", () => {
-    const panel = show(ASKER);
-    expect(panel).toHaveTextContent("Needs an Admin's approval");
-    expect(panel).toHaveTextContent("Your role (Editor) may not run migrations on this connection by itself.");
-    expect(panel).toHaveTextContent("you can run it once, within 7 days");
-    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeEnabled();
-  });
-
-  it("says rollback when it is a rollback", () => {
-    const panel = show({ ...ASKER, action: "revert" });
-    expect(panel).toHaveTextContent("may not roll back on this connection by itself");
-  });
-
-  it("waits for an Admin once asked, with no button to answer it themselves", () => {
-    const panel = show({ ...ASKER, pending: row({ requested_by: "me@example.com" }) });
-    expect(panel).toHaveTextContent("Waiting for an Admin");
-    expect(panel).toHaveTextContent("Admins see it on their Requests page");
-    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
-  });
-
-  it("says the approval is theirs, once", () => {
-    const panel = show({ ...ASKER, approved: row({ status: "approved", decided_by: "boss@example.com" }) });
-    expect(panel).toHaveTextContent("Approved for you, once");
-  });
-});

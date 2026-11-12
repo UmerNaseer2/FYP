@@ -51,7 +51,7 @@ let POST: RouteModule["POST"];
 const CONNECTION = {
   host: "db.test", port: 5432, database_name: "sales", username: "app",
   password: "not-a-real-password", connection_string: null, ssl: false,
-  ssl_mode: "disable", environment: "dev",
+  ssl_mode: "disable",
 };
 
 // Two scripts in one run. The first one could carry a plain SET of its own.

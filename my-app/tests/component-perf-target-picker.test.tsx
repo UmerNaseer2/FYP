@@ -39,12 +39,6 @@
  *    tests/connections-route.test.ts. /api/lineage/schemas has no suite of its
  *    own: tests/unreadable-credentials.test.ts calls its handler for the
  *    unreadable-credentials case and nothing else does.
- *  - The words on the environment pill. toEnvironment is covered in
- *    tests/deploy-safety.test.ts, and the ENVIRONMENT_META labels are written
- *    out in tests/component-schema-environment-picker.test.tsx — the screen
- *    they are edited on — so a wrong label would be caught there rather than
- *    here. These tests check only that the pill follows the connection that is
- *    selected.
  *  - Remembering the pair. The picker reports upward and nothing more; it does
  *    not write the choice back into the address bar, so a reload returns to the
  *    link's target or to the first saved server. That belongs to
@@ -70,21 +64,18 @@ const PG = {
   name: "Local Postgres",
   database_name: "shop",
   type: "PostgreSQL",
-  environment: "dev",
 };
 const WAREHOUSE = {
   id: 2,
   name: "Warehouse",
   database_name: "dw",
   type: "PostgreSQL",
-  environment: "prod",
 };
 const MYSQL = {
   id: 3,
   name: "Orders MySQL",
   database_name: "orders",
   type: "MySQL",
-  environment: "prod",
 };
 
 /** What each server answers with, so a switch between them is visible. */
@@ -481,40 +472,5 @@ describe("when the schemas cannot be listed", () => {
     expect(screen.queryByText("Could not list schemas")).not.toBeInTheDocument();
     expect(combo("Schema to analyse")).toHaveTextContent("public");
     expect(fetchCalls.filter((call) => call.url.includes("/api/connections"))).toHaveLength(1);
-  });
-});
-
-describe("the environment of the server being analysed", () => {
-  it("labels the chosen server with the environment it was saved under", async () => {
-    setRoutes(baseRoutes());
-    mount();
-    await settle();
-
-    expect(screen.getByText("Dev")).toBeInTheDocument();
-  });
-
-  it("follows the server the reader moves to", async () => {
-    // The pill is the only warning on this screen that the thing being read is
-    // production. Leaving it on the last server's label would be worse than
-    // not showing one at all.
-    setRoutes(baseRoutes());
-    mount();
-    await settle();
-
-    pick("Connection to analyse", "Warehouse (dw)");
-    await settle();
-
-    expect(screen.getByText("Production")).toBeInTheDocument();
-    expect(screen.queryByText("Dev")).not.toBeInTheDocument();
-  });
-
-  it("shows no label for a server that was never labelled, rather than guessing one", async () => {
-    setRoutes(baseRoutes([{ ...PG, environment: null }]));
-    mount();
-    await settle();
-
-    expect(screen.queryByText("Unlabelled")).not.toBeInTheDocument();
-    expect(screen.queryByText("Production")).not.toBeInTheDocument();
-    expect(screen.queryByText("Dev")).not.toBeInTheDocument();
   });
 });

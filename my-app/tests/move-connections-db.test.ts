@@ -178,7 +178,7 @@ describeWithDatabase("copying connections into a shared database", () => {
 
   async function sharedRows(slug = "acme-data") {
     const { rows } = await target.query(
-      `SELECT c.name, c.host, c.password, c.connection_string, c.version, c.environment, c.last_test_ok
+      `SELECT c.name, c.host, c.password, c.connection_string, c.version, c.last_test_ok
          FROM connections c JOIN organizations o ON o.id = c.org_id
         WHERE o.slug = $1 ORDER BY c.name`,
       [slug]
@@ -239,8 +239,8 @@ describeWithDatabase("copying connections into a shared database", () => {
     const rival = await id(source, `INSERT INTO organizations (slug, name) VALUES ('rival-co', 'Rival Co')`);
     const add = (db: Client, org: string, name: string, host: string, password: string, string: string | null, extra = "") =>
       db.query(
-        `INSERT INTO connections (org_id, name, host, port, database_name, username, password, connection_string, environment, last_test_ok)
-         VALUES ($1, $2, $3, 5432, 'shop', 'app_user', $4, $5, 'prod', ${extra || "NULL"})`,
+        `INSERT INTO connections (org_id, name, host, port, database_name, username, password, connection_string, last_test_ok)
+         VALUES ($1, $2, $3, 5432, 'shop', 'app_user', $4, $5, ${extra || "NULL"})`,
         [org, name, host, password, string]
       );
     await add(source, acme, "Shop", "db.example.com", old("made-up-1")!, old("postgres://app_user:made-up-1@db.example.com:5432/shop"), "true");
@@ -314,7 +314,7 @@ describeWithDatabase("copying connections into a shared database", () => {
       const shop = rows.find((row) => row.name === "Shop")!;
       expect(store.decryptSecret(shop.password)).toBe("made-up-1");
       expect(store.decryptSecret(shop.connection_string)).toBe("postgres://app_user:made-up-1@db.example.com:5432/shop");
-      expect(shop).toMatchObject({ version: 1, environment: "prod", last_test_ok: true });
+      expect(shop).toMatchObject({ version: 1, last_test_ok: true });
 
       // The site reads the local store and resolves each marker to the password typed on the server.
       cache.replaceLocalSecrets(

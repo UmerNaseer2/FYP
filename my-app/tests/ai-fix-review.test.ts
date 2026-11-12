@@ -83,7 +83,6 @@ function savedRow(over: Record<string, unknown> = {}) {
     ssl_mode: null,
     // Production: the script writer does not try a script there, so the test
     // needs no stand-in for the trial.
-    environment: "prod",
     execute_role: null,
     ...over,
   };

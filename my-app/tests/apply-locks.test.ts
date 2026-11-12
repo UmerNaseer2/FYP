@@ -28,7 +28,6 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-// An empty config by default: no host, so the twin lookup below asks nothing.
 const mockBuildPgConfig = jest.fn<Record<string, unknown>, unknown[]>(() => ({}));
 jest.mock("../lib/connection-config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
@@ -52,7 +51,6 @@ jest.mock("../lib/registry-archive", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockReleaseApproval = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
-  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockReleaseApproval(...args),
 }));
@@ -60,11 +58,12 @@ jest.mock("../lib/approvals-db", () => ({
 type RouteModule = typeof import("../app/api/scripts/apply/route");
 let POST: RouteModule["POST"];
 
-function connectionRow(environment: string) {
+/** A saved connection. "admin" makes it one the editor may run on only with an approval of their own. */
+function connectionRow(execute_role?: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment,
+    ssl_mode: "disable", name: "Sales", execute_role,
   };
 }
 
@@ -118,7 +117,7 @@ beforeAll(async () => {
 beforeEach(() => {
   guard = guardGitHub();
   mockPoolQuery.mockReset();
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev")] });
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow()] });
   mockClaim.mockReset();
   mockClaim.mockResolvedValue(null);
   mockReleaseApproval.mockClear();
@@ -256,13 +255,18 @@ it("stores a comment-only rollback as NULL and a real one as written", async () 
   expect(downSqlFor("b_fix")).toBe("DROP TABLE b;");
 });
 
-it("claims a 'deploy' approval on a real production run", async () => {
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+it("claims the editor's own 'deploy' approval on a real run where their role may not run", async () => {
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
   mockClaim.mockResolvedValue({ id: 9 });
-  const res = await apply({ ...RUN, acknowledgeProduction: true });
+  const res = await apply(RUN);
   expect(res.status).toBe(200);
   expect(mockClaim).toHaveBeenCalledTimes(1);
-  expect(mockClaim.mock.calls[0][0]).toMatchObject({ connectionId: 7, schemaName: "sales", action: "deploy" });
+  expect(mockClaim.mock.calls[0][0]).toMatchObject({
+    connectionId: 7,
+    schemaName: "sales",
+    action: "deploy",
+    requestedBy: "a@test",
+  });
 });
 
 // ─── A COMMIT that failed ──────────────────────────────────────────────────
@@ -276,7 +280,7 @@ function commitFails(error: FakeStep["error"]): FakeStep[] {
 }
 
 it("says the server rolled the run back when it refuses the COMMIT", async () => {
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
   mockClaim.mockResolvedValue({ id: 9 });
   mockClient = createFakeClient(
     commitFails({
@@ -286,7 +290,7 @@ it("says the server rolled the run back when it refuses the COMMIT", async () =>
       table: "orders",
     })
   );
-  const res = await apply({ ...RUN, acknowledgeProduction: true });
+  const res = await apply(RUN);
 
   expect(res.status).toBe(500);
   // Not unknown: the server answered, so it did the rollback itself.
@@ -309,12 +313,12 @@ it("says the server rolled the run back when it refuses the COMMIT", async () =>
 });
 
 it("still says the outcome is unknown when the COMMIT does not report back", async () => {
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
   mockClaim.mockResolvedValue({ id: 9 });
   // A socket that died mid-COMMIT: no SQLSTATE, so nobody can say whether the
   // server wrote it. This is the case the "go and look" answer is for.
   mockClient = createFakeClient(commitFails({ message: "Connection terminated unexpectedly" }));
-  const res = await apply({ ...RUN, acknowledgeProduction: true });
+  const res = await apply(RUN);
 
   expect(res.status).toBe(500);
   expect(res.body.outcomeUnknown).toBe(true);
@@ -345,10 +349,10 @@ function transactionEndsAfterFirstRead(): FakeStep[] {
 }
 
 it("says the outcome is unknown when a script ends the run's transaction", async () => {
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
   mockClaim.mockResolvedValue({ id: 9 });
   mockClient = createFakeClient(target(transactionEndsAfterFirstRead()));
-  const res = await apply({ ...RUN, acknowledgeProduction: true });
+  const res = await apply(RUN);
 
   expect(res.status).toBe(500);
   expect(res.body.outcomeUnknown).toBe(true);
@@ -379,57 +383,4 @@ it("fixes how strings are read before the first script, and never pools the conn
   // closed after the run rather than handed to the next request.
   expect(mockClient.releasedWith).toBe(true);
   expect(mockClient.releaseCount).toBe(1);
-});
-
-// ─── A second connection to a production database ─────────────────────────
-// Saving the production database again as a "dev" connection would skip the
-// approval as surely as relabelling it. The run counts as one against
-// production when another saved connection reaches the same database and is
-// labelled Production.
-
-describe("a dev connection that reaches a production database", () => {
-  /** The configs carry real hosts, and the lookup finds `twin`. */
-  function savedAlsoAs(twin: Record<string, unknown> | Error) {
-    mockBuildPgConfig.mockImplementation((input) => {
-      const { host, port, database } = input as Record<string, unknown>;
-      return { host, port, database };
-    });
-    mockPoolQuery.mockImplementation(async (text: unknown) => {
-      if (/environment = 'prod'/.test(String(text))) {
-        if (twin instanceof Error) throw twin;
-        return { rows: [twin] };
-      }
-      return { rows: [connectionRow("dev")] };
-    });
-  }
-  const twinRow = (over: Record<string, unknown> = {}) => ({
-    id: 8, name: "Sales (prod)", ...connectionRow("prod"), host: "DB.test", ...over,
-  });
-
-  it("refuses the run and opens nothing on the target", async () => {
-    savedAlsoAs(twinRow());
-    const res = await apply(RUN);
-    expect(res.status).toBe(409);
-    expect(res.body.environment).toBe("prod");
-    expect(res.body.error).toMatch(/"Sales \(prod\)", reaches the same database/);
-    expect(queryTexts(mockClient)).toEqual([]);
-    expect(mockClaim).not.toHaveBeenCalled();
-  });
-
-  it("refuses a dry run too, since the label is wrong either way", async () => {
-    savedAlsoAs(twinRow());
-    expect((await apply({ ...RUN, dryRun: true })).status).toBe(409);
-  });
-
-  it("runs when the production connection reaches another database", async () => {
-    savedAlsoAs(twinRow({ database_name: "billing" }));
-    expect((await apply(RUN)).status).toBe(200);
-  });
-
-  it("refuses with 503 when the lookup fails, running nothing", async () => {
-    savedAlsoAs(new Error("metadata database went away"));
-    const res = await apply(RUN);
-    expect(res.status).toBe(503);
-    expect(queryTexts(mockClient)).toEqual([]);
-  });
 });

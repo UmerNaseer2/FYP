@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Button, Card, EnvironmentPill, Pill } from "@/components/ui";
+import { Button, Card, Pill } from "@/components/ui";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { TIMED_OUT, type Computer, type JobAnswer } from "@/lib/agent-rules";
 import { apiFetch } from "@/lib/api-fetch";
-import { ENVIRONMENT_META, type Environment } from "@/lib/environments";
 import type {
   ChangeLine,
   CompareSummary,
@@ -49,7 +48,7 @@ const SEVERITIES: Record<ChangeLine["severity"], { label: string; tone: "break" 
   info: { label: "Info", tone: "neutral" },
 };
 
-type SavedConnection = { id: number; name: string; environment: Environment };
+type SavedConnection = { id: number; name: string };
 
 type Asked<T> = { ok: true; result: T } | { ok: false; error: string };
 
@@ -221,10 +220,7 @@ function SidePicker({
   const { schemas, error, loading, retry } = useSchemaList(place, connectionId);
   const connectionOptions = connections.map((entry) => ({
     value: String(entry.id),
-    label:
-      entry.environment === "unset"
-        ? entry.name
-        : `${entry.name}, ${ENVIRONMENT_META[entry.environment].label}`,
+    label: entry.name,
   }));
   const schemaOptions = schemas.map((name) => ({ value: name, label: name }));
 
@@ -284,7 +280,6 @@ function TargetResult({ target, seeAll }: { target: TargetSummary; seeAll: strin
     <Card className="p-4">
       <div className="flex items-center gap-2 flex-wrap">
         <h3 className="text-[14px] font-semibold">{target.name}</h3>
-        <EnvironmentPill environment={target.environment} />
       </div>
       <Meta>{target.schema}</Meta>
       <p className="text-[14px] font-medium mt-2">{headline(target)}</p>

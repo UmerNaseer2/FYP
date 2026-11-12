@@ -368,7 +368,7 @@ export async function listConnections(options: Pick<RequestOptions, "call" | "sh
   const connections = rows.flatMap((row) => {
     const fields = objectFields(row);
     if (fields === null || typeof fields.id !== "number" || !shared.has(fields.id)) return [];
-    return [{ id: fields.id, name: fields.name, environment: fields.environment, database: fields.database }];
+    return [{ id: fields.id, name: fields.name, database: fields.database }];
   });
   // A shared connection the app describes wrongly is a bug worth hearing
   // about, so it fails the whole list instead of quietly going missing.

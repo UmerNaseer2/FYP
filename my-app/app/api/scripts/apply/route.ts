@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { approvalsOn, claimApproval, releaseApproval } from "@/lib/approvals-db";
+import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
 import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
@@ -20,28 +20,18 @@ import {
 import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/script-transaction";
 import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/run-settings";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
-import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
+import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
 import { readApplications } from "@/lib/application-read";
-import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
 import {
-  analyseRunRisk,
   checkForwardOnly,
-  listLabels,
   readScriptLevel,
   scriptLabel,
   type ForwardOnlyProblem,
 } from "@/lib/deploy-risk";
-import {
-  isProduction,
-  needsApproval,
-  productionBlockReason,
-  risksNeedTicks,
-  toEnvironment,
-} from "@/lib/environments";
 
 // script_patch.version is VARCHAR(20)
 const MAX_VERSION_LENGTH = 20;
@@ -558,24 +548,6 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // applying ad-hoc SQL with no GitHub origin is still allowed.
     source_ref?: string;
     /**
-     * Set by a screen only after somebody has ticked the production warning.
-     * Absent or false against a production target is a refusal, not a default.
-     */
-    acknowledgeProduction?: boolean;
-    /**
-     * The three risk ticks. The route works each risk out again from the SQL
-     * (lib/deploy-risk) and refuses a run whose risk has no tick (409,
-     * needsAcknowledgement), so a caller that skipped a warning cannot run
-     * past it:
-     * - acknowledgeBreaking: a migration in the run is breaking;
-     * - acknowledgeDataLoss: a migration deletes rows (TRUNCATE, DELETE, a DROP);
-     * - acknowledgeDrift: the last drift check found the target drifted, or
-     *   could not reach it.
-     */
-    acknowledgeBreaking?: boolean;
-    acknowledgeDataLoss?: boolean;
-    acknowledgeDrift?: boolean;
-    /**
      * Run the scripts and then throw the work away instead of committing it.
      *
      * A rehearsal, not a review: the SQL really executes against the real target
@@ -739,7 +711,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       // The SQL's own level (its stamp, else what its statements read as),
       // raised to the caller's change_type when that is louder and never
       // lowered by it; a missing or "unknown" change_type is ignored. The rule
-      // lives in lib/deploy-risk, so the Deploy page's tick and this row agree.
+      // lives in lib/deploy-risk, so the Deploy page's warning and this row agree.
       changeType: readScriptLevel({
         sqlContent: raw.sql_content,
         changeType: raw.change_type,
@@ -783,7 +755,6 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     connection_string: string | null;
     ssl: boolean | null;
     ssl_mode: string | null;
-    environment: string | null;
     application_table: string | null;
     execute_role: string | null;
   };
@@ -792,7 +763,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     const result = await pool.query(
-      `SELECT name, host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment,
+      `SELECT name, host, port, database_name, username, password, connection_string, ssl, ssl_mode,
               application_table, execute_role
        FROM connections
        WHERE id = $1 AND org_id = $2`,
@@ -828,16 +799,16 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // The gate at the top of this route asked whether the caller may run
   // migrations at all. This asks whether they may run one against THIS
   // database, which is the question spec feature 02 is about: the same person
-  // is trusted on dev and not on production, and a role alone cannot say so.
+  // is trusted on one database and not on another, and a role alone cannot
+  // say so.
   //
-  // Before opening a connection to the target, and before the production
-  // confirmation below, because a read-only connection is refused whether or
-  // not the run was confirmed — including a dry run. A rehearsal really
+  // Before opening a connection to the target, because a read-only connection
+  // is refused for a dry run too. A rehearsal really
   // executes the script and only then rolls back, so exempting it would make
   // the quiet way to write to a read-only database the one nobody checks.
   //
   // Somebody whose role may not run here can still run one exact run an Admin
-  // approved for them (step 4c claims it). Never on a read-only connection,
+  // approved for them (step 4b claims it). Never on a read-only connection,
   // and never as a dry run: a rehearsal executes the SQL too.
   let onlyWithOwnApproval = false;
   {
@@ -863,110 +834,9 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     }
   }
 
-  // ─── 4b. Refuse an unconfirmed run against production ─────────────────────
-  //
-  // Before opening a single connection to the target. The label is the
-  // connection's: a tracked schema has none of its own. Production asks for
-  // one tick, on a dry run too (a dry run still runs the SQL on the live
-  // database before rolling it back). Nothing else asks for one.
-  //
-  // What the last drift check saved for this schema. Null when the schema is
-  // not tracked or has never been checked.
-  let storedDriftStatus: DriftStatus | null = null;
-  try {
-    const tracked = await findTrackedSchema(orgId, connectionId, schemaName);
-    if (tracked) storedDriftStatus = tracked.driftStatus;
-  } catch (error) {
-    console.error("Apply — could not read the tracked schema:", error);
-    return answerBeforeRun(
-      {
-        error:
-          "Could not read this schema's tracking record, so its drift state is " +
-          "unknown. Nothing ran. Try again in a moment; if it keeps " +
-          "failing, check that the app's metadata database is running.",
-      },
-      { status: 503 }
-    );
-  }
-  const targetEnvironment = toEnvironment(connRow.environment);
-  const blocked = productionBlockReason(
-    targetEnvironment,
-    body.acknowledgeProduction === true
-  );
-  if (blocked) {
-    return answerBeforeRun({ error: blocked, environment: targetEnvironment }, { status: 409 });
-  }
-
-  // ─── 4b-2. On production, every risk in the run has a tick ───────────────
-  //
-  // The Deploy screen asks for a tick under each risk it finds: a breaking
-  // migration, a migration that deletes rows, a target whose last drift check
-  // was not clean. Those ticks used to live only on the screen, so any other
-  // caller could run straight past them. The route now reads the same SQL
-  // with the same helper (lib/deploy-risk) and refuses a run whose risks have
-  // no tick.
-  //
-  // A dry run needs the ticks too: it really runs the SQL against the target,
-  // and the screen asks for the same ticks before either button. Checked
-  // before the approval claim in 4c, so a refusal here spends nothing.
-  //
-  // job.changeType is already the louder of the SQL's level and the caller's,
-  // so it counts as breaking exactly when the caller's own value would.
-  //
-  // Outside production the screen shows these as warnings and asks for no
-  // tick, so this route does not ask either.
-  const risk = analyseRunRisk(queue);
-  const ticksNeeded = risksNeedTicks(targetEnvironment);
-  const needsAcknowledgement: Array<"breaking" | "data_loss" | "drift"> = [];
-  const unticked: string[] = [];
-  if (ticksNeeded && risk.breaking.length > 0 && body.acknowledgeBreaking !== true) {
-    needsAcknowledgement.push("breaking");
-    const labels = risk.breaking.map((entry) => entry.label);
-    unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "is" : "are"} breaking`);
-  }
-  if (ticksNeeded && risk.dataLoss.length > 0 && body.acknowledgeDataLoss !== true) {
-    needsAcknowledgement.push("data_loss");
-    const labels = risk.dataLoss.map((entry) => `${entry.label} (${entry.kinds.join(", ")})`);
-    unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "deletes" : "delete"} rows`);
-  }
-  // The drift state is the one the last check saved, and it may be old, so
-  // the message says how to refresh it.
-  const driftUnsettled = storedDriftStatus === "drifted" || storedDriftStatus === "unreachable";
-  if (ticksNeeded && driftUnsettled && body.acknowledgeDrift !== true) {
-    needsAcknowledgement.push("drift");
-    unticked.push(
-      storedDriftStatus === "drifted"
-        ? `the last drift check found schema "${schemaName}" different from its tracked baseline`
-        : `the last drift check could not reach schema "${schemaName}"`
-    );
-  }
-  if (needsAcknowledgement.length > 0) {
-    return answerBeforeRun(
-      {
-        success: false,
-        dryRun,
-        schema: schemaName,
-        needsAcknowledgement,
-        results: queue.map((job) => ({
-          script_name: job.scriptName,
-          version: job.version,
-          status: "skipped" as const,
-        })),
-        error:
-          `This ${dryRun ? "dry run" : "deploy"} was refused because a risk in it has no ` +
-          `tick: ${unticked.join("; ")}. Nothing ran. Tick the box under each of those ` +
-          `warnings, then ${dryRun ? "start the dry run" : "deploy"} again.` +
-          (needsAcknowledgement.includes("drift")
-            ? " If you think the drift result is out of date, run the drift check again first."
-            : ""),
-      },
-      { status: 409 }
-    );
-  }
-
   // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
   //
-  // Before the approval claim in 4c, although it is numbered after it.
+  // Before the approval claim in 4b, although it is numbered after it.
   // buildPgConfig decrypts the saved password, and that throws when this
   // server's APP_ENCRYPTION_KEY is missing or is not the key the password was
   // saved with. After the claim, that throw left the approval spent on a run
@@ -992,53 +862,21 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       { status: 500 }
     );
   }
-  // A second saved connection to a production database, labelled anything
-  // else, must not be the way round an approval (see lib/environment-guard).
-  // Only checked when approvals are on: with them off, the label asks for one
-  // tick and there is nothing to get round.
-  const approvalsRequired = approvalsOn(gate.principal);
-  if (approvalsRequired && !isProduction(targetEnvironment)) {
-    let twin: Awaited<ReturnType<typeof findProductionTwin>>;
-    try {
-      twin = await findProductionTwin(orgId, connectionId, configIdentity(targetConfig));
-    } catch (error) {
-      console.error("Apply — could not check for a production connection to the same database:", error);
-      return answerBeforeRun(
-        {
-          error:
-            "Could not check whether another saved connection labels this database " +
-            "Production, so nothing ran. Try again in a moment.",
-        },
-        { status: 503 }
-      );
-    }
-    if (twin) {
-      return answerBeforeRun({ error: twinBlockReason(twin.name), environment: "prod" }, { status: 409 });
-    }
-  }
-
   const targetPool = getPoolForConfig(targetConfig);
 
-  // ─── 4c. Production needs an approval, when approvals are on ─────────────────
+  // ─── 4b. Somebody who may not run here needs their own approval ─────────────
   //
-  // The acknowledgement above says "the operator knows this is production". It
-  // does not say anyone else agreed, and it cannot: the same hand ticks it and
-  // presses Deploy. A real run against production therefore also needs an
-  // approval someone ELSE granted — see lib/approvals-db for the rule and the
-  // CHECK constraint that backs it.
+  // Somebody whose role may run here just runs: nothing waits for anyone.
+  // Anybody else (step 4a) may run only with an approval given to them, for
+  // this exact run. See lib/approvals-db for the rule, and for the CHECK
+  // constraint that stops anyone approving their own ask.
   //
   // Claimed BEFORE the run, not after. An approval authorises one run, so the
   // claim is what stops the same approved request being spent twice; taking it
-  // first also means two operators pressing Deploy together cannot both proceed.
+  // first also means two people pressing Deploy together cannot both proceed.
   // If the run does not commit, the claim is handed back in the finally block.
-  //
-  // Only for a real run in an organization whose two-person rule is on. A dry
-  // run rolls back, so it needs the production tick but no approval.
-  //
-  // And for anybody at all who may not run here by themselves (step 4a), on
-  // any connection: only an approval given to them, for this exact run.
   let claimedApprovalId: number | null = null;
-  if (onlyWithOwnApproval || needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
+  if (onlyWithOwnApproval) {
     try {
       const claimed = await claimApproval({
         // Only an approval given in the caller's organization. The connection
@@ -1055,40 +893,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         // Only a deploy approval can clear a deploy. A rollback approval for
         // the same scripts has action 'revert' and a different fingerprint.
         action: "deploy",
-        requestedBy: onlyWithOwnApproval ? gate.principal.email : null,
+        requestedBy: gate.principal.email,
       });
-      if (!claimed && onlyWithOwnApproval) {
+      if (!claimed) {
         return answerBeforeRun(
           {
             error: askToRunRefusal(connRow.name, false),
-            environment: targetEnvironment,
             needsApproval: true,
             askToRun: true,
-          },
-          { status: 403 }
-        );
-      }
-      if (!claimed) {
-        // Approvals are on here (needsApproval), so it is always someone else.
-        const approver = " from someone other than you";
-        // One migration or several, so the sentence reads as English either
-        // way ("these exact 1 migration" did not).
-        const one = queue.length === 1;
-        const what = one ? "this exact migration" : `these exact ${queue.length} migrations`;
-        const them = one ? "it" : "them";
-        const their = one ? "its" : "their";
-        return answerBeforeRun(
-          {
-            error:
-              // Deploy and Version Sync both run through this route, so the
-              // way forward names neither screen: it is the one the reader
-              // pressed Run on, which asks for approval of what it sent.
-              `This target is labelled production, so the run needs an approval` +
-              `${approver}. No approval covers ${what}, so nothing ran. ` +
-              `Request approval for ${them} on the screen you are running ${them} from, ` +
-              `or request a new approval if ${their} SQL has changed since the last one.`,
-            environment: targetEnvironment,
-            needsApproval: true,
           },
           { status: 403 }
         );
@@ -1099,7 +911,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       return answerBeforeRun(
         {
           error:
-            "Could not check the deploy approval for this production target, so nothing ran. " +
+            "Could not check the approval for this run, so nothing ran. " +
             "Try again in a moment; if it keeps failing, check that the app's metadata " +
             "database is running.",
         },
@@ -1114,7 +926,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
    * Best-effort on purpose: the caller is already returning an error, and
    * failing to un-claim an approval must not turn a clear message about the
    * real problem into a confusing one about bookkeeping. The cost of a missed
-   * release is that the second person is asked once more.
+   * release is that the approver is asked once more.
    */
   async function releaseClaimedApproval(): Promise<void> {
     if (claimedApprovalId === null) return;
@@ -1141,7 +953,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not connect to target DB:", message);
-    // This return is outside the try/finally below, so the claim taken in 4c
+    // This return is outside the try/finally below, so the claim taken in 4b
     // would otherwise stay spent on a run that never opened a connection.
     await releaseClaimedApproval();
     return answerBeforeRun(
@@ -1300,8 +1112,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // name it instead of reporting the failure against the run as a whole. Null
   // means the run failed outside any single migration (setup, BEGIN, COMMIT).
   let failedJob: ScriptJob | null = null;
-  // Whether the run actually committed. Only a commit spends the production
-  // approval claimed in step 4c; every other outcome gives it back.
+  // Whether the run actually committed. Only a commit spends the approval
+  // claimed in step 4b; every other outcome gives it back.
   let runCommitted = false;
   // Whether COMMIT was issued. Between this going true and runCommitted going
   // true there is a window where the run's outcome is genuinely unknown to
@@ -2050,14 +1862,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // Without this the pool eventually runs out of connections and hangs.
     if (!clientReleased) client.release(true);
     // Every exit from here that is not a commit rolled the whole run back, so
-    // the approval was not spent. Hand it back rather than making the second
-    // person read the same migrations again.
+    // the approval was not spent. Hand it back rather than making the
+    // approver read the same migrations again.
     //
     // Except when the COMMIT itself did not report back. The approval may have
     // been spent on a run that landed, and handing it back would leave a
     // one-click re-run of migrations that might already be applied sitting
     // under a screen that has just said it does not know. Keeping it spent
-    // costs the second person one more look and buys a deliberate decision.
+    // costs the approver one more look and buys a deliberate decision.
     //
     // A COMMIT the server REFUSED is not that case: it rolled the run back and
     // said so, so the approval was not spent and goes back like any other

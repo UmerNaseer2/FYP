@@ -49,7 +49,6 @@ export type SyncedConnection = {
   connection_string: string;
   has_password: boolean;
   ssl_mode: string;
-  environment: string;
   application_table: string | null;
   execute_role: string;
   version: number;
@@ -103,7 +102,6 @@ export async function readSync(principal: Principal, knownRev: string | null): P
     password: string | null;
     connection_string: string | null;
     ssl_mode: string;
-    environment: string;
     application_table: string | null;
     execute_role: string;
     version: number;
@@ -111,7 +109,7 @@ export async function readSync(principal: Principal, knownRev: string | null): P
     updated_by: string | null;
   }>(
     `SELECT id, name, host, port, database_name, type, username, password, connection_string,
-            ssl_mode, environment, application_table, execute_role, version, updated_at, updated_by
+            ssl_mode, application_table, execute_role, version, updated_at, updated_by
        FROM connections WHERE org_id = $1 ORDER BY id`,
     [principal.orgId]
   );
@@ -146,7 +144,6 @@ export async function readSync(principal: Principal, knownRev: string | null): P
       connection_string: connectionString,
       has_password: Boolean(row.password) || Boolean(row.connection_string),
       ssl_mode: row.ssl_mode,
-      environment: row.environment,
       application_table: row.application_table,
       execute_role: row.execute_role,
       version: Number(row.version),

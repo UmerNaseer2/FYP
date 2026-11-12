@@ -8,7 +8,6 @@ import {
   readDriftSchemas,
   type ComputerConnection,
 } from "@/lib/agent-rules";
-import { toEnvironment } from "@/lib/environments";
 
 const LONGEST_CONNECTION_NAME = 200;
 
@@ -17,7 +16,7 @@ const NOT_A_LIST = `Send up to ${MOST_CONNECTIONS} connections, each with an id 
 /**
  * PUT /api/agent/connections
  * A linked computer lists the connections only it can reach, and which of them
- * its person shared with the phone. Only a number, a name, an environment,
+ * its person shared with the phone. Only a number, a name,
  * that flag and the drift results of its watched schemas are copied from each,
  * so a host or a user sent by mistake is simply dropped here. Only shared ones can be asked about (createAgentJob); the rest
  * are shown to their owner on the Connections page.
@@ -43,13 +42,13 @@ function readConnections(value: unknown): ComputerConnection[] | null {
   const seen = new Set<number>();
   // Drift results are a nice-to-have: past the cap, or unreadable, they are left out rather than the list turned away.
   let room = MOST_DRIFT_SCHEMAS;
-  for (const entry of value as { id?: unknown; name?: unknown; environment?: unknown; shared?: unknown; drift?: unknown }[]) {
+  for (const entry of value as { id?: unknown; name?: unknown; shared?: unknown; drift?: unknown }[]) {
     const id = entry?.id;
     const name = cleanLabel(entry?.name, LONGEST_CONNECTION_NAME);
     if (typeof id !== "number" || !Number.isInteger(id) || id < 1 || id > 2147483647 || name === "") return null;
     if (seen.has(id)) return null;
     seen.add(id);
-    const connection: ComputerConnection = { id, name, environment: toEnvironment(entry.environment), shared: entry.shared !== false };
+    const connection: ComputerConnection = { id, name, shared: entry.shared !== false };
     if (entry.drift !== undefined) {
       connection.drift = readDriftSchemas(entry.drift, room);
       room -= connection.drift.length;

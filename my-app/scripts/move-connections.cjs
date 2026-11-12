@@ -92,7 +92,7 @@ const AS_TEXT = { getTypeParser: () => (value) => value };
  * database, a desktop's note of a website row means nothing here, and the
  * secrets are written on their own.
  */
-const NOT_COPIED = new Set(["id", "org_id", "site_id", "site_version", "version", "updated_at", "password", "connection_string"]);
+const NOT_COPIED = new Set(["id", "org_id", "environment", "site_id", "site_version", "version", "updated_at", "password", "connection_string"]);
 
 /** Where a connection points, as one string, or null when that cannot be told. */
 function placeOf(row, connectionString) {

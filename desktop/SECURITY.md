@@ -189,21 +189,21 @@ the next section says.
   (`driftAction` in `src/main/phone-requests.ts`), on the connections chosen in
   Settings and for schemas tracked on that connection.
 - With it on and a passkey on the phone, it can also start a deploy or a
-  rollback, ask for approval on production, and cancel a running query
+  rollback, ask for approval of a run the role may not start, and cancel a running query
   (`src/main/phone-control.ts`). There is no other way to change anything from
   a phone, and no box for free SQL: a run takes the SQL in the app's own plan,
   and a cancel names one query by its session and when it began.
 - Each of those takes a fresh passkey signature over a one-time number and
   exactly what would happen (`src/shared/remote/control.ts`): for a run the
-  connection, schema, script, version, SQL fingerprint, next step and ticked
-  risks. The phone works out the fingerprint itself before it offers to sign,
+  connection, schema, script, version, SQL fingerprint and next step. The phone works out the fingerprint itself before it offers to sign,
   so what it signs is what it shows. The computer then reads the plan again and
-  refuses if the fingerprint, the step or the risks have changed.
+  refuses if the fingerprint or the step has changed.
 - A passkey acts only as the person who set it up: the computer compares who is
   signed in now with the passkey's hash of their email.
-- On production a run goes through the same queue as the web page: asking takes
-  no ticks, someone else approves it, and the run that follows still takes its
-  ticks. A cancel does not go through the queue, because a stuck query is the
+- A run the signed-in role may not start goes through the same queue as the
+  web page: the phone asks for approval of that exact run, an Admin approves
+  it, and the run that follows is signed again. A run's risks are shown as
+  warnings to read, and none of them holds a run back. A cancel does not go through the queue, because a stuck query is the
   emergency it is for. It needs the passkey, Allow control and the role's
   `performance:update`, and the action log on the computer is its only record.
 - The same passkey signs approvals and control, so a passkey set up for Allow
@@ -323,7 +323,7 @@ for questions.
   (`checkShared`, the same check the phone link uses), and answers as
   whoever is signed in on the computer, so a role that may not compare is
   refused the same way as on the computer itself.
-- The site learns each shared connection's name and environment, never its
+- The site learns each shared connection's name, never its
   host, user, password or database name. A refusal is one word, and a local
   error stays in the computer's log while the site hears only "failed".
 - Answers are at most 1 MB. The site deletes questions and answers within

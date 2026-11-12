@@ -53,7 +53,7 @@ type Computer = {
   mine: boolean;
   online: boolean;
   lastSeenAt: string | null;
-  connections: { id: number; name: string; environment: string | null }[];
+  connections: { id: number; name: string }[];
 };
 
 /** Where the read of the linked computers stands. */

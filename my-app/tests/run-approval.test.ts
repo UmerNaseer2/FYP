@@ -89,11 +89,11 @@ let revertPOST: typeof import("../app/api/scripts/revert/route").POST;
 let approvalsPOST: typeof import("../app/api/deploy/approvals/route").POST;
 
 /** A saved connection, as each route's lookup reads it. */
-function connectionRow(environment: string, execute_role: string) {
+function connectionRow(execute_role: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment, name: "Sales dev", execute_role,
+    ssl_mode: "disable", name: "Sales dev", execute_role,
   };
 }
 
@@ -148,19 +148,17 @@ async function send(
   return { status: res.status, body: JSON.parse(text) as Record<string, unknown> };
 }
 
-// Adds a table: no risk at all, so no tick is in the way.
+// Adds a table.
 const APPLY_BODY = {
   connectionId: 7,
   schemaName: "sales",
   scripts: [{ script_name: "orders_fix", version: "1.0.0", sql_content: "CREATE TABLE orders (id int);" }],
 };
-// Its rollback is a DROP TABLE, which deletes rows, so the tick is given.
 const REVERT_BODY = {
   connectionId: 7,
   schemaName: "sales",
   script_name: "orders_fix",
   versions: ["3.0.0"],
-  acknowledgeDataLoss: true,
 };
 const REQUEST_BODY = {
   connectionId: 7,
@@ -205,7 +203,7 @@ beforeEach(() => {
   mockPrincipal = viewer();
   mockGateAsked.length = 0;
   mockPoolQuery.mockReset();
-  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "editor")] });
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("editor")] });
   mockClaim.mockReset();
   mockClaim.mockResolvedValue(null);
   mockRelease.mockReset();
@@ -256,7 +254,7 @@ describe("apply, for a role that may not run migrations", () => {
     expect(res.body.askToRun).toBe(true);
     expect(res.body.needsApproval).toBe(true);
     expect(res.body.error).toBe(askToRunRefusal("Sales dev", false));
-    // Looked for off production too, and only among their own requests.
+    // Looked for only among their own requests.
     expect(mockClaim).toHaveBeenCalledTimes(1);
     expect(firstArg(mockClaim)).toMatchObject({
       orgId: TEST_ORG.id,
@@ -281,7 +279,7 @@ describe("apply, for a role that may not run migrations", () => {
   });
 
   it("refuses a read-only connection without looking for an approval", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("none")] });
     // Even with an approval there to claim, a read-only connection runs nothing.
     mockClaim.mockResolvedValue({ id: 9 });
     for (const dryRun of [false, true]) {
@@ -296,7 +294,7 @@ describe("apply, for a role that may not run migrations", () => {
 });
 
 describe("apply, for a role that may run migrations", () => {
-  it("just runs off production, claiming nothing", async () => {
+  it("just runs, claiming nothing", async () => {
     mockPrincipal = editor();
     const res = await apply();
     expect(res.status).toBe(200);
@@ -356,7 +354,7 @@ describe("revert, for a role that may not roll back", () => {
   });
 
   it("refuses a read-only connection without looking for an approval", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("none")] });
     mockClaim.mockResolvedValue({ id: 42 });
     const res = await revert();
     expect(res.status).toBe(403);
@@ -390,34 +388,24 @@ describe("asking (POST /api/deploy/approvals)", () => {
 
   it("records an editor's request on an Admins-only connection the same way", async () => {
     mockPrincipal = editor();
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     const res = await ask();
     expect(res.status).toBe(200);
     expect(firstArg(mockCreate)).toMatchObject({ requestedBy: "editor@test", runByRequester: true });
   });
 
-  it("records an editor's request, where they may run, as an ordinary second-person one", async () => {
+  it("refuses an editor's request where their role may run: it needs no approval", async () => {
     mockPrincipal = editor();
-    const res = await ask({ action: "revert" });
-    expect(res.status).toBe(200);
-    expect(firstArg(mockCreate)).toMatchObject({
-      requestedBy: "editor@test",
-      action: "revert",
-      runByRequester: false,
-    });
-  });
-
-  it("refuses somebody who may run here but may not ask for approvals", async () => {
-    const all = editor();
-    mockPrincipal = { ...all, permissions: all.permissions.filter((key) => key !== "approvals:create") };
-    const res = await ask();
-    expect(res.status).toBe(403);
-    expect(String(res.body.error)).toContain("Approvals: Create");
+    for (const action of ["deploy", "revert"]) {
+      const res = await ask({ action });
+      expect(res.status).toBe(409);
+      expect(String(res.body.error)).toContain("needs no approval");
+    }
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("refuses everybody on a read-only connection: there is nothing to ask for", async () => {
-    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("none")] });
     for (const who of [viewer(), editor(), principalFor("admin")]) {
       mockPrincipal = who;
       const res = await ask();

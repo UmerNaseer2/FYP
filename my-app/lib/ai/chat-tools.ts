@@ -157,7 +157,7 @@ function spec(name: ToolName, description: string, properties: Record<string, un
 
 /** What the AI is told it can call. Plain JSON Schema: the free Gemini service refuses some keywords. */
 export const CHAT_TOOL_SPECS: AiToolSpec[] = [
-  spec("list_connections", "The saved database connections: id, name, type and environment label."),
+  spec("list_connections", "The saved database connections: id, name and type."),
   spec("list_schemas", "The schemas on one saved connection.", { connectionId: CONNECTION }, ["connectionId"]),
   spec(
     "show_schema",
@@ -190,7 +190,7 @@ export const CHAT_TOOL_SPECS: AiToolSpec[] = [
   ),
   spec(
     "list_tracked_schemas",
-    "The schemas the app tracks for drift: id, connection, environment, registry version and the last drift state."
+    "The schemas the app tracks for drift: id, connection, registry version and the last drift state."
   ),
   spec(
     "drift_detail",
@@ -381,11 +381,11 @@ export function makeChatTools(deps: ChatToolDeps): ChatTools {
       if ("refused" in got) return { content: got.refused, ok: false };
       const rows = Array.isArray(got.body) ? (got.body as Record<string, unknown>[]) : [];
       if (rows.length === 0) return { content: "There are no saved connections.", ok: true };
-      const lines = ["Saved connections (id: name, type, environment):"];
+      const lines = ["Saved connections (id: name, type):"];
       const data: string[] = [];
       for (const row of rows) {
-        lines.push(`- ${row.id}: ${clip(String(row.name ?? ""), 80)}, ${row.type ?? "unknown type"}, ${row.environment ?? "no label"}`);
-        data.push(String(row.name ?? ""), String(row.type ?? ""), String(row.environment ?? ""));
+        lines.push(`- ${row.id}: ${clip(String(row.name ?? ""), 80)}, ${row.type ?? "unknown type"}`);
+        data.push(String(row.name ?? ""), String(row.type ?? ""));
       }
       return { content: lines.join("\n"), ok: true, data };
     },
@@ -559,10 +559,10 @@ export function makeChatTools(deps: ChatToolDeps): ChatTools {
       if ("refused" in got) return { content: got.refused, ok: false };
       const items = Array.isArray(got.body) ? (got.body as Record<string, unknown>[]) : [];
       if (items.length === 0) return { content: "No schemas are tracked for drift yet.", ok: true };
-      const lines = ["Tracked schemas (id: schema on connection, environment, registry version, drift):"];
+      const lines = ["Tracked schemas (id: schema on connection, registry version, drift):"];
       const data: string[] = [];
       for (const item of items.slice(0, MAX_TRACKED)) {
-        for (const field of [item.schemaName, item.label, item.connectionName, item.environment, item.headVersion, item.driftStatus]) {
+        for (const field of [item.schemaName, item.label, item.connectionName, item.headVersion, item.driftStatus]) {
           if (typeof field === "string") data.push(field);
         }
         const status = typeof item.driftStatus === "string" ? item.driftStatus : "not checked";
@@ -575,7 +575,7 @@ export function makeChatTools(deps: ChatToolDeps): ChatTools {
         const label = typeof item.label === "string" && item.label ? ` "${clip(item.label, 60)}"` : "";
         lines.push(
           `- ${item.id}: ${item.schemaName}${label} on ${clip(String(item.connectionName ?? ""), 80)} (connection ${item.connectionId}), ` +
-            `${item.environment ?? "no label"}, version ${item.headVersion ?? "none"}, ${status}` +
+            `version ${item.headVersion ?? "none"}, ${status}` +
             (summary ? `: ${summary}` : "") +
             (item.driftCheckedAt ? `, checked ${item.driftCheckedAt}` : "")
         );
@@ -589,7 +589,6 @@ export function makeChatTools(deps: ChatToolDeps): ChatTools {
       if ("refused" in got) return { content: got.refused, ok: false };
       const view = got.body as {
         schemaName: string;
-        environment: string;
         connection: { id: number; name: string } | null;
         expected: { version: string | null };
         state: string;
@@ -600,9 +599,9 @@ export function makeChatTools(deps: ChatToolDeps): ChatTools {
       };
       // The report reads registry version on the left, live database on the right.
       if (view.connection) noteAbout(view.connection.id, view.schemaName, view.report?.right ?? null);
-      const data = [view.schemaName, view.connection?.name ?? "", view.environment, view.expected?.version ?? "", view.state];
+      const data = [view.schemaName, view.connection?.name ?? "", view.expected?.version ?? "", view.state];
       const lines = [
-        `Tracked schema ${trackedSchemaId}: ${view.schemaName} on ${view.connection ? `${clip(view.connection.name, 80)} (connection ${view.connection.id})` : "a deleted connection"}, ${view.environment}.`,
+        `Tracked schema ${trackedSchemaId}: ${view.schemaName} on ${view.connection ? `${clip(view.connection.name, 80)} (connection ${view.connection.id})` : "a deleted connection"}.`,
         `Registry version: ${view.expected?.version ?? "none"}. State now: ${view.state}.`,
         view.state === "unreachable" ? UNREACHABLE : clip(view.summary ?? "", 400),
       ];

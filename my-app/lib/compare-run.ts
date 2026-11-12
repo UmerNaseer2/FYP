@@ -52,12 +52,6 @@ import {
   trackedSchemaKey,
   type TrackedSchemaHead,
 } from "@/lib/lineage-db";
-import {
-  environmentRank,
-  isProduction,
-  toEnvironment,
-  type Environment,
-} from "@/lib/environments";
 import { tallyDelta } from "@/components/studio/DiffReport";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
 import {
@@ -134,7 +128,6 @@ export type ConnectionView = {
   id: number;
   name: string;
   database_name: string;
-  environment: string | null;
 };
 
 /** One target row in the picker bar. */
@@ -149,7 +142,6 @@ export type TargetSlotView = {
   displayName: string;
   schema: string;
   schemaOptions: string[];
-  environment: Environment;
   /**
    * Why this target has nothing to read: no saved connection, or one whose
    * credentials can't be read on this server. Null when it has one it can use.
@@ -163,7 +155,6 @@ export type SourceView = {
   displayName: string;
   schema: string;
   schemaOptions: string[];
-  environment: Environment;
   /**
    * What the source schema's own version table says. Null when the run never
    * got as far as reading it — an unreachable source, or a schema that is not
@@ -189,7 +180,7 @@ export type OutcomeView = Omit<TargetOutcome, "connection"> & {
   connectionDatabase: string | null;
   /**
    * The id of the saved connection this target was compared through, or null
-   * when the slot had none (the environment fallback). The Migration Workbench
+   * when the slot had none. The Migration Workbench
    * sends it to the preflight route to read the version already applied to
    * this target. Only the id travels: the host, user and password stay on the
    * server.
@@ -260,7 +251,6 @@ function toConnectionView(connection: SavedConnection): ConnectionView {
     id: connection.id,
     name: connection.name,
     database_name: connection.database_name,
-    environment: connection.environment,
   };
 }
 
@@ -307,7 +297,6 @@ type SavedConnection = {
   connection_string: string | null;
   ssl: boolean;
   ssl_mode: string | null;
-  environment: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -318,13 +307,12 @@ type SavedConnection = {
 
 async function getSavedConnections(orgId: number): Promise<SavedConnection[]> {
   try {
-    // Shared DDL (lib/version-db) guarantees the `ssl` and `environment`
-    // columns exist.
+    // Shared DDL (lib/version-db) guarantees the `ssl` column exists.
     await syncMetadataTables();
 
     const result = await pool.query(
       `SELECT id, name, host, port, database_name, type, username, password,
-              connection_string, ssl, ssl_mode, environment
+              connection_string, ssl, ssl_mode
          FROM connections
         WHERE type = 'PostgreSQL' AND org_id = $1
         ORDER BY name ASC`,
@@ -470,7 +458,6 @@ type TargetOutcome = {
   displayName: string;
   schema: string;
   schemaOptions: string[];
-  environment: Environment;
   /**
    * The target names the same database AND the same schema as the source.
    * "Same database" is the same host, port and database name — not the same
@@ -595,9 +582,9 @@ function tallySeverities(statements: SqlStatement[]): {
  * falls back to.
  *
  * Lifted out of compareOneTarget so the catch in the fan-out can build one
- * without calling back into the function that just threw. `environment` and
- * `error` are deliberately absent: every caller sets them, and a default for
- * either would be a claim rather than a blank.
+ * without calling back into the function that just threw. `error` is
+ * deliberately absent: every caller sets it, and a default would be a claim
+ * rather than a blank.
  */
 function blankOutcome(slot: {
   index: number;
@@ -606,7 +593,7 @@ function blankOutcome(slot: {
   schema: string;
   schemaOptions: string[];
   duplicateOf: number | null;
-}): Omit<TargetOutcome, "environment" | "error"> {
+}): Omit<TargetOutcome, "error"> {
   return {
     index: slot.index,
     connection: slot.connection,
@@ -671,7 +658,6 @@ async function compareOneTargetSafely(
     const detail = error instanceof Error ? error.message : String(error);
     return {
       ...blankOutcome(slot),
-      environment: toEnvironment(slot.connection?.environment),
       // Not "unreachable": the server may have answered every query it was
       // asked. Saying it could not be reached would send the reader to check a
       // network that is working.
@@ -722,8 +708,6 @@ async function compareOneTarget(
   /** The tables to read rows from, or [] for every table. See CompareScreen. */
   dataTables: string[],
 ): Promise<TargetOutcome> {
-  const connectionEnvironment = toEnvironment(slot.connection?.environment);
-
   const empty = blankOutcome(slot);
 
   // Nothing to dial. The message says whether the connection was deleted or
@@ -736,14 +720,12 @@ async function compareOneTarget(
     if (slot.credentialError) {
       return {
         ...empty,
-        environment: connectionEnvironment,
         failure: "unreachable",
         error: slot.credentialError,
       };
     }
     return {
       ...empty,
-      environment: connectionEnvironment,
       failure: "no-connection",
       error: slot.missingMessage,
     };
@@ -754,7 +736,7 @@ async function compareOneTarget(
   // fetching, and the "0 changes" it would produce is the one result on this
   // screen a reader can act on wrongly — it looks like two databases agreeing.
   if (slot.onSourceDatabase && slot.schema === source.schema) {
-    return { ...empty, sameAsSource: true, environment: connectionEnvironment, error: null };
+    return { ...empty, sameAsSource: true, error: null };
   }
 
   // A repeat of an earlier target would be the same report twice — and, with
@@ -763,7 +745,6 @@ async function compareOneTarget(
     const first = slot.duplicateOf + 1;
     return {
       ...empty,
-      environment: connectionEnvironment,
       failure: "duplicate",
       error: `Same database and schema as target ${first}, so it is not compared a second time — see target ${first} above.`,
     };
@@ -774,7 +755,6 @@ async function compareOneTarget(
     // not say which of several targets it came from.
     return {
       ...empty,
-      environment: connectionEnvironment,
       failure: "unreachable",
       error: `Could not reach ${slot.displayName}: ${slot.schemaListError}`,
     };
@@ -784,7 +764,6 @@ async function compareOneTarget(
     // here is unreachable.
     return {
       ...empty,
-      environment: connectionEnvironment,
       failure: "schema-missing",
       error: `Schema ${slot.schema} was not found in ${slot.displayName}.`,
     };
@@ -794,13 +773,9 @@ async function compareOneTarget(
   // started, so all that is left here is the target database itself.
   const snapshot = await fetchSchemaSnapshot(target.config, slot.schema);
 
-  // The connection's label is the only one.
-  const environment = connectionEnvironment;
-
   if (!snapshot.ok) {
     return {
       ...empty,
-      environment,
       failure: "unreachable",
       error: `Could not load ${target.displayName}.${slot.schema}: ${snapshot.error}`,
     };
@@ -851,7 +826,6 @@ async function compareOneTarget(
 
   return {
     ...empty,
-    environment,
     error: null,
     report,
     data,
@@ -1118,23 +1092,13 @@ export async function runComparison(
    * What a fresh Add target — or the first target on a bare /compare — starts
    * on.
    *
-   * Ordered by environment, not alphabetically. This used to be "the second
-   * connection by name", which on this very fixture data meant a blank target
-   * silently landed on Production: a database nobody chose, sitting under a
-   * generated migration. Production sorts last here, so it is only ever the
-   * default when it is the only thing left to pick.
-   *
-   * The source is excluded because comparing a schema against itself produces
-   * an empty diff and no useful migration. `sort` is stable, so connections in
-   * the same environment keep the alphabetical order the picker shows.
+   * The first connection by name that is not the source. The source is
+   * excluded because comparing a schema against itself produces an empty diff
+   * and no useful migration.
    */
-  const defaultTargetConnection = savedConnections
-    .filter((connection) => String(connection.id) !== sourceConnectionId)
-    .sort(
-      (a, b) =>
-        environmentRank(toEnvironment(a.environment)) -
-        environmentRank(toEnvironment(b.environment)),
-    )[0];
+  const defaultTargetConnection = savedConnections.find(
+    (connection) => String(connection.id) !== sourceConnectionId,
+  );
   const defaultTargetConnectionId = defaultTargetConnection
     ? String(defaultTargetConnection.id)
     : defaultConnectionId;
@@ -1290,7 +1254,6 @@ export async function runComparison(
   const sourceSchema = sourceTarget
     ? resolveSchema(requestedSourceSchema, sourceSchemaInfo.options)
     : requestedSourceSchema;
-  const sourceEnvironment = toEnvironment(sourceConnection?.environment);
   // Same host, port and database name — not the same saved entry, since two
   // entries for one database are still one database. See databaseIdentity.
   const sourceIdentity = sourceTarget ? databaseIdentity(sourceTarget.config) : null;
@@ -1478,19 +1441,10 @@ export async function runComparison(
   const canAddTarget = resolvedTargets.length < MAX_TARGETS;
 
   const setOptions: ComparisonSetOption[] = savedSets.map((set) => {
-    // The source counts as well as the targets: a set that reads production —
-    // row data included — is worth knowing about before anyone opens it.
-    const liveSource =
-      set.sourceConnectionId === null
-        ? null
-        : findConnection(String(set.sourceConnectionId));
     return {
       id: set.id,
       name: set.name,
       targetCount: set.targets.length,
-      hasProduction:
-        (liveSource !== null && isProduction(toEnvironment(liveSource.environment))) ||
-        set.targets.some((target) => isProduction(target.environment)),
       compareData: set.compareData,
       hasMissingConnection:
         set.sourceConnectionId === null ||
@@ -1517,7 +1471,6 @@ export async function runComparison(
         : sourceMissingLabel || "No connection",
       schema: sourceSchema,
       schemaOptions: sourceSchemaInfo.options,
-      environment: sourceEnvironment,
       detectedVersion: sourceVersionInfo ? detectedFor(sourceVersionInfo) : null,
       missingMessage: sourceMissingMessage,
     },
@@ -1528,7 +1481,6 @@ export async function runComparison(
       displayName: slot.displayName,
       schema: slot.schema,
       schemaOptions: slot.schemaOptions,
-      environment: toEnvironment(slot.connection?.environment),
       // The picker says why it has nothing to list: no connection, or one
       // whose credentials can't be read here.
       missingMessage: slot.missingMessage ?? slot.credentialError,

@@ -135,7 +135,6 @@ function drifted(live: ReturnType<typeof schema>) {
     live: r.right,
     schemaName: "public",
     label: null,
-    environment: "development" as const,
     connection: null,
     driftIntervalMinutes: 15,
   };
@@ -236,7 +235,6 @@ describe("a check that found nothing new", () => {
       expected: { snapshotId: 7, version: "1.0.0" },
       schemaName: "public",
       label: null,
-      environment: "development" as const,
       connection: null,
       driftIntervalMinutes: 15,
     };

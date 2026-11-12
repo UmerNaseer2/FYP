@@ -23,9 +23,6 @@ import {
  *     a password or a connection string back to the browser.
  *  3. `ssl_mode` is the real setting; the older boolean `ssl` column is written
  *     in step with it so a rollback to an earlier build still behaves.
- *  4. `environment` is a typed dev / staging / prod label, not free text in the
- *     name. It is what lets Compare and Deploy say "this target is production"
- *     before they generate or run anything.
  *
  * Every saved connection belongs to one organization, and every statement here
  * names the caller's organization next to the id. A connection id from another

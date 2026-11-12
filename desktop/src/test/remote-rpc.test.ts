@@ -112,7 +112,7 @@ const DECIDE: DecideParams = { approvalId: 12, decision: "approve", fingerprint:
 
 const DEPLOY_FAMILY = { connectionId: 7, schemaName: "public", scriptName: "users_migration" };
 const DEPLOY_PLAN: DeployPlanParams = { ...DEPLOY_FAMILY, action: "deploy", targetVersion: "2.0.0" };
-const DEPLOY_START: DeployStartParams = { ...DEPLOY_PLAN, fingerprint: FINGERPRINT, step: "run", ticks: ["production", "breaking", "data-loss", "other-scripts", "drift"], assertion: ASSERTION };
+const DEPLOY_START: DeployStartParams = { ...DEPLOY_PLAN, fingerprint: FINGERPRINT, step: "run", ticks: [], assertion: ASSERTION };
 const QUERY_START = "2026-10-30T09:59:48.123456Z";
 const CANCEL: CancelParams = { connectionId: 7, pid: 4242, queryStart: QUERY_START, assertion: ASSERTION };
 
@@ -142,7 +142,7 @@ const REQUESTS: Request[] = [
   { id: 19, method: "deploy.plan", params: { ...DEPLOY_FAMILY, action: "revert", targetVersion: null } },
   { id: 20, method: "control.begin" },
   { id: 21, method: "deploy.start", params: DEPLOY_START },
-  { id: 22, method: "deploy.start", params: { ...DEPLOY_START, action: "revert", targetVersion: null, step: "ask", ticks: [] } },
+  { id: 22, method: "deploy.start", params: { ...DEPLOY_START, action: "revert", targetVersion: null, step: "ask" } },
   { id: 23, method: "session.cancel", params: CANCEL },
 ];
 
@@ -182,7 +182,6 @@ const NOTE_LINE: ChangeLine = {
 const STAGING: TargetSummary = {
   connectionId: 8,
   name: "Staging",
-  environment: "staging",
   schema: "public",
   status: "compared",
   error: null,
@@ -201,12 +200,12 @@ const STAGING: TargetSummary = {
 
 /** A comparison of one schema with three others, as the computer describes it. */
 const SUMMARY: CompareSummary = {
-  source: { connectionId: 7, name: "Production", environment: "prod", schema: "public", error: null },
+  source: { connectionId: 7, name: "Production", schema: "public", error: null },
   targets: [
     STAGING,
     // A target with no saved connection chosen for it.
-    { connectionId: null, name: "Target 2", environment: "unset", schema: "public", status: "no-connection", error: "Choose a connection.", changes: 0, breaking: 0, manual: 0, lines: [], moreLines: 0, history: null },
-    { connectionId: 9, name: "Dev", environment: "dev", schema: "public", status: "unreachable", error: "Could not reach that database from the computer.", changes: 0, breaking: 0, manual: 0, lines: [], moreLines: 0, history: null },
+    { connectionId: null, name: "Target 2", schema: "public", status: "no-connection", error: "Choose a connection.", changes: 0, breaking: 0, manual: 0, lines: [], moreLines: 0, history: null },
+    { connectionId: 9, name: "Dev", schema: "public", status: "unreachable", error: "Could not reach that database from the computer.", changes: 0, breaking: 0, manual: 0, lines: [], moreLines: 0, history: null },
   ],
 };
 
@@ -260,11 +259,10 @@ const LIVE: LiveStatus = {
 
 const DEPLOY_PLAN_RESULT: DeployPlan = {
   ...DEPLOY_PLAN,
-  environment: "prod",
   partial: false,
   fingerprint: FINGERPRINT,
   scripts: [{ name: "users_migration", version: "2.0.0", sql: "DROP TABLE t;" }],
-  risks: { production: true, breaking: ["users_migration v2.0.0"], dataLoss: ["users_migration v2.0.0"], otherScripts: ["orders v1.0.0"], drift: "drifted" },
+  risks: { breaking: ["users_migration v2.0.0"], dataLoss: ["users_migration v2.0.0"], otherScripts: ["orders v1.0.0"], drift: "drifted" },
   next: "blocked",
   blockedReason: "read-only",
   passkey: "ready",
@@ -278,8 +276,8 @@ const RESULTS: { [M in Method]: Results[M] } = {
   hello: { signedIn: true, role: "Viewer", canCompare: false, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0" },
   "connections.list": {
     connections: [
-      { id: 7, name: "Production", environment: "prod", database: "shop" },
-      { id: 8, name: "Staging", environment: "staging", database: "shop" },
+      { id: 7, name: "Production", database: "shop" },
+      { id: 8, name: "Staging", database: "shop" },
     ],
   },
   "schemas.list": { schemas: ["public", "archive"] },
@@ -419,9 +417,11 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "deploy.start", params: DEPLOY_PLAN },
     { id: 5, method: "deploy.start", params: { ...DEPLOY_START, fingerprint: "nope" } },
     { id: 5, method: "deploy.start", params: { ...DEPLOY_START, step: "approve" } },
-    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: "production" } },
-    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["everything"] } },
-    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["production", "production"] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: "breaking" } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["Not a word"] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: [7] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["breaking", "breaking"] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] } },
     { id: 5, method: "deploy.start", params: { ...DEPLOY_START, assertion: { ...ASSERTION, signature: "not base64url!" } } },
     { id: 5, method: "deploy.start", params: { ...DEPLOY_START, assertion: { ...ASSERTION, x: 1 } } },
     { id: 5, method: "deploy.start", params: { ...DEPLOY_START, x: 1 } },
@@ -547,7 +547,7 @@ test("reads a passkey's answers with each part as big as a request takes, and ea
         targetVersion: "a".repeat(MAX_SCRIPT_TEXT_LENGTH),
         fingerprint: FINGERPRINT,
         step: "run",
-        ticks: ["production", "breaking", "data-loss", "other-scripts", "drift"],
+        ticks: [],
         assertion: { credentialId: base64Url(1023), authenticatorData: base64Url(1024), clientDataJSON: base64Url(2048), signature: base64Url(256) },
       },
     },
@@ -647,18 +647,18 @@ test("refuses anything that is not exactly an answer", () => {
 
 test("sends only the fields this file lists, however much more the app's server said", () => {
   // A connection as the app's server describes it, with where its database is.
-  const fromServer = { id: 7, name: "Production", environment: "prod" as const, database: "shop", host: "db.internal.example", port: 5432, user: "app" };
+  const fromServer = { id: 7, name: "Production", environment: "prod", database: "shop", host: "db.internal.example", port: 5432, user: "app" };
   assert.deepEqual(json(writeResult(1, "connections.list", { connections: [fromServer] })), {
     id: 1,
-    result: { connections: [{ id: 7, name: "Production", environment: "prod", database: "shop" }] },
+    result: { connections: [{ id: 7, name: "Production", database: "shop" }] },
   });
   const hello = { ...RESULTS.hello, email: "someone@example.com" };
   assert.deepEqual(json(writeResult(2, "hello", hello)), { id: 2, result: RESULTS.hello });
 });
 
 test("will not send a result that is not what the request asks for", () => {
-  // An environment the phone app does not know, which only a mistake on the computer could give.
-  const connection: SharedConnection = JSON.parse('{"id":7,"name":"Production","environment":"production","database":"shop"}');
+  // A connection with no database name, which only a mistake on the computer could give.
+  const connection: SharedConnection = JSON.parse('{"id":7,"name":"Production"}');
   assert.throws(() => writeResult(1, "connections.list", { connections: [connection] }), /does not have the fields/);
 });
 
@@ -722,13 +722,36 @@ test("reads a computer's hello without canSeeLive as one that cannot show live s
   assert.equal(readResult("hello", older)?.canSeeLive, false);
 });
 
+test("reads what an older computer or phone app still sends about labels and ticked risks, and leaves it out", () => {
+  // An older computer names an environment for each connection, each side of a comparison and each plan.
+  const connections = { connections: RESULTS["connections.list"].connections.map((connection) => ({ ...connection, environment: "prod" })) };
+  assert.deepEqual(readResult("connections.list", connections), RESULTS["connections.list"]);
+  const summary = {
+    source: { ...SUMMARY.source, environment: "prod" },
+    targets: SUMMARY.targets.map((target) => ({ ...target, environment: "no such label" })),
+  };
+  assert.deepEqual(readResult("compare.run", summary), SUMMARY);
+  const plan = { ...DEPLOY_PLAN_RESULT, environment: "prod", risks: { ...DEPLOY_PLAN_RESULT.risks, production: true } };
+  assert.deepEqual(readResult("deploy.plan", plan), DEPLOY_PLAN_RESULT);
+  // A plan without them reads the same.
+  assert.deepEqual(readResult("deploy.plan", DEPLOY_PLAN_RESULT), DEPLOY_PLAN_RESULT);
+});
+
+test("reads a start with no ticked risks, with an empty list, or with what an older phone app signed", () => {
+  const { ticks: _left, ...without } = DEPLOY_START;
+  assert.deepEqual(readRequest(message({ id: 5, method: "deploy.start", params: without })), { ok: true, request: { id: 5, method: "deploy.start", params: DEPLOY_START } });
+  assert.deepEqual(readRequest(message({ id: 5, method: "deploy.start", params: DEPLOY_START })), { ok: true, request: { id: 5, method: "deploy.start", params: DEPLOY_START } });
+  const older = { ...DEPLOY_START, ticks: ["production", "breaking", "data-loss", "other-scripts", "drift"] };
+  assert.deepEqual(readRequest(message({ id: 5, method: "deploy.start", params: older })), { ok: true, request: { id: 5, method: "deploy.start", params: older } });
+});
+
 test("refuses a result whose fields are the wrong kind", () => {
   const cases: [Method, unknown][] = [
     ["hello", { ...RESULTS.hello, role: 7 }],
     ["hello", { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true }],
     ["connections.list", {}],
-    ["connections.list", { connections: [{ id: 0, name: "Production", environment: "prod", database: "shop" }] }],
-    ["connections.list", { connections: [{ id: 7, name: "Production", environment: "qa", database: "shop" }] }],
+    ["connections.list", { connections: [{ id: 0, name: "Production", database: "shop" }] }],
+    ["connections.list", { connections: [{ id: 7, name: "Production", database: 5 }] }],
     ["schemas.list", { schemas: ["public", 7] }],
     ["schemas.list", null],
     ["schema.read", { database: "shop", schema: "public", tables: [ORDERS] }],

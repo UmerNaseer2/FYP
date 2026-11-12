@@ -27,7 +27,7 @@
  */
 import type { PhoneActionOutcome } from "../core/phone-link-file";
 import type { ApprovalAction } from "../shared/remote/approval";
-import { cancelChallenge, deployChallenge, ticksFor, type ControlTick } from "../shared/remote/control";
+import { cancelChallenge, deployChallenge } from "../shared/remote/control";
 import { objectFields } from "../shared/remote/json";
 import {
   isSchemaName,
@@ -161,16 +161,13 @@ export class PhoneControlActions {
       const read = await this.readPlan(params, signal);
       if (read.plan.fingerprint !== fingerprint) throw new Refused("control-changed");
       if (step === "ask") {
-        // A request changes nothing but a row in the queue, so it takes no ticks.
         if (read.plan.next !== "ask-approval" || read.approvalRequest === null) throw new Refused("control-changed");
         await ask(this.options, "POST", "/api/deploy/approvals", read.approvalRequest, signal);
         record("sent-for-approval");
         return { status: "sent-for-approval" };
       }
       if ((read.plan.next !== "run" && read.plan.next !== "run-approved") || read.run === null) throw new Refused("control-changed");
-      // A risk that has appeared since nobody accepted. A signed tick for one that has gone sets a field that does nothing.
-      if (ticksFor(read.plan.risks).some((tick) => !ticks.includes(tick))) throw new Refused("control-changed");
-      // In the same tick as the check, so two phones cannot both start one family. A run started in the app's window is not here: the apply route's own lock handles that.
+      // In the same turn as the check, so two phones cannot both start one family. A run started in the app's window is not here: the apply route's own lock handles that.
       const key = runKey(params);
       if (this.runs.get(key)?.state === "running") throw new Refused("already-running");
       this.runs.set(key, { state: "running", at: this.clock.now() });
@@ -180,7 +177,7 @@ export class PhoneControlActions {
       throw error;
     }
     record("started");
-    const ended = this.finishRun(run.path, { ...run.body, ...acknowledgements(action, ticks) }, runKey(params), record);
+    const ended = this.finishRun(run.path, run.body, runKey(params), record);
     return this.answerInTime(ended, deadline, signal);
   }
 
@@ -260,7 +257,6 @@ export class PhoneControlActions {
       schemaName: fields?.schemaName,
       scriptName: fields?.scriptName,
       targetVersion: fields?.targetVersion,
-      environment: fields?.environment,
       partial: fields?.partial,
       fingerprint: fields?.fingerprint,
       scripts: Array.isArray(fields?.scripts) ? fields.scripts.map(readScript) : null,
@@ -293,14 +289,6 @@ function canBeNamed(family: unknown): boolean {
 function describeRun(scriptName: string, action: ApprovalAction, targetVersion: string | null): string {
   if (targetVersion !== null) return `${scriptName} to ${targetVersion}`;
   return `${scriptName} to ${action === "deploy" ? "its newest version" : "before its first version"}`;
-}
-
-/** Only what was signed gets set, under the names each route reads. */
-function acknowledgements(action: ApprovalAction, ticks: readonly ControlTick[]): Record<string, boolean> {
-  const has = (tick: ControlTick): boolean => ticks.includes(tick);
-  return action === "deploy"
-    ? { acknowledgeProduction: has("production"), acknowledgeBreaking: has("breaking"), acknowledgeDataLoss: has("data-loss"), acknowledgeDrift: has("drift") }
-    : { acknowledgeProduction: has("production"), acknowledgeOtherScripts: has("other-scripts"), acknowledgeDataLoss: has("data-loss") };
 }
 
 function outcomeOf(error: unknown): PhoneActionOutcome {

@@ -35,7 +35,6 @@ const POSTGRES = {
   host: "localhost",
   database_name: "shop",
   type: "PostgreSQL",
-  environment: "dev",
 };
 const SECOND_POSTGRES = { ...POSTGRES, id: 2, name: "Warehouse", database_name: "dw" };
 

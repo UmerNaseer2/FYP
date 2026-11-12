@@ -993,9 +993,8 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .role-note .title { color:var(--text); font-weight:600; font-size:12.5px; }
 .role-note .body { color:var(--text-2); line-height:1.5; }
 
-/* Production gate — the stop in front of SQL that runs on a live database.
-   Louder than .warn-inline on purpose: that one reports a risk, this one is
-   holding a button down until somebody reads it. */
+/* Risk warning: the block in front of SQL that runs on a live database.
+   Louder than .warn-inline on purpose, so it is read before the button. */
 /* One tone drives the whole block, so a second kind of risk (drift) is one
    custom-property override rather than a duplicated rule set. */
 .prod-gate { --gate-tone: var(--break);
@@ -1011,7 +1010,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
                   font-size:12px; line-height:1.45; color:var(--text); cursor:pointer; }
 .prod-gate__ack input { margin-top:2px; flex:none; accent-color:var(--gate-tone); cursor:pointer; }
 
-/* Approval panel — the two-person rule on the Deploy screen. Three states, and
+/* Approval panel: asking for a run on the Deploy screen. Three states, and
    the colour is the answer to "may this run go ahead?": green yes, amber
    waiting on someone, red not asked or refused. */
 .appr { --appr-tone: var(--text-3);

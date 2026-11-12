@@ -3,12 +3,12 @@ import type { HelpTopic } from "./types";
 /** Help for Schema details. Shown in the Help panel; the blurb is the page header's one line. */
 export const schemaDetailsHelp: HelpTopic = {
   title: "Schema details",
-  blurb: "One tracked schema: its drift state, its environment and its history of versions.",
+  blurb: "One tracked schema: its drift state and its history of versions.",
   purpose:
-    "This page shows one tracked schema in full. You see whether it has drifted, which environment it is, and its lineage: every version Schema Studio recorded for it. From here you can check drift again or open Compare with this schema as the target.",
+    "This page shows one tracked schema in full. You see whether it has drifted, and its lineage: every version Schema Studio recorded for it. From here you can check drift again or open Compare with this schema as the target.",
   steps: [
     "Open the page from the Dashboard by pressing Open on a schema's card.",
-    "Read the pills at the top: the drift state, the environment, the database type and how many entries the lineage has.",
+    "Read the pills at the top: the drift state, the database type and how many entries the lineage has.",
     "Press Check drift now, or Re-check drift, to compare the live database with the baseline.",
     "If the schema has drifted, press Review drift. The Drift page shows what changed and the ways to resolve it.",
     "Read the Lineage list, newest at the top. Each entry shows its snapshot counts and its migration script where one is stored.",
@@ -41,11 +41,6 @@ export const schemaDetailsHelp: HelpTopic = {
         "The snapshot taken when the schema was tracked. It was captured straight from the live database, so it has no migration script of its own.",
     },
     {
-      term: "Environment",
-      meaning:
-        "The label of the schema's connection, set on Connections. Only Production changes anything: runs there ask you to tick the risks first.",
-    },
-    {
       term: "Not recorded in this snapshot",
       meaning:
         "Kinds of object an older snapshot does not hold, because it was captured before this app read them. A comparison against it stays quiet about them and does not report them as missing.",
@@ -58,7 +53,7 @@ export const schemaDetailsHelp: HelpTopic = {
     {
       term: "Re-baseline",
       meaning:
-        "Accepting the live structure as the new expected snapshot. It is done on the Drift page. On production, look at what changed first.",
+        "Accepting the live structure as the new expected snapshot. It is done on the Drift page. Look at what changed first.",
     },
   ],
   problems: [

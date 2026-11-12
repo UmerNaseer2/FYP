@@ -2,8 +2,8 @@
  * @jest-environment jsdom
  */
 // The Requests page: where someone asks for what their role can't do, where
-// whoever can change roles answers, and where a production run waiting on
-// somebody can be found.
+// whoever can change roles answers, and where a run waiting on somebody can
+// be found.
 //
 // The app sends no email, so this page is the only place a person learns any of
 // it. What these pin is that each person is offered only what they can actually
@@ -406,7 +406,7 @@ describe("reading your own requests", () => {
     expect(screen.queryByText(/Still waiting\./)).not.toBeInTheDocument();
   });
 
-  it("tells the story of a production run someone asked for", async () => {
+  it("tells the story of a run someone asked for", async () => {
     await draw(
       payload({
         myRuns: [
@@ -430,7 +430,7 @@ describe("reading your own requests", () => {
         ],
       })
     );
-    expect(await screen.findByText(/Waiting for a second person/)).toBeInTheDocument();
+    expect(await screen.findByText(/Waiting for an Admin/)).toBeInTheDocument();
     expect(screen.getByText(/Rejected by alice@example\.com/)).toBeInTheDocument();
     expect(screen.getByText(/Approved by bob@example\.com, and it has been run/)).toBeInTheDocument();
     expect(screen.getByText(/Approved by cara@example\.com, but it was not run in time/)).toBeInTheDocument();
@@ -741,7 +741,7 @@ describe("answering", () => {
   });
 });
 
-describe("production runs waiting on someone", () => {
+describe("runs waiting on someone", () => {
   beforeEach(() => setUser("admin"));
 
   it("links a run to approve to the very target on Deploy", async () => {

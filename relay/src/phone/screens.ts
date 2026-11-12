@@ -5,8 +5,8 @@
  */
 import { ACTION_LABELS, requestedText, requestSize, requestTitle, versionText, type Choices } from "./approvals.js";
 import { BUILD_VERSION } from "./build-info.js";
-import { allTicked, CANCEL_QUESTION, cancelResultText, deployButtonText, HIDDEN_TEXT, hidesCharacters, mayCancel, mayControl, MISMATCH_TEXT, NO_FAMILIES_TEXT, PARTIAL_TEXT, passkeyText, planTitle, registryText, riskRows, rollbackButtonText, runText, startStatusText, startStatusTone, stepButton, stepOf, stepText, whereText, type RiskRow } from "./deploy.js";
-import { button, el, envBadge, failed, heading, loading, notice, type Child } from "./dom.js";
+import { CANCEL_QUESTION, cancelResultText, deployButtonText, HIDDEN_TEXT, hidesCharacters, mayCancel, mayControl, MISMATCH_TEXT, NO_FAMILIES_TEXT, PARTIAL_TEXT, passkeyText, planTitle, registryText, riskRows, rollbackButtonText, runText, startStatusText, startStatusTone, stepButton, stepText, whereText, type RiskRow } from "./deploy.js";
+import { button, el, failed, heading, loading, notice, type Child } from "./dom.js";
 import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, showHiddenCharacters, targetHeadline } from "./format.js";
 import {
   ACKNOWLEDGE_QUESTION,
@@ -34,7 +34,6 @@ import {
 import type { Route } from "./routes.js";
 import type { PairedComputer } from "./store.js";
 import type { ApprovalDecision, ApprovalScript } from "../shared/remote/approval.js";
-import type { ControlTick } from "../shared/remote/control.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
 import type { ApprovalList, ApprovalRead, ApprovalSummary, CancelResult, CompareSummary, DeployFamilyStatus, DeployList, DeployPlan, DeployStartStatus, HelloResult, LiveActivity, LiveControl, LiveDrift, LiveHealth, LiveSession, LiveStatus, PasskeyState, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
 
@@ -88,8 +87,6 @@ export type Actions = {
   /** Asks the question before an acknowledgement, for this tracked schema, or takes it away. */
   askAcknowledge(id: number | null): void;
   acknowledgeDrift(connectionId: number, id: number): void;
-  /** Ticks or unticks a risk of the run being looked at. */
-  toggleTick(tick: ControlTick, on: boolean): void;
   startRun(): void;
   /** Asks the question before cancelling this session's query, or takes it away. */
   askCancel(session: LiveSession | null): void;
@@ -226,7 +223,7 @@ export function scanScreen(actions: Actions): { nodes: Node[]; ui: ScanUi } {
 /** A tappable row that opens a connection. */
 function connectionRow(connection: SharedConnection, actions: Actions): HTMLButtonElement {
   return button(
-    [el("span", { class: "row-main" }, el("span", { class: "row-title" }, connection.name), el("span", { class: "mono muted" }, connection.database)), envBadge(connection.environment)],
+    [el("span", { class: "row-main" }, el("span", { class: "row-title" }, connection.name), el("span", { class: "mono muted" }, connection.database))],
     () => actions.go({ screen: "connection", connectionId: connection.id }),
     { class: "row", id: `connection-${connection.id}` },
   );
@@ -255,7 +252,7 @@ export function homeScreen(computerName: string, hello: HelloResult | null, conn
 
 export function connectionScreen(connection: SharedConnection | null, schemas: Load<string[]> | undefined, canSeeLive: boolean, actions: Actions, connectionId: number): Node[] {
   const nodes: Node[] = [heading(connection?.name ?? "Connection")];
-  if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), " ", el("span", { class: "mono" }, connection.database)));
+  if (connection !== null) nodes.push(el("p", { class: "lead" }, el("span", { class: "mono" }, connection.database)));
   // Before the schemas load, because live status does not depend on them.
   if (canSeeLive) nodes.push(el("div", { class: "actions" }, button("Live status", () => actions.go({ screen: "live", connectionId }), { class: "secondary", id: "live-status" })));
   if (schemas === undefined || schemas.status === "loading") return [...nodes, loading("Asking the computer for the schemas\u{2026}")];
@@ -297,7 +294,6 @@ export type PlanView = {
   plan: Load<DeployPlan> | undefined;
   /** The fingerprint of the SQL, worked out on this device: null if it could not be, undefined while it is being worked out. */
   hash: string | null | undefined;
-  ticked: ReadonlySet<ControlTick>;
   starting: PasskeyStep<true> & { result: DeployStartStatus | null };
   setup: PasskeyStep<"create">;
   passkeys: boolean;
@@ -319,7 +315,7 @@ export type DriftActions = {
  */
 export function liveScreen(connection: SharedConnection | null, connectionId: number, view: LiveView, openTables: ReadonlySet<string>, now: number, actions: Actions): Node[] {
   const nodes: Node[] = [heading("Live status")];
-  if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), ` ${connection.name} \u{2022} `, el("span", { class: "mono" }, connection.database)));
+  if (connection !== null) nodes.push(el("p", { class: "lead" }, `${connection.name} \u{2022} `, el("span", { class: "mono" }, connection.database)));
   const { status, at } = view;
   if (status === null || at === null) {
     if (view.problem !== null) return [...nodes, failed(view.problem, actions.refresh)];
@@ -556,7 +552,7 @@ export function compareScreen(
     .map((c) => {
       const box = el("input", { type: "checkbox", id: `target-${c.id}`, checked: form.targets.has(c.id), disabled: full && !form.targets.has(c.id) });
       box.addEventListener("change", () => actions.toggleTarget(c.id, box.checked));
-      return el("label", { class: "row", for: `target-${c.id}` }, box, el("span", { class: "row-title" }, c.name), envBadge(c.environment));
+      return el("label", { class: "row", for: `target-${c.id}` }, box, el("span", { class: "row-title" }, c.name));
     });
   const running = result?.status === "loading";
   nodes.push(
@@ -581,7 +577,7 @@ export function compareScreen(
       el(
         "section",
         { class: "card target" },
-        el("h2", { class: "section" }, target.name, " ", envBadge(target.environment)),
+        el("h2", { class: "section" }, target.name),
         el("p", { class: "lead" }, targetHeadline(target)),
         target.error !== null && el("p", { class: "muted" }, target.error),
         target.breaking + target.manual > 0 &&
@@ -619,7 +615,7 @@ function requestRow(request: ApprovalSummary, connection: SharedConnection | und
         el("span", { class: "muted" }, connection === undefined ? request.schemaName : `${request.schemaName} on ${connection.name}`),
         el("span", { class: "muted small" }, requestedText(request)),
       ),
-      connection === undefined ? el("span", { class: "tag" }, ACTION_LABELS[request.action]) : envBadge(connection.environment),
+      el("span", { class: "tag" }, ACTION_LABELS[request.action]),
     ],
     () => actions.go({ screen: "approval", approvalId: request.id }),
     { class: "row", id: `approval-${request.id}` },
@@ -762,7 +758,7 @@ export function approvalScreen(
       infoRow("Script", summary.scriptName, true),
       infoRow("Schema", summary.schemaName, true),
       connection !== undefined
-        ? infoRow("Connection", [connection.name, " ", envBadge(connection.environment)])
+        ? infoRow("Connection", connection.name)
         : connections?.status === "loaded" && infoRow("Connection", "Not shared with phones"),
       infoRow("Runs", requestSize(summary)),
       infoRow("Asked for by", summary.requestedBy),
@@ -879,7 +875,7 @@ function controlPasskeyPart(passkey: PasskeyState, setup: PasskeyStep<"create">,
 /** The scripts that could run on a connection, under each schema. */
 export function deployScreen(connection: SharedConnection | null, connectionId: number, list: Load<DeployList> | undefined, setup: PasskeyStep<"create">, passkeys: boolean, actions: Actions): Node[] {
   const nodes: Node[] = [heading("Deploy or roll back")];
-  if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), ` ${connection.name}`));
+  if (connection !== null) nodes.push(el("p", { class: "lead" }, connection.name));
   if (list === undefined || list.status === "loading") return [...nodes, loading("Asking the computer for its scripts\u{2026}")];
   if (list.status === "failed") return [...nodes, failed(list.message, actions.refresh)];
   const { registry, partial, families, passkey } = list.value;
@@ -927,25 +923,21 @@ export function deployFamilyScreen(route: Extract<Route, { screen: "deploy-famil
   return nodes;
 }
 
-function riskRow(row: RiskRow, canTick: boolean, ticked: ReadonlySet<ControlTick>, actions: Actions): Node {
-  const body = el("span", { class: "row-main" }, el("span", {}, row.text), row.labels.map((label) => el("span", { class: "small mono risk-label" }, label)));
-  if (!canTick) return el("div", { class: "row" }, body);
-  const box = el("input", { type: "checkbox", id: `risk-${row.tick}`, checked: ticked.has(row.tick) });
-  box.addEventListener("change", () => actions.toggleTick(row.tick, box.checked));
-  return el("label", { class: "row", for: `risk-${row.tick}` }, box, body);
+/** A warning about the run. It is there to be read: it has no box, and it holds nothing back. */
+function riskRow(row: RiskRow): Node {
+  return el("div", { class: "row" }, el("span", { class: "row-main" }, el("span", {}, row.text), row.labels.map((label) => el("span", { class: "small mono risk-label" }, label))));
 }
 
 /** One run: what it would do, what it risks, and the passkey button for its next step. */
 export function deployPlanScreen(route: Extract<Route, { screen: "deploy-plan" }>, connection: SharedConnection | null, view: PlanView, actions: Actions): Node[] {
   const { connectionId, schema, script, action, version } = route;
   const load = view.plan;
-  const environment = load?.status === "loaded" ? load.value.environment : connection?.environment ?? null;
   const nodes: Node[] = [
     heading(planTitle(action, version)),
     el("dl", { class: "card" },
       infoRow("Script", script, true),
       infoRow("Schema", schema, true),
-      infoRow("Connection", [connection?.name ?? "", " ", environment !== null && envBadge(environment)]),
+      infoRow("Connection", connection?.name ?? ""),
     ),
   ];
   const { starting } = view;
@@ -963,8 +955,7 @@ export function deployPlanScreen(route: Extract<Route, { screen: "deploy-plan" }
   if (label === null) nodes.push(notice(stepText(plan), "info"));
   if (plan.partial) nodes.push(notice(PARTIAL_TEXT, "info"));
   const rows = riskRows(plan.risks);
-  const canTick = stepOf(plan.next) === "run";
-  if (rows.length > 0) nodes.push(el("h2", { class: "section" }, canTick ? "Tick each one to go on" : "What this run risks"), el("div", { class: "list" }, rows.map((row) => riskRow(row, canTick, view.ticked, actions))));
+  if (rows.length > 0) nodes.push(el("h2", { class: "section" }, "What this run risks"), el("div", { class: "list" }, rows.map(riskRow)));
   nodes.push(el("h2", { class: "section" }, plan.action === "revert" ? "The SQL it runs to roll back" : "The SQL it runs"), ...plan.scripts.map(scriptCard));
   // No step to take, or no passkey to take it with: what is above says why.
   if (label === null || plan.passkey !== "ready") return nodes;
@@ -974,7 +965,7 @@ export function deployPlanScreen(route: Extract<Route, { screen: "deploy-plan" }
   if (hidesCharacters(plan)) return [...nodes, notice(HIDDEN_TEXT, "bad")];
   if (starting.problem !== null) nodes.push(notice(starting.problem, "bad"));
   if (starting.prepared?.status === "failed") nodes.push(failed(starting.prepared.message, actions.refresh));
-  const ready = starting.prepared?.status === "loaded" && starting.working === null && allTicked(plan, view.ticked);
+  const ready = starting.prepared?.status === "loaded" && starting.working === null;
   nodes.push(
     el("p", { class: "hint" }, stepText(plan)),
     el("div", { class: "actions" }, button(starting.working !== null ? "Starting\u{2026}" : label, actions.startRun, { class: "primary", id: "start-run", disabled: !ready })),

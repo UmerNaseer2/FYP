@@ -32,7 +32,6 @@ export type PgTargetRow = {
   connection_string: string | null;
   ssl: boolean | null;
   ssl_mode: string | null;
-  environment: string | null;
   execute_role: string | null;
 };
 
@@ -57,7 +56,7 @@ export async function loadPgTarget(
     await syncMetadataTables();
     const result = await pool.query(
       `SELECT name, type, host, port, database_name, username, password, connection_string, ssl, ssl_mode,
-              environment, execute_role
+              execute_role
          FROM connections
         WHERE id = $1 AND org_id = $2`,
       [connectionId, orgId]

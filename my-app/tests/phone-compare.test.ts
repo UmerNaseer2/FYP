@@ -38,7 +38,6 @@ const REPORT = compareSchemas(SOURCE, TARGET);
 const SOURCE_VIEW: PhoneCompareInput["source"] = {
   connectionId: 1,
   displayName: "Dev (app)",
-  environment: "dev",
   schema: "public",
   schemaOptions: ["public", "qa"],
   missingMessage: null,
@@ -49,7 +48,6 @@ function outcome(over: Partial<PhoneOutcome> = {}): PhoneOutcome {
   return {
     connectionId: 2,
     displayName: "Staging (app)",
-    environment: "staging",
     schema: "public",
     sameAsSource: false,
     failure: null,
@@ -376,12 +374,11 @@ test("the answer has exactly the fields rpc.ts reads", () => {
   const summary = summarize([outcome()]);
   const keys = (value: object) => Object.keys(value).sort();
   expect(keys(summary)).toEqual(["source", "targets"]);
-  expect(keys(summary.source)).toEqual(["connectionId", "environment", "error", "name", "schema"]);
+  expect(keys(summary.source)).toEqual(["connectionId", "error", "name", "schema"]);
   expect(keys(summary.targets[0])).toEqual([
     "breaking",
     "changes",
     "connectionId",
-    "environment",
     "error",
     "history",
     "lines",

@@ -63,9 +63,7 @@ export function ownRunStory(run: ListedApproval): { label: string; tone: PillTon
       return {
         label: "Waiting",
         tone: "pending",
-        story: run.run_by_requester
-          ? "Waiting for an Admin. It is on the Requests page of anyone who can approve it."
-          : "Waiting for a second person. It is on the Requests page of anyone who can approve it.",
+        story: "Waiting for an Admin. It is on the Requests page of anyone who can approve it.",
       };
     case "rejected":
       return { label: "Rejected", tone: "break", story: `Rejected by ${by}.` };

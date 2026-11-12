@@ -6,12 +6,10 @@ import {
   Pill,
   Card,
   EmptyState,
-  EnvironmentPill,
   Skeleton,
   Timeline,
   TimelineNode,
 } from "@/components/ui";
-import { isProduction } from "@/lib/environments";
 import { countOf } from "@/lib/plural";
 import { displayVersion } from "@/lib/version-timeline";
 import {
@@ -217,7 +215,6 @@ export default function SchemaDetailPage({
             <i aria-hidden="true" />
             <b>{drift.label}</b>
           </span>
-          <EnvironmentPill environment={detail.environment} />
           {connectionGone ? (
             <Pill tone="neutral">Connection removed</Pill>
           ) : (
@@ -293,23 +290,6 @@ export default function SchemaDetailPage({
           )}
         </div>
       </div>
-
-      {/* The label is the connection's (set on Connections). Only production
-          says anything here. */}
-      {isProduction(detail.environment) && (
-        <Card className="sc-env">
-          <div className="warn-inline">
-            <span className="ico sc-env__ico">
-              <AlertTriangleIcon size={14} />
-            </span>
-            <div>
-              <b>Production schema.</b> Re-baselining it on the Drift page accepts
-              whatever changed outside this app as correct, so look at what changed
-              before you do.
-            </div>
-          </div>
-        </Card>
-      )}
 
       {/* Lineage timeline */}
       <Card className="sc-snc">

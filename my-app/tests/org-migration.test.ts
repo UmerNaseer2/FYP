@@ -188,7 +188,6 @@ const SWINBURNE = {
   name: "Swinburne FYP",
   personal: false,
   is_default: true,
-  two_person_rule: true,
 };
 const PERSONAL = {
   ...SWINBURNE,
@@ -507,7 +506,7 @@ async function insertId(
 
 async function organizationsIn(client: Client) {
   const { rows } = await client.query(
-    `SELECT id, slug, name, personal, is_default, two_person_rule
+    `SELECT id, slug, name, personal, is_default
        FROM organizations ORDER BY id`
   );
   return rows;
@@ -1653,7 +1652,6 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
-        twoPersonRule: false,
         role,
       };
     }
@@ -1878,7 +1876,6 @@ describeWithDatabase("org-migration", () => {
         slug: "elsewhere",
         name: "Elsewhere",
         isDefault: false,
-        twoPersonRule: false,
         role: "viewer",
       };
 
@@ -1918,7 +1915,6 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
-        twoPersonRule: false,
       });
       expect(await app.orgs.findOrganization("elsewhere")).toMatchObject({
         slug: "elsewhere",
@@ -2124,7 +2120,6 @@ describeWithDatabase("org-migration", () => {
           slug: "elsewhere",
           name: "Elsewhere",
           isDefault: false,
-          twoPersonRule: false,
           role: "viewer",
         },
       ]);
@@ -2394,8 +2389,6 @@ describeWithDatabase("org-migration", () => {
           slug: "acme-data",
           name: "Acme Data",
           isDefault: false,
-          // Off by default: whoever's role allows a run just runs it.
-          twoPersonRule: false,
         },
       });
       acmeId = created.kind === "ok" ? created.organization.id : 0;
@@ -2518,28 +2511,25 @@ describeWithDatabase("org-migration", () => {
     async function logOf(orgId: number) {
       const { rows } = await client.query(
         `SELECT role, kind, subject, detail, actor FROM role_changes
-          WHERE org_id = $1 AND kind IN ('rename-organization', 'two-person-rule') ORDER BY id`,
+          WHERE org_id = $1 AND kind = 'rename-organization' ORDER BY id`,
         [orgId]
       );
       return rows;
     }
 
-    test("renames it and switches its rule, keeps the address, and logs only what changed", async () => {
+    test("renames it, keeps the address, and logs only what changed", async () => {
       const id = await made("change-me", "Before");
 
-      const both = await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: true }, "ed@example.invalid");
-      expect(both).toEqual({
+      const renamed = await app.orgs.updateOrganization(id, { name: "After" }, "ed@example.invalid");
+      expect(renamed).toEqual({
         kind: "ok",
-        organization: expect.objectContaining({ id, slug: "change-me", name: "After", twoPersonRule: true }),
+        organization: expect.objectContaining({ id, slug: "change-me", name: "After" }),
       });
-      // The same values again change nothing, so they log nothing.
-      await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: true }, "ed@example.invalid");
-      await app.orgs.updateOrganization(id, { twoPersonRule: false }, "ed@example.invalid");
+      // The same name again changes nothing, so it logs nothing.
+      await app.orgs.updateOrganization(id, { name: "After" }, "ed@example.invalid");
 
       expect(await logOf(id)).toEqual([
         { role: ADMIN_ROLE, kind: "rename-organization", subject: "After", detail: "Before", actor: "ed@example.invalid" },
-        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "on", actor: "ed@example.invalid" },
-        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "off", actor: "ed@example.invalid" },
       ]);
       expect((await app.orgs.findOrganization("change-me"))?.name).toBe("After");
     }, SLOW);

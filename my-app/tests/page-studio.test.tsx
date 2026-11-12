@@ -32,7 +32,6 @@ import {
   resetPageState,
   setCustomRole,
   setRoutes,
-  setSessionLoading,
   setUser,
 } from "./helpers/render-page";
 
@@ -43,7 +42,6 @@ const CONNECTIONS = [
     host: "legacy.internal",
     database_name: "old",
     type: "PostgreSQL",
-    environment: "dev",
   },
   {
     id: 2,
@@ -51,7 +49,6 @@ const CONNECTIONS = [
     host: "new.internal",
     database_name: "shop",
     type: "PostgreSQL",
-    environment: "dev",
   },
 ];
 
@@ -61,7 +58,6 @@ const TRACKED: TrackedSchemaListItem = {
   connectionId: 1,
   schemaName: "shop",
   label: null,
-  environment: "dev",
   createdAt: "2026-01-01T00:00:00.000Z",
   connectionName: "Legacy box",
   connectionHost: "legacy.internal",
@@ -333,30 +329,6 @@ describe("for a role that may not track, check or stop tracking", () => {
     expect(await screen.findByRole("button", { name: /Check drift/ })).toBeEnabled();
     expect(screen.queryByText(/run a drift check/)).toBeNull();
   });
-
-  it("does not nag about a tracked schema with no label", async () => {
-    setUser("viewer");
-    setRoutes(baseRoutes([{ ...TRACKED, environment: "unset" }]));
-    render(<StudioPage />);
-
-    await screen.findByRole("button", { name: /^shop/ });
-    expect(screen.queryByText(/1 tracked schema has/)).toBeNull();
-    expect(screen.queryByText(/Label them so Compare/)).toBeNull();
-  });
-
-  it("says nothing while the session is still loading", async () => {
-    // The server decides then. Switching the buttons off for a role nobody
-    // knows yet would flash a refusal at everyone on every page load.
-    setSessionLoading();
-    setRoutes(baseRoutes([TRACKED]));
-    render(<StudioPage />);
-
-    const untrack = await screen.findByRole("button", { name: "Stop tracking shop" });
-    expect(untrack).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Track a schema/ })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Check drift/ })).toBeEnabled();
-    expect(screen.queryByText(/Your role/)).toBeNull();
-  });
 });
 
 describe("the skyline", () => {
@@ -364,7 +336,6 @@ describe("the skyline", () => {
     ...TRACKED,
     id: 8,
     schemaName: "billing",
-    environment: "prod",
     migrationCount: 4,
     driftStatus: "drifted",
     driftSummary: "1 table removed",
@@ -376,10 +347,10 @@ describe("the skyline", () => {
 
     // Drifted stands first, so it is the one picked to begin with.
     const billing = await screen.findByRole("button", {
-      name: "billing, Production, Drifted, 4 recorded versions",
+      name: "billing, Drifted, 4 recorded versions",
     });
     const shop = screen.getByRole("button", {
-      name: "shop, Dev, Not checked, 0 recorded versions",
+      name: "shop, Not checked, 0 recorded versions",
     });
     expect(billing).toHaveAttribute("aria-pressed", "true");
     expect(shop).toHaveAttribute("aria-pressed", "false");
@@ -391,13 +362,13 @@ describe("the skyline", () => {
     setRoutes(baseRoutes([TRACKED, SECOND]));
     render(<StudioPage />);
 
-    const shop = await screen.findByRole("button", { name: /^shop, Dev/ });
+    const shop = await screen.findByRole("button", { name: /^shop, / });
     fireEvent.click(shop);
     expect(shop).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Stop tracking shop" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Review drift/ })).toBeNull();
 
-    fireEvent.keyDown(screen.getByRole("button", { name: /^billing, Production/ }), {
+    fireEvent.keyDown(screen.getByRole("button", { name: /^billing, / }), {
       key: "Enter",
     });
     expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
@@ -407,7 +378,7 @@ describe("the skyline", () => {
     setRoutes(baseRoutes([TRACKED, SECOND]));
     render(<StudioPage />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /^shop, Dev/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^shop, / }));
     const row = screen.getByRole("button", { name: /billing.*1 table removed/ });
     fireEvent.click(row);
     expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
@@ -420,12 +391,12 @@ describe("the skyline", () => {
     ]);
     render(<StudioPage />);
 
-    await screen.findByRole("button", { name: /^shop, Dev/ });
+    await screen.findByRole("button", { name: /^shop, / });
     expect(fetchCalls.some((call) => call.url === "/api/lineage/7")).toBe(false);
 
     fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
     expect(
-      await screen.findByRole("button", { name: "shop, Dev, Not checked, 12 tables" })
+      await screen.findByRole("button", { name: "shop, Not checked, 12 tables" })
     ).toBeInTheDocument();
     expect(screen.getByText(/had more tables in its latest recorded version/)).toBeInTheDocument();
   });
@@ -437,22 +408,12 @@ describe("the skyline", () => {
     ]);
     render(<StudioPage />);
 
-    await screen.findByRole("button", { name: /^shop, Dev/ });
+    await screen.findByRole("button", { name: /^shop, / });
     fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
     expect(
-      await screen.findByRole("button", { name: "shop, Dev, Not checked, table count not known" })
+      await screen.findByRole("button", { name: "shop, Not checked, table count not known" })
     ).toBeInTheDocument();
     expect((await screen.findAllByText("Couldn't read")).length).toBeGreaterThan(0);
-  });
-
-  it("offers a filter only for the labels in use", async () => {
-    setRoutes(baseRoutes([TRACKED]));
-    render(<StudioPage />);
-
-    await screen.findByRole("button", { name: /^shop, Dev/ });
-    expect(screen.queryByRole("button", { name: /^Production/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /^Dev/ }));
-    expect(screen.getByRole("button", { name: /^shop, Dev/ })).toBeInTheDocument();
   });
 });
 

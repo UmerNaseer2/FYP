@@ -132,7 +132,7 @@ node scripts/seed-test-schemas.cjs
 
 After these nine the sidebar lists Connections, Requests and Admin. Requests is
 where a member asks for a permission their role does not have, and where a
-production run waiting for approval shows up for the people who can approve it.
+run waiting for approval shows up for the people who can approve it.
 
 The sidebar is in this order for the same reason, and the screens hand over to
 each other: each one offers a link onward at the point where it has actually
@@ -359,7 +359,7 @@ trusting this table to be complete. At commit `e1a4d0c` it declares 34 tables:
 | `ai_results` | Cached AI answers, deleted after a week |
 | `agents` | A computer linked to a person's account. Its token is kept only as a hash |
 | `agent_links` | A computer waiting to be approved, for ten minutes at most |
-| `agent_connections` | The connections a linked computer shares: a name and an environment, never the host, user or password |
+| `agent_connections` | The connections a linked computer shares: a name, never the host, user or password |
 | `agent_jobs` | A question waiting for a linked computer, and its answer |
 | `push_subscriptions` | Where to send phone and browser alerts |
 | `push_keys` | The server's own push key, one row |
@@ -377,7 +377,7 @@ trusting this table to be complete. At commit `e1a4d0c` it declares 34 tables:
 | `role_changes` | The Recent changes list on the Roles & permissions tab: permissions turned on and off, roles made, reset, deleted and given to people, invitations, people removed, and changes to the organization and its GitHub settings |
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
-| `deploy_approvals` | Approval requests, decisions, and the two-person record |
+| `deploy_approvals` | Approval requests and decisions. Nobody may approve their own ask |
 | `schema_metrics` | One reading of a schema's size and shape per drift check, pruned past 90 days |
 | `comparison_runs` | What one comparison of a source/target pair found, so the next one can say what changed since |
 | `query_history` | Saved EXPLAIN runs, so a query's plan can be compared against its own past |
@@ -424,13 +424,12 @@ nothing was run for it. Nothing below is deferred.
 
 Compare with rename detection · row-data comparison by count and checksum ·
 migration generation · script review and editing · semver push to the GitHub
-registry · pull back · pre-flight · dry run · approval and the two-person rule ·
+registry · pull back · pre-flight · dry run · asking for approval of one exact run ·
 transactional apply · `script_patch` ledger · rollback from a `.down.sql` ·
 lineage snapshots · drift detection and re-baseline · version-sync
 reconciliation · detecting an existing version table in a target · saved
 comparison sets · comparing one source against up to six
 targets · what changed since the last comparison of the same pair ·
-dev/staging/production labels and their warnings ·
 roles an admin edits box by box for each feature, custom roles and their
 change log · per-connection execution permissions · exporting a diff as
 Markdown, JSON or CSV · the ERD visualizer · scheduled drift checking
@@ -481,8 +480,7 @@ Some of those are new enough to say where they live:
   SVG; there is no charting dependency.
 - **Each connection says who may execute against it**, which is what spec
   feature 1.2 asks for. A role says what a person may do anywhere; it cannot say
-  that the same editor is trusted on dev and not on the reference schema, and
-  the environment label is only a warning. So running anything needs the
+  that the same editor is trusted on dev and not on the reference schema. So running anything needs the
   "Apply or revert migrations" permission (`deploy:run`) first, and then the connection's own setting on top: anyone
   whose role may run deployments (the default), the Admin role only, or nobody.
   `lib/connection-access.ts` holds the rule, the setting is a `<select>` on
@@ -576,7 +574,7 @@ Some of those are new enough to say where they live:
   addresses are blocked everywhere, production or not. `ALLOW_PRIVATE_DB_HOSTS=true`
   opts back in for a trusted or VPC deployment. Development is unaffected, which
   is why a localhost target works locally and then fails once deployed.
-- **A production approval expires after a week** (`APPROVAL_VALID_HOURS`, 24 × 7).
+- **An approval expires after a week** (`APPROVAL_VALID_HOURS`, 24 × 7).
   The run fingerprint pins *what* was approved but not *when*, and a month-old
   yes was a judgement about a database as it stood a month ago. Past the expiry
   the run simply reads as unapproved again — it is not an error, and asking

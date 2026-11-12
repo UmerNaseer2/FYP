@@ -1,7 +1,7 @@
 // The help text for every page, one file per page in this folder.
 //
 // The rule for what goes where:
-//   - On the page: warnings about losing data or touching production, and errors.
+//   - On the page: warnings about losing data, and errors.
 //   - In here: everything that explains how a page works.
 // A page's file holds what the page is for, the steps, what its words mean and
 // its common problems. The Help panel (components/help) shows it, and the

@@ -1,12 +1,3 @@
-import {
-  environmentRank,
-  isProduction,
-  looksLikeProduction,
-  needsApproval,
-  risksNeedTicks,
-  productionBlockReason,
-  toEnvironment,
-} from "@/lib/environments";
 import { cutForwardOnly, diffLedgers, entryKey, readReplayAnswer, type LedgerEntry } from "@/lib/version-sync";
 import { checkForwardOnly } from "@/lib/deploy-risk";
 import { createHash } from "node:crypto";
@@ -24,48 +15,6 @@ jest.mock("../lib/version-db", () => ({
   default: { query: jest.fn() },
   syncMetadataTables: jest.fn(),
 }));
-
-describe("environments", () => {
-  it("only accepts the four labels it knows", () => {
-    expect(toEnvironment("prod")).toBe("prod");
-    expect(toEnvironment("  PROD  ")).toBe("prod");
-    expect(toEnvironment(null)).toBe("unset");
-    expect(toEnvironment("live")).toBe("unset");
-  });
-
-  it("ranks environments with production loudest", () => {
-    expect(environmentRank("prod")).toBeGreaterThan(environmentRank("staging"));
-    expect(environmentRank("dev")).toBeGreaterThan(environmentRank("unset"));
-  });
-
-  it("asks for risk ticks only on production", () => {
-    expect(risksNeedTicks("prod")).toBe(true);
-    for (const env of ["staging", "dev", "unset"] as const) expect(risksNeedTicks(env)).toBe(false);
-  });
-
-  it("needs an approval only for a real production run with approvals on", () => {
-    expect(needsApproval("prod", true)).toBe(true);
-    expect(needsApproval("prod", true, true)).toBe(false);
-    expect(needsApproval("prod", false)).toBe(false);
-    expect(needsApproval("staging", true)).toBe(false);
-    expect(needsApproval("unset", true)).toBe(false);
-  });
-
-  it("blocks an unconfirmed production run and nothing else", () => {
-    expect(productionBlockReason("prod", false)).toMatch(/production/i);
-    expect(productionBlockReason("prod", true)).toBeNull();
-    expect(productionBlockReason("dev", false)).toBeNull();
-    expect(isProduction("prod")).toBe(true);
-    expect(isProduction("staging")).toBe(false);
-  });
-
-  it("only suggests production from a whole word", () => {
-    expect(looksLikeProduction("orders-production")).toBe(true);
-    expect(looksLikeProduction("PROD cluster")).toBe(true);
-    // "reproduction" is not a production database.
-    expect(looksLikeProduction("reproduction-steps")).toBe(false);
-  });
-});
 
 describe("roles", () => {
   it("has the three built-in roles every install starts with", () => {
@@ -438,9 +387,9 @@ describe("readReplayAnswer", () => {
     });
   });
 
-  it("reads a request for ticks as refused", () => {
-    const ticks = { success: false, nothingRan: true, needsAcknowledgement: ["breaking"], error: "Tick the box." };
-    expect(readReplayAnswer(409, ticks)).toMatchObject({ failure: "refused" });
+  it("reads a run that needs an approval as refused", () => {
+    const ask = { success: false, nothingRan: true, needsApproval: true, askToRun: true, error: "Ask for approval." };
+    expect(readReplayAnswer(403, ask)).toMatchObject({ failure: "refused" });
   });
 
   it("reads a server error from before the first write as not started", () => {

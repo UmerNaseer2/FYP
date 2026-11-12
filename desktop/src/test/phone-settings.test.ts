@@ -260,8 +260,8 @@ test("saves a relay's address tidied, and refuses one that is not a relay's", ()
 
 test("lists the saved connections the server sends, and says why it cannot", () => {
   const connections = [
-    { id: 2, name: "Bookshop", environment: "prod" as const, database: "bookshop" },
-    { id: 5, name: "Bookshop dev", environment: "unset" as const, database: "bookshop_dev" },
+    { id: 2, name: "Bookshop", database: "bookshop" },
+    { id: 5, name: "Bookshop dev", database: "bookshop_dev" },
   ];
   assert.deepEqual(readPhoneConnections({ status: 200, json: { connections } }), { ok: true, connections });
   assert.deepEqual(readPhoneConnections({ status: 200, json: { connections: [] } }), { ok: true, connections: [] });

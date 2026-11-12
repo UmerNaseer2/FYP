@@ -23,16 +23,6 @@ import {
   type SslMode,
 } from "@/lib/connection-validate";
 import {
-  DEFAULT_ENVIRONMENT,
-  ENVIRONMENTS,
-  ENVIRONMENT_META,
-  environmentRank,
-  isProduction,
-  looksLikeProduction,
-  toEnvironment,
-  type Environment,
-} from "@/lib/environments";
-import {
   DEFAULT_EXECUTE_ROLE,
   EXECUTE_ROLES,
   describeExecuteRole,
@@ -59,7 +49,7 @@ import {
   VersionSyncIcon,
   SearchIcon,
 } from "@/components/ui/icons";
-import { EnvironmentPill, ExecuteRolePill, FilterPill } from "@/components/ui";
+import { ExecuteRolePill, FilterPill } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import { LocalDatabaseFinder } from "@/components/studio/LocalDatabaseFinder";
 import {
@@ -98,10 +88,6 @@ type Connection = {
   // the column existed; read it through toExecuteRole(), which lands those on
   // the default.
   execute_role?: string | null;
-  // dev / staging / prod. Null on rows written before the column existed; read
-  // it through connEnvironment() so those come back as "unset" rather than
-  // silently looking like a labelled target.
-  environment?: string | null;
   // The last "Test" outcome, stored on the row. All null until the connection
   // has been tested once — and cleared again if it is later repointed at a
   // different host, database or user. Read them through rowResult().
@@ -181,7 +167,7 @@ type Computer = {
   mine: boolean;
   online: boolean;
   lastSeenAt: string | null;
-  connections: { id: number; name: string; environment: string | null }[];
+  connections: { id: number; name: string }[];
 };
 
 type RowResult =
@@ -192,7 +178,7 @@ type RowResult =
 type FieldMode = "uri" | "fields";
 // "remote" is any host other than this computer. It was labelled "Online",
 // which read as "reachable right now", a question the Test button answers.
-type Filter = "all" | "local" | "remote" | "ssl" | Environment;
+type Filter = "all" | "local" | "remote" | "ssl";
 
 type DrawerTest =
   | { kind: "idle" }
@@ -209,7 +195,6 @@ const EMPTY_FORM = {
   user: "postgres",
   password: "",
   sslMode: DEFAULT_SSL_MODE,
-  environment: DEFAULT_ENVIRONMENT as Environment,
   applicationTable: "",
   executeRole: DEFAULT_EXECUTE_ROLE as ExecuteRole,
   // "Only this machine can reach it". Null until the person ticks or unticks
@@ -266,11 +251,6 @@ function connSslMode(conn: Connection): SslMode {
   return conn.ssl_mode ? toSslMode(conn.ssl_mode) : sslModeFromLegacyBoolean(conn.ssl);
 }
 
-/** The environment for a saved row. Anything unknown or missing reads "unset". */
-function connEnvironment(conn: Connection): Environment {
-  return toEnvironment(conn.environment);
-}
-
 /**
  * What this row's "Last tested" cell should show.
  *
@@ -324,7 +304,6 @@ export default function ConnectionsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const [groupByEnv, setGroupByEnv] = useState(false);
   // What is typed in "Search by name or host". Empty means no search.
   const [search, setSearch] = useState("");
   const [rowResults, setRowResults] = useState<Record<number, RowResult>>({});
@@ -583,7 +562,6 @@ export default function ConnectionsPage() {
       user: conn.username ?? "postgres",
       password: "", // never prefilled; left blank keeps the stored one
       sslMode: connSslMode(conn),
-      environment: connEnvironment(conn),
       applicationTable: conn.application_table ?? "",
       executeRole: toExecuteRole(conn.execute_role),
       localOnly: conn.lives_on ? true : false,
@@ -612,9 +590,6 @@ export default function ConnectionsPage() {
         uri: LOCAL_QUICK_START_URI,
         name: nameFor(f.name),
         sslMode: "disable",
-        // A loopback Postgres is a development database by definition. Hosted
-        // is left unlabelled on purpose — only the user knows which it is.
-        environment: "dev",
       }));
     } else {
       // A pill that fills the field with words like "dbname" gets a green
@@ -622,16 +597,15 @@ export default function ConnectionsPage() {
       // address that does not exist. The input's own placeholder shows the
       // shape instead.
       setForm((f) => {
-        // Still what the Local pill filled in: its string and its "dev" label
-        // describe a database on this computer, so they go. A string the
-        // person pasted, and a label they picked, stay.
+        // Still what the Local pill filled in: its string describes a
+        // database on this computer, so it goes. A string the person pasted
+        // stays.
         const fromLocalPill = f.uri.trim() === LOCAL_QUICK_START_URI;
         return {
           ...f,
           uri: fromLocalPill ? "" : f.uri,
           name: nameFor(f.name),
           sslMode: "require",
-          environment: fromLocalPill && f.environment === "dev" ? DEFAULT_ENVIRONMENT : f.environment,
         };
       });
     }
@@ -659,10 +633,8 @@ export default function ConnectionsPage() {
       user: found.user ?? EMPTY_FORM.user,
       // A password typed for some other server is not this one's.
       password: "",
-      // A local PostgreSQL rarely has SSL set up, and a database on this
-      // computer is a development one, as with quickStart("local").
+      // A local PostgreSQL rarely has SSL set up.
       sslMode: "disable",
-      environment: "dev",
     }));
     setFieldMode("fields");
     setFormErrors({});
@@ -708,7 +680,6 @@ export default function ConnectionsPage() {
       // with it so nothing that still reads the old `ssl` column goes stale.
       ssl: sslModeUsesTls(form.sslMode),
       ssl_mode: form.sslMode,
-      environment: form.environment,
       // Sent trimmed, and "" rather than null for "not set": the API turns an
       // empty string back into NULL. Sending null here would mean the field
       // could never be cleared once set, since a missing key means "leave it".
@@ -1255,30 +1226,13 @@ export default function ConnectionsPage() {
     if (filter === "local") return isLocalHost(c.host);
     if (filter === "remote") return !isLocalHost(c.host);
     if (filter === "ssl") return sslModeUsesTls(connSslMode(c));
-    if ((ENVIRONMENTS as readonly string[]).includes(filter)) {
-      return connEnvironment(c) === filter;
-    }
     return true;
   });
 
-  // Rows split by environment, riskiest last, empty environments dropped. When
-  // "Group by environment" is off this collapses to a single unheaded group so
-  // the table body renders through exactly one code path either way.
-  const groups: { environment: Environment | null; rows: Connection[] }[] = groupByEnv
-    ? ENVIRONMENTS.slice()
-        .sort((a, b) => environmentRank(a) - environmentRank(b))
-        .map((environment) => ({
-          environment,
-          rows: visible.filter((c) => connEnvironment(c) === environment),
-        }))
-        .filter((group) => group.rows.length > 0)
-    : [{ environment: null, rows: visible }];
 
   const localCount = connections.filter((c) => isLocalHost(c.host)).length;
   const remoteCount = connections.length - localCount;
   const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
-  const envCount = (environment: Environment) =>
-    connections.filter((c) => connEnvironment(c) === environment).length;
   // Counted over the connections, not over `rowResults`: the summary has to
   // agree with the cards below it, and a card can be healthy because of a
   // result saved on it rather than one tested in this session.
@@ -1398,19 +1352,6 @@ export default function ConnectionsPage() {
               <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
                 SSL on
               </FilterPill>
-              {/* Only labels in use. No label is not a group worth a chip. */}
-              {ENVIRONMENTS.filter(
-                (e) => e !== "unset" && (envCount(e) > 0 || filter === e)
-              ).map((environment) => (
-                <FilterPill
-                  key={environment}
-                  active={filter === environment}
-                  onClick={() => setFilter(environment)}
-                  count={envCount(environment)}
-                >
-                  {ENVIRONMENT_META[environment].label}
-                </FilterPill>
-              ))}
             </div>
             <div className="cn-filters__tools">
               <label className="cn-search">
@@ -1422,14 +1363,6 @@ export default function ConnectionsPage() {
                   placeholder="Search by name or host"
                   aria-label="Search connections by name or host"
                 />
-              </label>
-              <label className="cn-group">
-                <input
-                  type="checkbox"
-                  checked={groupByEnv}
-                  onChange={(e) => setGroupByEnv(e.target.checked)}
-                />
-                Group by environment
               </label>
             </div>
           </div>
@@ -1568,20 +1501,8 @@ export default function ConnectionsPage() {
         {/* The cards */}
         {!loading &&
           !loadError &&
-          groups.map((group) => (
-            <section key={group.environment ?? "all"} className="cn-group-block">
-              {group.environment !== null && (
-                <h2 className="cn-group-head">
-                  {group.environment === "unset" ? (
-                    <b>{ENVIRONMENT_META.unset.label}</b>
-                  ) : (
-                    <EnvironmentPill environment={group.environment} />
-                  )}
-                  <span>
-                    {group.rows.length} connection{group.rows.length === 1 ? "" : "s"}
-                  </span>
-                </h2>
-              )}
+          [{ rows: visible }].map((group) => (
+            <section key="all" className="cn-group-block">
               <div className="cn-grid">
                 {group.rows.map((conn) => {
                   const result = rowResult(conn, rowResults);
@@ -1596,11 +1517,8 @@ export default function ConnectionsPage() {
                           <LogoIcon size={18} />
                         </span>
                         <h3>{conn.name}</h3>
-                        {/* Environment, and beside it who may deploy here: the
-                            two things about a target that change what Deploy
-                            will let you do. The role only gets a badge when it
-                            is not the default. */}
-                        <EnvironmentPill environment={connEnvironment(conn)} />
+                        {/* Who may deploy here. The role only gets a badge
+                            when it is not the default. */}
                         <ExecuteRolePill role={toExecuteRole(conn.execute_role)} />
                       </div>
 
@@ -1784,7 +1702,6 @@ export default function ConnectionsPage() {
                       {computer.connections.map((c) => (
                         <li key={c.id}>
                           <span>{c.name}</span>
-                          <EnvironmentPill environment={toEnvironment(c.environment)} />
                         </li>
                       ))}
                     </ul>
@@ -1896,67 +1813,6 @@ export default function ConnectionsPage() {
               {...fieldProps("name")}
             />
             <FieldError id={`${formId}-name-problem`} message={formErrors.name} />
-          </div>
-
-          {/* Environment — a typed label rather than a word inside the name.
-              This is the field Compare and Deploy read before they touch a
-              database, so "Prod — RDS" in the name above buys you nothing. */}
-          <div className="mb-4">
-            <div className="flex items-center mb-1.5">
-              <label className="label">Environment</label>
-              <HelpHint label="Environment">
-                Only a label, but Compare and Deploy read it to warn you before they touch
-                production, and to ask for approval before a deploy there.
-              </HelpHint>
-            </div>
-            <div className="seg" role="radiogroup" aria-label="Environment" style={{ display: "flex" }}>
-              {ENVIRONMENTS.map((environment) => (
-                <button
-                  key={environment}
-                  className={form.environment === environment ? "active" : ""}
-                  role="radio"
-                  aria-checked={form.environment === environment}
-                  onClick={() => setForm((f) => ({ ...f, environment }))}
-                  type="button"
-                  style={{ flex: 1 }}
-                >
-                  {ENVIRONMENT_META[environment].label}
-                </button>
-              ))}
-            </div>
-            <div className="help mt-1.5">{ENVIRONMENT_META[form.environment].help}</div>
-
-            {isProduction(form.environment) && (
-              <div className="warn-inline mt-2">
-                <span className="ico" style={{ color: "var(--break)" }}>
-                  <AlertTriangleIcon size={14} />
-                </span>
-                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                  Saved as production. Compare and Deploy will call this out before they
-                  generate or run anything against it.
-                </div>
-              </div>
-            )}
-
-            {/* A nudge, never a silent write: the name is a hint about intent,
-                but only the person saving the row actually knows. */}
-            {!isProduction(form.environment) && looksLikeProduction(form.name) && (
-              <div className="warn-inline mt-2">
-                <span className="ico">
-                  <InfoIcon size={14} />
-                </span>
-                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                  The name says production but the label doesn&apos;t.{" "}
-                  <button
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => setForm((f) => ({ ...f, environment: "prod" }))}
-                    type="button"
-                  >
-                    Mark as production
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Mode toggle */}
@@ -2199,11 +2055,8 @@ export default function ConnectionsPage() {
             </div>
           </div>
 
-          {/* Who may deploy here. Beside the environment label rather than
-              inside it: the label is a warning the user can click past, and
-              this one they cannot. A prod connection that nobody has locked
-              down is still deployable by anyone whose role may run
-              deployments. The label shouts; it does not stop anything. */}
+          {/* Who may deploy here. A connection that nobody has locked down
+              is deployable by anyone whose role may run deployments. */}
           <div className="mt-6">
             <div className="flex items-center mb-1.5">
               <label className="label" htmlFor={executeRoleId}>
@@ -2448,12 +2301,6 @@ export default function ConnectionsPage() {
                   <span className="mono" style={{ color: "var(--text-2)" }}>
                     {deleteTarget ? connSslMode(deleteTarget) : ""}
                   </span>
-                </div>
-                <div className="text-[12px] flex items-center justify-between mt-1">
-                  <span style={{ color: "var(--text-3)" }}>Environment</span>
-                  {deleteTarget ? (
-                    <EnvironmentPill environment={connEnvironment(deleteTarget)} />
-                  ) : null}
                 </div>
               </div>
             </div>

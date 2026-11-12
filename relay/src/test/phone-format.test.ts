@@ -1,6 +1,6 @@
 /**
  * The words the phone app shows (src/phone/format.ts): the names of
- * environments, changes and severities, counts, each target's headline,
+ * changes and severities, counts, each target's headline,
  * foreign keys, what the signed-in role may not do, waits, days, the
  * phone's own name, and SQL's characters that do not show on screen.
  */
@@ -13,7 +13,6 @@ import {
   countText,
   dayText,
   defaultPhoneName,
-  ENVIRONMENT_LABELS,
   foreignKeyText,
   hasHiddenCharacters,
   retryText,
@@ -28,7 +27,6 @@ function target(status: TargetStatus, changes = 0): TargetSummary {
   return {
     connectionId: 2,
     name: "Staging",
-    environment: "staging",
     schema: "public",
     status,
     error: status === "compared" ? null : "The computer's own sentence.",
@@ -50,10 +48,6 @@ function foreignKey(changes: Partial<ForeignKeyOverview> = {}): ForeignKeyOvervi
 function hello(changes: Partial<HelloResult> = {}): HelloResult {
   return { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0", ...changes };
 }
-
-test("names each environment as the web app does", () => {
-  assert.deepEqual(ENVIRONMENT_LABELS, { unset: "Unlabelled", dev: "Dev", staging: "Staging", prod: "Production" });
-});
 
 test("names each kind of change and each severity as the web app does", () => {
   assert.deepEqual(CHANGE_LABELS, {

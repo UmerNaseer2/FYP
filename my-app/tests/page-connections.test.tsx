@@ -56,7 +56,6 @@ function conn(over: Partial<Record<string, unknown>> & { id: number; name: strin
     username: "app",
     ssl: true,
     ssl_mode: "require",
-    environment: "dev",
     last_tested_at: null,
     last_test_ok: null,
     last_test_version: null,
@@ -147,17 +146,6 @@ describe("what the screen says about the list itself", () => {
     // set this up yet".
     expect(screen.queryByTestId("connections-summary")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^All/ })).not.toBeInTheDocument();
-  });
-
-  it("offers a filter only for the labels in use", async () => {
-    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
-    render(<ConnectionsPage />);
-    await loaded();
-
-    // One Dev connection: a Dev chip, and no chip that could only hide everything.
-    expect(screen.getByRole("button", { name: /^Dev/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Production/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Staging/ })).not.toBeInTheDocument();
   });
 
   it("finds a connection by its name or its host, and says so when nothing matches", async () => {
@@ -264,21 +252,6 @@ describe("what the screen says about each connection's health", () => {
     const tests = fetchCalls.filter((c) => c.url.includes("/test-saved"));
     expect(tests).toHaveLength(1);
     expect(tests[0].body).toBe(JSON.stringify({ id: 2 }));
-  });
-
-  it("does not nag about a connection with no label", async () => {
-    setRoutes([
-      {
-        match: "/api/connections",
-        body: [conn({ id: 1, name: "One", environment: null }), conn({ id: 2, name: "Two" })],
-      },
-    ]);
-    render(<ConnectionsPage />);
-    await loaded();
-
-    // No label means a normal database: no banner asking for one.
-    expect(screen.queryByText(/1 connection has/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pick Dev, Staging or Production/)).not.toBeInTheDocument();
   });
 
   it("lets a test run now overrule the one saved on the row", async () => {
@@ -542,18 +515,14 @@ describe("the add drawer", () => {
     const drawer = await openAdd();
     const nameBox = () => drawer.getByPlaceholderText("e.g. Staging — Neon");
     const uriBox = () => drawer.getByPlaceholderText(URI_PLACEHOLDER);
-    const checked = (label: string) =>
-      drawer.getByRole("radio", { name: label }).getAttribute("aria-checked");
 
     // Local then Hosted used to leave a hosted database named "Local
-    // Postgres", labelled Dev.
+    // Postgres".
     fireEvent.click(drawer.getByRole("button", { name: "Local Postgres" }));
     expect(nameBox()).toHaveValue("Local Postgres");
-    expect(checked("Dev")).toBe("true");
     fireEvent.click(drawer.getByRole("button", { name: /^Hosted/ }));
     expect(nameBox()).toHaveValue("Hosted Postgres");
     expect(uriBox()).toHaveValue("");
-    expect(checked("No label")).toBe("true");
 
     // Hosted used to wipe a pasted string as well. A typed name stays too.
     fireEvent.change(uriBox(), { target: { value: "postgres://app@db.shop.test:5432/shop" } });
@@ -883,17 +852,6 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(rowFor("Orders DB")).not.toHaveTextContent("failed");
   });
 
-  it("does not ask a role that may not edit to label anything", async () => {
-    setUser("viewer");
-    setRoutes([
-      { match: "/api/connections", body: [conn({ id: 1, name: "One", environment: null })] },
-    ]);
-    render(<ConnectionsPage />);
-    await loaded();
-
-    expect(screen.queryByText(/1 connection has/)).toBeNull();
-    expect(screen.queryByText(/edit each one/)).toBeNull();
-  });
 });
 
 describe("finding databases on this computer, in the desktop app", () => {
@@ -1017,9 +975,8 @@ describe("finding databases on this computer, in the desktop app", () => {
     await waitFor(() => expect(f.password).toHaveFocus());
     // The details went into the fields, so the drawer shows the fields.
     expect(drawer().getByRole("button", { name: "Fields" })).toHaveClass("active");
-    // A database on this computer is a development one, and seldom has SSL set
-    // up, the same as the "Local Postgres" quick start.
-    expect(drawer().getByRole("radio", { name: "Dev" })).toHaveAttribute("aria-checked", "true");
+    // A database on this computer seldom has SSL set up, the same as the
+    // "Local Postgres" quick start.
     expect(drawer().getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
   });
 
@@ -1459,7 +1416,7 @@ describe("the organization's linked computers, on the website", () => {
         mine: true,
         online: false,
         lastSeenAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
-        connections: [{ id: 5, name: "Laptop Postgres", environment: "dev" }],
+        connections: [{ id: 5, name: "Laptop Postgres" }],
       },
       {
         id: 3,
@@ -1468,7 +1425,7 @@ describe("the organization's linked computers, on the website", () => {
         mine: false,
         online: true,
         lastSeenAt: new Date().toISOString(),
-        connections: [{ id: 2, name: "Home MySQL", environment: "staging" }],
+        connections: [{ id: 2, name: "Home MySQL" }],
       },
       { id: 2, name: "Spare", owner: "Ada", mine: true, online: true, lastSeenAt: null, connections: [] },
     ],

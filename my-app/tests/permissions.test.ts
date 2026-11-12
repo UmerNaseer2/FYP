@@ -416,7 +416,7 @@ describe("the small helpers", () => {
   test("permissionLabel names a permission by its line on the Roles & permissions tab", () => {
     expect(permissionLabel("connections:create")).toBe("Add a connection");
     expect(permissionLabel("roles:read")).toBe("See roles and permissions");
-    expect(permissionLabel("approvals:approve")).toBe("Approve production runs");
+    expect(permissionLabel("approvals:approve")).toBe("Approve runs");
     expect(permissionLabel("nope:read" as PermissionKey)).toBe("nope:read");
   });
 

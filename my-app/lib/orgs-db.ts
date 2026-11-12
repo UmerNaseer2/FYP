@@ -51,12 +51,6 @@ export type Organization = {
    * of the registry would then belong to a different organization.
    */
   isDefault: boolean;
-  /**
-   * Whether a production deploy or rollback needs a second person to approve
-   * it (the require_approvals column). Off by default: whoever's role allows a
-   * run just does it. An Admin can switch it on (the Organization tab).
-   */
-  twoPersonRule: boolean;
 };
 
 /** One person's place in an organization: which one, and their role there. */
@@ -66,8 +60,6 @@ export type Membership = {
   name: string;
   /** Whether that organization is the default one (see Organization.isDefault). */
   isDefault: boolean;
-  /** That organization's two-person rule (see Organization.twoPersonRule). */
-  twoPersonRule: boolean;
   role: string;
 };
 
@@ -93,7 +85,7 @@ export type Member = Membership & {
 export async function findDefaultOrganization(): Promise<Organization | null> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule" FROM organizations WHERE is_default`
+    `SELECT id, slug, name, is_default AS "isDefault" FROM organizations WHERE is_default`
   );
   return rows[0] ?? null;
 }
@@ -111,7 +103,7 @@ export async function findOrganization(slug: string): Promise<Organization | nul
   if (!SLUG.test(slug)) return null;
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule" FROM organizations WHERE slug = $1`,
+    `SELECT id, slug, name, is_default AS "isDefault" FROM organizations WHERE slug = $1`,
     [slug]
   );
   return rows[0] ?? null;
@@ -122,14 +114,13 @@ type MemberRow = {
   slug: string;
   name: string;
   is_default: boolean;
-  two_person_rule: boolean;
   role: string;
   email: string;
   person_name: string | null;
 };
 
 /** The columns every membership lookup reads, joined the same way. */
-const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, o.require_approvals AS two_person_rule, m.role,
+const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, m.role,
             p.email, p.name AS person_name
        FROM profiles p
        JOIN memberships m ON m.profile_id = p.id
@@ -141,7 +132,6 @@ function toMembership(row: MemberRow): Membership {
     slug: row.slug,
     name: row.name,
     isDefault: row.is_default,
-    twoPersonRule: row.two_person_rule,
     role: row.role,
   };
 }
@@ -268,7 +258,7 @@ export async function rememberLastOrganization(profileId: number, orgId: number)
 export async function listOrganizations(): Promise<Organization[]> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"
+    `SELECT id, slug, name, is_default AS "isDefault"
        FROM organizations
       ORDER BY lower(name), id`
   );
@@ -356,7 +346,7 @@ async function createIn(
   const inserted = await client.query<Organization>(
     `INSERT INTO organizations (slug, name) VALUES ($1, $2)
      ON CONFLICT (slug) DO NOTHING
-     RETURNING id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"`,
+     RETURNING id, slug, name, is_default AS "isDefault"`,
     [slug, name]
   );
   const created = inserted.rows[0];
@@ -397,9 +387,8 @@ export type Updated =
   | { kind: "not-found" };
 
 /**
- * Rename an organization, switch its two-person rule, or both, from the
- * Organization tab. Only what is given changes, and each change that really
- * changes something gets its own line in the change log, written in the same
+ * Rename an organization, from the Organization tab. A rename that really
+ * changes the name gets a line in the change log, written in the same
  * transaction, so the log never shows a change that did not happen or misses
  * one that did.
  *
@@ -407,13 +396,13 @@ export type Updated =
  * the organization, and in the API calls of every page open on it right now,
  * so changing it would break all of those at once for a cosmetic gain.
  *
- * The log rows name the admin role because every row names a role, and the
+ * The log row names the admin role because every row names a role, and the
  * Organization tab is the admin role's alone. The new name is the subject and
  * the old one the detail, so the line can say both.
  */
 export async function updateOrganization(
   orgId: number,
-  changes: { name?: string; twoPersonRule?: boolean },
+  changes: { name?: string },
   actor: string
 ): Promise<Updated> {
   await syncMetadataTables();
@@ -421,9 +410,9 @@ export async function updateOrganization(
   try {
     await client.query("BEGIN");
     // Locked, so two Admins saving at once are lined up and each log line
-    // says what the name or the rule really was before that save.
+    // says what the name really was before that save.
     const found = await client.query<Organization>(
-      `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"
+      `SELECT id, slug, name, is_default AS "isDefault"
          FROM organizations WHERE id = $1 FOR NO KEY UPDATE`,
       [orgId]
     );
@@ -435,11 +424,10 @@ export async function updateOrganization(
     const after: Organization = {
       ...before,
       name: changes.name ?? before.name,
-      twoPersonRule: changes.twoPersonRule ?? before.twoPersonRule,
     };
     await client.query(
-      `UPDATE organizations SET name = $2, require_approvals = $3 WHERE id = $1`,
-      [orgId, after.name, after.twoPersonRule]
+      `UPDATE organizations SET name = $2 WHERE id = $1`,
+      [orgId, after.name]
     );
     await logRoleChanges(client, orgId, [
       ...(after.name !== before.name
@@ -449,16 +437,6 @@ export async function updateOrganization(
               kind: "rename-organization" as const,
               subject: after.name,
               detail: before.name,
-              actor,
-            },
-          ]
-        : []),
-      ...(after.twoPersonRule !== before.twoPersonRule
-        ? [
-            {
-              role: ADMIN_ROLE,
-              kind: "two-person-rule" as const,
-              detail: after.twoPersonRule ? "on" : "off",
               actor,
             },
           ]

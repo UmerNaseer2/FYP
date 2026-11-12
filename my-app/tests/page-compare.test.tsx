@@ -28,8 +28,8 @@ import type { CompareScreen } from "@/lib/compare-run";
 import { flushAsync, holdNext, render, resetPageState, setRoutes } from "./helpers/render-page";
 
 const CONNECTIONS = [
-  { id: 1, name: "Local Postgres", database_name: "shop", environment: "dev" },
-  { id: 2, name: "Warehouse", database_name: "warehouse", environment: "prod" },
+  { id: 1, name: "Local Postgres", database_name: "shop" },
+  { id: 2, name: "Warehouse", database_name: "warehouse" },
 ];
 
 /** A screen with both sides picked and nothing run — the state a bare /compare lands in. */
@@ -58,7 +58,6 @@ function ready(over: Partial<Extract<CompareScreen, { kind: "ready" }>> = {}): C
       displayName: "Local Postgres",
       schema: "public",
       schemaOptions: ["public", "shop_dev"],
-      environment: "dev",
       detectedVersion: null,
       missingMessage: null,
     },
@@ -70,7 +69,6 @@ function ready(over: Partial<Extract<CompareScreen, { kind: "ready" }>> = {}): C
         displayName: "Local Postgres",
         schema: "shop_dev",
         schemaOptions: ["public", "shop_dev"],
-        environment: "dev",
         missingMessage: null,
       },
     ],
@@ -168,7 +166,6 @@ describe("a screen with nothing to compare on", () => {
           displayName: "Deleted connection",
           schema: "public",
           schemaOptions: [],
-          environment: "unset",
           detectedVersion: null,
           missingMessage: "That connection has been deleted.",
         },

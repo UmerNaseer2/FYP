@@ -139,7 +139,7 @@ describe("draftDeploy", () => {
     expect(sent[0].source_ref).toBe("shop/public/users/v2.0.0.sql");
   });
 
-  it("never carries an acknowledgement: only the signed ticks add those", () => {
+  it("never carries an acknowledgement", () => {
     const draft = draftDeploy({ ...TARGET, targetVersion: "1.0.0" }, [script("1.0.0")], ledger(), null);
     expect(Object.keys(draft.run.body).filter((key) => key.startsWith("acknowledge"))).toEqual([]);
   });
@@ -271,14 +271,16 @@ describe("draftRollback", () => {
 });
 
 describe("nextStep", () => {
-  const free = { approvalNeeded: false, approval: null, readOnly: false, mayRun: true, mayAsk: true } as const;
+  const free = { approval: null, readOnly: false, mayRun: true } as const;
+  const asker = { ...free, mayRun: false };
 
-  it("lets a run go straight off production", () => {
+  it("lets a run go straight for a role that may run", () => {
     expect(nextStep(null, free)).toEqual({ next: "run", blockedReason: null });
+    // An old approval changes nothing for somebody who may run anyway.
+    expect(nextStep(null, { ...free, approval: "approved" })).toEqual({ next: "run", blockedReason: null });
   });
 
-  it("names the rule a person cannot run past off production", () => {
-    expect(nextStep(null, { ...free, mayRun: false })).toEqual({ next: "blocked", blockedReason: "role" });
+  it("says a connection nobody may run on is read-only", () => {
     expect(nextStep(null, { ...free, readOnly: true })).toEqual({ next: "blocked", blockedReason: "read-only" });
   });
 
@@ -289,33 +291,21 @@ describe("nextStep", () => {
     });
   });
 
-  const production = { ...free, approvalNeeded: true };
-
-  it("sends production to the queue when nobody has been asked", () => {
-    expect(nextStep(null, production)).toEqual({ next: "ask-approval", blockedReason: null });
-    // Asking needs no right to run.
-    expect(nextStep(null, { ...production, mayRun: false })).toEqual({ next: "ask-approval", blockedReason: null });
-    expect(nextStep(null, { ...production, mayAsk: false })).toEqual({ next: "blocked", blockedReason: "role" });
+  it("sends somebody who may not run to the queue when nobody has been asked", () => {
+    expect(nextStep(null, asker)).toEqual({ next: "ask-approval", blockedReason: null });
   });
 
-  it("waits for a request nobody has decided, whoever is asking", () => {
-    expect(nextStep(null, { ...production, approval: "pending", mayRun: false, mayAsk: false })).toEqual({
-      next: "waiting",
-      blockedReason: null,
-    });
+  it("waits for a request nobody has decided", () => {
+    expect(nextStep(null, { ...asker, approval: "pending" })).toEqual({ next: "waiting", blockedReason: null });
   });
 
-  it("runs production once this exact run is approved", () => {
-    expect(nextStep(null, { ...production, approval: "approved" })).toEqual({ next: "run-approved", blockedReason: null });
-    expect(nextStep(null, { ...production, approval: "approved", mayRun: false })).toEqual({
-      next: "blocked",
-      blockedReason: "role",
-    });
+  it("runs once this exact run is approved", () => {
+    expect(nextStep(null, { ...asker, approval: "approved" })).toEqual({ next: "run-approved", blockedReason: null });
   });
 
   it("will not ask for a run nobody could ever run on a read-only connection", () => {
-    expect(nextStep(null, { ...production, readOnly: true })).toEqual({ next: "blocked", blockedReason: "read-only" });
-    expect(nextStep(null, { ...production, approval: "approved", readOnly: true })).toEqual({
+    expect(nextStep(null, { ...asker, readOnly: true })).toEqual({ next: "blocked", blockedReason: "read-only" });
+    expect(nextStep(null, { ...asker, approval: "approved", readOnly: true })).toEqual({
       next: "blocked",
       blockedReason: "read-only",
     });

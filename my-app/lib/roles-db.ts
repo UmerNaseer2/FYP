@@ -92,7 +92,6 @@ export type RoleChange = {
    *   join         "email" or "link": which kind of invitation they joined with
    *   remove       null: the row's role is the one they held
    *   rename-organization  the name the organization had before
-   *   two-person-rule      "on" or "off": what the rule was switched to
    *   github-settings      "repository", "token" or "removed": what was saved;
    *                        the subject is the repository, as owner/name
    *   ai-settings          "on" or "off" for AI assistance as a whole, with

@@ -7,14 +7,14 @@
  * Everything else here can be read again or thrown away. A deploy cannot: it
  * commits on a live target, and this page's own words are what the reader
  * trusts when deciding to press it. So the tests below are about refusals —
- * who may run at all, which boxes have to be ticked first, and whether an
+ * who may run at all, what the page warns about first, and whether an
  * approval covers the SQL actually selected — and then about the two moments
  * where a wrong screen becomes a wrong database: what the run sends, and what
  * it says afterwards about what happened.
  *
  * What is NOT here:
  *  - The "Roll back to" panel and the revert route. A rollback is a second run
- *    with its own preview, its own ticks and its own approval; reaching it
+ *    with its own preview, its own warnings and its own approval; reaching it
  *    through this page would be a suite of its own, not a few more cases.
  *  - A run whose outcome is not known — the recovery bar, and the rows that
  *    say so. It turns on an answer the page could not read at all, which is a
@@ -42,7 +42,6 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import DeployPage from "@/app/[org]/(studio)/deploy/page";
-import { OrgProvider } from "@/components/OrgProvider";
 import { sha256Hex } from "@/components/studio/ApprovalPanel";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
@@ -56,7 +55,6 @@ import {
   setRoutes,
   setSearchParams,
   setUser,
-  TEST_ORG,
   type FetchRoute,
 } from "./helpers/render-page";
 
@@ -73,7 +71,6 @@ const CONNECTIONS = [
     port: 5432,
     database_name: "shop",
     type: "PostgreSQL",
-    environment: "dev",
   },
   {
     id: 2,
@@ -82,7 +79,6 @@ const CONNECTIONS = [
     port: 5432,
     database_name: "shop",
     type: "PostgreSQL",
-    environment: "prod",
   },
   {
     id: 3,
@@ -91,7 +87,6 @@ const CONNECTIONS = [
     port: 5432,
     database_name: "shop",
     type: "PostgreSQL",
-    environment: "dev",
     execute_role: "admin",
   },
   {
@@ -101,7 +96,6 @@ const CONNECTIONS = [
     port: 5432,
     database_name: "shop",
     type: "PostgreSQL",
-    environment: "dev",
     execute_role: "none",
   },
 ];
@@ -180,6 +174,7 @@ function approval(over: Record<string, unknown> = {}) {
     migration_count: 2,
     breaking_count: 0,
     requested_by: "someone@example.com",
+    run_by_requester: true,
     requested_at: "2026-01-02T09:00:00.000Z",
     status: "approved",
     decided_by: "boss@example.com",
@@ -241,14 +236,8 @@ function lastApply(): Record<string, unknown> {
   return JSON.parse(call.body) as Record<string, unknown>;
 }
 
-/** The page in an organization that has the two-person rule switched on (it is off by default). */
-function renderWithRule() {
-  return render(
-    <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name} twoPersonRule>
-      <DeployPage />
-    </OrgProvider>
-  );
-}
+/** The address setUser("editor") signs in with. */
+const EDITOR = "editor@example.com";
 
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
@@ -293,35 +282,35 @@ describe("who is allowed to run anything here", () => {
     expect(screen.queryByText(/Running migrations on this connection needs a role/)).toBeNull();
   });
 
-  it("lets a role that may deploy but not read approvals run nothing on production", async () => {
-    // A role an admin made with "Deploy: Run" but without "Approvals: Read".
+  it("does not read approvals for a role that may run by itself and may not answer", async () => {
+    // A role an admin made with "Deploy: Run" but without any approval box.
+    // It just runs, so the page must not ask for a list nobody needs.
+    setCustomRole("deployer", "Deployer", ["deploy:read", "deploy:run"]);
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    expect(await dryRunButton()).toBeEnabled();
+    expect(screen.queryByText("Approval state unknown")).not.toBeInTheDocument();
+    expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
+  });
+
+  it("keeps Deploy shut for a role that has to ask but may not read approvals", async () => {
     // The page must not ask for a list the route would refuse, and must not
     // read the missing list as "nothing approved yet" either: the state is
     // unknown, and Deploy stays shut because nothing on screen can show it is
     // cleared. (The server checks again on the press either way.)
-    setCustomRole("deployer", "Deployer", ["deploy:read", "deploy:run"]);
+    setCustomRole("reader", "Reader", ["deploy:read"]);
     setRoutes(baseRoutes());
-    renderWithRule();
-    await selectBothVersions(/Prod box/);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
 
     expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        `Your role (Deployer) can't see production approvals. Ask an admin to turn on "See production approvals" for this role.`
-      )
-    ).toBeInTheDocument();
+    expect(screen.getByText(/^Your role \(Reader\) can't see approval requests\./)).toBeInTheDocument();
     expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
-
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I understand, and I mean to run 2 migrations against production.",
-      })
-    );
-    // A rehearsal needs no approval, so it opens; the real run stays shut.
-    await flushAsync();
-    const dry = await dryRunButton();
-    await waitFor(() => expect(dry).toBeEnabled());
-    expect(await deployButton(" to production")).toBeDisabled();
+    expect(await deployButton()).toBeDisabled();
   });
 
   it("runs nothing at all against a read-only connection, rehearsals included", async () => {
@@ -347,14 +336,14 @@ describe("who is allowed to run anything here", () => {
   });
 });
 
-describe("the boxes in front of a run", () => {
+describe("the warnings in front of a run", () => {
   it("holds both buttons while the drift check is still out", async () => {
     // The check's result replaces the record the apply route holds a run to,
-    // so between asking and answering this page cannot yet show the tick that
-    // record may turn out to demand. A run started in that window would come
-    // back refused over a warning the reader was never shown.
+    // so between asking and answering this page cannot yet show the warning
+    // that record may turn out to carry. A run started in that window would
+    // go ahead past a warning the reader was never shown.
     setRoutes([
-      { match: "/api/lineage/lookup", body: { tracked: true, trackedSchemaId: 7, environment: "dev" } },
+      { match: "/api/lineage/lookup", body: { tracked: true, trackedSchemaId: 7 } },
       {
         match: "/api/lineage/drift",
         method: "POST",
@@ -386,14 +375,13 @@ describe("the boxes in front of a run", () => {
     expect(await dryRunButton()).toBeEnabled();
   });
 
-  it("shows the drift off production without asking for a tick", async () => {
+  it("shows the drift as a warning, with nothing to tick", async () => {
     // Drift means the target is not the database these migrations were written
     // against, so a statement may hit an object that is not the one it expects.
-    // That is a reason to stop and read, not a reason to forbid the run — so it
-    // is a tick. The tick then has to reach the server, because the route reads
-    // the same risk from the same SQL and refuses a run nobody acknowledged.
+    // That is a reason to stop and read, not a reason to forbid the run, so it
+    // is a warning and nothing else.
     setRoutes([
-      { match: "/api/lineage/lookup", body: { tracked: true, trackedSchemaId: 7, environment: "dev" } },
+      { match: "/api/lineage/lookup", body: { tracked: true, trackedSchemaId: 7 } },
       {
         match: "/api/lineage/drift",
         method: "POST",
@@ -423,7 +411,7 @@ describe("the boxes in front of a run", () => {
     render(<DeployPage />);
     await selectBothVersions(/Dev box/);
 
-    // Off production the drift is shown, but nothing has to be ticked.
+    // The drift is shown, but nothing has to be ticked.
     expect(await screen.findByText("The target has drifted")).toBeInTheDocument();
     expect(
       screen.queryByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
@@ -433,34 +421,10 @@ describe("the boxes in front of a run", () => {
     fireEvent.click(deploy);
 
     await screen.findByText("Deploy complete \u00b7 up to v1.0.2", undefined, { timeout: 3000 });
-    expect(lastApply()).toMatchObject({ acknowledgeProduction: false });
+    expect(Object.keys(lastApply()).filter((key) => key.startsWith("acknowledge"))).toEqual([]);
     // The run re-reads the ledger and re-checks drift on its way out; let those
     // land inside act rather than after the test has finished with the page.
     await flushAsync();
-  });
-
-  it("holds the rehearsal for the production tick, but not for the approval", async () => {
-    // A rehearsal runs the SQL on production, so the tick covers it; it never
-    // commits, so it needs no approval.
-    setRoutes(baseRoutes());
-    renderWithRule();
-    await selectBothVersions(/Prod box/);
-
-    expect(await dryRunButton()).toBeDisabled();
-    expect(screen.getByText("Tick every box above to enable this")).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I understand, and I mean to run 2 migrations against production.",
-      })
-    );
-
-    expect(
-      await screen.findByText("Deploy on production needs an approval. A dry run does not")
-    ).toBeInTheDocument();
-    const dry = await dryRunButton();
-    await waitFor(() => expect(dry).toBeEnabled());
-    expect(await deployButton(" to production")).toBeDisabled();
   });
 });
 
@@ -485,13 +449,13 @@ describe("what the page says about deleting rows", () => {
   it("says a TRUNCATE deletes rows", async () => {
     setRoutes(routesWithSecondScript("TRUNCATE invoices;"));
     render(<DeployPage />);
-    // Production, where the tick is asked for.
-    await selectBothVersions(/Prod box/);
+    await selectBothVersions(/Dev box/);
 
     expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
     expect(screen.getByText(/This run contains TRUNCATE\. Those take rows out of a live table/)).toBeInTheDocument();
     expect(screen.getByText(/Deletes rows · TRUNCATE in 1 script/)).toBeInTheDocument();
-    expect(screen.getByText("I have read these statements and know which rows they delete.")).toBeInTheDocument();
+    // The warning only tells: there is no sentence to tick.
+    expect(screen.queryByText(/know which rows they delete/)).not.toBeInTheDocument();
   });
 
   it("says SQL it could not read may delete rows, not that it does", async () => {
@@ -501,17 +465,16 @@ describe("what the page says about deleting rows", () => {
       routesWithSecondScript("DO $$\nBEGIN\n  EXECUTE 'ALTER TABLE ' || 'invoices' || ' ADD COLUMN notes text';\nEND\n$$;")
     );
     render(<DeployPage />);
-    await selectBothVersions(/Prod box/);
+    await selectBothVersions(/Dev box/);
 
     expect(await screen.findByText("1 migration may delete rows")).toBeInTheDocument();
     expect(screen.getByText(/Part of the SQL could not be read: an EXECUTE inside a DO block/)).toBeInTheDocument();
     expect(screen.getByText(/May delete rows · part of the SQL could not be read in 1 script/)).toBeInTheDocument();
-    expect(screen.getByText("I have read this SQL and know whether it deletes rows.")).toBeInTheDocument();
 
     // None of the words that say rows are deleted for certain.
     expect(screen.queryByText(/Those take rows out of a live table/)).not.toBeInTheDocument();
     expect(screen.queryByText(/migration deletes rows/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/know which rows they delete/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/know whether it deletes rows/)).not.toBeInTheDocument();
   });
 
   it("says both when a run has a TRUNCATE and SQL it could not read", async () => {
@@ -531,58 +494,32 @@ describe("what the page says about deleting rows", () => {
   });
 });
 
-describe("the two-person rule", () => {
+describe("an approval for somebody whose role may not run here", () => {
+  // An editor on a connection kept for admins: they ask, an Admin approves
+  // that exact run, and they may then run it once.
+  beforeEach(() => setUser("editor"));
+
   it("does not count an approval recorded for different SQL, and says why", async () => {
-    // The failure this exists for is a conversation: the panel says "Needs a
-    // second person" while the approver insists they approved it. Both are
-    // true — the approval is on the list, and it covers SQL that has since
-    // changed — so the panel has to name it rather than stay silent.
+    // The failure this exists for is a conversation: the panel says "Needs an
+    // Admin's approval" while the approver insists they approved it. Both are
+    // true, since the approval is on the list and covers SQL that has since
+    // changed, so the panel has to name it rather than stay silent.
     setRoutes([
-      { match: "/api/deploy/approvals", body: { approvals: [approval()] } },
+      { match: "/api/deploy/approvals", body: { approvals: [approval({ requested_by: EDITOR })] } },
       ...baseRoutes(),
     ]);
-    renderWithRule();
-    await selectBothVersions(/Prod box/);
+    render(<DeployPage />);
+    await selectBothVersions(/Admins only/);
 
-    const panel = (await screen.findByText("Needs a second person")).closest(".appr") as HTMLElement;
+    const panel = (await screen.findByText("Needs an Admin's approval")).closest(".appr") as HTMLElement;
     expect(panel).toHaveTextContent("Approved for a different selection: through v1.0.2");
     expect(panel).toHaveTextContent(/has changed since it was approved/);
-
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I understand, and I mean to run 2 migrations against production.",
-      })
-    );
     await flushAsync();
-    expect(await deployButton(" to production")).toBeDisabled();
+    expect(await deployButton()).toBeDisabled();
   });
 
-  it("asks for no approval when this organization has switched the rule off", async () => {
-    // The page reads the rule from the organization it is open in. With it
-    // off, production runs need only the tick.
-    setRoutes(baseRoutes());
-    render(
-      <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name} twoPersonRule={false}>
-        <DeployPage />
-      </OrgProvider>
-    );
-    await selectBothVersions(/Prod box/);
-
-    fireEvent.click(
-      await screen.findByRole("checkbox", {
-        name: "I understand, and I mean to run 2 migrations against production.",
-      })
-    );
-    const deploy = await deployButton(" to production");
-    await waitFor(() => expect(deploy).toBeEnabled());
-    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
-    expect(screen.queryByText("Needs an approval")).not.toBeInTheDocument();
-  });
-
-  it("clears the deploy when the approval covers exactly the SQL on screen", async () => {
-    // Hashed here the way the server hashes it, from the same module the page
-    // uses, so this passes only if the page really compared the two rather
-    // than settling for "an approval exists for this target".
+  it("does not count an approval somebody else asked for", async () => {
+    // The route lets a person spend only the approval they asked for.
     setRoutes([
       {
         match: "/api/deploy/approvals",
@@ -590,17 +527,46 @@ describe("the two-person rule", () => {
       },
       ...baseRoutes(),
     ]);
-    renderWithRule();
-    await selectBothVersions(/Prod box/);
+    render(<DeployPage />);
+    await selectBothVersions(/Admins only/);
 
-    expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I understand, and I mean to run 2 migrations against production.",
-      })
-    );
-    const deploy = await deployButton(" to production");
+    expect(await screen.findByText("Needs an Admin's approval")).toBeInTheDocument();
+    await flushAsync();
+    expect(await deployButton()).toBeDisabled();
+  });
+
+  it("clears the deploy when their approval covers exactly the SQL on screen", async () => {
+    // Hashed here the way the server hashes it, from the same module the page
+    // uses, so this passes only if the page really compared the two rather
+    // than settling for "an approval exists for this target".
+    setRoutes([
+      {
+        match: "/api/deploy/approvals",
+        body: {
+          approvals: [approval({ run_fingerprint: await runFingerprint(), requested_by: EDITOR })],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Admins only/);
+
+    expect(await screen.findByText("Approved for you, once")).toBeInTheDocument();
+    const deploy = await deployButton();
     await waitFor(() => expect(deploy).toBeEnabled());
+    // A dry run runs the SQL too, so it stays shut for them.
+    expect(await dryRunButton()).toBeDisabled();
+  });
+
+  it("shows an Admin no approval panel when nobody has asked", async () => {
+    setUser("admin");
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Admins only/);
+
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    expect(screen.queryByText(/Needs an/)).not.toBeInTheDocument();
   });
 });
 
@@ -643,11 +609,9 @@ describe("the run itself", () => {
       connectionId: 1,
       schemaName: "public",
       dryRun: false,
-      acknowledgeProduction: false,
-      acknowledgeBreaking: false,
-      acknowledgeDataLoss: false,
-      acknowledgeDrift: false,
     });
+    // No tick is sent, because there is none to give.
+    expect(Object.keys(sent).filter((key) => key.startsWith("acknowledge"))).toEqual([]);
     expect(sent.scripts).toEqual([
       expect.objectContaining({
         script_name: "invoices",
@@ -728,7 +692,7 @@ describe("the number beside Requests on the rail", () => {
       },
       ...baseRoutes(),
     ]);
-    renderWithRule();
+    render(<DeployPage />);
     await selectBothVersions(/Prod box/);
     const approve = await screen.findByRole("button", { name: "Approve this run" });
     expect(heard).not.toHaveBeenCalled();
@@ -933,7 +897,7 @@ describe("picking another target while the first is still being read", () => {
         match: "/api/lineage/lookup",
         body: (url: string) =>
           url.includes("connectionId=1")
-            ? { tracked: true, trackedSchemaId: 7, environment: "dev" }
+            ? { tracked: true, trackedSchemaId: 7 }
             : { tracked: false },
       },
       {
@@ -963,9 +927,6 @@ describe("picking another target while the first is still being read", () => {
     releaseDrift();
     await flushAsync();
     expect(screen.queryByText("The target has drifted")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
-    ).not.toBeInTheDocument();
   });
 });
 

@@ -15,14 +15,12 @@ import {
 } from "@/lib/local-secrets";
 import { deleteLocalSecret, saveLocalSecret } from "@/lib/local-store";
 import { hasPermission } from "@/lib/permissions";
-import { toEnvironment } from "@/lib/environments";
-import { approvalsOn } from "@/lib/approvals-db";
-import { loosenRefusal, loosensExecuteRole, toExecuteRole } from "@/lib/connection-access";
 import {
-  UNLABEL_PRODUCTION_PERMISSION,
-  lowersProduction,
-  unlabelRefusal,
-} from "@/lib/environment-guard";
+  LOOSEN_EXECUTE_ROLE_PERMISSION,
+  loosenRefusal,
+  loosensExecuteRole,
+  toExecuteRole,
+} from "@/lib/connection-access";
 import {
   REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
@@ -61,7 +59,7 @@ import {
 export const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
                 (password IS NOT NULL AND password <> '') AS has_password,
-                ssl, ssl_mode, environment, application_table, execute_role,
+                ssl, ssl_mode, application_table, execute_role,
                 last_tested_at, last_test_ok, last_test_version,
                 last_test_latency_ms, last_test_error,
                 version, updated_at, updated_by, site_id, site_version,
@@ -259,9 +257,9 @@ export async function createConnection(
       `
       INSERT INTO connections
       (name, host, port, database_name, type, username, password, connection_string,
-       ssl, ssl_mode, environment, application_table, execute_role, org_id,
+       ssl, ssl_mode, application_table, execute_role, org_id,
        version, updated_at, updated_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, 1, now(), $15)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, 1, now(), $14)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -275,7 +273,6 @@ export async function createConnection(
         localKey ? null : encryptSecret(value.connection_string) || null,
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
-        value.environment,
         value.application_table,
         value.execute_role,
         principal.orgId,
@@ -351,13 +348,12 @@ export async function updateConnection(
       ssl: boolean | null;
       ssl_mode: string | null;
       name: string;
-      environment: string | null;
       version: number;
       site_id: number | null;
       execute_role: string | null;
     }>(
       `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode,
-              name, environment, version, site_id, execute_role
+              name, version, site_id, execute_role
          FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
@@ -386,33 +382,14 @@ export async function updateConnection(
       return conflict(principal, id);
     }
 
-    // With approvals switched on, taking the Production label off is what
-    // would let a deploy skip its approval, so it needs the permission that
-    // gives approvals. With them off the label only adds a confirmation, and
-    // anyone who may edit the connection may change it. See
-    // lib/environment-guard.
-    const environmentBefore = toEnvironment(existing.rows[0].environment);
-    if (approvalsOn(principal) && lowersProduction(environmentBefore, value.environment)) {
-      if (!hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)) {
-        return reply(
-          { error: unlabelRefusal(`connection "${existing.rows[0].name}"`) },
-          { status: 403 }
-        );
-      }
-      console.info(
-        `Connection ${id} ("${existing.rows[0].name}") in organization ${principal.orgId} ` +
-          `relabelled from prod to ${value.environment} by ${principal.email}.`
-      );
-    }
-
     // "Who may run migrations here" is what holds an Editor back from a
     // connection marked admins only or read-only. If the same Editor could
-    // loosen it, the setting would stop nobody, so loosening needs the same
-    // permission as taking the Production label off. Making it stricter stays
+    // loosen it, the setting would stop nobody, so loosening needs the
+    // permission that gives approvals. Making it stricter stays
     // open to everyone who may edit the connection.
     const executeRoleBefore = toExecuteRole(existing.rows[0].execute_role);
     if (loosensExecuteRole(executeRoleBefore, value.execute_role)) {
-      if (!hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)) {
+      if (!hasPermission(principal, LOOSEN_EXECUTE_ROLE_PERMISSION)) {
         return reply(
           { error: loosenRefusal(existing.rows[0].name, executeRoleBefore) },
           { status: 403 }
@@ -514,8 +491,8 @@ export async function updateConnection(
     }
 
     // A stored test result describes the target that was reached, so it only
-    // stays true while the target does. Renaming a connection or relabelling
-    // its environment leaves it alone; repointing it — different host, port,
+    // stays true while the target does. Renaming a connection leaves it
+    // alone; repointing it — different host, port,
     // database, user, TLS setting or credential — makes it describe somewhere
     // else, so it is cleared and the row goes back to "never tested".
     //
@@ -585,23 +562,22 @@ export async function updateConnection(
           database_name = $4,
           type = $5,
           username = $6,
-          password = CASE WHEN $15::boolean THEN $7 WHEN $7 = '' THEN password ELSE $7 END,
+          password = CASE WHEN $14::boolean THEN $7 WHEN $7 = '' THEN password ELSE $7 END,
           connection_string = CASE
             WHEN $8 THEN NULL
-            WHEN $15::boolean THEN NULLIF($9, '')
+            WHEN $14::boolean THEN NULLIF($9, '')
             WHEN $9 = '' THEN connection_string
             ELSE $9
           END,
           ssl = $10,
           ssl_mode = $11,
-          environment = $12,
-          application_table = $13,
-          execute_role = $14,
+          application_table = $12,
+          execute_role = $13,
           version = version + 1,
           updated_at = now(),
-          updated_by = $18
-      WHERE id = $16 AND org_id = $17
-        AND ($19::int IS NULL OR version = $19::int)
+          updated_by = $17
+      WHERE id = $15 AND org_id = $16
+        AND ($18::int IS NULL OR version = $18::int)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -616,7 +592,6 @@ export async function updateConnection(
         connStringValue,
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
-        value.environment,
         value.application_table,
         value.execute_role,
         movesPassword,
@@ -658,12 +633,11 @@ export async function deleteConnection(
 
     const existing = await pool.query<{
       name: string;
-      environment: string | null;
       version: number;
       site_id: number | null;
       password: string | null;
     }>(
-      `SELECT name, environment, version, site_id, password FROM connections WHERE id = $1 AND org_id = $2`,
+      `SELECT name, version, site_id, password FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
     // Another organization's connection reads as missing, the same answer a
@@ -679,20 +653,6 @@ export async function deleteConnection(
     const startedFrom = baseVersion(body);
     if (startedFrom !== null && startedFrom !== Number(existing.rows[0].version)) {
       return conflict(principal, id);
-    }
-
-    // Deleting a production connection and saving the database again as "dev"
-    // would take the label off as surely as editing it, so it needs the same
-    // permission, again only while approvals are on. See lib/environment-guard.
-    if (
-      approvalsOn(principal) &&
-      toEnvironment(existing.rows[0].environment) === "prod" &&
-      !hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)
-    ) {
-      return reply(
-        { error: unlabelRefusal(`connection "${existing.rows[0].name}"`, "delete") },
-        { status: 403 }
-      );
     }
 
     // tracked_schemas deliberately has no foreign key to connections (see the

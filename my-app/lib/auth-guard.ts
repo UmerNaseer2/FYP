@@ -121,12 +121,6 @@ export type Principal = {
    * (registryRoot in lib/registry-paths.ts).
    */
   orgIsDefault: boolean;
-  /**
-   * The organization's two-person rule (Organization.twoPersonRule in
-   * lib/orgs-db.ts). Read with the rest of the principal on every request, so
-   * the approval routes act on the rule as it is now, not as it was at sign-in.
-   */
-  orgTwoPersonRule: boolean;
 };
 
 export type Gate =
@@ -189,7 +183,6 @@ function bypassAdmin(org: Organization): Principal {
     orgSlug: org.slug,
     orgName: org.name,
     orgIsDefault: org.isDefault,
-    orgTwoPersonRule: org.twoPersonRule,
   };
 }
 
@@ -344,7 +337,6 @@ function memberPrincipal(
     orgSlug: membership.slug,
     orgName: membership.name,
     orgIsDefault: membership.isDefault,
-    orgTwoPersonRule: membership.twoPersonRule,
   };
 }
 

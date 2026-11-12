@@ -17,7 +17,7 @@ import { CANCEL_SQL } from "@/lib/db-activity";
  * passkey (desktop/src/main/phone-control.ts), and keeps the record in its
  * action log.
  *
- * Unlike a deploy, this does not go through the approval queue on production.
+ * Unlike a deploy, this does not go through the approval queue.
  * A stuck query is the emergency the approval queue would only slow down, and
  * stopping a statement changes nothing that statement had not committed.
  *

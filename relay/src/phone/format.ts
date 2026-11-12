@@ -1,26 +1,16 @@
 /**
- * The words the phone app shows for what the computer sends: environment
- * names, counts, kinds of change, what the signed-in role may do, waits,
+ * The words the phone app shows for what the computer sends: counts, kinds of change, what the signed-in role may do, waits,
  * dates, and SQL with the characters that do not show on screen marked. Kept
  * apart from the screens so the tests (src/test/phone-format.test.ts) can
  * check every sentence in Node.
  */
 import type {
   ChangeKind,
-  Environment,
   ForeignKeyOverview,
   HelloResult,
   Severity,
   TargetSummary,
 } from "../shared/remote/rpc.js";
-
-/** Each environment's name, as the web app (my-app/lib/environments.ts) and the computer's Settings write it. */
-export const ENVIRONMENT_LABELS: Record<Environment, string> = {
-  unset: "Unlabelled",
-  dev: "Dev",
-  staging: "Staging",
-  prod: "Production",
-};
 
 /** What became of an object, in the web app's words. */
 export const CHANGE_LABELS: Record<ChangeKind, string> = {

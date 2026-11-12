@@ -27,8 +27,8 @@ recorded. So the tool exists to answer four questions:
    rollback, from that diff.
 3. **What has actually been applied where?** A versioned script registry in
    GitHub, a ledger table written into each target database, and a deploy
-   pipeline with pre-flight, dry run, and a two-person rule on production
-   (on by default; an organization's admin can switch it off).
+   pipeline with pre-flight, dry run, and an approval of one exact run for
+   anyone whose role may not run it.
 4. **Has anything changed behind my back?** Snapshot a schema as a baseline,
    then re-check it on a schedule and report drift.
 
@@ -281,8 +281,8 @@ older copy of this document will come looking for them:
 Not asked for, but built: drift detection with an in-server scheduler; lineage
 snapshots; the ERD visualiser; row-data comparison; diff export to
 Markdown/JSON/CSV/PDF; version-sync ledger replay between two databases;
-two-person production approval with a single-use run fingerprint; environment
-labels and production warnings; AES-256-GCM credential encryption at rest; an
+approval of one exact run with a single-use run fingerprint; risk warnings
+before a run; AES-256-GCM credential encryption at rest; an
 SSRF guard on connection targets; a 90-day schema-metrics time series; snapshot
 format versioning; and comparison breadth well past "tables, columns,
 constraints" — views, sequences, enum/range/composite types, routines, RLS

@@ -73,9 +73,9 @@ jest.mock("../lib/version-detection", () => ({
 }));
 
 const mockConnections = [
-  { id: 1, name: "Dev", environment: "development" },
-  { id: 2, name: "Prod", environment: "production" },
-  { id: 3, name: "Staging", environment: "staging" },
+  { id: 1, name: "Dev" },
+  { id: 2, name: "Prod" },
+  { id: 3, name: "Staging" },
 ].map((connection) => ({
   ...connection,
   host: `${connection.name.toLowerCase()}.example.com`,

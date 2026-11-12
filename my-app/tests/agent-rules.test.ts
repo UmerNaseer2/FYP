@@ -17,12 +17,11 @@ const FAKE_HOST = "db.private.example.test";
 
 function summary(over: Partial<CompareSummary["targets"][number]> = {}): CompareSummary {
   return {
-    source: { connectionId: 1, name: "Dev", environment: "dev", schema: "shop", error: null },
+    source: { connectionId: 1, name: "Dev", schema: "shop", error: null },
     targets: [
       {
         connectionId: 2,
         name: "Prod",
-        environment: "prod",
         schema: "shop",
         status: "compared",
         error: null,

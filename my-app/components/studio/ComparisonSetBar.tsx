@@ -33,8 +33,6 @@ export type ComparisonSetOption = {
   id: number;
   name: string;
   targetCount: number;
-  /** True when the source or any target points at a production database. */
-  hasProduction: boolean;
   /** True when the set also compares table rows — slower, and it reads data. */
   compareData: boolean;
   /** True when a connection this set used has since been deleted. */

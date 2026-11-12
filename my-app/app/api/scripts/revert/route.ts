@@ -23,18 +23,9 @@ import {
   vLabel,
 } from "@/lib/rollback-plan";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
-import { analyseRunRisk } from "@/lib/deploy-risk";
-import { approvalsOn, claimApproval, releaseApproval } from "@/lib/approvals-db";
+import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
-import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
-import {
-  isProduction,
-  needsApproval,
-  productionBlockReason,
-  risksNeedTicks,
-  toEnvironment,
-} from "@/lib/environments";
 import type { ChangeLevel } from "@/lib/change-level";
 
 // ---------------------------------------------------------------------------
@@ -57,10 +48,10 @@ import type { ChangeLevel } from "@/lib/change-level";
 //   2. Only the NEWEST applied versions can be undone. Undoing v2 while v3 is
 //      still applied would run v2's undo under structure v3 has changed.
 //   3. Other families applied after the oldest version being undone are
-//      listed, and the caller has to confirm it checked them
-//      (acknowledgeProduction's sibling, acknowledgeOtherScripts).
-//   4. On production, a real run needs a second person's approval, exactly
-//      like a deploy (deploy_approvals rows with action 'revert').
+//      listed, so the screen can warn about them.
+//   4. Somebody whose role may not roll back here needs an approval given to
+//      them for this exact rollback, exactly like a deploy (deploy_approvals
+//      rows with action 'revert').
 //
 // What it does NOT do: bring data back. A rollback restores structure. Rows
 // that a DROP removed are gone, and the Deploy screen says so first.
@@ -123,16 +114,6 @@ type RevertBody = {
   registryRollbacks?: unknown;
   /** Run everything, then ROLLBACK: reports what would happen and changes nothing. */
   dryRun?: unknown;
-  /** Set by a screen only after somebody ticked the production warning. */
-  acknowledgeProduction?: unknown;
-  /** Set by a screen only after somebody checked the later scripts from other families. */
-  acknowledgeOtherScripts?: unknown;
-  /**
-   * Set by a screen only after somebody ticked the warning that the rollback
-   * deletes rows. Needed whenever the rollback SQL that will run holds a
-   * TRUNCATE, DELETE or a DROP that takes rows with it, dry runs included.
-   */
-  acknowledgeDataLoss?: unknown;
 };
 
 type RevertRequest = {
@@ -143,9 +124,6 @@ type RevertRequest = {
   versions: string[];
   registry: { version: string; downSql: string }[];
   dryRun: boolean;
-  acknowledgeProduction: boolean;
-  acknowledgeOtherScripts: boolean;
-  acknowledgeDataLoss: boolean;
 };
 
 /**
@@ -257,9 +235,6 @@ function parseRequest(body: RevertBody): RevertRequest | string {
     versions,
     registry,
     dryRun: body.dryRun === true,
-    acknowledgeProduction: body.acknowledgeProduction === true,
-    acknowledgeOtherScripts: body.acknowledgeOtherScripts === true,
-    acknowledgeDataLoss: body.acknowledgeDataLoss === true,
   };
 }
 
@@ -317,7 +292,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     parsed.registry.find((entry) => compareVersions(entry.version, version) === 0)?.downSql ??
     null;
 
-  // ─── 3. Saved connection, then the production gate ───────────────────────
+  // ─── 3. Saved connection, then who may run on it ─────────────────────────
   let connRow: {
     host: string;
     port: number;
@@ -327,7 +302,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     connection_string: string | null;
     ssl: boolean | null;
     ssl_mode: string | null;
-    environment: string | null;
     name: string | null;
     execute_role: string | null;
   };
@@ -336,7 +310,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment, name,
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name,
               execute_role
        FROM connections
        WHERE id = $1 AND org_id = $2`,
@@ -384,15 +358,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     }
   }
 
-  // Same rule as the apply route (productionBlockReason): production asks for
-  // one tick, on a dry run too. The label is the connection's; a tracked
-  // schema has none of its own.
-  const targetEnvironment = toEnvironment(connRow.environment);
-  const ticksNeeded = risksNeedTicks(targetEnvironment);
-  const approvalsRequired = approvalsOn(gate.principal);
-  const blocked = productionBlockReason(targetEnvironment, parsed.acknowledgeProduction);
-  if (blocked) return fail(409, { error: blocked, environment: targetEnvironment });
-
   // ─── 4. Connect, and start collecting NOTICEs ────────────────────────────
   // buildPgConfig decrypts the saved password, and throws when this server's
   // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
@@ -413,24 +378,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — could not read the saved connection's credentials:", message);
     return failBeforeRun(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
-  }
-
-  // The same check as the apply route, and only when approvals are on: another
-  // saved connection to this database labelled Production makes this one
-  // count as production.
-  if (approvalsRequired && !isProduction(targetEnvironment)) {
-    let twin: Awaited<ReturnType<typeof findProductionTwin>>;
-    try {
-      twin = await findProductionTwin(gate.principal.orgId, connectionId, configIdentity(targetConfig));
-    } catch (error) {
-      console.error("Revert — could not check for a production connection to the same database:", error);
-      return failBeforeRun(503, {
-        error:
-          "Could not check whether another saved connection labels this database " +
-          "Production, so nothing was run. Try again in a moment.",
-      });
-    }
-    if (twin) return fail(409, { error: twinBlockReason(twin.name), environment: "prod" });
   }
 
   let connected: PoolClient;
@@ -648,45 +595,18 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       plan.push({ row, sql: resolved.sql, source: resolved.source });
     }
 
-    // ─── 8b. On production, a rollback that deletes rows needs a tick ───────
-    // Undoing a version often means DROP TABLE or DROP COLUMN, and the rows
-    // those take go with them: deploying the version again brings the
-    // structure back, not the rows. The Deploy screen asks for a tick about
-    // that before either button. This is the same check on the same SQL (the
-    // rollback text that will run, picked above) with the same helper
-    // (lib/deploy-risk), so a caller that skipped the warning cannot run past
-    // it. A dry run needs the tick too: it really runs the SQL. Checked before
-    // the approval claim in step 10, so a refusal here spends nothing.
-    const lost = analyseRunRisk(
-      plan.map((step) => ({ scriptName: name, version: step.row.version, sqlContent: step.sql }))
-    ).dataLoss;
-    if (ticksNeeded && lost.length > 0 && !parsed.acknowledgeDataLoss) {
-      const named = lost.map((entry) => `${vLabel(entry.version)} runs ${entry.kinds.join(", ")}`);
-      return await refuse(409, {
-        code: "data_loss",
-        needsAcknowledgement: ["data_loss"],
-        dataLoss: lost.map((entry) => ({ version: entry.version, kinds: entry.kinds })),
-        error:
-          `Rolling back ${listVersions(lost.map((entry) => entry.version))} of "${name}" ` +
-          `deletes rows (${named.join("; ")}), and deploying again brings back the ` +
-          `structure, not the rows. Nothing was rolled back. Tick the box about deleted ` +
-          `rows, then ${dryRun ? "start the dry run" : "roll back"} again.`,
-      });
-    }
-
     // ─── 9. Later scripts from other families ──────────────────────────────
     // Another family applied after the oldest version being undone may use
     // what this rollback removes, and a DROP ... CASCADE takes its objects
-    // with it. List them; a real run needs the caller to confirm it checked
-    // them. A dry run returns the list without refusing, so the screen can
-    // show it before asking.
+    // with it. They are listed in the answer, so the screen can warn about
+    // them.
     //
     // "After" is decided in SQL from the ledger ids being undone: a later
     // applied_at, or the same applied_at and a higher id. Every row one deploy
     // run writes shares one applied_at (the transaction's start time), so a
     // family deployed in the same run would be missed by applied_at alone, and
     // a timestamp sent back from JS would lose its microseconds. The
-    // pre-flight route uses the same rule, so its list and this refusal agree.
+    // pre-flight route uses the same rule, so its list and this one agree.
     // When none of the rows has an applied_at, "oldest" is empty and nothing
     // is listed.
     const later = await client.query<OtherScript>(
@@ -705,32 +625,14 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       [name, plan.map((step) => step.row.id)]
     );
     const otherScripts: OtherScript[] = later.rows;
-    if (ticksNeeded && otherScripts.length > 0 && !parsed.acknowledgeOtherScripts && !dryRun) {
-      const shown = otherScripts
-        .slice(0, 5)
-        .map((other) => `${other.script_name} ${vLabel(other.version)}`);
-      const more = otherScripts.length > 5 ? `, and ${otherScripts.length - 5} more` : "";
-      return await refuse(409, {
-        code: "other_scripts_after",
-        otherScripts,
-        error:
-          `Other scripts were applied to schema "${schemaName}" after ` +
-          `${vLabel(plan[plan.length - 1].row.version)} (${shown.join(", ")}${more}). They may ` +
-          `depend on what this rollback removes, and a DROP ... CASCADE would remove their ` +
-          `objects too. Tick the box once you have checked them.`,
-      });
-    }
-
-    // ─── 10. Production: spend an approval, when approvals are on ──────────
+    // ─── 10. Somebody who may not roll back here spends their approval ─────
     // After the ledger read, because the approved text is the resolved,
     // ledger-first rollback SQL, newest version first — the same list the
     // Deploy screen hashes with rollbackFingerprintBody when it asks.
     //
-    // Only for a real rollback in an organization whose two-person rule is
-    // on. A dry run rolls back, so it needs the production tick and no more.
-    // And for anybody who may not roll back here by themselves, on any
-    // connection: only an approval given to them, for this exact rollback.
-    if (onlyWithOwnApproval || needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
+    // Somebody whose role may roll back here just does it. Anybody else may
+    // only with an approval given to them, for this exact rollback.
+    if (onlyWithOwnApproval) {
       let claimed;
       try {
         claimed = await claimApproval({
@@ -745,7 +647,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             sqlContent: step.sql,
           })),
           action: "revert",
-          requestedBy: onlyWithOwnApproval ? gate.principal.email : null,
+          requestedBy: gate.principal.email,
         });
       } catch (claimError) {
         console.error("Revert — could not read the approval:", claimError);
@@ -755,19 +657,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             "changed. Is the app database reachable? Try again.",
         });
       }
-      if (!claimed && onlyWithOwnApproval) {
+      if (!claimed) {
         return await refuse(403, {
           needsApproval: true,
           askToRun: true,
           error: askToRunRefusal(connRow.name ?? `connection ${connectionId}`, false, true),
-        });
-      }
-      if (!claimed) {
-        return await refuse(403, {
-          needsApproval: true,
-          error:
-            "Rolling back on production needs a second person's approval. Ask for it in the " +
-            "Approvals panel, then press Roll back again.",
         });
       }
       claimedApprovalId = claimed.id;

@@ -23,12 +23,12 @@ export const requestsHelp: HelpTopic = {
     {
       term: "Needs you",
       meaning:
-        "Requests you may answer, and production runs that need you. The tab shows when something is waiting, or when you are someone who answers requests.",
+        "Requests you may answer, and runs that wait for your approval. The tab shows when something is waiting, or when you are someone who answers requests.",
     },
     {
       term: "You asked",
       meaning:
-        "What you asked for that is still waiting, and the production runs you asked for.",
+        "What you asked for that is still waiting, and the runs you asked to have approved.",
     },
     {
       term: "Done",
@@ -63,7 +63,7 @@ export const requestsHelp: HelpTopic = {
     {
       term: "Needs approval",
       meaning:
-        "A run someone asked for that is waiting for an approval on Deploy: a production run while the two-person rule is on, or a run the asker's role may not do by itself.",
+        "A run someone asked for that is waiting for an approval on Deploy, because the asker's role may not do that run by itself.",
     },
     {
       term: "Ready to run",

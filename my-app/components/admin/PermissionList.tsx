@@ -23,10 +23,10 @@ import { Button, InfoIcon, LockIcon, Pill, type PillTone } from "@/components/ui
 // with an Undo.
 // ---------------------------------------------------------------------------
 
-/** Red for what changes a database or production, amber for live databases. */
+/** Red for what changes a database or approves a run, amber for live databases. */
 const RISK_TONE: Record<Risk, PillTone> = {
   database: "break",
-  production: "break",
+  approval: "break",
   live: "drift",
 };
 

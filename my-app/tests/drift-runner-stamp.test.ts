@@ -68,7 +68,6 @@ function stamps(): unknown[][] {
 const subject = {
   schemaName: "public",
   label: null,
-  environment: "development" as const,
   connection: null,
   driftIntervalMinutes: 15,
 };
