@@ -12,22 +12,27 @@ export const requestsHelp: HelpTopic = {
     "Under What do you need?, choose the thing your role can't do yet, or Something else.",
     "Say why if you like. A sentence helps whoever answers. For Something else, you have to say what you need.",
     "Click Send request. It goes to the people here who can change roles or users.",
-    "Read the answer under Your requests. Withdraw takes back a request that is still waiting.",
+    "Find it under You asked while it waits. Withdraw takes it back. Once it is answered it moves to Done.",
     "Once it is allowed, reload the page you need it on, and you can use it.",
-    "If you answer requests, look under Waiting for you. Allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.",
+    "If you answer requests, look under Needs you. Allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.",
     "For a production run, follow Review it on Deploy to approve it, or Open it on Deploy to run one of yours that was approved.",
     "Away from a computer? Use Phone app at the top of this page. The phone app can alert you when something here needs you.",
   ],
   terms: [
     {
-      term: "Waiting for you",
+      term: "Needs you",
       meaning:
-        "Requests you may answer, and production runs that need you. It shows when something is waiting, or when you are someone who answers requests.",
+        "Requests you may answer, and production runs that need you. The tab shows when something is waiting, or when you are someone who answers requests.",
     },
     {
-      term: "Your requests",
+      term: "You asked",
       meaning:
-        "What you asked for, each with its answer once it has one, and the production runs you asked for.",
+        "What you asked for that is still waiting, and the production runs you asked for.",
+    },
+    {
+      term: "Done",
+      meaning:
+        "What you asked for that has an answer. The number beside it counts answers you have not seen yet.",
     },
     {
       term: "Something else",

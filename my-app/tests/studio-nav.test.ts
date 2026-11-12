@@ -31,7 +31,7 @@
 import path from "path";
 import { existsSync } from "fs";
 
-import { NAV_ITEMS, activeNavItem, type NavItem } from "@/components/studio/nav";
+import { NAV_ITEMS, activeNavItem, activeScreen, type NavItem } from "@/components/studio/nav";
 import {
   FEATURES,
   isAdminOnly,
@@ -222,5 +222,20 @@ describe("deciding which screen you are on", () => {
     // The shell holds the answer next to its own filtered copy of the list.
     // An object rebuilt here would satisfy every check above and break that.
     expect(NAV_ITEMS).toContain(activeNavItem("/deploy"));
+  });
+});
+
+describe("activeScreen", () => {
+  it("names the account pages in the breadcrumb and lights up no rail row", () => {
+    expect(activeScreen("/acme/devices")).toEqual({ screen: "Phone and desktop", href: "/devices" });
+    expect(activeScreen("/acme/history")).toEqual({ screen: "Your activity", href: "/history" });
+    for (const page of ["/devices", "/history"]) {
+      expect(NAV_ITEMS.some((item) => item.href === page)).toBe(false);
+    }
+  });
+
+  it("falls through to the rail for every other page", () => {
+    expect(activeScreen("/acme/drift").screen).toBe("Drift");
+    expect(activeScreen("/acme").screen).toBe("Dashboard");
   });
 });

@@ -1,43 +1,33 @@
 /** @jest-environment jsdom */
 
 /**
- * The rail down the left of every studio screen.
+ * The rail down the left of every studio screen (the Atelier design).
  *
- * It is presentational — it holds no state, fetches nothing, and every decision
- * it makes arrives as a prop — but it is on screen on every single page, and
- * two of its decisions have already gone wrong once. Both are recorded in the
- * source, and both are what most of this file is about.
+ * It is presentational: it holds no state, fetches nothing, and every decision
+ * it makes arrives as a prop. But it is on screen on every page, and two of its
+ * decisions have gone wrong before, so most of this file is about them.
  *
  * The first is what "collapsed" means. Hiding the words with `hidden` is
  * display:none, which takes them out of the accessibility tree as well as out
  * of the layout, and a collapsed rail then handed a screen reader a column of
  * unnamed icons. `sr-only` costs the same room and keeps the text, so the tests
- * below read the rail the way assistive tech does — by accessible name — and
- * expect every row to still answer in the narrow state.
+ * below read the rail by accessible name and expect every row to still answer
+ * in the narrow state.
  *
  * The second is that a collapsed rail has to keep a way out of itself. The
- * collapse toggle moves into the brand cell, because a right-aligned chevron
- * would be clipped off a 64px column and leave nothing to click, and Sign out
- * stays where it is, because hiding it along with the labels once removed the
- * only way to leave the app.
+ * mark at the top becomes the expand button, because a right-aligned chevron
+ * would be clipped off a 64px column and leave nothing to click.
  *
  * What is NOT here:
- *  - Who decides `collapsed`, `theme`, `activeHref`, `role`, `roleLabel`,
- *    `bypass`, `viewAs`, `orgSwitcher`, or what sign out actually does. All of
- *    them are the shell's: tests/component-studio-shell.test.tsx. What the
- *    organization picker offers is tests/component-org-switcher.test.tsx. In particular, that the
- *    role comes from the session and is withheld when there isn't one is
- *    asserted there; below it is only that whatever arrives is what gets drawn.
- *  - The real list of screens, which route counts as active, and which rows a
- *    role may see: tests/studio-nav.test.ts, and the shell's suite for the
- *    filtering itself. The rows below are written out by hand so these tests
- *    keep their meaning the next time a screen is added to that file.
- *  - The drawer this rail is hosted in on a phone:
- *    tests/component-drawer.test.tsx covers bare mode from the drawer's side.
- *  - That the rail is 64px wide when collapsed, that sr-only text is invisible,
- *    or that the avatar has a gradient in it. All three are CSS and jsdom
- *    applies no stylesheet, so what is asserted is the class the component asks
- *    for, not what a browser would draw from it.
+ *  - Who you are, the theme switch and signing out. In this design they live
+ *    in the top bar's account menu: tests/component-account-menu.test.tsx and
+ *    tests/component-studio-shell.test.tsx.
+ *  - Who decides `collapsed`, `activeHref`, `bypass`, `viewAs` or
+ *    `orgSwitcher`. All of them are the shell's.
+ *  - The real list of screens and which rows a role may see:
+ *    tests/studio-nav.test.ts and the shell's suite.
+ *  - What any of it looks like. jsdom applies no stylesheet, so what is
+ *    asserted is the class the component asks for.
  */
 
 import "@testing-library/jest-dom";
@@ -45,14 +35,11 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import { StudioSidebar } from "@/components/studio/StudioSidebar";
 import type { NavItem } from "@/components/studio/nav";
-import { BUILT_IN_ROLE_INFO } from "@/lib/permissions";
+import { APP_VERSION } from "@/lib/app-version";
 
 // A cut-down rail. The icons are stand-ins: what matters is that whatever the
 // caller hands over for a row is what gets drawn in it. One row is given a
-// label that is not its screen name — the two are allowed to differ, and it is
-// the label the rail is supposed to show. Each row names its feature because
-// the type asks for one, but the rail draws every row it is handed: which rows
-// a role may see is decided by the shell before the list gets here.
+// label that is not its screen name, and it is the label the rail shows.
 const ITEMS: NavItem[] = [
   {
     screen: "Dashboard",
@@ -77,18 +64,10 @@ const ITEMS: NavItem[] = [
   },
 ];
 
-// Initials as the shell actually builds them: the first two letters of the
-// name, upper-cased.
-const USER = { name: "Ada Lovelace", email: "ada@example.com", initials: "AD" };
-
 const onToggleCollapse = jest.fn();
-const onToggleTheme = jest.fn();
-const onSignOut = jest.fn();
 
 beforeEach(() => {
   onToggleCollapse.mockClear();
-  onToggleTheme.mockClear();
-  onSignOut.mockClear();
 });
 
 type Overrides = Partial<Parameters<typeof StudioSidebar>[0]>;
@@ -100,10 +79,6 @@ function renderRail(over: Overrides = {}) {
       activeHref="/drift"
       collapsed={false}
       onToggleCollapse={onToggleCollapse}
-      theme="dark"
-      onToggleTheme={onToggleTheme}
-      user={USER}
-      onSignOut={onSignOut}
       {...over}
     />
   );
@@ -117,7 +92,12 @@ describe("the rail when it is open", () => {
   test("says what the app is and which build of it this is", () => {
     renderRail();
     expect(screen.getByText("Schema Studio")).toBeInTheDocument();
-    expect(screen.getByText("v2.0.0")).toBeInTheDocument();
+    expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument();
+  });
+
+  test("draws the mark the logo reveal flies to", () => {
+    renderRail();
+    expect(rail().querySelectorAll("[data-intro-target]")).toHaveLength(1);
   });
 
   test("offers a way to collapse and no way to expand", () => {
@@ -149,8 +129,6 @@ describe("the rail when it is open", () => {
   });
 
   test("draws the icon it was given for each row", () => {
-    // The collapsed rail is nothing but these, so a row that dropped its icon
-    // would be a blank line in the 64px state.
     renderRail();
     expect(screen.getByTestId("icon-dashboard")).toBeInTheDocument();
     expect(screen.getByTestId("icon-drift")).toBeInTheDocument();
@@ -165,12 +143,9 @@ describe("the rail when it is open", () => {
     // The highlight is only colour, so it is said out loud as well.
     expect(link("Drift watch")).toHaveAttribute("aria-current", "page");
     expect(link("Dashboard")).not.toHaveAttribute("aria-current");
-    expect(link("Admin")).not.toHaveAttribute("aria-current");
   });
 
   test("marks nothing when the page you are on has no row", () => {
-    // /schemas/12 is a real screen with no rail entry. Lighting a row anyway
-    // would tell somebody they are somewhere they are not.
     renderRail({ activeHref: "/schemas/12" });
     for (const row of screen.getAllByRole("link")) {
       expect(row.className).not.toContain("active");
@@ -178,28 +153,28 @@ describe("the rail when it is open", () => {
     }
   });
 
-  test("heads the list rather than leaving the rows loose", () => {
+  test("names the list of pages for a screen reader", () => {
     renderRail();
-    expect(screen.getByText("Menu")).not.toHaveClass("sr-only");
+    expect(screen.getByRole("navigation", { name: "Pages" })).toBeInTheDocument();
   });
 });
 
 describe("the rail when it is collapsed", () => {
-  test("turns the brand cell into the way back out", () => {
+  test("turns the mark into the way back out", () => {
     renderRail({ collapsed: true });
     expect(button("Expand sidebar")).toHaveAttribute("title", "Expand");
     expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
+    // The reveal still has somewhere to land.
+    expect(button("Expand sidebar").querySelector("[data-intro-target]")).not.toBeNull();
   });
 
   test("drops the product name and version, which have no room", () => {
     renderRail({ collapsed: true });
     expect(screen.queryByText("Schema Studio")).toBeNull();
-    expect(screen.queryByText("v2.0.0")).toBeNull();
+    expect(screen.queryByText(`v${APP_VERSION}`)).toBeNull();
   });
 
   test("still says what every row is", () => {
-    // The whole point of sr-only over hidden: read by accessible name, the
-    // narrow rail answers exactly as the wide one does.
     renderRail({ collapsed: true });
     expect(link("Dashboard")).toBeInTheDocument();
     expect(link("Drift watch")).toBeInTheDocument();
@@ -211,159 +186,32 @@ describe("the rail when it is collapsed", () => {
     expect(screen.getByText("Drift watch", { selector: "span" })).toHaveClass("sr-only");
   });
 
-  test("takes the heading out of sight the same way", () => {
+  test("asks for the folded look", () => {
     renderRail({ collapsed: true });
-    expect(screen.getByText("Menu")).toHaveClass("sr-only");
-  });
-
-  test("keeps sign out reachable", () => {
-    // The regression this component records: hidden along with the labels, and
-    // a collapsed rail had no way to leave the app at all.
-    renderRail({ collapsed: true });
-    fireEvent.click(button("Sign out"));
-    expect(onSignOut).toHaveBeenCalledTimes(1);
-  });
-
-  test("keeps the initials as the one visible sign of who is signed in", () => {
-    renderRail({ collapsed: true });
-    expect(screen.getByText("AD")).not.toHaveClass("sr-only");
-    expect(screen.getByText("Ada Lovelace").parentElement).toHaveClass("sr-only");
+    expect(rail().firstElementChild).toHaveClass("side", "side-folded");
   });
 });
 
-describe("the theme switch", () => {
-  test("offers the theme you would get, not the one you have", () => {
-    renderRail({ theme: "dark" });
-    expect(button("Switch to light theme")).toHaveAttribute("title", "Switch to light theme");
-  });
-
-  test("and the other way round", () => {
-    renderRail({ theme: "light" });
-    expect(button("Switch to dark theme")).toHaveAttribute("title", "Switch to dark theme");
-  });
-
-  test("says which theme is on now, in words and in a picture", () => {
-    // Of the two icons only the sun is drawn with a circle in it, which is the
-    // one difference between them jsdom can see without a stylesheet.
-    renderRail({ theme: "dark" });
-    expect(screen.getByText("Dark")).toBeInTheDocument();
-    expect(screen.queryByText("Light")).toBeNull();
-    expect(button("Switch to light theme").querySelector("circle")).not.toBeNull();
-  });
-
-  test("and says the other one when that is the one on", () => {
-    renderRail({ theme: "light" });
-    expect(screen.getByText("Light")).toBeInTheDocument();
-    expect(screen.queryByText("Dark")).toBeNull();
-    expect(button("Switch to dark theme").querySelector("circle")).toBeNull();
-  });
-
-  test("hands the switch back rather than making it here", () => {
+describe("the sign-in bypass warning", () => {
+  test("says nothing when the bypass is off", () => {
     renderRail();
-    fireEvent.click(button("Switch to light theme"));
-    expect(onToggleTheme).toHaveBeenCalledTimes(1);
-    expect(onToggleCollapse).not.toHaveBeenCalled();
-  });
-
-  test("still names itself and its setting in the narrow rail", () => {
-    renderRail({ collapsed: true, theme: "light" });
-    expect(button("Switch to dark theme")).toBeInTheDocument();
-    expect(screen.getByText("Theme")).toHaveClass("sr-only");
-    expect(screen.getByText("Light")).toHaveClass("sr-only");
-  });
-});
-
-describe("who is signed in", () => {
-  test("shows the name and the address that goes with it", () => {
-    renderRail();
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
-    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
-  });
-
-  test("shows the initials the avatar stands in with", () => {
-    // There is no photo anywhere in this app, so the initials are the avatar
-    // rather than a fallback for one.
-    renderRail();
-    expect(screen.getByText("AD")).toBeInTheDocument();
-  });
-
-  test("hands sign out back to the shell and does nothing else", () => {
-    renderRail();
-    fireEvent.click(button("Sign out"));
-    expect(onSignOut).toHaveBeenCalledTimes(1);
-    expect(onToggleCollapse).not.toHaveBeenCalled();
-    expect(onToggleTheme).not.toHaveBeenCalled();
-  });
-});
-
-describe("what the rail says you are allowed to do", () => {
-  // Both pills live in the same block as the name and address, so a collapsed
-  // rail keeps them in the page as sr-only rather than dropping them — the same
-  // rule the rows above follow, and the reason these tests read by text.
-  test("says nothing about rights when it was handed none", () => {
-    // The shell withholds both while nobody is signed in. A "viewer" pill under
-    // "Not signed in" would read as a role somebody holds rather than as the
-    // absence of one, so the rail has to be able to draw neither.
-    renderRail();
-    expect(screen.queryByText("viewer")).not.toBeInTheDocument();
-    expect(screen.queryByText("admin")).not.toBeInTheDocument();
     expect(screen.queryByText("auth off")).not.toBeInTheDocument();
   });
 
-  test("names the role the way people read it, and explains it on hover", () => {
-    renderRail({ role: "editor", roleLabel: "Editor" });
-    const pill = screen.getByText("Editor");
-    // The word on its own does not say what it buys you, so the tooltip says
-    // what the role starts out able to do, in the Admin screen's own words.
-    expect(pill).toHaveAttribute("title", BUILT_IN_ROLE_INFO.editor.description);
-  });
-
-  test("falls back to the role's key when no name came with it", () => {
-    renderRail({ role: "viewer" });
-    expect(screen.getByText("viewer")).toHaveAttribute(
-      "title",
-      BUILT_IN_ROLE_INFO.viewer.description
-    );
-  });
-
-  test("calls a role an admin made by its own name, and says where to look", () => {
-    // Nothing in the code knows what a role made on the Admin screen can do,
-    // so the tooltip does not guess at it.
-    renderRail({ role: "qa-lead", roleLabel: "QA Lead" });
-    expect(screen.getByText("QA Lead")).toHaveAttribute(
-      "title",
-      expect.stringContaining("An admin decides what it can do")
-    );
-  });
-
   test("says out loud when authentication is switched off", () => {
-    // The bypass hands the admin role to whoever opens the page. An app with
-    // authentication off used to look exactly like one somebody signed in to.
     renderRail({ bypass: true });
-    const pill = screen.getByText("auth off");
-    expect(pill).toBeInTheDocument();
+    const pill = screen.getByText("auth off").parentElement!;
     expect(pill).toHaveAttribute("title", expect.stringContaining("NEXT_PUBLIC_AUTH_BYPASS"));
   });
 
-  test("shows both, because the role on its own is the reassuring half", () => {
-    // "admin" alone reads as somebody who signed in and was granted it.
-    renderRail({ role: "admin", bypass: true });
-    expect(screen.getByText("admin")).toBeInTheDocument();
-    expect(screen.getByText("auth off")).toBeInTheDocument();
-  });
-
-  test("keeps both readable in the narrow rail", () => {
-    renderRail({ role: "admin", bypass: true, collapsed: true });
-    // Still answerable to a screen reader, the same way the nav rows are.
-    expect(screen.getByText("admin")).toBeInTheDocument();
-    expect(screen.getByText("auth off")).toBeInTheDocument();
+  test("keeps it readable in the narrow rail", () => {
+    renderRail({ bypass: true, collapsed: true });
+    expect(screen.getByText("auth off")).toHaveClass("sr-only");
   });
 });
 
 describe('the "View as" slot', () => {
-  // The switcher is the shell's to build, and only while the bypass is on. The
-  // rail decides where it goes, and whether there is room for it.
-  test("draws whatever it was handed, under the identity", () => {
+  test("draws whatever it was handed", () => {
     renderRail({ viewAs: <p>the switcher</p> });
     expect(screen.getByText("the switcher")).toBeInTheDocument();
   });
@@ -375,13 +223,10 @@ describe('the "View as" slot', () => {
 });
 
 describe("the organization slot", () => {
-  // The picker is the shell's to build. The rail puts it first in the footer,
-  // so drawing it grows the footer upward and moves nothing under it.
-  test("draws whatever it was handed, above the theme switch", () => {
+  test("draws whatever it was handed, at the foot of the rail", () => {
     renderRail({ orgSwitcher: <p>the organizations</p> });
     const picker = screen.getByText("the organizations");
-    const theme = button("Switch to light theme");
-    expect(picker.compareDocumentPosition(theme) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(picker.closest(".side-foot")).not.toBeNull();
   });
 
   test("leaves it off the narrow rail, which has no room for a picker", () => {
@@ -391,23 +236,19 @@ describe("the organization slot", () => {
 
   // The picker draws nothing when there is nothing to pick. Its box stays in
   // the page, and the class is what lets a browser drop it, gap and all.
-  // jsdom applies no stylesheet, so the class and the emptiness are what can
-  // be checked here; the preview is where the missing gap was seen.
   test("puts a picker that draws nothing in a box that hides itself", () => {
     function NothingToPick() {
       return null;
     }
     renderRail({ orgSwitcher: <NothingToPick /> });
-    const footer = button("Switch to light theme").parentElement!;
-    const box = footer.firstElementChild!;
+    const box = rail().querySelector(".side-foot")!.firstElementChild!;
     expect(box).toHaveClass("empty:hidden");
     expect(box).toBeEmptyDOMElement();
   });
 
   test("draws no box at all when handed no picker", () => {
     renderRail();
-    const footer = button("Switch to light theme").parentElement!;
-    expect(footer.firstElementChild).toBe(button("Switch to light theme"));
+    expect(rail().querySelector(".side-foot")).toBeEmptyDOMElement();
   });
 });
 
@@ -427,15 +268,14 @@ describe("the collapse control", () => {
 
 describe("hosting it", () => {
   test("takes the extra classes whoever hosts it needs", () => {
-    // The mobile drawer passes h-full so the rail fills the slide-over.
-    renderRail({ className: "h-full" });
-    expect(rail()).toHaveClass("h-full");
-    expect(rail()).toHaveClass("flex");
+    // The phone drawer passes side-in-drawer so the rail fills it edge to edge.
+    renderRail({ className: "side-in-drawer" });
+    expect(rail()).toHaveClass("side-wrap", "side-in-drawer");
   });
 
   test("stands on its own when nobody passes any", () => {
     renderRail();
-    expect(rail().className.trim()).toBe("flex flex-col");
+    expect(rail().className.trim()).toBe("side-wrap");
   });
 });
 

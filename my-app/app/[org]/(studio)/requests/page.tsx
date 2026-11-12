@@ -1,13 +1,15 @@
 "use client";
 
+import "@/app/styles/atelier-requests.css";
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Button, Card, ConfirmDialog, EmptyState, Pill, Skeleton } from "@/components/ui";
+import { Button, Card, ConfirmDialog, Pill, Skeleton, type PillTone } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
-import { AlertTriangleIcon, InboxIcon } from "@/components/ui/icons";
+import { AlertTriangleIcon, CheckIcon, InboxIcon, XIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { PillTabs, type PillTab } from "@/components/studio/PillTabs";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -46,6 +48,11 @@ import {
  * Answering "allow" calls the same Roles and Users routes the Admin page uses,
  * and only then records the answer, so their guards and audit trail still apply
  * and a refusal from them leaves the request waiting.
+ *
+ * The page has three tabs. "Needs you" holds what is waiting on the reader,
+ * "You asked" holds what they asked for that is still open, and "Done" holds
+ * the answers. All three stay mounted, so a half-written note is still there
+ * when the reader comes back to its tab.
  */
 
 /** The choice in the form for a request that is not one box in the grid. */
@@ -73,41 +80,43 @@ async function errorFrom(response: Response, fallback: string): Promise<string> 
 
 function ErrorNote({ children }: { children: ReactNode }) {
   return (
-    <div
-      className="flex items-start gap-2 p-3 rounded-xl mt-3"
-      role="alert"
-      style={{
-        background: "color-mix(in oklab, var(--break) 10%, transparent)",
-        border: "1px solid color-mix(in oklab, var(--break) 30%, transparent)",
-      }}
-    >
-      <AlertTriangleIcon size={15} style={{ color: "var(--break)", marginTop: 1, flex: "none" }} />
-      <span className="text-[13px]" style={{ color: "var(--break)" }}>
-        {children}
-      </span>
+    <div className="rq-error" role="alert">
+      <AlertTriangleIcon size={15} />
+      <span>{children}</span>
     </div>
   );
 }
 
-function SectionHeading({ title, hint }: { title: string; hint?: string }) {
-  return (
-    <div className="mt-8 mb-3">
-      <h2 className="text-[15px] font-semibold">{title}</h2>
-      {hint && (
-        <p className="text-[12.5px] mt-0.5 max-w-[62ch]" style={{ color: "var(--text-2)" }}>
-          {hint}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** The little line under a row saying who and when. */
+/** The little line under a title saying who and when. */
 function Meta({ children }: { children: ReactNode }) {
+  return <p className="rq-meta">{children}</p>;
+}
+
+/** Two letters for the round badge beside a person's request. */
+function initialsOf(who: string): string {
+  const words = who.split("@")[0].split(/[\s._-]+/).filter(Boolean);
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : who.slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/** The round mark at the start of a Done row: a tick, a cross, or a dash. */
+function ToneIcon({ tone }: { tone: PillTone }) {
   return (
-    <div className="text-[12px] mt-1" style={{ color: "var(--text-3)" }}>
-      {children}
-    </div>
+    <span className="rq-ico" data-tone={tone} aria-hidden>
+      {tone === "sync" ? <CheckIcon size={13} /> : tone === "break" ? <XIcon size={13} /> : "-"}
+    </span>
+  );
+}
+
+function EmptyCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <Card className="rq-empty">
+      <span className="rq-ico" data-tone="sync" aria-hidden>
+        <InboxIcon size={22} />
+      </span>
+      <h2>{title}</h2>
+      <p>{children}</p>
+    </Card>
   );
 }
 
@@ -117,22 +126,25 @@ function TextBox({
   onChange,
   placeholder,
   disabled,
+  label,
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   disabled?: boolean;
+  /** For a box with no visible label of its own. */
+  label?: string;
 }) {
   return (
     <textarea
       id={id}
-      className="input w-full"
-      style={{ height: "auto", minHeight: 62, padding: "8px 10px", resize: "vertical" }}
+      className="rq-ta"
       rows={2}
       maxLength={REQUEST_TEXT_MAX}
       value={value}
       placeholder={placeholder}
+      aria-label={label}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
     />
@@ -200,7 +212,7 @@ function AskForm({ onSent }: { onSent: () => void }) {
       setSent(
         body?.already
           ? "You already asked for this, and it is still waiting."
-          : "Sent. The answer will show under Your requests, below."
+          : "Sent. It is under You asked, and the answer will show under Done."
       );
       setChoice("");
       setMessage("");
@@ -213,17 +225,16 @@ function AskForm({ onSent }: { onSent: () => void }) {
   }
 
   return (
-    <Card className="p-4 sm:p-5 mt-6">
-      <div className="flex items-center">
-        <label htmlFor="request-what" className="text-[13px] font-medium">
-          What do you need?
-        </label>
-        <HelpHint label="What do you need?">
-          {"The list holds what your role can't do yet and an Admin could give. " +
-            "Your request goes to the people here who can change roles or users."}
-        </HelpHint>
-      </div>
-      <div className="mt-1.5">
+    <Card className="rq-ask">
+      <h2>Ask for something</h2>
+      <div className="rq-fld">
+        <div>
+          <label htmlFor="request-what">What do you need?</label>
+          <HelpHint label="What do you need?">
+            {"The list holds what your role can't do yet and an Admin could give. " +
+              "Your request goes to the people here who can change roles or users."}
+          </HelpHint>
+        </div>
         <Select
           id="request-what"
           variant="input"
@@ -236,15 +247,15 @@ function AskForm({ onSent }: { onSent: () => void }) {
         />
       </div>
       {alreadyHeld && (
-        <p className="text-[12.5px] mt-2" style={{ color: "var(--text-2)" }}>
+        <p>
           {`Your role (${roleLabel}) can already ${describeAsked(linked).does ?? "do that"}. Reload the page you came from to use it.`}
         </p>
       )}
 
-      <label htmlFor="request-why" className="block text-[13px] font-medium mt-4">
-        {somethingElse ? "Say what you need" : "Why? (optional)"}
-      </label>
-      <div className="mt-1.5">
+      <div className="rq-fld">
+        <div>
+          <label htmlFor="request-why">{somethingElse ? "Say what you need" : "Why? (optional)"}</label>
+        </div>
         <TextBox
           id="request-why"
           value={message}
@@ -258,16 +269,10 @@ function AskForm({ onSent }: { onSent: () => void }) {
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mt-4">
-        <Button variant="primary" size="sm" disabled={!ready || busy} onClick={() => void send()}>
-          {busy ? "Sending..." : "Send request"}
-        </Button>
-      </div>
-      {sent && (
-        <p className="text-[13px] mt-3" role="status" style={{ color: "var(--text-1)" }}>
-          {sent}
-        </p>
-      )}
+      <Button variant="primary" disabled={!ready || busy} onClick={() => void send()}>
+        {busy ? "Sending..." : "Send request"}
+      </Button>
+      {sent && <p role="status">{sent}</p>}
       {error && <ErrorNote>{error}</ErrorNote>}
     </Card>
   );
@@ -422,50 +427,52 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
   const roleLabel = request.member_role_label ?? request.member_role;
 
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13.5px] font-semibold">{asked.title}</span>
+    <Card className="rq-card">
+      <div className="rq-top">
+        <span className="rq-av" aria-hidden>
+          {initialsOf(who)}
+        </span>
+        <div>
+          <h2>{asked.title}</h2>
+          <Meta>
+            {`${who}${who === request.requested_by ? "" : ` (${request.requested_by})`}, `}
+            {stillHere ? `currently ${roleLabel}. ` : "who has left this organization. "}
+            {`Asked ${formatWhen(request.created_at)}.`}
+          </Meta>
+        </div>
         <Pill tone="pending">Request</Pill>
       </div>
       {request.message && (
-        <p className="text-[13px] mt-2 whitespace-pre-wrap break-words">{request.message}</p>
+        <blockquote className="rq-quote">
+          <small>{`${who} wrote`}</small>
+          {request.message}
+        </blockquote>
       )}
-      <Meta>
-        {`${who}${who === request.requested_by ? "" : ` (${request.requested_by})`}, `}
-        {stillHere ? `currently ${roleLabel}. ` : "who has left this organization. "}
-        {`Asked ${formatWhen(request.created_at)}.`}
-      </Meta>
 
-      <div className="mt-3">
-        <TextBox
-          id={`request-note-${request.id}`}
-          value={note}
-          onChange={setNote}
-          disabled={busy}
-          placeholder={`A note to ${who} (optional)`}
-        />
-      </div>
+      <TextBox
+        id={`request-note-${request.id}`}
+        value={note}
+        onChange={setNote}
+        disabled={busy}
+        placeholder={`A note to ${who} (optional)`}
+        label={`A note to ${who} (optional)`}
+      />
 
-      <div className="flex flex-wrap gap-2 mt-3">
+      <div className="rq-act">
         {mayWiden && (
-          <Button variant="primary" size="sm" disabled={busy} onClick={() => void startWidening()}>
+          <Button variant="primary" disabled={busy} onClick={() => void startWidening()}>
             {`Allow for everyone who is ${roleLabel}`}
           </Button>
         )}
         {mayMove && (
-          <Button size="sm" disabled={busy} onClick={() => void startMoving()}>
+          <Button variant="secondary" disabled={busy} onClick={() => void startMoving()}>
             {`Give ${who} another role`}
           </Button>
         )}
-        <Button size="sm" disabled={busy} onClick={() => void working(() => answer("done"))}>
+        <Button variant="secondary" disabled={busy} onClick={() => void working(() => answer("done"))}>
           Mark as done
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => void working(() => answer("declined"))}
-        >
+        <Button variant="ghost" disabled={busy} onClick={() => void working(() => answer("declined"))}>
           Decline
         </Button>
         {mayWiden && (
@@ -480,8 +487,8 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
       </div>
 
       {moveOptions && (
-        <div className="flex flex-wrap items-center gap-2 mt-3">
-          <div className="min-w-[220px]">
+        <div className="rq-move">
+          <div>
             <Select
               variant="input"
               ariaLabel={`New role for ${who}`}
@@ -492,19 +499,14 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
               disabled={busy}
             />
           </div>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={busy || moveTo === ""}
-            onClick={() => void confirmMoving()}
-          >
+          <Button variant="primary" disabled={busy || moveTo === ""} onClick={() => void confirmMoving()}>
             {moving?.includes ? "Change role and allow" : "Change role"}
           </Button>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setMoveOptions(null)}>
+          <Button variant="ghost" disabled={busy} onClick={() => setMoveOptions(null)}>
             Cancel
           </Button>
           {moving && !moving.includes && (
-            <p className="text-[12px] w-full" style={{ color: "var(--text-3)" }}>
+            <p>
               {moving.includes === false
                 ? `${moving.roleLabel} does not include "${asked.title}", so this is marked as done, not allowed.`
                 : "This also marks the request as done."}
@@ -514,6 +516,7 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
       )}
 
       {error && <ErrorNote>{error}</ErrorNote>}
+
 
       <ConfirmDialog
         open={widening !== null}
@@ -539,33 +542,36 @@ function RunRow({ run, kind }: { run: ListedApproval; kind: "approve" | "run" })
   const { can } = useUser();
   const orgPath = useOrgHref();
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13.5px] font-semibold">{runTitle(run)}</span>
+    <Card className="rq-card">
+      <div className="rq-top">
+        <span className="rq-av" aria-hidden>
+          {initialsOf(run.requested_by)}
+        </span>
+        <div>
+          <h2>{runTitle(run)}</h2>
+          <Meta>{`Asked for by ${run.requested_by}, ${formatWhen(run.requested_at)}.`}</Meta>
+        </div>
         {kind === "approve" ? (
           <Pill tone="pending">Needs approval</Pill>
         ) : (
           <Pill tone="sync">Ready to run</Pill>
         )}
       </div>
-      <div className="text-[13px] mt-0.5" style={{ color: "var(--text-2)" }}>
-        {runTarget(run)}
-      </div>
+      <div className="rq-line">{runTarget(run)}</div>
       {kind === "run" && run.decided_by && (
-        <div className="text-[13px] mt-0.5" style={{ color: "var(--text-2)" }}>
+        <div className="rq-line">
           {`Approved by ${run.decided_by}.`}
           {run.expires_at ? ` Good until ${formatWhen(run.expires_at)}.` : ""}
         </div>
       )}
-      <Meta>{`Asked for by ${run.requested_by}, ${formatWhen(run.requested_at)}.`}</Meta>
       {run.action === "revert" && (
-        <div className="text-[13px] mt-1.5">
+        <div className="rq-line rq-line--strong">
           On Deploy, use &quot;Roll back to&quot; on this target. The approval is waiting there.
         </div>
       )}
       {can("deploy:read") && (
-        <div className="mt-3">
-          <Link href={orgPath(deployHref(run))} className="btn btn-secondary btn-sm">
+        <div className="rq-act">
+          <Link href={orgPath(deployHref(run))} className="btn btn-primary">
             {kind === "approve" ? "Review it on Deploy" : "Open it on Deploy"}
           </Link>
         </div>
@@ -578,21 +584,21 @@ function RunRow({ run, kind }: { run: ListedApproval; kind: "approve" | "run" })
 // Your own
 // ---------------------------------------------------------------------------
 
-function NewMark({ decidedAt, since }: { decidedAt: string | null; since: string | null }) {
-  if (!decidedAt) return null;
-  if (since && new Date(decidedAt) <= new Date(since)) return null;
-  return <Pill tone="brand">New</Pill>;
+/** True when an answer arrived after the reader last looked at this page. */
+function isNew(decidedAt: string | null, since: string | null): boolean {
+  if (!decidedAt) return false;
+  return !since || new Date(decidedAt) > new Date(since);
 }
 
-function OwnRequestRow({
-  request,
-  since,
-  onChanged,
-}: {
-  request: AccessRequest;
-  since: string | null;
-  onChanged: () => void;
-}) {
+/** True while a run of yours is still going somewhere: waiting, or approved and in time. */
+function runIsOpen(run: ListedApproval): boolean {
+  if (run.status === "pending") return true;
+  if (run.status !== "approved") return false;
+  return !run.expires_at || new Date(run.expires_at).getTime() > Date.now();
+}
+
+/** A request of yours that nobody has answered yet. */
+function OwnRequestCard({ request, onChanged }: { request: AccessRequest; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const asked = describeAsked(request.permission);
@@ -617,60 +623,118 @@ function OwnRequestRow({
   }
 
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13.5px] font-semibold">{asked.title}</span>
+    <Card className="rq-card">
+      <div className="rq-top">
+        <div>
+          <h2>{asked.title}</h2>
+          <Meta>{`Asked ${formatWhen(request.created_at)}.`}</Meta>
+        </div>
         <Pill tone={pill.tone}>{pill.label}</Pill>
-        <NewMark decidedAt={request.decided_at} since={since} />
       </div>
       {request.message && (
-        <p className="text-[13px] mt-1.5 whitespace-pre-wrap break-words">{request.message}</p>
+        <blockquote className="rq-quote">
+          <small>You wrote</small>
+          {request.message}
+        </blockquote>
       )}
-      {request.status === "allowed" && (
-        <div className="text-[13px] mt-1.5">Reload the page you need it on, and you can use it.</div>
-      )}
-      {request.decision_note && (
-        <div className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
-          {`Their note: ${request.decision_note}`}
-        </div>
-      )}
-      <Meta>
-        {`Asked ${formatWhen(request.created_at)}.`}
-        {request.decided_by ? ` Answered by ${request.decided_by}, ${formatWhen(request.decided_at)}.` : ""}
-      </Meta>
-      {request.status === "pending" && (
-        <div className="mt-3">
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void withdraw()}>
-            Withdraw
-          </Button>
-        </div>
-      )}
+      <div className="rq-act">
+        <Button variant="ghost" disabled={busy} onClick={() => void withdraw()}>
+          Withdraw
+        </Button>
+        <small>It is with the people here who can change roles or users.</small>
+      </div>
       {error && <ErrorNote>{error}</ErrorNote>}
     </Card>
   );
 }
 
-function OwnRunRow({ run, since }: { run: ListedApproval; since: string | null }) {
+/** A production run you asked for that is waiting, or approved and ready. */
+function OwnRunCard({ run, since }: { run: ListedApproval; since: string | null }) {
+  const { label, tone, story } = ownRunStory(run);
+  const approved = run.status !== "pending";
+  return (
+    <Card className="rq-card">
+      <div className="rq-top">
+        <div>
+          <h2>{runTitle(run)}</h2>
+          <Meta>{`Asked ${formatWhen(run.requested_at)}.`}</Meta>
+        </div>
+        <Pill tone={tone}>{label}</Pill>
+        {!run.self_approved && isNew(run.decided_at, since) && <Pill tone="brand">New</Pill>}
+      </div>
+      <div className="rq-line">{runTarget(run)}</div>
+      <ol className="rq-steps" aria-label="Where this run has got to">
+        <li data-s="done">
+          <i aria-hidden>
+            <CheckIcon size={10} />
+          </i>
+          Asked
+        </li>
+        <li data-s={approved ? "done" : "now"}>
+          <i aria-hidden>
+            <CheckIcon size={10} />
+          </i>
+          Approved
+        </li>
+        <li data-s={approved ? "now" : "todo"}>
+          <i aria-hidden>
+            <CheckIcon size={10} />
+          </i>
+          Run
+        </li>
+      </ol>
+      <div className="rq-line rq-line--strong">{story}</div>
+      {/* Not "their note": it stays the one you wrote unless the approver left another. */}
+      {run.note && approved && <div className="rq-line">{`Note: ${run.note}`}</div>}
+    </Card>
+  );
+}
+
+/** A request of yours that has its answer, as one row of the Done list. */
+function DoneRequestRow({ request, since }: { request: AccessRequest; since: string | null }) {
+  const asked = describeAsked(request.permission);
+  const pill = STATUS_PILLS[request.status];
+  return (
+    <div className="rq-row">
+      <ToneIcon tone={pill.tone} />
+      <div>
+        <b>{asked.title}</b>
+        {request.message && <p className="rq-said">{request.message}</p>}
+        {request.status === "allowed" && <p>Reload the page you need it on, and you can use it.</p>}
+        {request.decision_note && <p>{`Their note: ${request.decision_note}`}</p>}
+        <Meta>
+          {`Asked ${formatWhen(request.created_at)}.`}
+          {request.decided_by
+            ? ` Answered by ${request.decided_by}, ${formatWhen(request.decided_at)}.`
+            : ""}
+        </Meta>
+      </div>
+      <div className="rq-rt">
+        <Pill tone={pill.tone}>{pill.label}</Pill>
+        {isNew(request.decided_at, since) && <Pill tone="brand">New</Pill>}
+      </div>
+    </div>
+  );
+}
+
+/** A production run of yours that is over: run, rejected, or out of time. */
+function DoneRunRow({ run, since }: { run: ListedApproval; since: string | null }) {
   const { label, tone, story } = ownRunStory(run);
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13.5px] font-semibold">{runTitle(run)}</span>
+    <div className="rq-row">
+      <ToneIcon tone={run.status === "used" ? "sync" : tone} />
+      <div>
+        <b>{runTitle(run)}</b>
+        <p>{runTarget(run)}</p>
+        <p>{story}</p>
+        {run.note && <p>{`Note: ${run.note}`}</p>}
+        <Meta>{`Asked ${formatWhen(run.requested_at)}.`}</Meta>
+      </div>
+      <div className="rq-rt">
         <Pill tone={tone}>{label}</Pill>
-        {!run.self_approved && <NewMark decidedAt={run.decided_at} since={since} />}
+        {!run.self_approved && isNew(run.decided_at, since) && <Pill tone="brand">New</Pill>}
       </div>
-      <div className="text-[13px] mt-0.5" style={{ color: "var(--text-2)" }}>
-        {runTarget(run)}
-      </div>
-      <div className="text-[13px] mt-1.5">{story}</div>
-      {/* Not "their note": it stays the one you wrote unless the approver left another. */}
-      {run.note && run.status !== "pending" && (
-        <div className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
-          {`Note: ${run.note}`}
-        </div>
-      )}
-      <Meta>{`Asked ${formatWhen(run.requested_at)}.`}</Meta>
-    </Card>
+    </div>
   );
 }
 
@@ -678,11 +742,16 @@ function OwnRunRow({ run, since }: { run: ListedApproval; since: string | null }
 // The page
 // ---------------------------------------------------------------------------
 
+type TabKey = "needs" | "asked" | "done";
+
 function RequestsBody() {
   const orgPath = useOrgHref();
   const { isAdmin } = useUser();
   const [data, setData] = useState<RequestsPayload | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  // The tab the reader picked. Null until they pick one, and the page then
+  // opens on the first tab that has something in it.
+  const [picked, setPicked] = useState<TabKey | null>(null);
   // Answers newer than this are marked New. Kept from the first read, because
   // reading the page moves the stored time on and the marks should stay until
   // the next visit. Undefined until then; null means never looked before.
@@ -727,79 +796,150 @@ function RequestsBody() {
   const myRuns = data?.myRuns ?? [];
   const since = newSince ?? null;
 
-  const nothingWaiting = inbox.length + toApprove.length + toRun.length === 0;
+  const openRequests = mine.filter((request) => request.status === "pending");
+  const doneRequests = mine.filter((request) => request.status !== "pending");
+  const openRuns = myRuns.filter(runIsOpen);
+  const doneRuns = myRuns.filter((run) => !runIsOpen(run));
+
+  const waitingCount = inbox.length + toApprove.length + toRun.length;
+  const askedCount = openRequests.length + openRuns.length;
+  const doneCount = doneRequests.length + doneRuns.length;
+  const newCount =
+    doneRequests.filter((request) => isNew(request.decided_at, since)).length +
+    doneRuns.filter((run) => !run.self_approved && isNew(run.decided_at, since)).length;
+
   // "Nothing is waiting" is for the person who answers requests. Anyone else came here to
-  // ask for something, and an empty section would only push the form down the page.
-  const showWaiting = data?.canAnswer || !nothingWaiting;
-  const nothingOfYours = mine.length + myRuns.length === 0;
+  // ask for something, and an empty tab would only be in the way.
+  const showWaiting = Boolean(data?.canAnswer) || waitingCount > 0;
+  // An Admin can do everything, so they have nothing to ask for. Their own
+  // tabs show only when a production run of theirs is listed.
+  const showOwn = !isAdmin || askedCount + doneCount > 0;
+
+  const tabs: PillTab[] = [];
+  if (showWaiting) tabs.push({ key: "needs", label: "Needs you", count: waitingCount });
+  if (showOwn) {
+    tabs.push({ key: "asked", label: "You asked", count: askedCount });
+    tabs.push({ key: "done", label: "Done", count: newCount });
+  }
+
+  // Until the reader picks a tab, open on the one with something to read.
+  let opening: TabKey = showWaiting ? "needs" : "asked";
+  if (waitingCount === 0 && showOwn) {
+    if (newCount > 0) opening = "done";
+    else if (askedCount > 0) opening = "asked";
+    else if (doneCount > 0) opening = "done";
+  }
+  const tab = picked !== null && tabs.some((entry) => entry.key === picked) ? picked : opening;
 
   return (
-    <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
+    <div className="rq-page">
       <PageHeader
         page="/requests"
+        title="What needs you. What you asked for."
         actions={
-          <Link href={orgPath("/phone")} className="btn btn-sm">
+          <Link href={orgPath("/phone")} className="btn btn-secondary btn-sm">
             Phone app
           </Link>
         }
-      />
+      >
+        {data && tabs.length > 0 && (
+          <PillTabs
+            label="Requests"
+            tabs={tabs}
+            value={tab}
+            onChange={(key) => setPicked(key as TabKey)}
+            idPrefix="requests-tab-"
+            panelPrefix="requests-panel-"
+          />
+        )}
+      </PageHeader>
 
       {failed && <ErrorNote>{failed}</ErrorNote>}
 
       {!data && !failed && (
-        <div className="mt-6 space-y-3">
-          <Skeleton className="h-[84px] rounded-xl" />
-          <Skeleton className="h-[84px] rounded-xl" />
+        <div className="rq-main" aria-busy="true">
+          <Skeleton width="100%" height={120} radius={24} />
+          <Skeleton width="100%" height={120} radius={24} />
         </div>
       )}
 
-      {data && showWaiting && (
-        <section>
-          <SectionHeading title="Waiting for you" />
-          {nothingWaiting ? (
-            <Card>
-              <EmptyState
-                icon={<InboxIcon size={18} />}
-                title="Nothing is waiting for you"
-                description="Requests and production runs that need you will show here."
-              />
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {inbox.map((request) => (
-                <InboxRow key={request.id} request={request} onChanged={changed} />
-              ))}
-              {toApprove.map((run) => (
-                <RunRow key={run.id} run={run} kind="approve" />
-              ))}
-              {toRun.map((run) => (
-                <RunRow key={run.id} run={run} kind="run" />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
+      {data && (
+        <div className={isAdmin ? "rq-grid" : "rq-grid rq-grid--side"}>
+          <div className="rq-main">
+            {showWaiting && (
+              <section
+                role="tabpanel"
+                id="requests-panel-needs"
+                aria-labelledby="requests-tab-needs"
+                hidden={tab !== "needs"}
+              >
+                {waitingCount === 0 && (
+                  <EmptyCard title="Nothing is waiting for you">
+                    Requests and production runs that need you will show here.
+                  </EmptyCard>
+                )}
+                {inbox.map((request) => (
+                  <InboxRow key={request.id} request={request} onChanged={changed} />
+                ))}
+                {toApprove.map((run) => (
+                  <RunRow key={run.id} run={run} kind="approve" />
+                ))}
+                {toRun.map((run) => (
+                  <RunRow key={run.id} run={run} kind="run" />
+                ))}
+              </section>
+            )}
 
-      {data && !isAdmin && <AskForm onSent={changed} />}
+            {showOwn && (
+              <section
+                role="tabpanel"
+                id="requests-panel-asked"
+                aria-labelledby="requests-tab-asked"
+                hidden={tab !== "asked"}
+              >
+                {askedCount === 0 && (
+                  <EmptyCard title="Nothing of yours is waiting">
+                    {doneCount === 0
+                      ? "You have not asked for anything here yet."
+                      : "Everything you asked for has its answer. Look under Done."}
+                  </EmptyCard>
+                )}
+                {openRequests.map((request) => (
+                  <OwnRequestCard key={request.id} request={request} onChanged={changed} />
+                ))}
+                {openRuns.map((run) => (
+                  <OwnRunCard key={run.id} run={run} since={since} />
+                ))}
+              </section>
+            )}
 
-      {data && (!isAdmin || !nothingOfYours) && (
-        <section>
-          <SectionHeading title="Your requests" />
-          {nothingOfYours ? (
-            <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
-              You have not asked for anything here yet.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {mine.map((request) => (
-                <OwnRequestRow key={request.id} request={request} since={since} onChanged={changed} />
-              ))}
-              {myRuns.map((run) => (
-                <OwnRunRow key={run.id} run={run} since={since} />
-              ))}
-            </div>
-          )}
-        </section>
+            {showOwn && (
+              <section
+                role="tabpanel"
+                id="requests-panel-done"
+                aria-labelledby="requests-tab-done"
+                hidden={tab !== "done"}
+              >
+                {doneCount === 0 ? (
+                  <EmptyCard title="No answers yet">
+                    When someone answers a request of yours, it shows here.
+                  </EmptyCard>
+                ) : (
+                  <Card className="rq-list">
+                    {doneRequests.map((request) => (
+                      <DoneRequestRow key={request.id} request={request} since={since} />
+                    ))}
+                    {doneRuns.map((run) => (
+                      <DoneRunRow key={run.id} run={run} since={since} />
+                    ))}
+                  </Card>
+                )}
+              </section>
+            )}
+          </div>
+
+          {!isAdmin && <AskForm onSent={changed} />}
+        </div>
       )}
     </div>
   );

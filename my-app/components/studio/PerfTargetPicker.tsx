@@ -182,7 +182,7 @@ export function PerfTargetPicker({
 
   if (connPhase === "error") {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not load your saved connections</div>
@@ -206,9 +206,9 @@ export function PerfTargetPicker({
   }
 
   return (
-    <div className="source-bar">
+    <div className="source-bar pf-pick">
       <div className="source-bar__group">
-        <span className="source-bar__label">Analyse</span>
+        <span className="source-bar__label">Looking at</span>
         {/* One picker, not the Compare screen's grid of them — so the
             connection name gets the width it needs instead of being truncated
             into a 300px track with nothing beside it. */}
@@ -263,7 +263,7 @@ export function PerfTargetPicker({
       </div>
 
       {connPhase === "ready" && connections.length === 0 && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">No PostgreSQL connections saved</div>
@@ -282,7 +282,7 @@ export function PerfTargetPicker({
       )}
 
       {schemaPhase === "error" && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">Could not list schemas</div>
@@ -305,7 +305,7 @@ export function PerfTargetPicker({
       )}
 
       {schemaPhase === "ready" && connectionId !== "" && schemas.length === 0 && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">This server has no readable schemas</div>

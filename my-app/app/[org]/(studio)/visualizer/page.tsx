@@ -12,13 +12,14 @@ import {
 } from "@/components/studio/visualizer/VisualizerPane";
 import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
+import "@/app/styles/atelier-visualizer.css";
 
 // The Schema Visualizer. "Single" draws one schema; "Side by side" draws two
 // independent panes (e.g. dev vs prod) with a draggable divider between them.
 //
 // Connections are fetched once here and shared with both panes; each pane owns
 // its own schema selection + introspection. The LEFT pane sits at a stable spot
-// in the tree across modes, so toggling Single↔Side-by-side keeps its diagram;
+// in the tree across modes, so toggling Single and Side by side keeps its diagram;
 // the RIGHT pane mounts only in side-by-side.
 
 type Mode = "single" | "split";
@@ -46,10 +47,9 @@ function PanelSplitIcon() {
 
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
   return (
-    <div className="viz-mode" role="group" aria-label="View mode">
+    <div className="vz-seg" role="group" aria-label="View mode">
       <button
         type="button"
-        className={`viz-mode__btn${mode === "single" ? " is-active" : ""}`}
         aria-pressed={mode === "single"}
         onClick={() => onChange("single")}
       >
@@ -57,7 +57,6 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
       </button>
       <button
         type="button"
-        className={`viz-mode__btn${mode === "split" ? " is-active" : ""}`}
         aria-pressed={mode === "split"}
         onClick={() => onChange("split")}
       >
@@ -93,13 +92,13 @@ export default function VisualizerPage() {
   const splitRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
-  // ── Load connections once, shared by both panes ─────────────────────────--
+  // Load connections once, shared by both panes.
   useEffect(() => {
     let active = true;
     (async () => {
       try {
         const res = await apiFetch("/api/connections", { cache: "no-store" });
-        // A failed read must not become "you have no connections" — that empty
+        // A failed read must not become "you have no connections": that empty
         // state points at a page that cannot save one either.
         const data = res.ok ? await res.json() : null;
         if (!active) return;
@@ -116,13 +115,13 @@ export default function VisualizerPage() {
     };
   }, []);
 
-  // ── Divider drag (pointer-captured, so it tracks outside the handle) ─────--
+  // Divider drag (pointer-captured, so it tracks outside the handle).
   function onDividerDown(e: PointerEvent<HTMLDivElement>) {
     draggingRef.current = true;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
-      /* capture unavailable — drag still tracks while over the divider */
+      /* capture unavailable: drag still tracks while over the divider */
     }
   }
   function onDividerMove(e: PointerEvent<HTMLDivElement>) {
@@ -167,42 +166,36 @@ export default function VisualizerPage() {
   const compareHref = orgPath(query ? `/compare?${query}` : "/compare");
 
   return (
-    <div className="viz-page">
-      {/* The title and its one line come from lib/help/visualizer.ts. */}
-      <div className="px-8 pt-8">
-        <PageHeader
-          page="/visualizer"
-          actions={
-            !noConnections && (
-              <>
-                {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
-                {/* The one screen with no way onward. Every other step hands over to
-                    the next one, and this one drew a picture and stopped — which is
-                    a shame, because "side by side" is somebody looking for a
-                    difference by eye. The diagram can show them one; it cannot
-                    write the script that fixes it.
+    <div className="viz-page vz-page">
+      {/* The one line under the title comes from lib/help/visualizer.ts. */}
+      <div className="vz-head px-4 sm:px-8 pt-8">
+        <PageHeader page="/visualizer" title="See the shape of your data.">
+          {!noConnections && (
+            <div className="vz-bar">
+              {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
+              <span className="vz-bar__gap" />
+              {/* The way onward. Side by side is somebody looking for a
+                  difference by eye: the diagram can show them one, but only
+                  Compare can write the script that fixes it.
 
-                    Outside the `narrow` guard, unlike the toggle: side by side is
-                    what does not fit on a small screen, but wanting the comparison
-                    is not. Hiding the link there would leave exactly the reader
-                    with the least room to squint at two diagrams as the only one
-                    with no way out.
+                  It sits outside the narrow check, unlike the toggle. Side by
+                  side is what does not fit on a small screen, but wanting the
+                  comparison is not.
 
-                    Ghost rather than a primary button: reading the diagram is a
-                    legitimate reason to be here and most visits end here on
-                    purpose. */}
-                <Link href={compareHref} className="btn btn-ghost btn-sm">
-                  <CompareIcon size={14} />
-                  Open in Compare
-                </Link>
-              </>
-            )
-          }
-        />
+                  Ghost and not a primary button, because reading the diagram
+                  is a fair reason to be here and most visits end here on
+                  purpose. */}
+              <Link href={compareHref} className="btn btn-ghost btn-sm">
+                <CompareIcon size={14} />
+                Open in Compare
+              </Link>
+            </div>
+          )}
+        </PageHeader>
       </div>
 
       {noConnections ? (
-        <div className="viz-stage">
+        <div className="viz-stage vz-stage">
           {connectionsFailed ? (
             <EmptyState
               icon={<SchemaMapIcon size={22} />}
@@ -224,8 +217,11 @@ export default function VisualizerPage() {
           )}
         </div>
       ) : (
-        <div className={`viz-body${effectiveMode === "split" ? " viz-split" : ""}`} ref={splitRef}>
-          {/* Left pane — stable position across modes, so its diagram survives a toggle. */}
+        <div
+          className={`viz-body vz-stage${effectiveMode === "split" ? " viz-split" : ""}`}
+          ref={splitRef}
+        >
+          {/* Left pane: stable position across modes, so its diagram survives a toggle. */}
           <div
             className="viz-split__pane"
             style={effectiveMode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
@@ -236,9 +232,9 @@ export default function VisualizerPage() {
           {effectiveMode === "split" && (
             <>
               {/* A separator with pointer handlers and no tabIndex reads as
-                  decoration — the only control over the split was mouse-only. */}
+                  decoration, and the only control over the split was mouse-only. */}
               <div
-                className="viz-divider"
+                className="viz-divider vz-div"
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize panes"

@@ -1,0 +1,127 @@
+/* The Requests page (app/[org]/(studio)/requests/page.tsx).
+   Every class here starts with rq- so nothing leaks onto another page. */
+
+.rq-page { max-width: 1100px; margin: 0 auto; padding: 32px 16px 40px; }
+@media (min-width: 640px) { .rq-page { padding: 40px 32px; } }
+
+/* The list on the left, the ask form on the right. One column on a small screen. */
+.rq-grid { display: grid; gap: 16px; align-items: start; }
+@media (min-width: 960px) { .rq-grid--side { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); } }
+.rq-main { display: grid; gap: 14px; min-width: 0; }
+.rq-main > section { display: grid; gap: 14px; min-width: 0; }
+.rq-main > section[hidden] { display: none; }
+.rq-main > section > * { animation: rise var(--dur-3) var(--ease-out) backwards; }
+.rq-main > section > *:nth-child(2) { animation-delay: 60ms; }
+.rq-main > section > *:nth-child(3) { animation-delay: 120ms; }
+.rq-main > section > *:nth-child(n+4) { animation-delay: 180ms; }
+
+/* ---------- one request ---------- */
+.rq-card { position: relative; padding: 20px 22px; display: grid; gap: 14px; min-width: 0; }
+.rq-top { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.rq-top > div { flex: 1; min-width: 0; }
+.rq-top h2 { font: 700 19px/24px var(--display); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.rq-top .pill { flex: none; margin-top: 3px; }
+.rq-meta { font-size: 13px; line-height: 19px; color: var(--ink-3); margin-top: 2px; overflow-wrap: anywhere; }
+.rq-av {
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: var(--tint); color: var(--ink); font-weight: 700; font-size: 12.5px;
+}
+.rq-quote {
+  margin: 0; padding: 10px 14px;
+  border-left: 3px solid var(--accent); border-radius: 0 12px 12px 0;
+  background: var(--surface-2);
+  font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.rq-quote small { display: block; color: var(--ink-3); font-size: 12px; font-weight: 600; }
+.rq-line { font-size: 13.5px; line-height: 20px; color: var(--ink-2); overflow-wrap: anywhere; }
+.rq-line--strong { color: var(--ink); }
+
+.rq-ta {
+  width: 100%; min-height: 76px; padding: 10px 14px;
+  border-radius: 12px; border: 1.5px solid var(--line-strong);
+  background: var(--surface); color: inherit; font: inherit; line-height: 21px; resize: vertical;
+  transition: border-color var(--dur-2), box-shadow var(--dur-2);
+}
+.rq-ta:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.rq-ta:disabled { background: var(--surface-2); color: var(--ink-3); }
+.rq-ta::placeholder { color: var(--ink-3); opacity: 1; }
+
+/* The answer buttons. All of them are at least 44px tall, for a thumb. */
+.rq-act { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.rq-act .btn { min-height: 44px; padding: 0 18px; font-size: 14px; }
+.rq-act .btn-primary { font-size: 15px; }
+.rq-act > small { flex: 1 1 200px; font-size: 12.5px; line-height: 18px; color: var(--ink-3); }
+.rq-move { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; animation: rise var(--dur-2) var(--ease-out); }
+.rq-move > div { flex: 1 1 220px; min-width: 0; }
+.rq-move .btn { min-height: 44px; }
+.rq-move p { width: 100%; font-size: 12.5px; line-height: 18px; color: var(--ink-3); }
+
+.rq-error {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 10px 14px; border-radius: 12px;
+  background: var(--remove-soft); color: var(--remove);
+  font-size: 13px; line-height: 19px;
+}
+.rq-error svg { flex: none; margin-top: 2px; }
+
+/* ---------- where a production run of yours has got to ---------- */
+.rq-steps {
+  display: flex; align-items: center; flex-wrap: wrap; row-gap: 8px;
+  list-style: none; padding: 0; margin: 0;
+  font-size: 12.5px; line-height: 18px; color: var(--ink-3);
+}
+.rq-steps li { display: flex; align-items: center; gap: 8px; }
+.rq-steps li + li::before { content: ""; width: 26px; height: 2px; background: var(--line-strong); margin: 0 4px 0 12px; }
+.rq-steps li[data-s="done"] + li::before { background: var(--add); }
+.rq-steps i {
+  width: 18px; height: 18px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line-strong);
+  display: grid; place-items: center; color: var(--surface);
+}
+.rq-steps i svg { opacity: 0; }
+.rq-steps li[data-s="done"] { color: var(--ink-2); }
+.rq-steps li[data-s="done"] i { background: var(--add); border-color: var(--add); }
+.rq-steps li[data-s="done"] i svg { opacity: 1; }
+.rq-steps li[data-s="now"] { color: var(--ink); font-weight: 600; }
+.rq-steps li[data-s="now"] i { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 9px var(--accent); }
+
+/* ---------- the Done list ---------- */
+.rq-list { padding: 4px 0; min-width: 0; }
+.rq-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 12px; padding: 14px 20px; align-items: start; }
+.rq-row + .rq-row { border-top: 1px solid var(--line); }
+.rq-ico {
+  width: 24px; height: 24px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: var(--surface-2); color: var(--ink-3);
+}
+.rq-ico[data-tone="sync"] { background: var(--add-soft); color: var(--add); }
+.rq-ico[data-tone="break"] { background: var(--remove-soft); color: var(--remove); }
+.rq-row b { font-weight: 600; font-size: 14.5px; line-height: 21px; display: block; overflow-wrap: anywhere; }
+.rq-row p { font-size: 13px; line-height: 19px; color: var(--ink-2); overflow-wrap: anywhere; }
+.rq-row p.rq-said { white-space: pre-wrap; color: var(--ink); }
+.rq-row .rq-rt { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 560px) {
+  .rq-row { grid-template-columns: 26px minmax(0, 1fr); }
+  .rq-row .rq-rt { grid-column: 2; justify-content: flex-start; }
+}
+
+/* ---------- nothing here ---------- */
+.rq-empty { padding: 44px 24px; display: grid; gap: 8px; justify-items: center; text-align: center; }
+.rq-empty .rq-ico { width: 52px; height: 52px; margin-bottom: 6px; }
+.rq-empty h2 { font: 800 24px/28px var(--display); letter-spacing: -.03em; }
+.rq-empty p { color: var(--ink-2); max-width: 46ch; font-size: 14px; line-height: 21px; }
+
+/* ---------- asking ---------- */
+.rq-ask { padding: 20px 22px; display: grid; gap: 12px; min-width: 0; }
+.rq-ask h2 { font: 700 19px/24px var(--display); letter-spacing: -.02em; }
+.rq-ask label { font-weight: 600; font-size: 13.5px; }
+.rq-fld { display: grid; gap: 5px; }
+.rq-fld > div:first-child { display: flex; align-items: center; }
+.rq-ask .btn { min-height: 44px; padding: 0 20px; font-size: 15px; justify-self: start; }
+.rq-ask p { font-size: 13.5px; line-height: 20px; color: var(--ink-2); }
+.rq-ask p[role="status"] { color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .rq-main > section > *, .rq-move { animation: none; }
+}

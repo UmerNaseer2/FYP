@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { EmptyState } from "@/components/ui";
-import { CompareIcon } from "@/components/ui/icons";
+import { OnboardingFrame } from "@/components/onboarding/OnboardingFrame";
 
 /**
  * The live demo, at the address the FYP poster's QR code opens.
@@ -20,18 +19,17 @@ export const metadata: Metadata = {
 };
 
 export default function DemoPage() {
+  // The same frame as "Your organizations": the brand at the top and one card
+  // in the middle. Nobody is signed in here, so there is no Sign out.
   return (
-    <div style={{ height: "100vh", background: "var(--bg)" }}>
-      <EmptyState
-        icon={<CompareIcon size={22} />}
-        title="The live demo is coming soon"
-        description="This page will run a ready-made compare of two sample databases, with nothing to sign in to. Until then, the home page shows what Schema Studio does."
-        actions={
-          <Link href="/" className="btn btn-primary btn-sm">
-            Go to the home page
-          </Link>
-        }
-      />
-    </div>
+    <OnboardingFrame
+      title="The live demo is coming soon"
+      lede="This page will run a ready-made compare of two sample databases, with nothing to sign in to. Until then, the home page shows what Schema Studio does."
+      signedIn={false}
+    >
+      <Link href="/" className="btn btn-primary">
+        Go to the home page
+      </Link>
+    </OnboardingFrame>
   );
 }

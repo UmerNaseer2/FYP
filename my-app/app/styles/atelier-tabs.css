@@ -1,0 +1,36 @@
+/* The pill tabs used on Requests, Admin and Performance
+   (components/studio/PillTabs.tsx). A dark thumb slides behind the picked
+   tab. Every class here starts with atabs so nothing leaks onto another page. */
+
+.atabs {
+  position: relative; display: inline-flex; max-width: 100%;
+  padding: 4px; margin-top: 18px;
+  border-radius: var(--r-pill); background: var(--surface-2);
+  overflow-x: auto; scrollbar-width: none;
+}
+.atabs::-webkit-scrollbar { display: none; }
+.atabs button {
+  position: relative; z-index: 1; flex: none;
+  height: 44px; padding: 0 16px; border-radius: var(--r-pill);
+  font-weight: 600; font-size: 13.5px; color: var(--ink-2); white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: color var(--dur-2);
+}
+.atabs button[aria-selected="true"] { color: var(--on-pill); }
+.atabs button:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.atabs__thumb {
+  position: absolute; left: 0; top: 4px; height: 44px;
+  width: var(--w, 0px); transform: translateX(var(--x, 4px));
+  border-radius: var(--r-pill); background: var(--pill);
+  transition: transform var(--dur-3) var(--ease-spring), width var(--dur-3) var(--ease-out);
+}
+.atabs__count {
+  font-size: 11.5px; font-weight: 700; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--r-pill); display: grid; place-items: center;
+  background: var(--change-soft); color: var(--change);
+}
+.atabs button[aria-selected="true"] .atabs__count { background: var(--accent); color: var(--on-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .atabs__thumb, .atabs button { transition: none; }
+}

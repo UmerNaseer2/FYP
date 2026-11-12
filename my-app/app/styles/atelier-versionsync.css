@@ -1,0 +1,172 @@
+/* Version Sync, in the Atelier design. Every class here starts with vs-. */
+
+.vs-page { padding: 16px; max-width: 1240px; }
+@media (min-width: 640px) { .vs-page { padding: 24px; } }
+.vs-stack { display: grid; gap: 16px; }
+.vs-stack > * { min-width: 0; }
+
+/* ── Source and Target pickers ───────────────────────────────────────────── */
+.vs-pick { padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; align-items: center; }
+.vs-side { min-width: 0; display: grid; gap: 8px; }
+.vs-side-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.vs-side-head h2 { font: 700 17px/22px var(--display); color: var(--ink); }
+.vs-side-sub { font-size: 12.5px; color: var(--ink-3); }
+.vs-side-env { margin-left: auto; }
+.vs-swap {
+  width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--tint); color: var(--ink-2); border: 1px solid var(--line);
+  transition: transform var(--dur-2) var(--ease-spring), background var(--dur-1) var(--ease-out);
+}
+.vs-swap:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-ink); transform: rotate(180deg); }
+.vs-swap:disabled { opacity: .5; cursor: not-allowed; }
+.vs-hint { font-size: 12.5px; line-height: 18px; color: var(--ink-3); }
+.vs-bad { color: var(--remove); }
+@media (max-width: 720px) {
+  .vs-pick { grid-template-columns: minmax(0, 1fr); }
+  .vs-swap { justify-self: center; }
+}
+
+/* ── Waiting and empty ───────────────────────────────────────────────────── */
+.vs-blank { padding: 28px 16px; }
+.vs-wait { padding: 18px; display: grid; gap: 12px; }
+
+/* ── The version line ────────────────────────────────────────────────────── */
+.vs-line { padding: 16px 18px 12px; }
+.vs-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.vs-lh h2 { font: 700 19px/24px var(--display); color: var(--ink); }
+.vs-lh span { font-size: 12.5px; color: var(--ink-3); }
+.vs-scroll { overflow-x: auto; margin-top: 8px; padding-bottom: 6px; border-radius: var(--r-sm); }
+.vs-track { display: flex; width: max-content; min-width: 100%; }
+.vs-step {
+  position: relative; flex: 1 0 auto; min-width: 96px; padding: 0 10px;
+  display: flex; flex-direction: column; align-items: center;
+}
+.vs-pins { height: 34px; display: flex; gap: 4px; align-items: flex-start; }
+.vs-pin {
+  position: relative; height: 24px; padding: 0 9px; border-radius: var(--r-pill);
+  background: var(--tint); color: var(--ink-2); font: 700 11.5px/24px var(--sans); white-space: nowrap;
+}
+.vs-pin::after {
+  content: ""; position: absolute; left: 50%; bottom: -3px; width: 7px; height: 7px;
+  background: inherit; transform: translateX(-50%) rotate(45deg);
+}
+.vs-pin--target { background: var(--accent); color: var(--on-accent); }
+.vs-tag { height: 20px; font-size: 10.5px; line-height: 20px; color: var(--ink-2); white-space: nowrap; }
+.vs-mk {
+  position: relative; z-index: 1; width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--surface); color: var(--ink-3);
+  border: 2px dashed var(--line-strong);
+}
+.vs-word { margin-top: 6px; font-size: 11.5px; line-height: 16px; color: var(--ink-3); white-space: nowrap; }
+
+/* The band between two markers is drawn in two halves: the left half by the
+   marker it runs into, the right half by the marker that comes next. */
+.vs-step::before, .vs-step::after {
+  content: ""; position: absolute; top: 67px; height: 4px; width: 50%;
+  background: repeating-linear-gradient(90deg, var(--line-strong) 0 6px, transparent 6px 12px);
+}
+.vs-step::before { left: 0; }
+.vs-step::after { right: 0; }
+.vs-step:first-child::before, .vs-step:last-child::after { display: none; }
+.vs-step--has::before, .vs-after--has::after { background: var(--pill); }
+.vs-step--next::before, .vs-after--next::after {
+  background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 12px);
+  background-size: 12px 100%;
+  animation: vs-march 900ms linear infinite;
+}
+@keyframes vs-march { to { background-position: 12px 0; } }
+
+.vs-step--has .vs-mk { background: var(--pill); color: var(--on-pill); border: 0; }
+.vs-step--next .vs-mk { border-color: var(--accent); }
+.vs-step--next .vs-word { color: var(--accent-ink); font-weight: 600; }
+.vs-step--stop .vs-mk { border-color: var(--change); color: var(--change); }
+.vs-step--stop .vs-word { color: var(--change); font-weight: 600; }
+.vs-step--past .vs-mk { background: var(--tint); border-style: solid; border-color: var(--line); }
+
+/* ── The missing list beside what to do about it ─────────────────────────── */
+.vs-cols { display: grid; gap: 16px; align-items: start; }
+.vs-cols > * { min-width: 0; }
+@media (min-width: 1021px) { .vs-cols--two { grid-template-columns: minmax(0, 1fr) 340px; } }
+
+.vs-hist { padding: 14px 18px 8px; }
+.vs-hist-head { display: flex; align-items: center; gap: 6px; padding-bottom: 10px; }
+.vs-hist-head h2 { font: 700 19px/24px var(--display); color: var(--ink); }
+.vs-row { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+.vs-mm {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--tint); color: var(--ink-2); font: 700 12px/1 var(--sans);
+}
+.vs-row--run .vs-mm { background: var(--accent-soft); color: var(--accent-ink); }
+.vs-row-body { min-width: 0; display: grid; gap: 6px; }
+.vs-row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vs-row-top b { font: 600 14px/20px var(--mono); color: var(--ink); }
+.vs-row-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.vs-row-meta { font-size: 12.5px; line-height: 18px; color: var(--ink-3); overflow-wrap: anywhere; }
+.vs-row-act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vs-stopnote { font-size: 12.5px; color: var(--ink-3); }
+.vs-nosql { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 18px; color: var(--ink-3); }
+.vs-nosql svg { flex: none; margin-top: 2px; }
+
+.vs-more > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--accent-ink); width: fit-content; }
+.vs-more > summary:hover { text-decoration: underline; }
+.vs-sql, .banner .vs-sql {
+  margin-top: 8px; padding: 12px 14px; border-radius: var(--r-md);
+  background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--code-line);
+  font: 12px/19px var(--mono); max-height: 260px; overflow: auto; white-space: pre; tab-size: 2;
+}
+
+.vs-sd { padding: 18px; display: grid; gap: 12px; }
+.vs-sd h2 { font: 700 19px/24px var(--display); color: var(--ink); }
+.vs-lead { font-size: 14px; line-height: 21px; color: var(--ink-2); }
+.vs-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.vs-sd .btn { width: 100%; justify-content: center; }
+.vs-calm { display: flex; gap: 12px; align-items: flex-start; }
+.vs-calm-ico {
+  flex: none; width: 44px; height: 44px; border-radius: var(--r-md);
+  display: grid; place-items: center; background: var(--add-soft); color: var(--add);
+}
+.vs-calm--plain .vs-calm-ico { background: var(--tint); color: var(--ink-3); }
+.vs-calm b { display: block; font: 700 16px/22px var(--display); color: var(--ink); }
+.vs-calm p { font-size: 13px; line-height: 19px; color: var(--ink-2); margin-top: 2px; }
+
+/* ── Banners in this page's tones ────────────────────────────────────────── */
+.vs-good { background: var(--add-soft); border-color: color-mix(in oklab, var(--add) 30%, transparent); }
+.vs-good .title, .vs-good .ico { color: var(--add); }
+.vs-amber { background: var(--change-soft); border-color: color-mix(in oklab, var(--change) 35%, var(--line)); }
+.vs-amber .title, .vs-amber .ico { color: var(--change); }
+.vs-amber .vs-more { margin-top: 6px; }
+.vs-amber .vs-more > summary { color: var(--ink-2); font-weight: 500; }
+.vs-note-good { font-size: 12.5px; color: var(--add); }
+.vs-warn-text { font-size: 13px; line-height: 19px; color: var(--change); margin-top: 8px; }
+
+.vs-sec h2 { font: 700 19px/24px var(--display); color: var(--ink); margin-bottom: 10px; }
+
+/* ── The replay check (drawn in a Modal, outside the page's own box) ─────── */
+.vs-dialog { display: flex; flex-direction: column; max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px); }
+.vs-dialog-head h4 { font: 700 20px/26px var(--display); color: var(--ink); overflow-wrap: anywhere; }
+.vs-dialog-head p { font-size: 13.5px; line-height: 20px; color: var(--ink-2); margin-top: 4px; }
+.vs-dialog-body { overflow-y: auto; min-height: 0; flex: 1 1 auto; margin-top: 12px; padding-right: 4px; }
+.vs-dialog-sub { font: 700 12px/16px var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px; }
+.vs-runlist { display: grid; gap: 6px; }
+.vs-runlist summary { cursor: pointer; font-size: 13px; line-height: 19px; color: var(--ink-2); }
+.vs-gates { display: grid; gap: 12px; margin-top: 16px; }
+.vs-gates > * { min-width: 0; }
+.vs-dialog-foot { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.vs-dialog-acts { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+/* ── Phones and touch: every control at least 44px tall ──────────────────── */
+@media (max-width: 720px), (pointer: coarse) {
+  .vs-page .btn, .vs-dialog .btn { min-height: 44px; }
+  .vs-more > summary, .vs-runlist summary { min-height: 44px; display: flex; align-items: center; }
+  .vs-page .ds-select__trigger { min-height: 44px; }
+}
+@media (max-width: 480px) {
+  .vs-dialog-acts .btn { flex: 1 1 100%; justify-content: center; }
+  .vs-row-act .btn { width: 100%; justify-content: center; white-space: normal; height: auto; padding-top: 8px; padding-bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vs-step--next::before, .vs-after--next::after { animation: none; }
+  .vs-swap { transition: none; }
+  .vs-swap:hover:not(:disabled) { transform: none; }
+}

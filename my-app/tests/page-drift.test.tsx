@@ -19,7 +19,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -168,6 +168,18 @@ describe("which schema the drift screen shows", () => {
     // Asked about 2 even though 1 is the worse of the two, which is the whole
     // point: the reader's choice outranks the default ordering.
     expect(await driftRequest()).toContain("trackedSchemaId=2");
+
+    // The watch list lists both, worst first, each a link that picks it, and
+    // marks the one on screen for a screen reader.
+    const rows = within(screen.getByRole("navigation", { name: "Tracked schemas" })).getAllByRole(
+      "link"
+    );
+    expect(rows.map((row) => row.getAttribute("href"))).toEqual([
+      "/test-org/drift?tab=detail&schema=1",
+      "/test-org/drift?tab=detail&schema=2",
+    ]);
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveAttribute("aria-current", "true");
   });
 
   it("falls back to the worst-drifted schema when the URL names one that is gone", async () => {
@@ -296,7 +308,7 @@ describe("where the report on screen came from", () => {
     // other is the audit trail — and only saying so makes them readable.
     expect(await screen.findByText("Read live on this page load")).toBeInTheDocument();
     expect(
-      screen.getByText("Nothing recorded yet — Check drift now saves it")
+      screen.getByText("Nothing recorded yet. Check drift now saves it.")
     ).toBeInTheDocument();
     // "Nothing recorded" has a second meaning worth telling apart: not watched
     // at all, versus watched regularly and never seen to change.
@@ -415,9 +427,15 @@ describe("the schema picker after a fix", () => {
 
     const listReads = () => fetchCalls.filter((c) => /\/api\/lineage$/.test(c.url));
     await waitFor(() => expect(listReads()).toHaveLength(2));
+    // The watch list marks the schema on screen, and now calls it in sync.
+    const watchList = within(screen.getByRole("navigation", { name: "Tracked schemas" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("Select a tracked schema").textContent).toContain("● in sync")
+      expect(watchList.getByRole("link", { current: true }).textContent).toContain(
+        "Matches its baseline"
+      )
     );
+    expect(watchList.getByRole("link", { current: true }).textContent).toContain("schema_1");
+    expect(watchList.getByText("1 of 2 drifted")).toBeInTheDocument();
     const detailReads = fetchCalls
       .filter((c) => c.url.includes("/api/lineage/drift"))
       .map((c) => c.url.split("?")[1]);

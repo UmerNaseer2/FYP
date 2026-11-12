@@ -1,0 +1,186 @@
+/* The Dashboard (app/[org]/(studio)/studio/page.tsx): "The Skyline".
+   Every tracked schema is drawn as a building in a small city. Every class
+   here starts with sk- so nothing leaks onto another page.
+
+   The stage is dark in both themes, like a city at night. Its colours are the
+   --sky-* tokens in app/globals.css, which change with data-theme. */
+
+@keyframes sk-rise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes sk-fade { from { opacity: 0; transform: translateY(6px); } }
+
+/* ---------- the numbers above the city ---------- */
+.sk-vit { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.sk-v { display: grid; gap: 2px; align-content: start; padding: 14px 16px; min-width: 0; }
+.sk-v small { font: 700 11px/16px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.sk-v b { font: 800 34px/40px var(--display); letter-spacing: -.04em; color: var(--ink); }
+.sk-v[data-tone="drift"] b { color: var(--drift); }
+.sk-v[data-tone="sync"] b { color: var(--sync); }
+.sk-v[data-tone="break"] b { color: var(--break); }
+
+/* ---------- the stage ---------- */
+.sk-stage {
+  position: relative; overflow: hidden;
+  border-radius: var(--r-xl); padding: 16px 18px 14px;
+  color: var(--sky-ink);
+  background: radial-gradient(90% 80% at 36% 64%, var(--sky-bg-2), var(--sky-bg) 70%);
+  box-shadow: var(--lift);
+  --sk-glass: color-mix(in srgb, var(--sky-ink) 8%, transparent);
+  --sk-line: color-mix(in srgb, var(--sky-ink) 16%, transparent);
+}
+.sk-stage [data-s="drifted"] { --c: var(--sky-drift); }
+.sk-stage [data-s="unreachable"] { --c: var(--sky-change); }
+.sk-stage [data-s="unchecked"] { --c: var(--sky-wait); }
+.sk-stage [data-s="in_sync"] { --c: var(--sky-new); }
+.sk-stage button:focus-visible, .sk-stage a:focus-visible, .sk-stage summary:focus-visible { outline: 3px solid var(--sky-ink); outline-offset: 2px; }
+
+.sk-top { display: flex; gap: 10px 14px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.sk-envs, .sk-seg {
+  display: flex; align-items: center; gap: 4px; padding: 4px; max-width: 100%; overflow-x: auto;
+  border-radius: var(--r-pill); background: var(--sk-glass);
+}
+.sk-envs button, .sk-seg button {
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 14px;
+  border: 0; border-radius: var(--r-pill); background: transparent; cursor: pointer;
+  font: 600 13px/18px var(--sans); color: var(--sky-ink-2); white-space: nowrap;
+  transition: background var(--dur-2), color var(--dur-2);
+}
+.sk-envs button span { font: 12px/18px var(--mono); }
+.sk-envs button:hover, .sk-seg button:hover { background: var(--sk-glass); }
+.sk-envs button[aria-pressed="true"] { background: var(--sky-ink); color: var(--sky-bg); }
+.sk-seg > span { padding: 0 6px 0 10px; font: 700 11px/1 var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--sky-ink-2); white-space: nowrap; }
+.sk-seg button[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
+
+.sk-mid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: center; margin-top: 8px; }
+.sk-city { display: grid; place-items: center; min-width: 0; }
+.sk-city svg { width: min(100%, 720px); height: auto; max-height: 440px; display: block; overflow: visible; }
+
+/* One building: a ground tile, two walls, a roof and its name. */
+.sk-tile { fill: var(--sky-ground); stroke: var(--sk-line); stroke-width: 1; }
+.sk-b { cursor: pointer; outline: none; animation: sk-rise var(--dur-3) var(--ease-out) backwards; }
+.sk-b:hover, .sk-b:focus-visible { filter: brightness(1.2); }
+.sk-b polygon { stroke-linejoin: round; }
+.sk-fl { fill: var(--sky-left); }
+.sk-fr { fill: var(--sky-right); }
+.sk-ft { fill: var(--c, var(--sky-top)); }
+.sk-gd { fill: transparent; stroke: none; }
+.sk-b[aria-pressed="true"] .sk-gd { stroke: var(--sky-ink); stroke-width: 1.8; fill: var(--sk-glass); }
+.sk-b:focus-visible .sk-gd { stroke: var(--accent); stroke-width: 2.6; }
+.sk-name { font: 500 11px var(--mono); fill: var(--sky-ink); text-anchor: middle; pointer-events: none; paint-order: stroke; stroke: var(--sky-bg); stroke-width: 3px; stroke-linejoin: round; }
+
+/* The picked building, in words. */
+.sk-ins {
+  display: grid; gap: 10px; align-content: start; min-width: 0; padding: 18px;
+  border-radius: 20px; background: var(--sk-glass); border: 1px solid var(--sk-line);
+}
+.sk-ins > * { animation: sk-fade var(--dur-2) var(--ease-out) backwards; }
+.sk-ins h2 { font: 500 24px/30px var(--mono); letter-spacing: -.03em; color: var(--sky-ink); overflow-wrap: anywhere; margin: 0; }
+.sk-ins p { margin: 0; font-size: 13.5px; line-height: 20px; color: var(--sky-ink-2); overflow-wrap: anywhere; }
+.sk-ins p b { color: var(--sky-ink); font-weight: 600; }
+.sk-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sk-chip {
+  display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 10px 3px 8px;
+  border-radius: var(--r-pill); font: 700 11.5px/18px var(--sans);
+  background: var(--sk-line); color: var(--sky-ink);
+}
+.sk-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--sky-ink-2)); }
+.sk-st { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+.sk-st div { padding: 8px 11px; border-radius: 12px; background: var(--sk-glass); border: 1.5px solid transparent; min-width: 0; }
+.sk-st dt { font: 700 10.5px/14px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--sky-ink-2); }
+.sk-st dd { margin: 0; font: 800 18px/24px var(--display); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.sk-st .sk-on { border-color: var(--accent); }
+.sk-err { color: var(--sky-drift); font-weight: 600; }
+.sk-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.sk-acts .btn { min-height: 44px; }
+.sk-acts .btn-ghost { color: var(--sky-ink); }
+.sk-acts .btn-ghost:hover { background: var(--sk-glass); }
+.sk-acts .sk-stop { margin-left: auto; min-width: 44px; justify-content: center; }
+
+.sk-bot { display: flex; justify-content: space-between; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; line-height: 18px; color: var(--sky-ink-2); }
+.sk-leg { display: flex; gap: 6px 16px; flex-wrap: wrap; }
+.sk-leg span { display: inline-flex; align-items: center; gap: 6px; }
+.sk-leg i { width: 10px; height: 10px; border-radius: 3px; background: var(--c, var(--sky-top)); }
+
+/* The same city as a plain table, for anyone who would rather read rows. */
+.sk-tb { margin-top: 10px; font-size: 13px; }
+.sk-tb summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; width: fit-content; color: var(--sky-ink-2); font-weight: 600; }
+.sk-tb-scroll { overflow-x: auto; border: 1px solid var(--sk-line); border-radius: 12px; }
+.sk-tb table { width: 100%; border-collapse: collapse; }
+.sk-tb th, .sk-tb td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--sk-line); white-space: nowrap; }
+.sk-tb tr:last-child td { border-bottom: 0; }
+.sk-tb th { background: var(--sky-bg-2); color: var(--sky-ink); font-weight: 600; }
+.sk-tb td button { min-height: 44px; border: 0; background: transparent; cursor: pointer; color: var(--sky-ink); font: 500 13px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
+
+/* An environment with nothing tracked in it. */
+.sk-none { display: grid; gap: 10px; justify-items: start; margin-top: 12px; padding: 22px; border-radius: 20px; background: var(--sk-glass); border: 1px solid var(--sk-line); }
+.sk-none h2 { font: 800 24px/1.1 var(--display); letter-spacing: -.02em; margin: 0; color: var(--sky-ink); }
+.sk-none p { margin: 0; color: var(--sky-ink-2); }
+.sk-none .btn { min-height: 44px; }
+
+/* ---------- needs you ---------- */
+.sk-need { padding: 18px 20px; min-width: 0; }
+.sk-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.sk-hd h2 { font: 700 18px/24px var(--display); letter-spacing: -.01em; margin: 0; }
+.sk-hd small { font: 700 11px/16px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.sk-nr {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
+  width: calc(100% + 20px); min-height: 44px; padding: 11px 10px; margin: 0 -10px; text-align: left;
+  border: 0; border-top: 1px solid var(--line); border-radius: 12px; background: transparent; cursor: pointer;
+  color: var(--ink); transition: background var(--dur-2);
+}
+.sk-nr:first-of-type { border-top-color: transparent; }
+.sk-nr:hover, .sk-nr[aria-pressed="true"] { background: var(--surface-2); }
+.sk-nr > i { width: 10px; height: 10px; border-radius: 3px; background: var(--drift); }
+.sk-nr[data-s="unreachable"] > i { background: var(--break); }
+.sk-nr b { font: 500 14px/20px var(--mono); margin-right: 8px; overflow-wrap: anywhere; }
+.sk-nr em { font: 700 11.5px/18px var(--sans); font-style: normal; color: var(--ink-3); }
+.sk-nr span span { display: block; font-size: 13px; line-height: 19px; color: var(--ink-2); }
+.sk-nr-go { font: 700 13px/20px var(--sans); color: var(--accent-ink); text-decoration: none; white-space: nowrap; }
+.sk-quiet { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+
+/* ---------- first run: nothing tracked yet ---------- */
+.sk-first { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); overflow: hidden; padding: 0; }
+.sk-first-stage { display: grid; align-items: center; min-height: 300px; padding: 14px 10px 6px; background: var(--surface-2); }
+.sk-first-stage svg { width: 100%; height: auto; display: block; }
+.sk-plot { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.sk-plot-next { fill: none; stroke: var(--line-strong); stroke-width: 1.5; stroke-dasharray: 6 7; }
+.sk-first-side { display: flex; flex-direction: column; padding: 26px 30px 24px; }
+.sk-steps { list-style: none; margin: 0 0 22px; padding: 0; display: flex; gap: 6px; }
+.sk-steps li { flex: 1; padding-top: 10px; border-top: 4px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--ink-3); }
+.sk-steps li[data-step="on"] { border-color: var(--accent); color: var(--ink); }
+.sk-steps li[data-step="done"] { border-color: var(--add); color: var(--ink-2); }
+.sk-first-side small { font-size: 12.5px; font-weight: 700; color: var(--accent-ink); }
+.sk-first-side h2 { font: 800 clamp(26px, 3vw, 34px)/1.08 var(--display); letter-spacing: -.03em; margin: 4px 0 8px; text-wrap: balance; }
+.sk-first-side p { margin: 0; color: var(--ink-2); max-width: 46ch; }
+.sk-go { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.sk-go .btn { min-height: 44px; }
+
+/* ---------- something went wrong, or a filter shows nothing ---------- */
+.sk-state { max-width: 620px; margin: 0 auto; padding: 30px 32px 26px; }
+.sk-state-ico { width: 48px; height: 48px; border-radius: 16px; display: grid; place-items: center; margin-bottom: 14px; background: var(--brand-soft); color: var(--brand); }
+.sk-state[data-tone="break"] .sk-state-ico { background: var(--break-soft); color: var(--break); }
+.sk-state h2 { font: 800 clamp(24px, 3.2vw, 32px)/1.08 var(--display); letter-spacing: -.03em; margin: 0 0 8px; }
+.sk-state p { margin: 0; color: var(--ink-2); max-width: 52ch; }
+
+/* ---------- smaller screens ---------- */
+@media (max-width: 1120px) {
+  .sk-mid { grid-template-columns: minmax(0, 1fr); }
+  .sk-vit { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sk-first { grid-template-columns: minmax(0, 1fr); }
+  .sk-first-stage { min-height: 0; }
+}
+@media (max-width: 560px) {
+  .sk-stage { padding: 12px; }
+  .sk-vit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sk-v b { font-size: 28px; line-height: 34px; }
+  .sk-envs button, .sk-seg button { min-height: 44px; }
+  .sk-seg > span { display: none; }
+  .sk-nr { grid-template-columns: 10px minmax(0, 1fr); }
+  .sk-nr-go { grid-column: 2; }
+  .sk-first-side { padding: 20px 18px; }
+  .sk-state { padding: 24px 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk-b, .sk-ins > * { animation: none; }
+  .sk-envs button, .sk-seg button, .sk-nr { transition: none; }
+}

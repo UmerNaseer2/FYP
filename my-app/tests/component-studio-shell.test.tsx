@@ -200,12 +200,22 @@ const rail = () => screen.getByRole("complementary");
 const grid = () => document.querySelector(".studio") as HTMLElement;
 const button = (name: string) => screen.getByRole("button", { name });
 const hamburger = () => screen.queryByRole("button", { name: "Open navigation" });
+// The top bar's "where am I" line. The rail's list of pages is a navigation
+// landmark too, so it is found by name.
+const breadcrumb = () => screen.getByRole("navigation", { name: "Breadcrumb" });
+// The round button at the right of the top bar, and the menu it opens. Who you
+// are, your role and Sign out all live there in this design.
+const accountButton = () => screen.getByRole("button", { name: /^Account menu/ });
+function openAccountMenu() {
+  fireEvent.click(accountButton());
+  return screen.getByRole("menu", { name: "Account" });
+}
 
 describe("a window with room for the rail", () => {
   test("puts the rail, the bar and the page on screen together", () => {
     renderShell({}, "acme");
     expect(rail()).toBeInTheDocument();
-    expect(screen.getByRole("navigation")).toHaveTextContent("acme");
+    expect(breadcrumb()).toHaveTextContent("acme");
     expect(screen.getByRole("main")).toHaveTextContent("The page itself");
   });
 
@@ -243,7 +253,7 @@ describe("a window with room for the rail", () => {
   test("names the screen you are on, from the address bar", () => {
     setPathname("/versionsync");
     renderShell();
-    expect(screen.getByRole("navigation")).toHaveTextContent("Version Sync");
+    expect(breadcrumb()).toHaveTextContent("Version Sync");
   });
 
   test("follows the address into a page underneath a screen", () => {
@@ -251,7 +261,7 @@ describe("a window with room for the rail", () => {
     // there would tell somebody they had left the screen they are looking at.
     setPathname("/compare/142");
     renderShell();
-    expect(screen.getByRole("navigation")).toHaveTextContent("Compare & Author");
+    expect(breadcrumb()).toHaveTextContent("Compare & Author");
   });
 
   test("lights the row you are on", () => {
@@ -270,7 +280,7 @@ describe("a window with room for the rail", () => {
     expect(screen.getByRole("link", { name: "Drift" })).toHaveAttribute("href", "/acme/drift");
     expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/acme/studio");
     expect(screen.getByRole("link", { name: "Drift" }).className).toContain("active");
-    expect(screen.getByRole("navigation")).toHaveTextContent("Drift");
+    expect(breadcrumb()).toHaveTextContent("Drift");
   });
 
   test("hands the rail the organization picker, which reads the list for itself", async () => {
@@ -334,35 +344,39 @@ describe("a window with room for the rail", () => {
     expect(grid().getAttribute("style")).toContain("100vh");
   });
 
-  test("does not hand the rail the drawer's full-height class", () => {
+  test("does not hand the rail the drawer's class", () => {
     renderShell();
-    expect(rail()).not.toHaveClass("h-full");
+    expect(rail()).not.toHaveClass("side-in-drawer");
   });
 });
 
-describe("who the rail says you are", () => {
+describe("who the account menu says you are", () => {
   test("takes the name, the address and the initials from the session", () => {
     renderShell();
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
-    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
-    expect(screen.getByText("AD")).toBeInTheDocument();
+    expect(accountButton()).toHaveTextContent("Ada Lovelace");
+    const menu = openAccountMenu();
+    expect(within(menu).getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(menu).getByText("ada@example.com")).toBeInTheDocument();
+    expect(within(menu).getByText("AD")).toBeInTheDocument();
   });
 
   test("falls back to the address when the session carries no name", () => {
     signInAs("viewer", { email: "ada@example.com" });
     renderShell();
+    const menu = openAccountMenu();
     // Shown twice on purpose: the address stands in for the name as well,
     // which is honest about what is known rather than leaving a blank line.
-    expect(screen.getAllByText("ada@example.com")).toHaveLength(2);
-    expect(screen.getByText("AD")).toBeInTheDocument();
+    expect(within(menu).getAllByText("ada@example.com")).toHaveLength(2);
+    expect(within(menu).getByText("AD")).toBeInTheDocument();
   });
 
   test("says plainly when nobody is signed in", () => {
     mockSession = null;
     renderShell();
-    expect(screen.getByText("Guest")).toBeInTheDocument();
-    expect(screen.getByText("Not signed in")).toBeInTheDocument();
-    expect(screen.getByText("?")).toBeInTheDocument();
+    const menu = openAccountMenu();
+    expect(within(menu).getByText("Guest")).toBeInTheDocument();
+    expect(within(menu).getByText("Not signed in")).toBeInTheDocument();
+    expect(within(menu).getByText("?")).toBeInTheDocument();
   });
 
   test("still calls a session with neither name nor address signed in", () => {
@@ -370,20 +384,21 @@ describe("who the rail says you are", () => {
     // beside an empty address would look like the app had lost track of you.
     signInAs("viewer", {});
     renderShell();
-    expect(screen.getByText("Signed in")).toBeInTheDocument();
-    expect(screen.getByText("SI")).toBeInTheDocument();
+    const menu = openAccountMenu();
+    expect(within(menu).getByText("Signed in")).toBeInTheDocument();
+    expect(within(menu).getByText("SI")).toBeInTheDocument();
   });
 
   test("lets a caller name the user itself, over the session", () => {
     renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
-    expect(screen.getByText("Release bot")).toBeInTheDocument();
+    expect(accountButton()).toHaveTextContent("Release bot");
     expect(screen.queryByText("Ada Lovelace")).toBeNull();
   });
 });
 
-describe("what the rail says you are allowed to do", () => {
-  // Only the role half is checked here. The other pill is driven by
-  // BYPASS_AUTH, which lib/auth-mode reads once at module load — a jest.mock of
+describe("what the account menu says you are allowed to do", () => {
+  // Only the role half is checked here. The bypass pill is driven by
+  // BYPASS_AUTH, which lib/auth-mode reads once at module load. A jest.mock of
   // it would switch the bypass on for every test in this file, including the
   // ones above that are about a real session. That the rail draws the pill when
   // it is told to is tests/component-studio-sidebar.test.tsx's.
@@ -425,7 +440,7 @@ describe("what the rail says you are allowed to do", () => {
     // allow is not something it gets to relabel, so the role comes straight
     // from useUser and ignores it.
     renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
-    expect(screen.getByText("Release bot")).toBeInTheDocument();
+    expect(accountButton()).toHaveTextContent("Release bot");
     expect(pill("admin")).toHaveTextContent("Admin");
   });
 
@@ -434,7 +449,8 @@ describe("what the rail says you are allowed to do", () => {
     // name would be a guess presented as a fact.
     me = DATABASE_DOWN;
     renderShell();
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(accountButton()).toHaveTextContent("Ada Lovelace");
+    expect(accountButton()).not.toHaveTextContent("Viewer");
     expect(pill("viewer")).toBeNull();
     expect(screen.queryByText("Viewer")).toBeNull();
   });
@@ -442,7 +458,7 @@ describe("what the rail says you are allowed to do", () => {
   test("names no role for someone who is not a member, who holds none", () => {
     me = NOT_A_MEMBER;
     renderShell();
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(accountButton()).toHaveTextContent("Ada Lovelace");
     expect(pill("viewer")).toBeNull();
     expect(screen.queryByText("Viewer")).toBeNull();
   });
@@ -506,12 +522,12 @@ describe("which screens the rail offers", () => {
 
   test("none at all for someone who is not a member, though Sign out stays", () => {
     // Every screen would only repeat the guard's "not a member". Signing out is
-    // the one way on, and it sits in the rail's footer, not among the rows.
+    // the one way on, and it sits in the account menu, not among the rows.
     me = NOT_A_MEMBER;
     renderShell();
     // Inside the rail: the shell's own skip link is not a screen.
     expect(within(rail()).queryAllByRole("link")).toEqual([]);
-    expect(button("Sign out")).toBeInTheDocument();
+    expect(within(openAccountMenu()).getByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
   });
 });
 
@@ -521,7 +537,7 @@ describe("signing out", () => {
     const loaded = jest.spyOn(pageLoader, "load").mockImplementation(() => {});
     try {
       renderShell();
-      fireEvent.click(button("Sign out"));
+      fireEvent.click(within(openAccountMenu()).getByRole("menuitem", { name: "Sign out" }));
       await waitFor(() => expect(loaded).toHaveBeenCalledWith("/login"));
       // lib/sign-out.ts loads the page itself, once the session is gone.
       expect(mockSignOutCalls).toEqual([{ redirect: false }]);
@@ -537,7 +553,7 @@ describe("signing out", () => {
     const bridge = installDesktopBridge();
     try {
       renderShell();
-      fireEvent.click(button("Sign out"));
+      fireEvent.click(within(openAccountMenu()).getByRole("menuitem", { name: "Sign out" }));
       await act(async () => {});
       expect(bridge.signOut).toHaveBeenCalledTimes(1);
       expect(mockSignOutCalls).toEqual([]);
@@ -590,11 +606,11 @@ describe("a window too narrow for the rail", () => {
     expect(drawer).toContainElement(rail());
   });
 
-  test("hands that rail the full height it needs inside the drawer", () => {
+  test("hands that rail the drawer's class, so it fills the drawer", () => {
     setViewport(true);
     renderShell();
     fireEvent.click(button("Open navigation"));
-    expect(rail()).toHaveClass("h-full");
+    expect(rail()).toHaveClass("side-in-drawer");
   });
 
   test("never collapses the rail in the drawer, which has no room to spare", () => {

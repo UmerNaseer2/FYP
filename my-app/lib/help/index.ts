@@ -22,6 +22,8 @@ import { requestsHelp } from "./requests";
 import { adminHelp } from "./admin";
 import { schemaDetailsHelp } from "./schema-details";
 import { linkComputerHelp } from "./link-computer";
+import { devicesHelp } from "./devices";
+import { historyHelp } from "./history";
 
 export type { HelpTopic, HelpTerm, HelpProblem, HelpSection } from "./types";
 
@@ -46,6 +48,8 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
   "/admin": adminHelp,
   "/schemas": schemaDetailsHelp,
   "/link-computer": linkComputerHelp,
+  "/devices": devicesHelp,
+  "/history": historyHelp,
 };
 
 /** Shown where a page has no help of its own. */

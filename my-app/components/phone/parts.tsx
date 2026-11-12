@@ -45,7 +45,7 @@ export function RefreshRow({ onRefresh }: { onRefresh: () => Promise<void> }) {
   }
 
   return (
-    <div className="flex justify-end">
+    <div className="dv-refresh">
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
         <RefreshIcon className="ico" />
         Refresh
@@ -118,38 +118,26 @@ export async function sendJson(
 
 export function ErrorNote({ children }: { children: ReactNode }) {
   return (
-    <div
-      role="alert"
-      className="text-[13px] px-3 py-2 rounded-lg"
-      style={{ background: "var(--break-soft)", color: "var(--break)" }}
-    >
+    <div role="alert" className="dv-err">
       {children}
     </div>
   );
 }
 
 export function SectionHeading({ children }: { children: ReactNode }) {
-  return (
-    <h2 className="text-[13px] font-semibold mt-5 mb-2" style={{ color: "var(--text-2)" }}>
-      {children}
-    </h2>
-  );
+  return <h2 className="dv-section">{children}</h2>;
 }
 
 export function Meta({ children }: { children: ReactNode }) {
-  return (
-    <div className="text-[12px] mt-1" style={{ color: "var(--text-3)" }}>
-      {children}
-    </div>
-  );
+  return <div className="dv-meta">{children}</div>;
 }
 
 export function RowsLoading() {
   return (
-    <div className="flex flex-col gap-2" aria-label="Loading">
-      <Skeleton height={68} radius={12} />
-      <Skeleton height={68} radius={12} />
-      <Skeleton height={68} radius={12} />
+    <div className="dv-rows" role="status" aria-label="Loading">
+      <Skeleton height={72} radius={18} />
+      <Skeleton height={72} radius={18} />
+      <Skeleton height={72} radius={18} />
     </div>
   );
 }

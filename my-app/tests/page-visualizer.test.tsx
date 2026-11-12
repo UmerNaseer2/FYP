@@ -78,6 +78,16 @@ describe("the visualizer with connections", () => {
     ]);
   });
 
+  it("names the page in its heading and marks the picked view on the switch", async () => {
+    render(<VisualizerPage />);
+    await firstPane();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "See the shape of your data." })
+    ).toBeInTheDocument();
+    const group = screen.getByRole("group", { name: "View mode" });
+    expect(group.querySelectorAll('button[aria-pressed="true"]')).toHaveLength(1);
+  });
+
   it("opens on one pane and splits into two", async () => {
     render(<VisualizerPage />);
     await firstPane();

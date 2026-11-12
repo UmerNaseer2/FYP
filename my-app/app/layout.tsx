@@ -1,21 +1,31 @@
 import ClientProvider from "./ClientProvider";
 import "./globals.css";
 import type { ReactNode } from "react";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Bricolage_Grotesque, DM_Mono, Figtree } from "next/font/google";
 
-const geistSans = Geist({
+// The three Atelier typefaces. app/globals.css reads them as --sans, --display
+// and --mono, with plain system fonts behind them in case one fails to load.
+const sans = Figtree({
   subsets: ["latin"],
-  variable: "--font-geist-sans",
+  variable: "--ff-sans",
   display: "swap",
 });
 
-const geistMono = Geist_Mono({
+const display = Bricolage_Grotesque({
   subsets: ["latin"],
-  variable: "--font-geist-mono",
+  variable: "--ff-display",
+  display: "swap",
+});
+
+const mono = DM_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--ff-mono",
   display: "swap",
 });
 
 import type { Viewport } from "next";
+import { INTRO_HEAD_SCRIPT } from "@/lib/intro";
 
 export const metadata = {
   title: "Schema Studio",
@@ -42,6 +52,10 @@ export const viewport: Viewport = {
  * is inside the app and read the app's theme from `prefers-color-scheme`, which
  * Electron answers from the app's own setting. In a browser it does nothing at
  * all: there the saved choice still comes from localStorage, as before.
+ *
+ * In a browser it puts the saved choice (hooks/useTheme's "ss-theme") on the
+ * page just as early. Without it a light-theme user saw every page load dark
+ * and then flash to light once React started.
  */
 const DESKTOP_THEME_SCRIPT = `try {
   if (window.schemaStudioDesktop) {
@@ -49,6 +63,11 @@ const DESKTOP_THEME_SCRIPT = `try {
       "data-theme",
       window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
     );
+  } else {
+    var saved = localStorage.getItem("ss-theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
   }
 } catch (e) {}`;
 
@@ -61,11 +80,13 @@ export default function RootLayout({
     <html
       lang="en"
       data-theme="dark"
-      className={`${geistSans.variable} ${geistMono.variable}`}
+      className={`${sans.variable} ${display.variable} ${mono.variable}`}
       suppressHydrationWarning
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: DESKTOP_THEME_SCRIPT }} />
+        {/* Marks the page as waiting for the logo reveal (lib/intro.ts). */}
+        <script dangerouslySetInnerHTML={{ __html: INTRO_HEAD_SCRIPT }} />
       </head>
       <body>
         <ClientProvider>{children}</ClientProvider>

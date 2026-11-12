@@ -10,6 +10,7 @@ import { useUser } from "@/hooks/useUser";
 import { loginHref } from "@/lib/callback-url";
 import { keepDeviceOnFile, turnAlertsOff } from "@/lib/phone-push-client";
 import { signOutEverywhere } from "@/lib/sign-out";
+import "@/app/styles/atelier-devices.css";
 import AlertsTab from "./AlertsTab";
 import ApprovalsTab from "./ApprovalsTab";
 import CompareTab from "./CompareTab";
@@ -60,22 +61,16 @@ export default function PhoneApp() {
   }
 
   return (
-    <div className="min-h-[100dvh]" style={{ background: "var(--bg)", color: "var(--text)" }}>
-      <header
-        className="sticky top-0 z-10 flex items-center justify-between gap-3 px-4 py-3"
-        style={{
-          background: "var(--surface)",
-          borderBottom: "1px solid var(--border)",
-          paddingTop: "max(12px, env(safe-area-inset-top))",
-        }}
-      >
-        <h1 className="text-[15px] font-semibold truncate">{org?.name ?? "Schema Studio"}</h1>
+    <div className="dv-app">
+      <header className="dv-app__bar">
+        <h1>{org?.name ?? "Schema Studio"}</h1>
         <Button size="sm" variant="ghost" disabled={signingOut} onClick={() => void signOut()}>
           Sign out
         </Button>
       </header>
 
-      <main className="mx-auto max-w-[560px] px-4 pt-4 pb-24">
+      <main className="dv-app__main">
+        <h2 className="dv-app__title">{tabs.find((entry) => entry.key === tab)?.label}</h2>
         {tab === "drift" && <DriftTab />}
         {tab === "history" && <HistoryTab />}
         {tab === "approvals" && <ApprovalsTab />}
@@ -83,15 +78,7 @@ export default function PhoneApp() {
         {tab === "alerts" && <AlertsTab />}
       </main>
 
-      <nav
-        aria-label="Phone app"
-        className="fixed bottom-0 inset-x-0 z-10 flex"
-        style={{
-          background: "var(--surface)",
-          borderTop: "1px solid var(--border)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
-      >
+      <nav aria-label="Phone app" className="dv-app__tabs">
         {tabs.map((entry) => {
           const active = entry.key === tab;
           return (
@@ -100,17 +87,12 @@ export default function PhoneApp() {
               type="button"
               aria-current={active ? "page" : undefined}
               onClick={() => setTab(entry.key)}
-              className="relative flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium"
-              style={{ color: active ? "var(--brand)" : "var(--text-3)", minHeight: 52 }}
+              className="dv-app__tab"
             >
               {entry.icon}
               <span>{entry.label}</span>
               {entry.key === "approvals" && waiting > 0 && (
-                <span
-                  aria-label={`${waiting} waiting`}
-                  className="absolute top-1 left-1/2 ml-2 px-1 rounded-full text-[10px] leading-[14px]"
-                  style={{ background: "var(--break)", color: "var(--text-inv)" }}
-                >
+                <span aria-label={`${waiting} waiting`} className="dv-app__count">
                   {waiting}
                 </span>
               )}

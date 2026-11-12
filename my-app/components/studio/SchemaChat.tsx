@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Drawer, Pill } from "@/components/ui";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { AlertCircleIcon, CheckIcon, ClipboardIcon } from "@/components/ui/icons";
+import { AlertCircleIcon, CheckIcon, ClipboardIcon, SparkIcon } from "@/components/ui/icons";
+import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { apiFetch } from "@/lib/api-fetch";
@@ -223,6 +224,14 @@ export function SchemaChatButton() {
   // the question.
   useEffect(() => () => askRef.current?.abort(), []);
 
+  // The command bar's "Ask AI" opens this same panel.
+  useEffect(() => {
+    if (!usable) return;
+    const openIt = () => setOpen(true);
+    window.addEventListener(OPEN_ASK_AI_EVENT, openIt);
+    return () => window.removeEventListener(OPEN_ASK_AI_EVENT, openIt);
+  }, [usable]);
+
   if (!usable) return null;
 
   const question = draft.trim();
@@ -305,9 +314,10 @@ export function SchemaChatButton() {
 
   return (
     <>
-      <Button size="sm" variant="ghost" onClick={() => setOpen(true)} aria-haspopup="dialog">
-        Ask AI
-      </Button>
+      <button type="button" className="tb tb-ai" onClick={() => setOpen(true)} aria-haspopup="dialog">
+        <SparkIcon size={14} />
+        <span>Ask AI</span>
+      </button>
       <Drawer
         open={open}
         onClose={() => setOpen(false)}

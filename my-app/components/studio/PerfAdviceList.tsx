@@ -120,7 +120,7 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not analyse this schema</div>
@@ -149,7 +149,7 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
       <SummaryBar view={view} onRerun={() => setReload((n) => n + 1)} />
 
       {view.statsUnavailable && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">Live counters could not be read</div>
@@ -166,7 +166,7 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
       )}
 
       {view.patternsUnavailable && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">The record of analysed queries could not be read</div>

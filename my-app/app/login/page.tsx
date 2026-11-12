@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
@@ -11,15 +12,10 @@ import {
 } from "@/lib/desktop-bridge";
 import { APP_VERSION } from "@/lib/app-version";
 import { safeCallbackUrl, wantsAccountPicker } from "@/lib/callback-url";
-import {
-  LogoIcon,
-  SunIcon,
-  MoonIcon,
-  ChevronRightIcon,
-  RefreshIcon,
-  LockIcon,
-  AlertCircleIcon,
-} from "@/components/ui/icons";
+import { resetIntro } from "@/lib/intro";
+import { SunIcon, MoonIcon, LockIcon, AlertCircleIcon } from "@/components/ui/icons";
+import { BrandMark } from "@/components/ui/BrandMark";
+import "../styles/atelier-signin.css";
 
 /**
  * "redirecting" is the browser sign-in, on its way to Microsoft. The desktop
@@ -238,6 +234,8 @@ export default function LoginPage() {
 
   async function handleLogin(chosen: Via) {
     setErrorMsg(null);
+    // Signing in plays the logo reveal again when the studio opens.
+    resetIntro();
     const callbackUrl = safeCallbackUrl(window.location.search, window.location.origin);
     try {
       const bridge = getDesktopBridge();
@@ -263,107 +261,68 @@ export default function LoginPage() {
     }
   }
 
+  /** The button look: the first way is the dark pill, any other is outlined. */
+  const buttonClass = (index: number) => (index === 0 ? "si-ms" : "si-ms si-alt");
+
   return (
-    <div className="auth-stage">
-      {/* ——— decorative background ——— */}
-      <div className="bg-grid" aria-hidden="true" />
-      <div className="bg-wash-a" aria-hidden="true" />
-      <div className="bg-wash-b" aria-hidden="true" />
-      <div className="deco" aria-hidden="true" style={{ top: "18%", left: "8%" }}>
-        finance<span style={{ color: "var(--text-3)" }}>@</span>Prod — RDS{" "}
-        <span className="mono">v2.3.0 · 0007</span>
-      </div>
-      <div className="deco" aria-hidden="true" style={{ top: "30%", left: "6%" }}>
-        <span className="add">+ invoice_lines.id uuid PRIMARY KEY</span>
-      </div>
-      <div className="deco" aria-hidden="true" style={{ top: "34%", left: "6%" }}>
-        <span className="chg">~ amount numeric(10,2) → numeric(12,2)</span>
-      </div>
-      <div className="deco" aria-hidden="true" style={{ bottom: "22%", right: "7%" }}>
-        CREATE INDEX invoice_lines_invoice_id_idx
-      </div>
-      <div className="deco" aria-hidden="true" style={{ bottom: "18%", right: "7%" }}>
-        <span className="add">+ ALTER TABLE invoices ALTER COLUMN amount …</span>
-      </div>
-      <div className="deco" aria-hidden="true" style={{ top: "14%", right: "9%" }}>
-        analytics<span style={{ color: "var(--text-3)" }}>@</span>Staging — Neon{" "}
-        <span className="mono">v0.9.0 · 0003</span>
-      </div>
-
-      {/* ——— top bar: brand + theme toggle ——— */}
-      <header className="relative z-10 px-8 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="w-7 h-7 rounded-lg grid place-items-center text-white"
-            style={{ background: "var(--brand)" }}
-          >
-            <LogoIcon size={15} />
+    <div className="si-page">
+      <div className="si">
+        {/* ——— left: what the product is, drawn rather than told ——— */}
+        <section className="si-art" aria-labelledby="si-tagline">
+          <svg className="si-sq" viewBox="0 0 300 300" aria-hidden="true">
+            <rect x="40" y="40" width="150" height="150" rx="36" fill="var(--accent)" />
+            <rect
+              x="110"
+              y="110"
+              width="150"
+              height="150"
+              rx="36"
+              fill="none"
+              stroke="var(--on-pill)"
+              strokeWidth="3"
+            />
+          </svg>
+          <div className="brand">
+            <BrandMark size={30} />
+            <span className="brand-name">Schema Studio</span>
+            <span className="brand-v mono">v{APP_VERSION}</span>
           </div>
-          <div className="leading-tight">
-            <div className="font-semibold text-[13.5px]">Schema Studio</div>
-            <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-              v{APP_VERSION}
-            </div>
-          </div>
-        </div>
+          <h2 id="si-tagline">Version control for your database schema.</h2>
+          {/* A picture of a review, not data: three made-up changes. */}
+          <ul aria-hidden="true">
+            <li>
+              <i className="g add">+</i>reviews<code>new table</code>
+            </li>
+            <li>
+              <i className="g chg">~</i>customers.phone<code>varchar(32)</code>
+            </li>
+            <li>
+              <i className="g rem">−</i>orders_customer_idx<code>index dropped</code>
+            </li>
+          </ul>
+        </section>
 
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={toggleTheme}
-          title="Toggle theme"
-        >
-          {theme === "dark" ? <SunIcon size={14} /> : <MoonIcon size={14} />}
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
-      </header>
-
-      {/* ——— login card ——— */}
-      <main className="relative z-10 flex-1 grid place-items-center px-6 pb-10 pt-2">
-        <div className="w-full max-w-[420px] relative">
-          {/* top labels */}
-          <div className="flex items-center gap-2 justify-center mb-5">
-            <span className="pill pill-brand">
-              <span className="dot" />
-              Single sign-on
-            </span>
-            <span className="pill pill-neutral">
-              <span className="dot" style={{ background: "var(--text-3)" }} />
-              <span className="mono">v{APP_VERSION}</span>
-            </span>
+        {/* ——— right: the sign-in card ——— */}
+        <main className="si-main">
+          <div className="si-top">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={toggleTheme}
+              title="Toggle theme"
+            >
+              {theme === "dark" ? <SunIcon size={14} /> : <MoonIcon size={14} />}
+              <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+            </button>
           </div>
 
-          <article className="auth-card p-8">
-            {/* brand block */}
-            <div className="flex flex-col items-center text-center">
-              <div
-                className="w-12 h-12 rounded-2xl grid place-items-center mb-4 text-white"
-                style={{
-                  background: "var(--brand)",
-                  boxShadow: "0 8px 24px -10px var(--brand), 0 0 0 6px var(--brand-soft)",
-                }}
-              >
-                <LogoIcon size={22} />
-              </div>
-              <h1 className="text-[24px] font-semibold tracking-[-0.015em]">
-                Welcome to Schema Studio
-              </h1>
-              <p className="text-[13.5px] mt-1.5" style={{ color: "var(--text-2)" }}>
-                Version control for your database schema.
-              </p>
-            </div>
-
-            {/* divider */}
-            <div className="flex items-center gap-3 my-7">
-              <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
-              <span
-                className="text-[11px]"
-                style={{ color: "var(--text-3)", letterSpacing: ".06em", textTransform: "uppercase" }}
-              >
-                {desktop ? "Sign in with your work account" : "Sign in or create an account"}
-              </span>
-              <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
-            </div>
+          <article className="card si-card">
+            <h1>Welcome to Schema Studio</h1>
+            <p className="sub">
+              {desktop
+                ? "Sign in with the work account your team uses. There is no separate password to remember."
+                : "Sign in with the account your team uses. There is no separate password to remember."}
+            </p>
 
             {/* state-swappable region — `key` remounts it so the fade replays */}
             <div className="swap" key={ssoReady === false ? "unconfigured" : status}>
@@ -397,47 +356,42 @@ export default function LoginPage() {
                   </div>
                   <button
                     type="button"
-                    className="sso-btn"
+                    className="si-ms"
                     disabled
                     aria-label="Continue with Microsoft (unavailable)"
                   >
                     <MsMark />
-                    <span className="label">Continue with Microsoft</span>
-                    <ChevronRightIcon size={14} className="chev" />
+                    <span>Continue with Microsoft</span>
                   </button>
                 </div>
               )}
 
               {ssoReady === null && status === "idle" && (
-                <div>
-                  {/* Only while the server says which ways it offers, which is
-                      quick; a guessed button could be one it does not have. */}
-                  <button type="button" className="sso-btn" disabled aria-busy="true">
-                    <span className="spin" aria-hidden="true" />
-                    <span className="label">Loading sign-in…</span>
-                    <ChevronRightIcon size={14} className="chev" />
-                  </button>
-                </div>
+                // Only while the server says which ways it offers, which is
+                // quick; a guessed button could be one it does not have.
+                <button type="button" className="si-ms busy" disabled aria-busy="true">
+                  <span className="spin" aria-hidden="true" />
+                  <span>Loading sign-in…</span>
+                </button>
               )}
 
               {ssoReady === true && status === "idle" && (
                 <div>
-                  <div className="flex flex-col gap-2.5">
-                    {vias.map((way) => (
+                  <div className="si-ways">
+                    {vias.map((way, index) => (
                       <button
                         key={way}
                         type="button"
-                        className="sso-btn"
+                        className={buttonClass(index)}
                         onClick={() => handleLogin(way)}
                         aria-label={`Continue with ${VIA_NAME[way]}`}
                       >
                         <ViaMark via={way} />
-                        <span className="label">Continue with {VIA_NAME[way]}</span>
-                        <ChevronRightIcon size={14} className="chev" />
+                        <span>Continue with {VIA_NAME[way]}</span>
                       </button>
                     ))}
                   </div>
-                  <p className="text-[12px] mt-3 text-center" style={{ color: "var(--text-3)" }}>
+                  <p className="si-note">
                     {desktop
                       ? "Opens your web browser for your organization's Microsoft sign-in."
                       : `You'll sign in with ${vias.map((way) => VIA_NAME[way]).join(" or ")}, then come straight back here.`}
@@ -447,16 +401,15 @@ export default function LoginPage() {
 
               {ssoReady !== false && status === "waiting" && (
                 <div>
-                  <button type="button" className="sso-btn" disabled aria-busy="true">
+                  <button type="button" className="si-ms busy" disabled aria-busy="true">
                     <span className="spin" aria-hidden="true" />
-                    <span className="label">Waiting for your browser…</span>
-                    <ChevronRightIcon size={14} className="chev" />
+                    <span>Waiting for your browser…</span>
                   </button>
-                  <div className="mt-3 flex flex-col items-center gap-2 text-center">
-                    <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                      Finish signing in with Microsoft in your web browser. This
-                      window carries on by itself once you have.
-                    </p>
+                  <p className="si-note">
+                    Finish signing in with Microsoft in your web browser. This
+                    window carries on by itself once you have.
+                  </p>
+                  <div className="si-cancel">
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
@@ -469,28 +422,19 @@ export default function LoginPage() {
               )}
 
               {ssoReady !== false && status === "finishing" && (
-                <div>
-                  <button type="button" className="sso-btn" disabled aria-busy="true">
-                    <span className="spin" aria-hidden="true" />
-                    <span className="label">Signing you in…</span>
-                    <ChevronRightIcon size={14} className="chev" />
-                  </button>
-                </div>
+                <button type="button" className="si-ms busy" disabled aria-busy="true">
+                  <span className="spin" aria-hidden="true" />
+                  <span>Signing you in…</span>
+                </button>
               )}
 
               {ssoReady !== false && status === "redirecting" && (
                 <div>
-                  <button type="button" className="sso-btn" disabled aria-busy="true">
+                  <button type="button" className="si-ms busy" disabled aria-busy="true">
                     <span className="spin" aria-hidden="true" />
-                    <span className="label">Redirecting to {VIA_NAME[via]}…</span>
-                    <ChevronRightIcon size={14} className="chev" />
+                    <span>Redirecting to {VIA_NAME[via]}…</span>
                   </button>
-                  <div
-                    className="mt-3 flex items-center justify-center gap-2 text-[12px]"
-                    style={{ color: "var(--text-3)" }}
-                  >
-                    <span className="mono">{VIA_SCOPES[via]}</span>
-                  </div>
+                  <p className="si-note mono">{VIA_SCOPES[via]}</p>
                 </div>
               )}
 
@@ -507,18 +451,17 @@ export default function LoginPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex flex-col gap-2.5">
-                    {vias.map((way) => (
+                  <div className="si-ways">
+                    {vias.map((way, index) => (
                       <button
                         key={way}
                         type="button"
-                        className="sso-btn"
+                        className={buttonClass(index)}
                         onClick={() => handleLogin(way)}
                         aria-label={`Retry with ${VIA_NAME[way]}`}
                       >
                         <ViaMark via={way} />
-                        <span className="label">Retry with {VIA_NAME[way]}</span>
-                        <RefreshIcon size={14} className="chev" />
+                        <span>Retry with {VIA_NAME[way]}</span>
                       </button>
                     ))}
                   </div>
@@ -526,17 +469,20 @@ export default function LoginPage() {
               )}
             </div>
 
+            <p className="si-sm">
+              {`Schema Studio reads your name and email from ${
+                desktop ? "Microsoft" : "the account you sign in with"
+              } and nothing else. What you may do here is decided by your organization's admins.`}
+            </p>
+
             {/* inline help */}
-            <div
-              className="mt-6 pt-5 flex items-center justify-between gap-3 text-[12px]"
-              style={{ color: "var(--text-3)", borderTop: "1px solid var(--border)" }}
-            >
-              <span className="inline-flex items-center gap-2">
+            <div className="si-foot">
+              <span className="si-lock">
                 <LockIcon size={13} /> Encrypted in transit · single sign-on
               </span>
               <button
                 type="button"
-                className="flink cursor-pointer"
+                className="flink"
                 aria-expanded={helpOpen}
                 aria-controls="signin-help"
                 onClick={() => setHelpOpen((open) => !open)}
@@ -544,12 +490,7 @@ export default function LoginPage() {
                 Trouble signing in?
               </button>
             </div>
-            <p
-              id="signin-help"
-              hidden={!helpOpen}
-              className="mt-3 text-[12px] leading-relaxed"
-              style={{ color: "var(--text-2)" }}
-            >
+            <p id="signin-help" className="si-help" hidden={!helpOpen}>
               {desktop
                 ? "Sign in with your work Microsoft account. If Microsoft turns you away, ask " +
                   "your administrator whether your account may use Schema Studio. Once you are " +
@@ -563,21 +504,15 @@ export default function LoginPage() {
             </p>
           </article>
 
-          {/* under-card meta */}
-          <div
-            className="mt-5 flex items-center justify-end gap-4 text-[12px]"
-            style={{ color: "var(--text-3)" }}
-          >
-            <div className="inline-flex items-center gap-2 mono">
-              <span
-                className="inline-block w-1.5 h-1.5 rounded-full"
-                style={{ background: "var(--sync)" }}
-              />
-              <span>v{APP_VERSION}</span>
-            </div>
-          </div>
-        </div>
-      </main>
+          {/* The desktop app has no front page to go back to ("/" forwards it
+              to the studio), so the link is only for a browser. */}
+          {!desktop && (
+            <Link className="flink si-what" href="/">
+              What is Schema Studio?
+            </Link>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

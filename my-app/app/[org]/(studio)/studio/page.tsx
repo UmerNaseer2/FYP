@@ -1,20 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import "@/app/styles/atelier-dashboard.css";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import {
   Button,
   Pill,
   Card,
-  EmptyState,
   Skeleton,
   Drawer,
   ConfirmDialog,
   Label,
   Input,
   EnvironmentPill,
-  FilterPill,
   type PillTone,
 } from "@/components/ui";
 import {
@@ -36,25 +35,24 @@ import { describeCadence } from "@/lib/drift-schedule";
 import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
 import { displayVersion } from "@/lib/version-timeline";
 import {
-  DashboardIcon,
   CheckIcon,
   AlertTriangleIcon,
   AlertCircleIcon,
   RefreshIcon,
   PlusIcon,
   TrashIcon,
-  ConnectionsIcon,
   InfoIcon,
 } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
 
 /**
- * Phase 7 — Dashboard / Tracked Schemas.
+ * Dashboard: "The Skyline".
  *
- * The showpiece. Every tracked schema from the Phase 6 lineage backend shows up
- * here as a card: its lineage HEAD version and its latest drift status. The
- * DRIFTED card is the hero — drifted schemas sort to the front and get a louder
- * treatment. Real data only (GET /api/lineage); no mocks.
+ * Every tracked schema (GET /api/lineage) is drawn as one building in a small
+ * city. The roof colour is what the last drift check found, and the height is
+ * a real number about the schema: how many versions it has recorded, or how
+ * many tables its latest recorded version had. Press a building to read about
+ * it and to act on it. Drifted schemas stand at the front. Real data only.
  *
  * Tracking, checking and untracking each have their own box on the Roles tab
  * (Drift tracking: Create, Run and Delete). A button the role may not use
@@ -98,6 +96,9 @@ type ConnectionRow = {
   type: string;
   environment?: string | null;
 };
+
+/** What a building's height stands for. */
+type HeightBy = "versions" | "tables";
 
 /** Where the saved-connections fetch has got to. */
 type ConnPhase = { kind: "idle" } | { kind: "loading" } | { kind: "ready" } | { kind: "error" };
@@ -170,6 +171,14 @@ export default function DashboardPage() {
   // "all", or one environment. Filtering the grid is how you answer "what is
   // actually in production right now?" without reading every card.
   const [envFilter, setEnvFilter] = useState<"all" | Environment>("all");
+  // The building whose details are on screen. Null means the first one.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [heightBy, setHeightBy] = useState<HeightBy>("versions");
+  // Tables in each schema's latest recorded version, by tracked schema id.
+  // Missing means not read yet; null means the read failed.
+  const [tableCounts, setTableCounts] = useState<Record<number, number | null>>({});
+  // Which schemas we have already asked about, so each is asked once.
+  const askedTables = useRef(new Set<number>());
 
   // Track-a-schema drawer.
   const [trackOpen, setTrackOpen] = useState(false);
@@ -224,6 +233,33 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadList();
   }, [loadList]);
+
+  // ── Read the table counts ──────────────────────────────────────────────────
+  // Only once somebody picks "Tables" as the height. The list does not carry
+  // the number, so each schema's own details are read (GET /api/lineage/[id])
+  // and the newest version's snapshot says how many tables it had.
+  useEffect(() => {
+    if (heightBy !== "tables") return;
+
+    async function readTableCount(id: number) {
+      let count: number | null = null;
+      try {
+        const res = await apiFetch(`/api/lineage/${id}`, { cache: "no-store" });
+        const data = res.ok ? await res.json() : null;
+        const tables = data?.migrations?.[0]?.snapshot?.tableCount;
+        if (typeof tables === "number") count = tables;
+      } catch {
+        count = null;
+      }
+      setTableCounts((previous) => ({ ...previous, [id]: count }));
+    }
+
+    for (const item of items) {
+      if (askedTables.current.has(item.id)) continue;
+      askedTables.current.add(item.id);
+      void readTableCount(item.id);
+    }
+  }, [heightBy, items]);
 
   // ── Load the saved connections ─────────────────────────────────────────────
   // On mount as well as on every drawer open: the dashboard has to know whether
@@ -350,7 +386,7 @@ export default function DashboardPage() {
     }
   }
 
-  // ── Per-card actions ───────────────────────────────────────────────────────
+  // ── Actions on the picked schema ───────────────────────────────────────────────────────
   async function checkDrift(item: TrackedSchema) {
     if (checkRefusal !== null) return;
     setCheckingId(item.id);
@@ -433,6 +469,33 @@ export default function DashboardPage() {
     (a, b) => sortPriority(a.driftStatus) - sortPriority(b.driftStatus)
   );
 
+  // The building on show: the one picked, or the first if that one has gone
+  // (untracked, or hidden by the environment filter).
+  const selected = sorted.find((i) => i.id === selectedId) ?? sorted[0] ?? null;
+  const needsYou = sorted.filter(
+    (i) => i.driftStatus === "drifted" || i.driftStatus === "unreachable"
+  );
+  const noConnections = connPhase.kind === "ready" && connections.length === 0;
+
+  const buildings: Building[] = sorted.map((item) => {
+    const tables = tableCounts[item.id];
+    const amount =
+      heightBy === "versions"
+        ? `${item.migrationCount} recorded version${item.migrationCount === 1 ? "" : "s"}`
+        : typeof tables === "number"
+          ? `${tables} table${tables === 1 ? "" : "s"}`
+          : "table count not known";
+    return {
+      id: item.id,
+      name: item.schemaName,
+      status: item.driftStatus ?? "unchecked",
+      value: heightBy === "versions" ? item.migrationCount : (tables ?? null),
+      label:
+        `${item.schemaName}, ${ENVIRONMENT_META[toEnvironment(item.environment)].label}, ` +
+        `${driftMeta(item.driftStatus).label}, ${amount}`,
+    };
+  });
+
   const trackButton = (
     <Button
       variant="primary"
@@ -456,7 +519,7 @@ export default function DashboardPage() {
   const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
 
   return (
-    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
+    <div className="sk-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-6">
       {/* Header. The title and its one line come from lib/help/studio.ts. */}
       <PageHeader
         page="/studio"
@@ -475,7 +538,7 @@ export default function DashboardPage() {
         }
       />
 
-      {/* Said once for the page rather than under every card's buttons. */}
+      {/* Said once for the page rather than beside every button. */}
       {roleNote && (
         <div className="role-note">
           <InfoIcon size={15} className="ico" />
@@ -488,56 +551,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Summary strip — only meaningful once we have data. Every tile counts
-          what is on screen, so the strip and the grid can never disagree. */}
-      {listPhase === "ready" && total > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {/* "Tracked" is a property of the schema; with a filter on, this tile
-              counts the view while the All pill below still counts everything. */}
-          <SummaryTile label={envFilter === "all" ? "Tracked" : "Showing"} value={visible.length} />
-          <SummaryTile
-            label="Production"
-            value={prodShown}
-            tone={prodShown > 0 ? "break" : undefined}
-          />
-          <SummaryTile label="Drifted" value={drifted} tone={drifted > 0 ? "drift" : undefined} />
-          <SummaryTile label="In sync" value={inSync} tone={inSync > 0 ? "sync" : undefined} />
-          <SummaryTile
-            label="Unreachable"
-            value={unreachable}
-            tone={unreachable > 0 ? "break" : undefined}
-          />
-          <SummaryTile label="Not checked" value={notChecked} />
-        </div>
-      )}
-
-      {/* Environment filter — the reason the label is typed rather than a word
-          somebody wrote inside a name. Counts are over everything tracked, so
-          they stay put while you move between filters. */}
-      {listPhase === "ready" && total > 0 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <FilterPill
-            active={envFilter === "all"}
-            onClick={() => setEnvFilter("all")}
-            count={total}
-          >
-            All
-          </FilterPill>
-          <span className="hsep mx-1" />
-          {ENVIRONMENTS.map((environment) => (
-            <FilterPill
-              key={environment}
-              active={envFilter === environment}
-              onClick={() => setEnvFilter(environment)}
-              count={envCount(environment)}
-            >
-              {ENVIRONMENT_META[environment].label}
-            </FilterPill>
-          ))}
-        </div>
-      )}
-
-      {/* Only while something is genuinely unlabelled — that is the state in
+      {/* Only while something is genuinely unlabelled. That is the state in
           which nothing downstream can warn you that a target is production. */}
       {listPhase === "ready" && unlabelledCount > 0 && (
         <div className="warn-inline">
@@ -557,98 +571,239 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Body */}
-      {listPhase === "loading" && <LoadingGrid />}
+      {listPhase === "loading" && (
+        <div role="status" aria-label="Loading the dashboard">
+          <Skeleton width="100%" height={380} radius={24} />
+        </div>
+      )}
 
       {listPhase === "error" && (
-        <Card className="p-0 overflow-hidden">
-          <div style={{ height: 260 }}>
-            <EmptyState
-              icon={<AlertCircleIcon size={22} />}
-              title="Couldn't load tracked schemas"
-              description="The app database may be unreachable. Try again in a moment."
-              actions={
-                <Button variant="secondary" size="sm" onClick={() => void loadList()}>
-                  <RefreshIcon size={14} /> Retry
-                </Button>
-              }
-            />
-          </div>
-        </Card>
+        <StateCard
+          tone="break"
+          icon={<AlertCircleIcon size={22} />}
+          title="Couldn't load tracked schemas"
+          description="The app database may be unreachable. Try again in a moment."
+        >
+          <Button variant="secondary" onClick={() => void loadList()}>
+            <RefreshIcon size={14} /> Retry
+          </Button>
+        </StateCard>
       )}
 
       {/* Two first-run states, not one. Offering "Track a schema" to somebody
           with no saved connection sends them into a drawer whose only option is
-          an empty list — the fetch is on mount now so we can tell them first.
-          The error phase deliberately falls through to the card below rather
-          than claiming they have no connections. */}
-      {listPhase === "ready" &&
-        total === 0 &&
-        connPhase.kind === "ready" &&
-        connections.length === 0 && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ height: 320 }}>
-              <EmptyState
-                icon={<ConnectionsIcon size={22} />}
-                title="Add a connection first"
-                description="Save a PostgreSQL connection, then come back and track a schema on it."
-                actions={
-                  <Link href={orgPath("/connections")} className="btn btn-primary btn-sm">
-                    <PlusIcon size={14} /> Add a connection
-                  </Link>
-                }
-              />
-            </div>
-          </Card>
-        )}
-
-      {listPhase === "ready" &&
-        total === 0 &&
-        !(connPhase.kind === "ready" && connections.length === 0) && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ height: 320 }}>
-              <EmptyState
-                icon={<DashboardIcon size={22} />}
-                title="Nothing tracked yet"
-                description="Track a schema to record what it looks like today and to hear when the live database changes."
-                actions={trackButton}
-              />
-            </div>
-          </Card>
-        )}
-
-      {listPhase === "ready" && total > 0 && sorted.length === 0 && (
-        <Card className="p-0 overflow-hidden">
-          <div style={{ height: 220 }}>
-            <EmptyState
-              icon={<DashboardIcon size={22} />}
-              title={`Nothing tracked in ${ENVIRONMENT_META[envFilter as Environment].label}`}
-              description="Every tracked schema is in another environment."
-              actions={
-                <Button variant="secondary" size="sm" onClick={() => setEnvFilter("all")}>
-                  Show all environments
-                </Button>
-              }
-            />
-          </div>
-        </Card>
+          an empty list, so the connections are read on mount and we can tell
+          them first. A failed connections read deliberately falls through to
+          the second card rather than claiming they have no connections. */}
+      {listPhase === "ready" && total === 0 && noConnections && (
+        <FirstRun
+          step={1}
+          title="Add a connection first"
+          description="Save a PostgreSQL connection, then come back and track a schema on it."
+        >
+          <Link href={orgPath("/connections")} className="btn btn-primary">
+            <PlusIcon size={14} /> Add a connection
+          </Link>
+        </FirstRun>
       )}
 
-      {listPhase === "ready" && sorted.length > 0 && (
-        <div className="grid md:grid-cols-3 gap-5">
-          {sorted.map((item) => (
-            <SchemaCard
-              key={item.id}
-              item={item}
-              checking={checkingId === item.id}
-              error={cardError?.id === item.id ? cardError.msg : null}
-              checkRefusal={checkRefusal}
-              untrackRefusal={untrackRefusal}
-              onCheckDrift={() => void checkDrift(item)}
-              onUntrack={() => setUntrackTarget(item)}
+      {listPhase === "ready" && total === 0 && !noConnections && (
+        <FirstRun
+          step={2}
+          title="Nothing tracked yet"
+          description="Track a schema to record what it looks like today and to hear when the live database changes."
+        >
+          {trackButton}
+        </FirstRun>
+      )}
+
+      {listPhase === "ready" && total > 0 && (
+        <>
+          <section className="sk-stage" aria-label="The skyline">
+            <div className="sk-top">
+              {/* Counts are over everything tracked, so they stay put while
+                  you move between environments. */}
+              <div className="sk-envs" role="group" aria-label="Environment">
+                <button
+                  type="button"
+                  aria-pressed={envFilter === "all"}
+                  onClick={() => setEnvFilter("all")}
+                >
+                  All <span>{total}</span>
+                </button>
+                {ENVIRONMENTS.map((environment) => (
+                  <button
+                    key={environment}
+                    type="button"
+                    aria-pressed={envFilter === environment}
+                    onClick={() => setEnvFilter(environment)}
+                  >
+                    {ENVIRONMENT_META[environment].label} <span>{envCount(environment)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="sk-seg" role="radiogroup" aria-label="Height shows">
+                <span aria-hidden="true">Height shows</span>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={heightBy === "versions"}
+                  onClick={() => setHeightBy("versions")}
+                >
+                  Versions
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={heightBy === "tables"}
+                  onClick={() => setHeightBy("tables")}
+                >
+                  Tables
+                </button>
+              </div>
+            </div>
+
+            {sorted.length === 0 && (
+              <div className="sk-none">
+                <h2>Nothing tracked in {ENVIRONMENT_META[envFilter as Environment].label}</h2>
+                <p>Every tracked schema is in another environment.</p>
+                <Button variant="secondary" onClick={() => setEnvFilter("all")}>
+                  Show all environments
+                </Button>
+              </div>
+            )}
+
+            {sorted.length > 0 && selected && (
+              <>
+                <div className="sk-mid">
+                  <div className="sk-city">
+                    <Skyline
+                      buildings={buildings}
+                      selectedId={selected.id}
+                      onSelect={setSelectedId}
+                    />
+                  </div>
+                  <Inspector
+                    key={selected.id}
+                    item={selected}
+                    tables={tableCounts[selected.id]}
+                    heightBy={heightBy}
+                    checking={checkingId === selected.id}
+                    error={cardError?.id === selected.id ? cardError.msg : null}
+                    checkRefusal={checkRefusal}
+                    untrackRefusal={untrackRefusal}
+                    onCheckDrift={() => void checkDrift(selected)}
+                    onUntrack={() => setUntrackTarget(selected)}
+                  />
+                </div>
+
+                <div className="sk-bot">
+                  <span>
+                    {heightBy === "versions"
+                      ? "Each building is one tracked schema. A taller one has more recorded versions."
+                      : "Each building is one tracked schema. A taller one had more tables in its latest recorded version."}
+                  </span>
+                  <span className="sk-leg">
+                    <span data-s="drifted">
+                      <i /> Drifted
+                    </span>
+                    <span data-s="unreachable">
+                      <i /> Unreachable
+                    </span>
+                    <span data-s="unchecked">
+                      <i /> Not checked
+                    </span>
+                    <span data-s="in_sync">
+                      <i /> In sync
+                    </span>
+                  </span>
+                </div>
+
+                <details className="sk-tb">
+                  <summary>Show as a table</summary>
+                  <div className="sk-tb-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">Schema</th>
+                          <th scope="col">Environment</th>
+                          <th scope="col">Last check found</th>
+                          <th scope="col">Versions</th>
+                          {heightBy === "tables" && <th scope="col">Tables</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sorted.map((item) => (
+                          <tr key={item.id}>
+                            <td>
+                              <button
+                                type="button"
+                                aria-label={`Show ${item.schemaName} in the skyline`}
+                                onClick={() => setSelectedId(item.id)}
+                              >
+                                {item.schemaName}
+                              </button>
+                            </td>
+                            <td>{ENVIRONMENT_META[toEnvironment(item.environment)].label}</td>
+                            <td>{driftMeta(item.driftStatus).label}</td>
+                            <td>{item.migrationCount}</td>
+                            {heightBy === "tables" && <td>{tablesText(tableCounts[item.id])}</td>}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              </>
+            )}
+          </section>
+
+          {/* Every number counts what is on screen, so the numbers and the
+              city can never disagree. Drifted, in sync, unreachable and not
+              checked always add up to the first one. */}
+          <div className="sk-vit">
+            <Vital label={envFilter === "all" ? "Tracked" : "Showing"} value={visible.length} />
+            <Vital label="Production" value={prodShown} tone={prodShown > 0 ? "break" : undefined} />
+            <Vital label="Drifted" value={drifted} tone={drifted > 0 ? "drift" : undefined} />
+            <Vital label="In sync" value={inSync} tone={inSync > 0 ? "sync" : undefined} />
+            <Vital
+              label="Unreachable"
+              value={unreachable}
+              tone={unreachable > 0 ? "break" : undefined}
             />
-          ))}
-        </div>
+            <Vital label="Not checked" value={notChecked} />
+          </div>
+
+          <Card className="sk-need">
+            <div className="sk-hd">
+              <h2>Needs you</h2>
+              <small>
+                {needsYou.length} of {visible.length}
+              </small>
+            </div>
+            {needsYou.length === 0 && (
+              <p className="sk-quiet">Nothing here has drifted or stopped answering.</p>
+            )}
+            {needsYou.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="sk-nr"
+                data-s={item.driftStatus ?? undefined}
+                aria-pressed={selected?.id === item.id}
+                onClick={() => setSelectedId(item.id)}
+              >
+                <i aria-hidden="true" />
+                <span>
+                  <b>{item.schemaName}</b>
+                  <em>{driftMeta(item.driftStatus).label}</em>
+                  <span>{item.driftSummary ?? "No details were recorded."}</span>
+                </span>
+                <span className="sk-nr-go">Show in the skyline</span>
+              </button>
+            ))}
+          </Card>
+        </>
       )}
 
       {/* Track-a-schema drawer */}
@@ -833,7 +988,8 @@ export default function DashboardPage() {
 
 // ── Presentational pieces ────────────────────────────────────────────────────
 
-function SummaryTile({
+/** One big number above the "Needs you" list. */
+function Vital({
   label,
   value,
   tone,
@@ -842,57 +998,241 @@ function SummaryTile({
   value: number;
   tone?: "drift" | "sync" | "break";
 }) {
-  const color =
-    tone === "drift"
-      ? "var(--drift)"
-      : tone === "sync"
-        ? "var(--sync)"
-        : tone === "break"
-          ? "var(--break)"
-          : "var(--text)";
   return (
-    <Card className="p-4">
-      <div className="text-[11px] uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
-        {label}
+    <Card className="sk-v" data-tone={tone}>
+      <small>{label}</small>
+      <b>{value}</b>
+    </Card>
+  );
+}
+
+/** A plain card for "this went wrong": an icon, what happened, and a way on. */
+function StateCard({
+  tone,
+  icon,
+  title,
+  description,
+  children,
+}: {
+  tone?: "break";
+  icon: ReactNode;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className="sk-state" data-tone={tone}>
+      <div className="sk-state-ico">{icon}</div>
+      <h2>{title}</h2>
+      <p>{description}</p>
+      <div className="sk-go">{children}</div>
+    </Card>
+  );
+}
+
+const FIRST_RUN_STEPS = ["Add a connection", "Track a schema", "See the skyline grow"];
+
+/**
+ * The dashboard before anything is tracked: an empty plot of land, the three
+ * steps to a first building, and the one button for the step you are on.
+ */
+function FirstRun({
+  step,
+  title,
+  description,
+  children,
+}: {
+  /** Which of the three steps comes next: 1 or 2. */
+  step: 1 | 2;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  // Nine empty plots. The middle one is dashed: that is where the first
+  // building will go.
+  const plots = [];
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 3; x++) {
+      const cx = 270 + ((x - y) * CELL_W) / 2;
+      const cy = 70 + ((x + y) * CELL_H) / 2;
+      plots.push(
+        <polygon
+          key={`${x}-${y}`}
+          className={x === 1 && y === 1 ? "sk-plot-next" : "sk-plot"}
+          points={diamond(cx, cy, CELL_W / 2 - 4, CELL_H / 2 - 2)}
+        />
+      );
+    }
+  }
+
+  return (
+    <Card className="sk-first">
+      <div className="sk-first-stage" aria-hidden="true">
+        <svg viewBox="0 0 540 270">{plots}</svg>
       </div>
-      <div className="mono text-[26px] font-semibold mt-1" style={{ color }}>
-        {value}
+      <div className="sk-first-side">
+        <ol className="sk-steps">
+          {FIRST_RUN_STEPS.map((name, i) => (
+            <li
+              key={name}
+              data-step={i + 1 < step ? "done" : i + 1 === step ? "on" : undefined}
+              aria-current={i + 1 === step ? "step" : undefined}
+            >
+              {i + 1 < step && <CheckIcon size={12} />} {name}
+            </li>
+          ))}
+        </ol>
+        <small>Step {step} of 3</small>
+        <h2>{title}</h2>
+        <p>{description}</p>
+        <div className="sk-go">{children}</div>
       </div>
     </Card>
   );
 }
 
-function LoadingGrid() {
-  return (
-    <div className="grid md:grid-cols-3 gap-5">
-      {[0, 1, 2].map((i) => (
-        <Card key={i} className="p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <Skeleton width={92} height={20} />
-            <Skeleton width={54} height={20} />
-          </div>
-          <div className="space-y-2">
-            <Skeleton width="55%" height={18} />
-            <Skeleton width="70%" height={12} />
-          </div>
-          <Skeleton width="40%" height={16} />
-          <div className="flex gap-2 pt-1">
-            <Skeleton width={96} height={30} />
-            <Skeleton width={72} height={30} />
-          </div>
-        </Card>
-      ))}
-    </div>
-  );
+// ── The skyline drawing ──────────────────────────────────────────────────────
+
+/** What the drawing needs to know about one tracked schema. */
+type Building = {
+  id: number;
+  name: string;
+  /** Sets the roof colour. "unchecked" is a schema nobody has checked yet. */
+  status: DriftStatus | "unchecked";
+  /** What the height stands for, or null when the number is not known. */
+  value: number | null;
+  /** The whole building in words, for a screen reader and the tooltip. */
+  label: string;
+};
+
+// The size of one plot of land, and how tall the tallest building is drawn.
+const CELL_W = 116;
+const CELL_H = 58;
+const FOOTPRINT = 0.72; // a building covers this much of its plot
+const MIN_HEIGHT = 10;
+const EXTRA_HEIGHT = 168;
+
+/** The four corners of a diamond around (cx, cy), as an SVG points string. */
+function diamond(cx: number, cy: number, halfWidth: number, halfHeight: number): string {
+  return [
+    `${cx - halfWidth},${cy}`,
+    `${cx},${cy - halfHeight}`,
+    `${cx + halfWidth},${cy}`,
+    `${cx},${cy + halfHeight}`,
+  ].join(" ");
 }
 
 /**
- * "Checked 3m ago · every 15m" under a schema card.
+ * The city: one building per tracked schema, on a square grid seen from above
+ * and to the side. A building's height is its value against the largest value
+ * on screen, so the tallest building always has the most.
+ */
+function Skyline({
+  buildings,
+  selectedId,
+  onSelect,
+}: {
+  buildings: Building[];
+  selectedId: number;
+  onSelect: (id: number) => void;
+}) {
+  const columns = Math.ceil(Math.sqrt(buildings.length));
+  const largest = Math.max(1, ...buildings.map((b) => b.value ?? 0));
+  const halfW = (CELL_W / 2) * FOOTPRINT;
+  const halfH = (CELL_H / 2) * FOOTPRINT;
+
+  // Where each building stands and how tall it is.
+  const placed = buildings.map((building, i) => {
+    const x = i % columns;
+    const y = Math.floor(i / columns);
+    return {
+      building,
+      depth: x + y,
+      cx: ((x - y) * CELL_W) / 2,
+      cy: ((x + y) * CELL_H) / 2,
+      height: MIN_HEIGHT + (EXTRA_HEIGHT * (building.value ?? 0)) / largest,
+    };
+  });
+  // Back to front, so a building in front is drawn over the one behind it.
+  placed.sort((a, b) => a.depth - b.depth);
+
+  // A frame just big enough for every building and its name.
+  const left = Math.min(...placed.map((p) => p.cx)) - CELL_W / 2 - 12;
+  const right = Math.max(...placed.map((p) => p.cx)) + CELL_W / 2 + 12;
+  const top = Math.min(...placed.map((p) => p.cy - halfH - p.height)) - 30;
+  const bottom = Math.max(...placed.map((p) => p.cy)) + CELL_H / 2 + 12;
+
+  return (
+    <svg
+      viewBox={`${left} ${top} ${right - left} ${bottom - top}`}
+      role="group"
+      aria-label="Tracked schemas, drawn as buildings"
+    >
+      {placed.map(({ building, cx, cy }) => (
+        <polygon
+          key={building.id}
+          className="sk-tile"
+          points={diamond(cx, cy, CELL_W / 2, CELL_H / 2)}
+        />
+      ))}
+      {placed.map(({ building, cx, cy, height }, i) => {
+        const roofY = cy - height;
+        return (
+          <g
+            key={building.id}
+            className="sk-b"
+            data-s={building.status}
+            role="button"
+            tabIndex={0}
+            aria-pressed={building.id === selectedId}
+            aria-label={building.label}
+            style={{ animationDelay: `${i * 40}ms` }}
+            onClick={() => onSelect(building.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(building.id);
+              }
+            }}
+          >
+            <title>{building.label}</title>
+            <polygon className="sk-gd" points={diamond(cx, cy, CELL_W / 2, CELL_H / 2)} />
+            <polygon
+              className="sk-fl"
+              points={`${cx - halfW},${cy} ${cx},${cy + halfH} ${cx},${roofY + halfH} ${cx - halfW},${roofY}`}
+            />
+            <polygon
+              className="sk-fr"
+              points={`${cx},${cy + halfH} ${cx + halfW},${cy} ${cx + halfW},${roofY} ${cx},${roofY + halfH}`}
+            />
+            <polygon className="sk-ft" points={diamond(cx, roofY, halfW, halfH)} />
+          </g>
+        );
+      })}
+      {/* Names last, so a taller building in front never hides one. */}
+      {placed.map(({ building, cx, cy, height }) => (
+        <text key={building.id} className="sk-name" x={cx} y={cy - height - halfH - 8}>
+          {building.name.length > 16 ? `${building.name.slice(0, 15)}…` : building.name}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+/** "12", or why there is no number: still being read, or could not be read. */
+function tablesText(count: number | null | undefined): string {
+  if (count === undefined) return "Reading…";
+  if (count === null) return "Couldn't read";
+  return String(count);
+}
+
+/**
+ * "Checked 3m ago · every 15m" for the picked schema.
  *
  * Two facts, deliberately together. The age on its own reads as the last thing
  * that happened and says nothing about whether anything will happen next; the
  * cadence on its own is a promise with no evidence. Side by side they answer
- * the only question a watched schema raises — is this still being looked at?
+ * the only question a watched schema raises: is this still being looked at?
  *
  * The age ticks (useNow) because a dashboard is a screen people leave open.
  */
@@ -908,25 +1248,27 @@ function CheckedLine({
   const cadence = intervalMinutes > 0 ? describeCadence(intervalMinutes) : null;
 
   if (!lastCheckedAt) {
-    return (
-      <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
-        {cadence ? `Not checked yet — due ${cadence}` : "Automatic checking is off"}
-      </div>
-    );
+    return <p>{cadence ? `Not checked yet. Due ${cadence}.` : "Automatic checking is off."}</p>;
   }
 
   return (
-    <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
+    <p>
       {/* now === null is the pre-hydration frame; showing nothing for it beats
           showing a relative age the browser then has to correct. */}
-      {now === null ? "\u00a0" : `Checked ${timeAgo(lastCheckedAt)}`}
-      {cadence ? ` \u00b7 ${cadence}` : " \u00b7 manual only"}
-    </div>
+      {now === null ? " " : `Checked ${timeAgo(lastCheckedAt)}`}
+      {cadence ? ` · ${cadence}` : " · manual only"}
+    </p>
   );
 }
 
-function SchemaCard({
+/**
+ * The picked building in words: what it is, what the last drift check found,
+ * and everything you can do with it.
+ */
+function Inspector({
   item,
+  tables,
+  heightBy,
   checking,
   error,
   checkRefusal,
@@ -935,6 +1277,9 @@ function SchemaCard({
   onUntrack,
 }: {
   item: TrackedSchema;
+  /** Tables in the latest recorded version: undefined until read, null if unreadable. */
+  tables: number | null | undefined;
+  heightBy: HeightBy;
   checking: boolean;
   error: string | null;
   /** Why this role may not check drift, or null. The page says it once. */
@@ -949,111 +1294,75 @@ function SchemaCard({
   const environment = toEnvironment(item.environment);
   const connectionGone = item.connectionName === null;
   // Where the schema lives. Shown under the label rather than replaced by it,
-  // because a label says nothing about which database the card is about.
+  // because a label says nothing about which database this is.
   const source = item.connectionName
     ? `${item.connectionName} · ${item.connectionDatabase ?? "?"}`
     : "Connection removed";
 
-  // The drifted card is the hero: louder border + a subtle top-tint gradient.
-  const heroStyle = meta.hero
-    ? {
-        borderColor: "color-mix(in oklab, var(--drift) 60%, var(--border))",
-        background:
-          "linear-gradient(180deg, color-mix(in oklab, var(--drift) 8%, var(--surface)) 0%, var(--surface) 60%)",
-      }
-    : undefined;
-
   return (
-    <Card className="p-5 relative overflow-hidden flex flex-col" style={heroStyle}>
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Pill tone={meta.tone}>
-            {meta.hero && <AlertTriangleIcon size={11} />}
-            {meta.label}
-          </Pill>
-          <EnvironmentPill environment={environment} />
-        </div>
-        {connectionGone ? (
-          <Pill tone="neutral">no connection</Pill>
-        ) : (
-          <Pill tone="neutral" dot={false}>
-            {item.migrationCount} version{item.migrationCount === 1 ? "" : "s"}
-          </Pill>
-        )}
+    <div className="sk-ins" aria-live="polite">
+      <div className="sk-chips">
+        <span className="sk-chip" data-s={item.driftStatus ?? "unchecked"}>
+          <i aria-hidden="true" />
+          {meta.label}
+        </span>
+        <EnvironmentPill environment={environment} />
+        {connectionGone && <span className="sk-chip">no connection</span>}
       </div>
 
-      <div className="mt-1">
-        <div className="mono text-[18px] font-semibold tracking-tight">{item.schemaName}</div>
+      <h2>{item.schemaName}</h2>
+      <p>
         {item.label && (
-          <div className="text-[13px] break-words" style={{ color: "var(--text-2)" }}>
-            {item.label}
+          <>
+            <b>{item.label}</b>
+            <br />
+          </>
+        )}
+        <span className="mono">{source}</span>
+      </p>
+
+      <dl className="sk-st">
+        <div className={heightBy === "versions" ? "sk-on" : undefined}>
+          <dt>Versions</dt>
+          <dd>{item.migrationCount}</dd>
+        </div>
+        {heightBy === "tables" && (
+          <div className="sk-on">
+            <dt>Tables</dt>
+            <dd>{tablesText(tables)}</dd>
           </div>
         )}
-        <div className="mono text-[12px] break-words" style={{ color: "var(--text-3)" }}>
-          {source}
+        {/* "lineage" is spelled out because this number is Schema Studio's own
+            counter for the tracked schema, and without the word it reads like
+            the script version Deploy shows as "Applied to target". */}
+        <div title="Schema Studio's lineage number for this tracked schema. It moves when a deploy or re-baseline changes the structure, and is separate from the script versions in GitHub.">
+          <dt>Lineage</dt>
+          <dd>{item.headVersion ? displayVersion(item.headVersion, true) : "None yet"}</dd>
         </div>
-      </div>
-
-      {/* "lineage" is spelled out because this number is Schema Studio's own
-          counter for the tracked schema, and without the word it reads like
-          the script version Deploy shows as "Applied to target". The title
-          sits on the row so it shows over the number and the seq alike. */}
-      <div
-        className="mt-4 flex flex-wrap items-baseline gap-x-2"
-        title="Schema Studio's lineage number for this tracked schema. It moves when a deploy or re-baseline changes the structure, and is separate from the script versions in GitHub."
-      >
-        <span className="mono text-[18px] font-semibold whitespace-nowrap">
-          {item.headVersion ? `lineage ${displayVersion(item.headVersion, true)}` : "—"}
-        </span>
         {item.headSeq !== null && (
-          <span className="mono text-[12px] whitespace-nowrap" style={{ color: "var(--text-3)" }}>
-            · seq {String(item.headSeq).padStart(4, "0")} — latest
-          </span>
+          <div>
+            <dt>Latest seq</dt>
+            <dd>{String(item.headSeq).padStart(4, "0")}</dd>
+          </div>
         )}
-      </div>
+      </dl>
 
-      {/* Drift detail line */}
-      <div className="mt-3 text-[12px] min-h-[16px]" style={{ color: "var(--text-2)" }}>
-        {item.driftSummary ? (
-          <span className="inline-flex items-center gap-1.5">
-            {item.driftStatus === "in_sync" && (
-              <CheckIcon size={12} style={{ color: "var(--sync)" }} />
-            )}
-            {item.driftStatus === "drifted" && (
-              <AlertTriangleIcon size={12} style={{ color: "var(--drift)" }} />
-            )}
-            {item.driftStatus === "unreachable" && (
-              <AlertCircleIcon size={12} style={{ color: "var(--break)" }} />
-            )}
-            <span>{item.driftSummary}</span>
-          </span>
-        ) : (
-          <span style={{ color: "var(--text-3)" }}>No drift check yet.</span>
-        )}
-      </div>
+      <p>{item.driftSummary ?? "No drift check yet."}</p>
       <CheckedLine
         lastCheckedAt={item.lastCheckedAt ?? item.driftCheckedAt}
         intervalMinutes={item.driftIntervalMinutes ?? 0}
       />
 
       {error && (
-        <div className="text-[11.5px] mt-2" style={{ color: "var(--break)" }}>
+        <p className="sk-err" role="alert">
           {error}
-        </div>
+        </p>
       )}
 
-      {/* Actions */}
-      <div className="mt-4 pt-4 flex items-center gap-2 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
-        <Link
-          href={orgPath(`/schemas/${item.id}`)}
-          className="btn btn-secondary btn-sm"
-          aria-label={`Open ${item.schemaName}`}
-        >
-          Open
-        </Link>
+      <div className="sk-acts">
         {/* A drifted schema needs the drift detail (what changed, and the
             ways to resolve it) more than another check, so that is the
-            loud button on the drifted card. */}
+            loud button when it has drifted. */}
         {item.driftStatus === "drifted" && (
           <Link
             href={orgPath(`/drift?tab=detail&schema=${item.id}`)}
@@ -1063,6 +1372,13 @@ function SchemaCard({
             Review drift
           </Link>
         )}
+        <Link
+          href={orgPath(`/schemas/${item.id}`)}
+          className="btn btn-secondary btn-sm"
+          aria-label={`Open ${item.schemaName}`}
+        >
+          Open
+        </Link>
         <Button
           variant="secondary"
           size="sm"
@@ -1090,7 +1406,7 @@ function SchemaCard({
         )}
         <button
           type="button"
-          className="btn btn-ghost btn-sm ml-auto"
+          className="btn btn-ghost btn-sm sk-stop"
           aria-label={`Stop tracking ${item.schemaName}`}
           onClick={onUntrack}
           disabled={untrackRefusal !== null}
@@ -1099,6 +1415,6 @@ function SchemaCard({
           <TrashIcon size={14} />
         </button>
       </div>
-    </Card>
+    </div>
   );
 }

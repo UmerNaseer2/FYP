@@ -1,12 +1,14 @@
 "use client";
 
+import "@/app/styles/atelier-admin.css";
 import { useState } from "react";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { Skeleton } from "@/components/ui";
-import { InfoIcon } from "@/components/ui/icons";
+import { LockIcon } from "@/components/ui/icons";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { PillTabs } from "@/components/studio/PillTabs";
 import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
@@ -46,7 +48,7 @@ export default function AdminPage() {
 
   if (loading) {
     return (
-      <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
+      <div className="ad-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
         <Skeleton width={140} height={14} />
         <Skeleton width={220} height={28} className="mt-3" />
         <div className="space-y-3 mt-8">
@@ -79,42 +81,34 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
-      <PageHeader page="/admin" />
+    <div className="ad-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
+      <PageHeader page="/admin" title="Who can do what.">
+        {tab !== null && (
+          <PillTabs
+            label="Admin sections"
+            tabs={tabs}
+            value={tab}
+            onChange={(key) => setPicked(key as Tab)}
+            idPrefix="admin-tab-"
+            panelPrefix="admin-panel-"
+          />
+        )}
+      </PageHeader>
 
       {tab === null ? (
         // Only a fallback: the layout's <AuthGuard feature={["users", "roles",
         // "organization", "github"]}> is what really turns away a role that may
         // read no tab.
-        <div className="role-note mt-6">
-          <InfoIcon size={15} className="ico" />
-          <div>
-            <div className="title">{"You can't manage users or roles"}</div>
-            <div className="body">
-                {refusalMessage(roleLabel, "users:read")}
-                <AskAdmin permission="users:read" />
-              </div>
-          </div>
+        <div className="card ad-stop">
+          <span className="ad-stop__lock" aria-hidden>
+            <LockIcon size={22} />
+          </span>
+          <h2>{"You can't manage users or roles"}</h2>
+          <p>{refusalMessage(roleLabel, "users:read")}</p>
+          <AskAdmin permission="users:read" />
         </div>
       ) : (
         <>
-          <div className="seg mt-6" role="tablist" aria-label="Admin sections">
-            {tabs.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                role="tab"
-                id={`admin-tab-${t.key}`}
-                aria-controls={`admin-panel-${t.key}`}
-                aria-selected={tab === t.key}
-                className={tab === t.key ? "active" : ""}
-                onClick={() => setPicked(t.key)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
           {/* Every tab stays mounted and a hidden one is only hidden, so a
               half-changed list or a half-filled form is still there when the
               person comes back. `active` tells a tab when it is on screen, so
@@ -126,7 +120,7 @@ export default function AdminPage() {
               id={`admin-panel-${t.key}`}
               aria-labelledby={`admin-tab-${t.key}`}
               hidden={tab !== t.key}
-              className="mt-6"
+              className="ad-panel"
             >
               {t.key === "users" ? (
                 <UsersTab active={tab === "users"} />

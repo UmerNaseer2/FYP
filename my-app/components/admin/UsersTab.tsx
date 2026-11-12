@@ -99,6 +99,8 @@ export function UsersTab({ active }: { active: boolean }) {
   const [deleting, setDeleting] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Profile | null>(null);
+  // What is typed in the search box above the list.
+  const [search, setSearch] = useState("");
 
   // Counts every load and every change. A list whose number is no longer the
   // latest when it arrives is thrown away: a newer load overtook it, or a
@@ -248,27 +250,19 @@ export function UsersTab({ active }: { active: boolean }) {
   const adminCount = users.filter((u) => u.role === "admin").length;
   const empty = phase === "ready" && users.length === 0;
 
+  // The search box only narrows the list on screen. It asks the server nothing.
+  const wanted = search.trim().toLowerCase();
+  const shownUsers = wanted
+    ? users.filter((u) =>
+        [u.name ?? "", u.email, labelOf(u.role)].some((text) => text.toLowerCase().includes(wanted))
+      )
+    : users;
+  const rolesInUse = new Set(users.map((u) => u.role)).size;
+
   return (
-    <div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        {/*
-          "· 0 users, 0 admins" sits directly above the empty state, so the
-          first-run page would say the same nothing twice, the second time in
-          the language of a populated list that has been emptied. The counts
-          are worth reading once there is something to count.
-        */}
-        <p className="text-[13.5px]" style={{ color: "var(--text-2)" }}>
-          Give people a role, or remove them from this organization.
-          {phase === "ready" && users.length > 0 && (
-            <>
-              {" "}
-              <span style={{ color: "var(--text-3)" }}>
-                · {users.length} {users.length === 1 ? "user" : "users"},{" "}
-                {adminCount} admin{adminCount === 1 ? "" : "s"}
-              </span>
-            </>
-          )}
-        </p>
+    <div className="ad-stack">
+      <div className="ad-intro">
+        <p>Give people a role, or remove them from this organization.</p>
         <Button
           variant="ghost"
           size="sm"
@@ -284,7 +278,7 @@ export function UsersTab({ active }: { active: boolean }) {
           the same stand-in admin, who has no row here. Said once above the
           list, or by the empty state when there is no list. */}
       {bypass && !empty && (
-        <div className="role-note mt-4">
+        <div className="ad-note">
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="title">
@@ -301,95 +295,105 @@ export function UsersTab({ active }: { active: boolean }) {
       )}
 
       {actionError && (
-        <div
-          className="flex items-start gap-2 p-3 rounded-xl mt-4"
-          role="alert"
-          style={{
-            background: "color-mix(in oklab, var(--break) 10%, transparent)",
-            border: "1px solid color-mix(in oklab, var(--break) 30%, transparent)",
-          }}
-        >
-          <AlertTriangleIcon size={15} style={{ color: "var(--break)", marginTop: 1, flex: "none" }} />
-          <span className="text-[13px]" style={{ color: "var(--break)" }}>
-            {actionError}
-          </span>
+        <div className="ad-note ad-note--bad" role="alert">
+          <AlertTriangleIcon size={15} className="ico" />
+          <div className="body">{actionError}</div>
         </div>
       )}
 
-      <div className="mt-4 space-y-3">
-        {phase === "loading" &&
-          [0, 1, 2].map((i) => <Skeleton key={i} width="100%" height={68} radius={14} />)}
+      {phase === "loading" && (
+        <div className="space-y-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} width="100%" height={68} radius={14} />
+          ))}
+        </div>
+      )}
 
-        {phase === "error" && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ minHeight: 240 }}>
+      {phase === "error" && (
+        <Card className="p-0 overflow-hidden">
+          <div style={{ minHeight: 240 }}>
+            <EmptyState
+              tone="break"
+              icon={<AlertCircleIcon size={22} />}
+              title="Couldn't load users"
+              description={loadError ?? undefined}
+              actions={
+                <Button variant="secondary" size="sm" onClick={() => void fetchUsers(false)}>
+                  <RefreshIcon size={14} /> Retry
+                </Button>
+              }
+            />
+          </div>
+        </Card>
+      )}
+
+      {empty && (
+        <Card className="p-0 overflow-hidden">
+          <div style={{ minHeight: 240 }}>
+            {bypass ? (
               <EmptyState
-                tone="break"
-                icon={<AlertCircleIcon size={22} />}
-                title="Couldn't load users"
-                description={loadError ?? undefined}
-                actions={
-                  <Button variant="secondary" size="sm" onClick={() => void fetchUsers(false)}>
-                    <RefreshIcon size={14} /> Retry
-                  </Button>
-                }
+                icon={<UsersIcon size={22} />}
+                title="Nobody has signed in yet"
+                description="Sign-in is off for testing, so everyone using the app is the same stand-in admin and nobody is added here. People appear here once it is back on and they join this organization. To see the app as another role now, use View as in the sidebar."
+              />
+            ) : (
+              <EmptyState
+                icon={<UsersIcon size={22} />}
+                title="No users yet"
+                description="People appear here once they join this organization."
+              />
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* The counts show only once there is something to count, so an empty
+          list does not say "0 people" above an empty state that says the same. */}
+      {phase === "ready" && users.length > 0 && (
+        <>
+          <ul className="card ad-sum" aria-label="This organization in numbers">
+            <li>
+              <b>{users.length}</b> {users.length === 1 ? "person" : "people"}
+            </li>
+            <li>
+              <b>{adminCount}</b> {adminCount === 1 ? "admin" : "admins"}
+            </li>
+            <li>
+              <b>{rolesInUse}</b> {rolesInUse === 1 ? "role in use" : "roles in use"}
+            </li>
+          </ul>
+
+          <div className="card ad-list">
+            <div className="ad-lh">
+              <h2>People</h2>
+              <input
+                type="search"
+                className="ad-q"
+                aria-label="Search people"
+                placeholder="Search by name, email or role"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
               />
             </div>
-          </Card>
-        )}
-
-        {empty && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ minHeight: 240 }}>
-              {bypass ? (
-                <EmptyState
-                  icon={<UsersIcon size={22} />}
-                  title="Nobody has signed in yet"
-                  description="Sign-in is off for testing, so everyone using the app is the same stand-in admin and nobody is added here. People appear here once it is back on and they join this organization. To see the app as another role now, use View as in the sidebar."
-                />
-              ) : (
-                <EmptyState
-                  icon={<UsersIcon size={22} />}
-                  title="No users yet"
-                  description="People appear here once they join this organization."
-                />
-              )}
-            </div>
-          </Card>
-        )}
-
-        {phase === "ready" &&
-          users.map((u) => {
-            const isYou = currentUser?.email === u.email;
-            const reachable = inReach(u.role);
-            return (
-              <Card key={u.id} className="p-4">
-                <div className="flex items-center gap-3 flex-wrap">
-                  {/* Identity */}
-                  <div
-                    className="w-9 h-9 rounded-full grid place-items-center flex-none text-white text-[12px] font-semibold"
-                    style={{ background: "linear-gradient(135deg, var(--brand), #a78bfa)" }}
-                    aria-hidden
-                  >
+            {shownUsers.length === 0 && (
+              <p className="ad-none" role="status">
+                Nobody here matches that search.
+              </p>
+            )}
+            {shownUsers.map((u) => {
+              const isYou = currentUser?.email === u.email;
+              const reachable = inReach(u.role);
+              return (
+                <div key={u.id} className="ad-p">
+                  <span className="ad-av" aria-hidden>
                     {initialsOf(u.email)}
-                  </div>
-                  <div className="min-w-0 flex-1">
+                  </span>
+                  <div className="ad-p__who">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[14px] font-medium truncate">{u.name || u.email}</span>
-                      {isYou && (
-                        <span
-                          className="text-[10.5px] px-1.5 py-0.5 rounded-md flex-none"
-                          style={{ background: "var(--surface-2)", color: "var(--text-3)" }}
-                        >
-                          You
-                        </span>
-                      )}
+                      <b className="truncate">{u.name || u.email}</b>
+                      {isYou && <span className="ad-tag">You</span>}
                     </div>
-                    {u.name && u.name !== u.email && (
-                      <div className="text-[12.5px] truncate" style={{ color: "var(--text-2)" }}>
-                        {u.email}
-                      </div>
-                    )}
+                    {u.name && u.name !== u.email && <small>{u.email}</small>}
                     <div className="mt-1">
                       <Pill tone={roleTone(u.role)} dot={u.role === "admin"}>
                         {labelOf(u.role)}
@@ -397,22 +401,18 @@ export function UsersTab({ active }: { active: boolean }) {
                     </div>
                   </div>
 
-                  {/* Controls: full row on mobile, inline on ≥sm. Your own row is
-                      read-only so you can't demote or delete yourself into a lockout. */}
+                  {/* Your own row is read-only so you can't demote or delete
+                      yourself into a lockout. */}
                   {isYou ? (
-                    <span className="text-[12px] w-full sm:w-auto sm:text-right" style={{ color: "var(--text-3)" }}>
-                      Your account
-                    </span>
+                    <span className="ad-p__fx">Your account</span>
                   ) : !reachable ? (
                     (canChangeRoles || canRemove) && (
-                      <span className="text-[12px] w-full sm:w-auto sm:text-right" style={{ color: "var(--text-3)" }}>
-                        {`${labelOf(u.role)} can do things your role can't`}
-                      </span>
+                      <span className="ad-p__fx">{`${labelOf(u.role)} can do things your role can't`}</span>
                     )
                   ) : (
                     (canChangeRoles || canRemove) && (
-                      // This column holds the width: .ds-select sets its own, and a Tailwind width on it would lose.
-                      <div className="flex items-center justify-end gap-2 w-full sm:w-[200px]">
+                      // This box holds the width: .ds-select sets its own, and a Tailwind width on it would lose.
+                      <div className="ad-p__act">
                         {canChangeRoles && (
                           <Select
                             variant="input"
@@ -447,10 +447,11 @@ export function UsersTab({ active }: { active: boolean }) {
                     )
                   )}
                 </div>
-              </Card>
-            );
-          })}
-      </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {can("users:create") && <InvitePanel active={active} options={options} />}
 

@@ -257,6 +257,37 @@ describe("the rest of the object lines", () => {
   });
 });
 
+describe("showing one kind of change", () => {
+  // The count tiles on Compare narrow the report through the `only` prop.
+  const added: ObjectDiff = {
+    kind: "VIEW",
+    name: "new_orders",
+    status: "onlyA",
+    summary: "View new_orders exists only in the source.",
+    leftDefinition: "SELECT 1",
+    severity: "safe",
+  };
+  const both = () => report([added, droppedView("open_orders", false)]);
+
+  it("shows every change when nothing is picked", () => {
+    render(<DiffReport report={both()} allowDataLoss={false} />);
+    expect(screen.getByText("new_orders")).toBeInTheDocument();
+    expect(screen.getByText("open_orders")).toBeInTheDocument();
+  });
+
+  it("keeps only the additions when Added is picked", () => {
+    render(<DiffReport report={both()} allowDataLoss={false} only="add" />);
+    expect(screen.getByText("new_orders")).toBeInTheDocument();
+    expect(screen.queryByText("open_orders")).not.toBeInTheDocument();
+  });
+
+  it("keeps only the removals when Removed is picked", () => {
+    render(<DiffReport report={both()} allowDataLoss={false} only="rem" />);
+    expect(screen.queryByText("new_orders")).not.toBeInTheDocument();
+    expect(screen.getByText("open_orders")).toBeInTheDocument();
+  });
+});
+
 describe("what the signs mean", () => {
   // The legend was a paragraph above the report. It is now the "?" beside the
   // report's title, and it still reads differently on each page.

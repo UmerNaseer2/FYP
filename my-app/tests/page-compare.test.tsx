@@ -130,6 +130,26 @@ describe("a screen with nothing to compare on", () => {
     expect(screen.queryByRole("button", { name: /^Compare$/ })).not.toBeInTheDocument();
   });
 
+  it("lets a failed first run be tried again", async () => {
+    setRoutes([
+      {
+        match: "/api/compare",
+        method: "POST",
+        status: 500,
+        body: { error: "Could not reach the source database." },
+      },
+    ]);
+    render(<ComparePage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not reach the source database."
+    );
+
+    // The retry is a real way back, not a button that redraws the failure.
+    serve(ready());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await compareButton()).toBeInTheDocument();
+  });
+
   it("says nothing has been read yet when nobody pressed Compare", async () => {
     serve(ready({ asked: false }));
     render(<ComparePage />);

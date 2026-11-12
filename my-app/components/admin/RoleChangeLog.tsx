@@ -188,7 +188,7 @@ export function RoleChangeLog({ changes }: { changes: readonly RoleChange[] }) {
     );
   }
   return (
-    <ul className="role-log">
+    <ul className="ad-log">
       {entries.map((entry) => (
         <li key={entry.id}>
           <div className="text-[13px]">

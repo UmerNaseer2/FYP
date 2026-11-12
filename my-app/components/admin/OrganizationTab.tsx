@@ -138,7 +138,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
 
   if (loadError && !org) {
     return (
-      <div className="role-note" role="alert">
+      <div className="ad-note" role="alert">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">{"Couldn't load the organization"}</div>
@@ -162,7 +162,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
   return (
     <div className="space-y-6">
       {actionError && (
-        <div className="role-note" role="alert">
+        <div className="ad-note" role="alert">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">{"Couldn't save"}</div>
@@ -173,7 +173,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
 
       <Card className="p-4 sm:p-5">
         <form onSubmit={rename} noValidate>
-          <h3 className="section-title">Name</h3>
+          <h3 className="ad-h">Name</h3>
           <div className="mt-2 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
             <div>
               <div className="flex items-center mb-1">
@@ -207,7 +207,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
       </Card>
 
       <Card className="p-4 sm:p-5">
-        <h3 className="section-title">Two-person rule</h3>
+        <h3 className="ad-h">Two-person rule</h3>
         <label className="mt-2 flex items-start gap-3 text-[13.5px]">
           <input
             type="checkbox"
@@ -232,8 +232,8 @@ export function OrganizationTab({ active }: { active: boolean }) {
       </Card>
 
       {org.canDelete && can("organization:delete") && (
-        <Card className="p-4 sm:p-5">
-          <h3 className="section-title">Delete this organization</h3>
+        <Card className="ad-dz p-4 sm:p-5">
+          <h3 className="ad-h">Delete this organization</h3>
           <p className="text-[13px] mt-2 max-w-[60ch]" style={{ color: "var(--text-2)" }}>
             {`Deletes ${org.name} with its connections, scripts, approvals, invitations and change log, and takes everyone out of it. Their accounts stay, and so do scripts already in the GitHub registry. This can't be undone.`}
           </p>

@@ -709,3 +709,122 @@ describe("for a role that may not save scripts", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("the editor's two tabs", () => {
+  it("opens the rollback tab from the keyboard and keeps what the first tab holds", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+    await screen.findByRole("combobox", { name: "Connection" });
+    writeSql("SQL", ADDS_A_COLUMN);
+
+    const migration = screen.getByRole("tab", { name: "Migration" });
+    const rollback = screen.getByRole("tab", { name: "Rollback" });
+    expect(migration).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toContainElement(screen.getByLabelText("SQL"));
+
+    fireEvent.keyDown(migration, { key: "ArrowRight" });
+    expect(rollback).toHaveAttribute("aria-selected", "true");
+    expect(rollback).toHaveFocus();
+    // Only the open panel is shown, and the closed box still has its text.
+    expect(screen.getByRole("tabpanel")).toContainElement(screen.getByLabelText(/Rollback SQL/));
+    expect(screen.getByLabelText("SQL")).toHaveValue(ADDS_A_COLUMN);
+  });
+
+  it("indents on Tab, and lets Esc then Tab leave the box", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+    await screen.findByRole("combobox", { name: "Connection" });
+    const box = screen.getByLabelText("SQL") as HTMLTextAreaElement;
+
+    box.focus();
+    // fireEvent returns false when the page cancelled the key.
+    expect(fireEvent.keyDown(box, { key: "Tab" })).toBe(false);
+    expect(box).toHaveValue("  ");
+
+    fireEvent.keyDown(box, { key: "Escape" });
+    // Not cancelled, so the browser moves focus on as usual.
+    expect(fireEvent.keyDown(box, { key: "Tab" })).toBe(true);
+    expect(box).toHaveValue("  ");
+  });
+
+  it("comments a line out and back in with Ctrl and slash", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+    await screen.findByRole("combobox", { name: "Connection" });
+    writeSql("SQL", "DROP TABLE invoices;");
+    const box = screen.getByLabelText("SQL") as HTMLTextAreaElement;
+    box.setSelectionRange(3, 3);
+
+    fireEvent.keyDown(box, { key: "/", ctrlKey: true });
+    expect(box).toHaveValue("-- DROP TABLE invoices;");
+    fireEvent.keyDown(box, { key: "/", ctrlKey: true });
+    expect(box).toHaveValue("DROP TABLE invoices;");
+  });
+
+  it("saves on Ctrl S, but only when the Save button would", async () => {
+    setRoutes([
+      {
+        match: "/api/github/push",
+        method: "POST",
+        body: {
+          ok: true,
+          version: "1.0.0",
+          rollback_saved: true,
+          url: "https://github.test/shop/public/add_invoices/v1.0.0.sql",
+          paths: { migration: "shop/public/add_invoices/v1.0.0.sql" },
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices");
+    writeSql("SQL", ADDS_A_COLUMN);
+    const box = screen.getByLabelText("SQL");
+
+    // No rollback yet, so the button is refusing and the key must too.
+    expect(await saveButton("1.0.0")).toBeDisabled();
+    fireEvent.keyDown(box, { key: "s", ctrlKey: true });
+    await flushAsync();
+    expect(fetchCalls.some((c) => c.url.includes("/api/github/push"))).toBe(false);
+
+    writeSql(/Rollback SQL/, DROPS_THE_COLUMN);
+    await waitFor(async () => expect(await saveButton("1.0.0")).toBeEnabled());
+    fireEvent.keyDown(box, { key: "s", ctrlKey: true });
+    expect(
+      await screen.findByText("v1.0.0 saved to shop/public/add_invoices on GitHub, with its rollback.")
+    ).toBeInTheDocument();
+  });
+});
+
+describe("the line of saved versions", () => {
+  it("lists what GitHub holds, oldest first, then the draft", async () => {
+    setRoutes([
+      { match: "/api/github/family", body: { ok: true, versions: ["1.0.0", "1.2.0"] } },
+      {
+        match: "/api/github/pull",
+        body: {
+          ok: true,
+          scripts: [savedScript({ version: "1.2.0", rollback_state: "none" }), savedScript()],
+          warnings: [],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices", true);
+    writeSql("SQL", "ALTER TABLE invoices ADD COLUMN paid_on date;");
+    await saveButton("1.3.0");
+
+    const line = screen.getByRole("region", { name: "Saved versions of this script group" });
+    expect(within(line).getByText("2 saved versions, oldest first")).toBeInTheDocument();
+    const steps = within(line).getAllByRole("listitem").map((item) => item.textContent);
+    expect(steps).toEqual(["v1.0.0with rollback", "v1.2.0no rollback", "v1.3.0this draft, not saved"]);
+  });
+
+  it("is not drawn before a script group is picked", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+    await screen.findByRole("combobox", { name: "Connection" });
+    expect(screen.queryByRole("region", { name: "Saved versions of this script group" })).toBeNull();
+  });
+});

@@ -36,7 +36,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
@@ -692,12 +692,12 @@ describe("the run itself", () => {
 
     const failed = (
       await screen.findByText("failed · the whole run was rolled back", undefined, { timeout: 3000 })
-    ).closest(".mig-row") as HTMLElement;
+    ).closest(".dp-mig-row") as HTMLElement;
     expect(failed).toHaveTextContent("v1.0.1");
 
     const skipped = screen
       .getByText("skipped · the run rolled back before this one could commit")
-      .closest(".mig-row") as HTMLElement;
+      .closest(".dp-mig-row") as HTMLElement;
     expect(skipped).toHaveTextContent("v1.0.2");
 
     expect(screen.getByText(/0 of 2 applied/)).toBeInTheDocument();
@@ -772,7 +772,7 @@ describe("arriving from a link on the Requests page", () => {
     body: { schemas: ["archive", "public"] },
   };
   /** The version the run would end on, from the summary beside the run button. */
-  const endsOn = () => document.querySelector(".vchip.next");
+  const endsOn = () => document.querySelector(".dp-chip.dp-next");
 
   it("opens on the target the link names and reads it", async () => {
     setRoutes([twoSchemas, ...baseRoutes()]);
@@ -965,5 +965,79 @@ describe("picking another target while the first is still being read", () => {
     expect(
       screen.queryByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("the timeline of what has run", () => {
+  // Rows shaped as /api/scripts/attempts sends them, dated from the clock so
+  // they always fall inside the default 30 days. Newest first, as the route
+  // sends them.
+  function attemptsRoute() {
+    const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+    const row = (id: number, age: number, over: Record<string, unknown>) => ({
+      id,
+      connection_id: 1,
+      schema_name: "public",
+      scripts: [{ script_name: "invoices", version: "1.0.0" }],
+      outcome: "applied",
+      dry_run: false,
+      http_status: 200,
+      detail: null,
+      actor: "dana@example.com",
+      created_at: daysAgo(age),
+      ...over,
+    });
+    return {
+      match: "/api/scripts/attempts",
+      body: {
+        attempts: [
+          row(3, 2, { outcome: "refused", http_status: 403, detail: "Your role cannot run this." }),
+          row(2, 12, {}),
+          row(1, 60, { dry_run: true }),
+        ],
+      },
+    };
+  }
+
+  it("marks each attempt in range, and shows the reason of the one picked", async () => {
+    setRoutes([attemptsRoute(), ...baseRoutes()]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    // Two of the three rows are inside the last 30 days.
+    const shipped = await screen.findByRole("button", { name: /^Shipped: invoices v1\.0\.0/ });
+    const stopped = screen.getByRole("button", { name: /^Stopped: invoices v1\.0\.0/ });
+    expect(screen.queryByRole("button", { name: /^Rehearsed:/ })).not.toBeInTheDocument();
+    expect(shipped).toHaveAttribute("aria-pressed", "false");
+
+    // A refused run keeps the reason the server gave.
+    fireEvent.click(stopped);
+    expect(stopped).toHaveAttribute("aria-pressed", "true");
+    const panel = document.querySelector(".dp-tl-d") as HTMLElement;
+    expect(within(panel).getByText("Your role cannot run this.")).toBeInTheDocument();
+    expect(within(panel).getByText(/Refused before anything ran/)).toBeInTheDocument();
+    expect(within(panel).getByText(/by dana@example\.com/)).toBeInTheDocument();
+
+    // A longer range brings the older rehearsal in.
+    fireEvent.click(screen.getByRole("button", { name: "90 days" }));
+    expect(screen.getByRole("button", { name: /^Rehearsed: invoices v1\.0\.0/ })).toBeInTheDocument();
+
+    // The run picked on this page has its own marker, and it is not history.
+    fireEvent.click(screen.getByRole("button", { name: /^This run, not started yet/ }));
+    expect(within(panel).getByText(/Not started yet/)).toBeInTheDocument();
+
+    // Every attempt is also in the list, whatever the range.
+    expect(screen.getByText("Every attempt as a list (3)")).toBeInTheDocument();
+  });
+
+  it("says so when nothing has been run", async () => {
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(
+      await screen.findByText("Nothing has been run on this schema from here yet.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Every attempt as a list/)).not.toBeInTheDocument();
   });
 });

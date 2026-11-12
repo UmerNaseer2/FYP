@@ -1,0 +1,179 @@
+/* =====================================================================
+   Connections, in the Atelier design.
+   Everything here sits under .cn-page (the page's root), so nothing leaks
+   to another screen. Only colours and sizes from app/globals.css are used,
+   so both themes work without a second set of rules.
+   ===================================================================== */
+
+.cn-page { background:var(--bg); min-height:100%; }
+.cn-main { padding:32px 32px 56px; max-width:1280px; }
+
+/* The counts under the title, as one sentence. */
+.cn-sum { margin-top:10px; font-size:14px; line-height:1.5; color:var(--ink-2); }
+
+/* The role note and the warnings: same boxes as before, with Atelier corners. */
+.cn-page .cn-note { margin-top:14px; border-radius:var(--r-lg); font-size:13.5px; line-height:1.5;
+                    color:var(--ink-2); align-items:flex-start; }
+.cn-page .cn-note b { color:var(--ink); }
+
+/* Filters and search */
+.cn-filters { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-top:22px; }
+.cn-filters__pills { display:flex; flex-wrap:wrap; gap:8px; }
+.cn-filters__tools { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
+/* The shared filter pill, made big enough to press. The chosen one is filled
+   with ink, as in the prototype. */
+.cn-filters .pill { min-height:36px; padding:0 14px; font-size:13px; cursor:pointer;
+                    border:1.5px solid var(--line-strong); background:transparent; color:var(--ink-2);
+                    transition:background var(--dur-1) ease, color var(--dur-1) ease, border-color var(--dur-1) ease; }
+.cn-filters .pill:hover { border-color:var(--ink); color:var(--ink); }
+.cn-filters .pill[aria-pressed="true"] { background:var(--pill); color:var(--on-pill); border-color:var(--pill); }
+.cn-filters .pill .dot { display:none; }
+.cn-search { display:flex; align-items:center; gap:8px; min-height:40px; padding:0 14px; width:240px; max-width:100%;
+             border:1.5px solid var(--line-strong); border-radius:var(--r-pill); background:var(--surface); color:var(--ink-3); }
+.cn-search:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.cn-search input { flex:1; min-width:0; border:0; outline:0; background:transparent; color:var(--ink); font:inherit; font-size:14px; }
+.cn-search input::placeholder { color:var(--ink-3); opacity:1; }
+.cn-group { display:flex; align-items:center; gap:8px; min-height:40px; font-size:13px; color:var(--ink-2); cursor:pointer; }
+
+/* The card grid */
+.cn-group-block { margin-top:20px; }
+.cn-group-head { display:flex; align-items:center; gap:10px; margin:0 0 10px; font-size:12.5px; font-weight:500; color:var(--ink-3); }
+.cn-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:16px; }
+.cn-card { display:flex; flex-direction:column; gap:10px; min-width:0; padding:20px 22px;
+           background:var(--surface); border-radius:var(--r-xl); box-shadow:var(--lift);
+           transition:transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2) ease;
+           animation:rise var(--dur-3) var(--ease-out) backwards; }
+.cn-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-lg); }
+.cn-card__top { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; }
+.cn-card__ico { width:38px; height:38px; flex:none; display:grid; place-items:center;
+                border-radius:var(--r-md); background:var(--tint); color:var(--ink); }
+.cn-card h3 { flex:1 1 120px; min-width:0; margin:0; font:700 18px/1.2 var(--display); letter-spacing:-.02em;
+              color:var(--ink); overflow-wrap:anywhere; }
+.cn-card__where { display:block; padding:8px 10px; border-radius:var(--r-sm); background:var(--surface-2);
+                  font:400 12.5px/1.45 var(--mono); color:var(--ink); overflow-wrap:anywhere; }
+.cn-card__meta { margin:0; font-size:12.5px; line-height:1.45; color:var(--ink-3); overflow-wrap:anywhere; }
+.cn-card__pills { display:flex; flex-wrap:wrap; gap:6px; }
+.cn-card__acts { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:auto; padding-top:6px; }
+.cn-card__del { color:var(--remove); margin-left:auto; }
+.cn-card__del[disabled] { color:var(--ink-3); }
+
+/* The health line: a dot, what the last test found, and when. */
+.cn-health { display:flex; align-items:flex-start; gap:8px; margin:0; font-size:13.5px; line-height:1.45; color:var(--ink-2); }
+.cn-health--bad { color:var(--remove); font-weight:600; }
+.cn-health__server { display:block; font:400 12px/1.4 var(--mono); color:var(--ink-3); }
+.cn-dot { width:9px; height:9px; margin-top:5px; flex:none; border-radius:50%; background:var(--ink-3); }
+.cn-dot--ok { background:var(--add); }
+.cn-dot--bad { background:var(--remove); }
+.cn-page .cn-spin { width:13px; height:13px; margin-top:3px; }
+/* Why the last test failed, in the database's own words. */
+.cn-why { margin:0; padding:9px 12px; border-radius:var(--r-md); background:var(--remove-soft); color:var(--remove);
+          font-size:12.5px; line-height:1.45; overflow-wrap:anywhere; }
+
+/* Page states: loading, could not read, nothing matches */
+.cn-grid[role="status"] { margin-top:22px; }
+.cn-loading { grid-column:1 / -1; font-size:13px; color:var(--ink-3); }
+.cn-bone { height:210px; border-radius:var(--r-xl);
+           background:linear-gradient(90deg, var(--surface-3) 0%, var(--surface-2) 50%, var(--surface-3) 100%);
+           background-size:200% 100%; animation:sk 1.4s linear infinite; }
+.cn-state { display:flex; align-items:flex-start; gap:16px; margin-top:22px; padding:24px 26px; max-width:640px;
+            background:var(--surface); border-radius:var(--r-xl); box-shadow:var(--lift); }
+.cn-state__ico { width:44px; height:44px; flex:none; display:grid; place-items:center; border-radius:var(--r-lg);
+                 background:var(--tint); color:var(--ink); }
+.cn-state__ico--bad { background:var(--remove-soft); color:var(--remove); }
+.cn-state h2 { margin:0; font:700 19px/1.25 var(--display); letter-spacing:-.02em; color:var(--ink); overflow-wrap:anywhere; }
+.cn-state p { margin:6px 0 14px; font-size:14px; line-height:1.5; color:var(--ink-2); }
+
+/* First run: nothing saved yet */
+.cn-first { display:grid; grid-template-columns:200px minmax(0, 1fr); gap:32px; align-items:center;
+            margin-top:24px; padding:32px 34px; max-width:860px;
+            background:var(--surface); border-radius:var(--r-xl); box-shadow:var(--lift);
+            animation:rise var(--dur-3) var(--ease-out) backwards; }
+.cn-first__art { aspect-ratio:1; display:grid; place-items:center; border-radius:var(--r-xl);
+                 border:2px dashed var(--line-strong); background:var(--surface-2); color:var(--ink-3); }
+.cn-first__label { margin:0 0 6px; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent-ink); }
+.cn-first h2 { margin:0; font:800 clamp(24px, 3.4vw, 30px)/1.1 var(--display); letter-spacing:-.03em; color:var(--ink); }
+.cn-first p { margin:8px 0 16px; max-width:48ch; font-size:14.5px; line-height:1.5; color:var(--ink-2); }
+.cn-first__steps { margin:20px 0 0; padding:0; list-style:none; counter-reset:cn-step; display:grid; gap:8px; }
+.cn-first__steps li { counter-increment:cn-step; display:grid; grid-template-columns:26px minmax(0, 1fr); gap:10px;
+                      font-size:13.5px; line-height:1.5; color:var(--ink-2); }
+.cn-first__steps li::before { content:counter(cn-step); width:24px; height:24px; display:grid; place-items:center;
+                              border-radius:50%; background:var(--tint); color:var(--ink); font-weight:700; font-size:12px; }
+.cn-first__steps b { color:var(--ink); font-weight:600; }
+
+/* Under the cards */
+.cn-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 24px; margin-top:22px; }
+.cn-foot p, .cn-foot__next span { margin:0; font-size:13px; color:var(--ink-3); }
+.cn-foot__next { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+
+/* On linked computers */
+.cn-linked { margin-top:40px; }
+.cn-linked__head { display:flex; align-items:center; gap:8px; color:var(--ink); }
+.cn-linked__head h2 { margin:0; font:700 20px/1.2 var(--display); letter-spacing:-.02em; }
+.cn-linked__sub { max-width:70ch; margin:4px 0 14px; font-size:13.5px; }
+.cn-linked__list { display:flex; flex-wrap:wrap; gap:6px 16px; margin:0; padding:0; list-style:none; font-size:13px; color:var(--ink); }
+.cn-linked__list li { display:flex; align-items:center; gap:6px; }
+.cn-card--computer:hover { transform:none; box-shadow:var(--lift); }
+
+/* The add and edit drawer
+   The markup keeps the shared .drawer classes. These rules only change how
+   it looks on this page: rounded on its left side, roomier fields, a pill
+   for every choice. */
+.cn-page .drawer { width:480px; border-left:0; border-radius:var(--r-xl) 0 0 var(--r-xl); overflow:hidden;
+                   transition:transform var(--dur-3) var(--ease-out); }
+.cn-page .drawer-header { padding:20px 24px 16px; border-bottom:1px solid var(--line); }
+.cn-page .drawer-header h2 { font:800 22px/1.15 var(--display); letter-spacing:-.03em; white-space:normal; }
+.cn-page .drawer-body { padding:20px 24px; }
+.cn-page .drawer-footer { padding:16px 24px; border-top:1px solid var(--line); background:var(--surface); }
+.cn-page .drawer .input { min-height:44px; border-radius:var(--r-md); }
+.cn-page .drawer .seg { flex-wrap:wrap; gap:6px; padding:0; border:0; background:transparent; border-radius:0; }
+.cn-page .drawer .seg button { min-height:36px; padding:0 14px; border-radius:var(--r-pill); font-size:13px; font-weight:600;
+                               border:1.5px solid var(--line-strong); color:var(--ink-2); }
+.cn-page .drawer .seg button:hover { border-color:var(--ink); color:var(--ink); }
+.cn-page .drawer .seg button.active,
+.cn-page .drawer .seg button[aria-checked="true"] { background:var(--pill); color:var(--on-pill); border-color:var(--pill); box-shadow:none; }
+.cn-page .drawer .pill-outline { min-height:32px; padding:0 12px; cursor:pointer; }
+.cn-page .drawer .panel,
+.cn-page .drawer .ssl-card,
+.cn-page .drawer .test-banner,
+.cn-page .drawer .warn-inline { border-radius:var(--r-lg); }
+.cn-page .local-finder__pick { border-radius:var(--r-md); min-height:48px; }
+.cn-page .local-finder__pick:focus-visible { outline:3px solid var(--accent); }
+
+/* Dialogs and the toast */
+.cn-page .modal { border:0; border-radius:var(--r-xl); box-shadow:var(--shadow-lg); padding:26px 28px;
+                  max-height:calc(100dvh - 48px); overflow-y:auto; }
+.cn-page .modal h2, .cn-page .modal h3 { font-family:var(--display); letter-spacing:-.02em; }
+.cn-page .toast { background:var(--pill); color:var(--on-pill); border-radius:var(--r-pill); padding:11px 18px; font-weight:600; }
+
+/* Phones
+   One column, nothing wider than the screen, and everything you press is at
+   least 44px tall. */
+@media (max-width: 640px) {
+  .cn-main { padding:20px 16px 40px; }
+  .cn-grid { grid-template-columns:minmax(0, 1fr); }
+  .cn-filters__tools, .cn-search { width:100%; }
+  .cn-search, .cn-group { min-height:44px; }
+  .cn-filters .pill { min-height:44px; }
+  .cn-card { padding:18px; }
+  .cn-page .cn-card__acts .btn, .cn-page .cn-tap { min-height:44px; }
+  .cn-page .cn-card__acts .btn-icon { width:44px; height:44px; }
+  .cn-state { flex-direction:column; padding:20px 18px; }
+  .cn-first { grid-template-columns:minmax(0, 1fr); gap:18px; padding:22px 18px; }
+  .cn-first__art { max-width:120px; }
+  .cn-foot { align-items:flex-start; flex-direction:column; }
+  .cn-page .drawer { width:100vw; border-radius:0; }
+  .cn-page .drawer-header { padding:16px; }
+  .cn-page .drawer-body { padding:16px; }
+  .cn-page .drawer-footer { padding:12px 16px; }
+  .cn-page .drawer .btn, .cn-page .modal .btn { min-height:44px; }
+  .cn-page .drawer .seg button, .cn-page .drawer .pill-outline { min-height:44px; }
+  .cn-page .modal { padding:22px 18px; }
+  .cn-page .modal-scrim { padding:16px; }
+}
+
+/* No movement for people who ask for none. */
+@media (prefers-reduced-motion: reduce) {
+  .cn-card, .cn-first, .cn-bone { animation:none; }
+  .cn-card, .cn-page .drawer { transition:none; }
+  .cn-card:hover { transform:none; }
+}

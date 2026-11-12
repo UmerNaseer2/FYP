@@ -90,7 +90,7 @@ export function AiTab({ active }: { active: boolean }) {
 
   if (loadError && !view) {
     return (
-      <div className="role-note" role="alert">
+      <div className="ad-note" role="alert">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">{"Couldn't load the AI settings"}</div>
@@ -115,7 +115,7 @@ export function AiTab({ active }: { active: boolean }) {
   return (
     <div className="space-y-6">
       {actionError && (
-        <div className="role-note" role="alert">
+        <div className="ad-note" role="alert">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">{"Couldn't save"}</div>
@@ -125,7 +125,7 @@ export function AiTab({ active }: { active: boolean }) {
       )}
 
       {!setup.configured && !view.orgKey && (
-        <div className="role-note">
+        <div className="ad-note">
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="title">No AI service is set up on this server</div>
@@ -138,9 +138,9 @@ export function AiTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      <Card className="p-4 sm:p-5">
+      <Card className="ad-aim p-5 sm:p-6">
         <div className="flex items-center">
-          <h3 className="section-title">AI assistance</h3>
+          <h3 className="ad-aim__title">AI assistance</h3>
           <HelpHint label="What is sent">
             {`${SENT} Every answer is checked before it is shown, and nothing runs without approval.`}
           </HelpHint>
@@ -183,11 +183,11 @@ export function AiTab({ active }: { active: boolean }) {
       />
 
       <Card className="p-4 sm:p-5">
-        <h3 className="section-title">Features</h3>
-        <ul className="mt-2 space-y-2">
+        <h3 className="ad-h">Features</h3>
+        <ul className={view.enabled ? "ad-feats" : "ad-feats off"}>
           {view.features.map((feature) => (
             <li key={feature.key}>
-              <label className="flex items-center gap-3 text-[13.5px]">
+              <label className="ad-feat">
                 <input
                   type="checkbox"
                   role="switch"
@@ -232,7 +232,7 @@ function UsageCard({ view }: { view: AiAdminView }) {
   if (!usage) {
     return (
       <Card className="p-4 sm:p-5">
-        <h3 className="section-title">Use</h3>
+        <h3 className="ad-h">Use</h3>
         <p className="text-[13px] mt-2" style={{ color: "var(--text-2)" }}>
           The use figures could not be read just now.
         </p>
@@ -244,7 +244,7 @@ function UsageCard({ view }: { view: AiAdminView }) {
     <Card className="p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div className="flex items-center">
-          <h3 className="section-title">{`Use in the last ${usage.days} days`}</h3>
+          <h3 className="ad-h">{`Use in the last ${usage.days} days`}</h3>
           <HelpHint label="Use figures">
             One request to the AI service is one call, retries included. Saved answers cost nothing.
             Failed means no usable answer: the service was busy, out of allowance or too slow, or the
@@ -263,7 +263,7 @@ function UsageCard({ view }: { view: AiAdminView }) {
         </p>
       ) : (
         <div className="mt-3 overflow-x-auto">
-          <table className="responsive-table w-full text-[12.5px]" style={{ borderCollapse: "collapse" }}>
+          <table className="responsive-table ad-use w-full">
             <thead>
               <tr className="text-left" style={{ color: "var(--text-3)", borderBottom: "1px solid var(--border)" }}>
                 {["Feature", "Calls", "Saved", "Failed", "Tokens in / out", "Median", "Slowest 5%", "Thumbs"].map(

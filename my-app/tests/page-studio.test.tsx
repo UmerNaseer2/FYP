@@ -359,3 +359,132 @@ describe("for a role that may not track, check or stop tracking", () => {
     expect(screen.queryByText(/Your role/)).toBeNull();
   });
 });
+
+describe("the skyline", () => {
+  const SECOND: TrackedSchemaListItem = {
+    ...TRACKED,
+    id: 8,
+    schemaName: "billing",
+    environment: "prod",
+    migrationCount: 4,
+    driftStatus: "drifted",
+    driftSummary: "1 table removed",
+  };
+
+  it("draws one building per tracked schema and says what each one is", async () => {
+    setRoutes(baseRoutes([TRACKED, SECOND]));
+    render(<StudioPage />);
+
+    // Drifted stands first, so it is the one picked to begin with.
+    const billing = await screen.findByRole("button", {
+      name: "billing, Production, Drifted, 4 recorded versions",
+    });
+    const shop = screen.getByRole("button", {
+      name: "shop, Dev, Not checked, 0 recorded versions",
+    });
+    expect(billing).toHaveAttribute("aria-pressed", "true");
+    expect(shop).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("link", { name: "Review drift on billing" })).toBeInTheDocument();
+    expect(screen.getByText(/A taller one has more recorded versions/)).toBeInTheDocument();
+  });
+
+  it("shows the building you press, by mouse or by keyboard", async () => {
+    setRoutes(baseRoutes([TRACKED, SECOND]));
+    render(<StudioPage />);
+
+    const shop = await screen.findByRole("button", { name: /^shop, Dev/ });
+    fireEvent.click(shop);
+    expect(shop).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Stop tracking shop" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Review drift/ })).toBeNull();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: /^billing, Production/ }), {
+      key: "Enter",
+    });
+    expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
+  });
+
+  it("lists what has drifted under Needs you, and picks it from there", async () => {
+    setRoutes(baseRoutes([TRACKED, SECOND]));
+    render(<StudioPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^shop, Dev/ }));
+    const row = screen.getByRole("button", { name: /billing.*1 table removed/ });
+    fireEvent.click(row);
+    expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
+  });
+
+  it("reads the table counts only when Tables is picked as the height", async () => {
+    setRoutes([
+      ...baseRoutes([TRACKED]),
+      { match: "/api/lineage/7", body: { migrations: [{ snapshot: { tableCount: 12 } }] } },
+    ]);
+    render(<StudioPage />);
+
+    await screen.findByRole("button", { name: /^shop, Dev/ });
+    expect(fetchCalls.some((call) => call.url === "/api/lineage/7")).toBe(false);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
+    expect(
+      await screen.findByRole("button", { name: "shop, Dev, Not checked, 12 tables" })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/had more tables in its latest recorded version/)).toBeInTheDocument();
+  });
+
+  it("says so when a table count cannot be read, rather than drawing a zero", async () => {
+    setRoutes([
+      ...baseRoutes([TRACKED]),
+      { match: "/api/lineage/7", status: 500, body: { error: "no" } },
+    ]);
+    render(<StudioPage />);
+
+    await screen.findByRole("button", { name: /^shop, Dev/ });
+    fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
+    expect(
+      await screen.findByRole("button", { name: "shop, Dev, Not checked, table count not known" })
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("Couldn't read")).length).toBeGreaterThan(0);
+  });
+
+  it("shows one environment at a time, and says when it is empty", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    await screen.findByRole("button", { name: /^shop, Dev/ });
+    fireEvent.click(screen.getByRole("button", { name: /^Production/ }));
+    expect(screen.getByText("Nothing tracked in Production")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^shop, Dev/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all environments" }));
+    expect(screen.getByRole("button", { name: /^shop, Dev/ })).toBeInTheDocument();
+  });
+});
+
+describe("before anything is tracked", () => {
+  it("sends somebody with no saved connection to add one first", async () => {
+    setRoutes([
+      { match: "/api/connections", body: [] },
+      { match: /\/api\/lineage$/, body: [] },
+    ]);
+    render(<StudioPage />);
+
+    expect(await screen.findByText("Add a connection first")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Add a connection/ })).toHaveAttribute(
+      "href",
+      "/test-org/connections"
+    );
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
+  });
+
+  it("says the list could not be read rather than that nothing is tracked", async () => {
+    setRoutes([
+      { match: "/api/connections", body: CONNECTIONS },
+      { match: /\/api\/lineage$/, status: 500, body: { error: "down" } },
+    ]);
+    render(<StudioPage />);
+
+    expect(await screen.findByText("Couldn't load tracked schemas")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing tracked yet")).toBeNull();
+    expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+  });
+});

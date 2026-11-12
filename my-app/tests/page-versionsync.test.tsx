@@ -16,7 +16,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
@@ -457,5 +457,62 @@ describe("who may replay", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dry run" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Replay 1 version on production" })).toBeDisabled();
+  });
+});
+
+describe("the version line", () => {
+  /** What each step of the line says, read the way a screen reader would. */
+  async function lineSteps() {
+    const line = await screen.findByRole("region", { name: "The Source's versions" });
+    return within(line)
+      .getAllByRole("listitem")
+      .map((step) => step.textContent);
+  }
+
+  it("draws the Source's versions in order, with a pin where the Target has got to", async () => {
+    setRoutes(baseRoutes());
+    await pickStagingToLive();
+
+    // v1.0.0 is on both, so the Target's pin sits on it; v2.0.0 is the one a
+    // replay can run, and the newest the Source has.
+    expect(await lineSteps()).toEqual(["Targetv1.0.0on the Target", "Sourcev2.0.0can run"]);
+  });
+
+  it("marks the version every run stops before, and the ones waiting behind it", async () => {
+    // v2.0.0 was applied before its SQL was stored, so nothing can be sent for
+    // it, and v3.0.0 cannot run until it has.
+    const source = [
+      SOURCE_LEDGER[0],
+      { ...SOURCE_LEDGER[1], hasSql: false, sqlContent: null },
+      entry("3.0.0", "2026-03-01T00:00:00Z"),
+    ];
+    setRoutes([
+      {
+        match: "/api/versionsync/ledger",
+        body: (url: string) =>
+          url.includes("connectionId=1") ? { entries: source } : { entries: TARGET_LEDGER },
+      },
+      ...baseRoutes(),
+    ]);
+    await pickStagingToLive();
+
+    expect(await lineSteps()).toEqual([
+      "Targetv1.0.0on the Target",
+      "v2.0.0runs stop here",
+      "Sourcev3.0.0waits",
+    ]);
+    // And nothing is offered to run, on the line or in the list.
+    expect(screen.queryByRole("button", { name: /^Run / })).toBeNull();
+  });
+
+  it("is not drawn for a Source with nothing applied", async () => {
+    setRoutes([
+      { match: "/api/versionsync/ledger", body: { entries: [] } },
+      ...baseRoutes(),
+    ]);
+    await pickStagingToLive();
+
+    expect(await screen.findByText("The Source has no applied scripts")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "The Source's versions" })).toBeNull();
   });
 });

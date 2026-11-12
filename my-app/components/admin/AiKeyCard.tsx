@@ -96,7 +96,7 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex items-center">
-        <h3 className="section-title">Organization AI key</h3>
+        <h3 className="ad-h">Organization AI key</h3>
         <HelpHint label="Organization AI key">
           {"AI uses the service set up on this server unless an Admin saves this organization's own key here. " +
             "Every AI call then goes to that service with that key, and is billed to that account."}
@@ -115,7 +115,7 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
       )}
 
       {saved && !saved.readable && (
-        <div className="role-note mt-3" role="alert">
+        <div className="ad-note mt-3" role="alert">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">{"The saved key can't be read on this server"}</div>

@@ -248,9 +248,9 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
     BUILT_IN_ROLE_INFO[LINK_INVITE_ROLE].label;
 
   return (
-    <Card className="mt-6 p-4 sm:p-5">
+    <Card className="ad-inv p-5 sm:p-6">
       <div className="flex items-center">
-        <h2 className="text-[15px] font-semibold">Invite people</h2>
+        <h2 className="ad-h2">Invite people</h2>
         <HelpHint label="Invite people">
           Make an invitation here, then send its link to the person yourself. The app does not send
           email. The link is shown once, so copy it then.
@@ -267,7 +267,7 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
 
           <form className="mt-4" onSubmit={(event) => void makeEmailInvite(event)} noValidate>
             <div className="flex items-center">
-              <h3 className="section-title">To an email address</h3>
+              <h3 className="ad-h">To an email address</h3>
               <HelpHint label="To an email address">
                 Only someone who signs in with this address can take it, once, within{" "}
                 {EMAIL_INVITE_DAYS} days.
@@ -328,7 +328,7 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
           </form>
 
           <form className="mt-5" onSubmit={(event) => void makeLinkInvite(event)} noValidate>
-            <h3 className="section-title">As a link</h3>
+            <h3 className="ad-h">As a link</h3>
             <div className="mt-2 grid gap-3 sm:grid-cols-[170px_auto] sm:justify-start sm:items-end">
               <div>
                 <Label htmlFor={daysId} className="mb-1 block">
@@ -365,7 +365,7 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
           </form>
 
           <div className="mt-5">
-            <h3 className="section-title">Waiting to be taken</h3>
+            <h3 className="ad-h">Waiting to be taken</h3>
             {listError && <FormProblem message={listError} />}
             {cancelError && <FormProblem message={cancelError} />}
             {listing.invites.length === 0 ? (
@@ -453,7 +453,7 @@ function MadeInvite({ made, onDone }: { made: Made; onDone: () => void }) {
   const { invite } = made;
   return (
     <section
-      className="role-note mt-4 flex-col"
+      className="ad-note mt-4 flex-col"
       aria-labelledby={headingId}
       style={{ gap: 8 }}
     >

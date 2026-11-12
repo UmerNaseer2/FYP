@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ErrorNote, JSON_HEADERS, Meta, errorFrom } from "@/components/phone/parts";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { Button, Card, Input } from "@/components/ui";
+import { AlertCircleIcon, CheckIcon } from "@/components/ui/icons";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { useOrg } from "@/hooks/useOrg";
 import { readUserCode } from "@/lib/agent-rules";
@@ -12,6 +13,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { orgHref } from "@/lib/org-slug";
 import { isOrgListing, type OrgSummary } from "@/lib/organization-list";
 import { timeAgo } from "@/lib/time-ago";
+import "@/app/styles/atelier-devices.css";
 
 const COULD_NOT_READ = "Could not read that code. Try again.";
 const COULD_NOT_LINK = "Could not link that computer. Try again.";
@@ -154,17 +156,17 @@ export default function LinkComputer() {
         ];
 
   return (
-    <div
-      className="min-h-dvh px-4 py-10"
-      style={{ background: "var(--bg)", color: "var(--text)" }}
-    >
-      <main className="mx-auto w-full max-w-[460px] flex flex-col gap-4">
+    <div className="dv-link">
+      <main className="dv-link__main">
         <PageHeader page="/link-computer" />
 
         {finished === "linked" && (
-          <Card className="p-4">
-            <p className="text-[14px] font-semibold">Linked</p>
-            <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
+          <Card className="dv-card dv-done">
+            <span className="dv-done__mark" aria-hidden="true">
+              <CheckIcon size={20} />
+            </span>
+            <p className="dv-card__title">Linked</p>
+            <p className="dv-text">
               {asking} is linked to your account in {orgName}. Close this page and go back to
               Schema Studio on the computer.
             </p>
@@ -172,32 +174,36 @@ export default function LinkComputer() {
         )}
 
         {finished === "turned-away" && (
-          <Card className="p-4">
-            <p className="text-[14px] font-semibold">Nothing was linked</p>
-            <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
+          <Card className="dv-card">
+            <p className="dv-card__title">Nothing was linked</p>
+            <p className="dv-text">
               That computer was turned away. You can close this page.
             </p>
           </Card>
         )}
 
         {finished === null && (
-          <Card className="p-4 flex flex-col gap-3">
-            <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
+          <Card className="dv-card dv-form">
+            <p className="warn-inline dv-note">
+              <AlertCircleIcon size={16} />
+              <span>
               Only link a computer you are sitting at. Type the code it is showing in Schema
               Studio&apos;s Settings. Never type a code that someone sent you.
+              </span>
             </p>
-            <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
+            <p className="dv-text">
               Linking lets that computer open {orgName}&apos;s saved connections, including their
               passwords, and answer questions from your account.
             </p>
 
-            <div className="flex flex-col gap-1">
-              <label className="section-title" htmlFor={codeFieldId}>
+            <div className="dv-field">
+              <label className="dv-label" htmlFor={codeFieldId}>
                 Code shown on the computer
               </label>
               <Input
                 id={codeFieldId}
                 mono
+                className="dv-code"
                 autoComplete="off"
                 autoCapitalize="characters"
                 spellCheck={false}
@@ -211,8 +217,8 @@ export default function LinkComputer() {
             </div>
 
             {others.length > 0 && org !== null && (
-              <div className="flex flex-col gap-1">
-                <label className="section-title" htmlFor={orgFieldId}>
+              <div className="dv-field">
+                <label className="dv-label" htmlFor={orgFieldId}>
                   Organization
                 </label>
                 <Select
@@ -228,26 +234,25 @@ export default function LinkComputer() {
 
             {asking !== null && (
               <>
-                <p className="text-[14px] font-semibold">
+                <p className="dv-card__title">
                   Link {asking} to {orgName}?
                 </p>
                 {openedAt !== null && (
-                  <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
+                  <p className="dv-text">
                     This computer asked to be linked at {clockTime(openedAt)} ({timeAgo(openedAt)}). If you
                     did not start that on your computer just now, choose Not mine.
                   </p>
                 )}
-                <div className="flex gap-2">
+                <div className="dv-acts">
                   <Button
-                    size="sm"
+                    variant="primary"
                     disabled={busy}
                     onClick={() => void answer("POST", COULD_NOT_LINK, "linked")}
                   >
                     Link this computer
                   </Button>
                   <Button
-                    size="sm"
-                    variant="ghost"
+                    variant="secondary"
                     disabled={busy}
                     onClick={() => void answer("DELETE", COULD_NOT_TURN_AWAY, "turned-away")}
                   >

@@ -528,7 +528,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
       {phase === "ready" && (
         <>
           <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
-            <div className="seg" role="group" aria-label="View">
+            <div className="ad-seg" role="group" aria-label="View">
               <button
                 type="button"
                 className={view === "one" ? "active" : ""}
@@ -556,7 +556,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
           {/* One card per role: its name, what it adds up to (unsaved changes
               included) and how many people have it. A screen reader gets the
               same from aria-label, with commas between the parts. */}
-          <div role="group" aria-label="Roles" className="role-cards mt-3">
+          <div role="group" aria-label="Roles" className="ad-roles mt-3">
             {roles.map((role) => {
               const isCurrent = view === "one" && role.name === current?.name;
               const unsaved = unsavedCount(role) > 0;
@@ -565,19 +565,19 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
                 <button
                   key={role.name}
                   type="button"
-                  className={isCurrent ? "role-card current" : "role-card"}
+                  className={isCurrent ? "ad-role current" : "ad-role"}
                   aria-pressed={isCurrent}
                   aria-label={`${role.label}, ${summary}, ${peopleText(role.userCount)}${
                     unsaved ? ", unsaved changes" : ""
                   }`}
                   onClick={() => selectRole(role.name)}
                 >
-                  <span className="role-card__name">
+                  <span className="ad-role__name">
                     {role.label}
-                    {unsaved && <span className="perm-unsaved">Unsaved</span>}
+                    {unsaved && <span className="ad-perm-unsaved">Unsaved</span>}
                   </span>
-                  <span className="role-card__summary">{summary}</span>
-                  <span className="role-card__people">{peopleText(role.userCount)}</span>
+                  <span className="ad-role__summary">{summary}</span>
+                  <span className="ad-role__people">{peopleText(role.userCount)}</span>
                 </button>
               );
             })}
@@ -586,7 +586,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
           {creating && (
             <Card className="mt-4 p-4 sm:p-5">
               <form onSubmit={(event) => void create(event)}>
-                <h2 className="text-[15px] font-semibold">New role</h2>
+                <h2 className="ad-h2">New role</h2>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <div>
                     <Label htmlFor={nameId} className="mb-1 block">
@@ -655,7 +655,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
           {view === "compare" && (
             <Card className="mt-4 p-4 sm:p-5">
               <div className="flex items-center mb-3">
-                <h2 className="text-[15px] font-semibold">Compare roles</h2>
+                <h2 className="ad-h2">Compare roles</h2>
                 <HelpHint label="Compare roles">
                   Every role side by side. It only shows. Pick a role above to change what it can do.
                 </HelpHint>
@@ -667,18 +667,13 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
           {/* Not overflow-hidden: the save bar at the bottom is sticky, and a
               card that clips its contents would stop it sticking. */}
           {view === "one" && current && (
-            <Card className="mt-4 p-0">
+            <Card className="ad-ed mt-4 p-0">
               <div className="p-4 sm:p-5 flex items-start justify-between gap-3 flex-wrap">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="text-[16px] font-semibold">{current.label}</h2>
+                    <h2 className="ad-title">{current.label}</h2>
                     {current.builtIn && (
-                      <span
-                        className="text-[10.5px] px-1.5 py-0.5 rounded-md flex-none"
-                        style={{ background: "var(--surface-2)", color: "var(--text-3)" }}
-                      >
-                        Built in
-                      </span>
+                      <span className="ad-tag">Built in</span>
                     )}
                   </div>
                   {current.description && (
@@ -732,7 +727,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
               {/* The four things people ask about a role first, worked out from
                   its lines as they are on screen, unsaved changes included. */}
               <div className="px-4 sm:px-5 pb-4" role="group" aria-label="At a glance">
-                <dl className="role-glance">
+                <dl className="ad-glance">
                   {glance(current.name, shown).map((row) => (
                     <div key={row.label} className={row.yes ? "yes" : "no"}>
                       <dt>{row.label}</dt>
@@ -744,7 +739,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
 
               {isAdminRole && (
                 <div className="px-4 sm:px-5 pb-4">
-                  <div className="role-note">
+                  <div className="ad-note">
                     <InfoIcon size={15} className="ico" />
                     <div>
                       <div className="title">Admin can always do everything</div>
@@ -769,7 +764,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
               />
 
               {(dirty || notice) && (
-                <div className="role-savebar">
+                <div className="ad-bar">
                   {notice && (
                     <div
                       className={notice.tone === "ok" ? "test-banner test-ok" : "banner"}
@@ -793,12 +788,12 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
                   )}
                   {dirty && (
                     <>
-                      <div className="role-savebar__changes">
+                      <div className="ad-bar__changes">
                         {changeSentences(current.label, saved, shown).map((sentence) => (
                           <p key={sentence}>{sentence}</p>
                         ))}
                       </div>
-                      <div className="flex gap-2">
+                      <div className="ad-bar__act flex gap-2">
                         <Button
                           variant="ghost"
                           size="sm"
@@ -825,7 +820,7 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
 
           <Card className="mt-4 p-4 sm:p-5">
             <div className="flex items-center mb-3">
-              <h2 className="text-[15px] font-semibold">Recent changes</h2>
+              <h2 className="ad-h2">Recent changes</h2>
               <HelpHint label="Recent changes">
                 Newest first, with who made each change. Roles made or deleted, lines turned on or
                 off, roles given to people, invitations, people removed and changes to the

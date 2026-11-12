@@ -94,6 +94,9 @@ describe("which tab the Performance screen opens on", () => {
       "page"
     );
     expect(screen.getByRole("link", { name: "Trends" })).not.toHaveAttribute("aria-current");
+    // All six tabs sit in one named strip, each a link with its own address.
+    const strip = screen.getByRole("navigation", { name: "Performance sections" });
+    expect(strip.querySelectorAll("a")).toHaveLength(6);
     await adviceRequest();
   });
 

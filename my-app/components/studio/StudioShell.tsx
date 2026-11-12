@@ -1,21 +1,27 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
+import { BellIcon, ClockIcon, MoonIcon, PhoneIcon, SunIcon } from "@/components/ui/icons";
 import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
-import { HelpButton, HelpProvider } from "@/components/help/HelpPanel";
+import { HelpButton, HelpProvider, useHelp } from "@/components/help/HelpPanel";
 import { StudioTopbar } from "./StudioTopbar";
 import { SchemaChatButton } from "./SchemaChat";
 import { OrgSwitcher } from "./OrgSwitcher";
 import { ViewAsSwitcher } from "./ViewAsSwitcher";
-import { NAV_ITEMS, activeNavItem } from "./nav";
+import { AccountMenu } from "./AccountMenu";
+import { CommandBar } from "./CommandBar";
+import { useAiFeature } from "./AiPanel";
+import LogoIntro from "./LogoIntro";
+import { NAV_ITEMS, activeScreen, type NavItem } from "./nav";
 
 // What the rail offers while it cannot ask what the role may do: what a new
 // Viewer can read.
@@ -44,8 +50,10 @@ type StudioShellProps = {
 };
 
 /**
- * The chrome every Studio screen lives inside: collapsible left nav, top
- * breadcrumb + per-screen action, theme toggle, identity.
+ * The frame every studio page lives inside: the floating rail on the left
+ * (the drawer on a phone), the top bar with the search pill, Ask AI, Help,
+ * Needs you, the theme and the account menu, the command bar (Ctrl K or
+ * Cmd K) and the logo intro.
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
@@ -53,7 +61,9 @@ export function StudioShell({ children, user }: StudioShellProps) {
     useUser();
   const { theme, toggleTheme } = useTheme();
   const orgPath = useOrgHref();
+  const orgName = useOrg()?.name ?? null;
   const [collapsed, setCollapsed] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const waitingRequests = useRequestCounts(
     !notMember && !loading && !accessError && !!authUser,
     pathname
@@ -76,6 +86,18 @@ export function StudioShell({ children, user }: StudioShellProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMobileNavOpen(false);
   }, [pathname]);
+
+  // Ctrl K (Cmd K on a Mac) opens the command bar from anywhere, and closes
+  // it again. The browser's own Ctrl K (search the web) is not wanted here.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      event.preventDefault();
+      setCommandOpen((open) => !open);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Real identity from the NextAuth session; honest signed-out state otherwise.
   const studioUser = useMemo(() => user ?? toStudioUser(authUser), [user, authUser]);
@@ -115,10 +137,10 @@ export function StudioShell({ children, user }: StudioShellProps) {
     [notMember, loading, accessError, authUser, can, orgPath, waitingRequests],
   );
 
-  // Whether the rail may name the role. See the badge below.
+  // Whether the account menu may name the role. See AccountMenu below.
   const roleKnown = authUser !== null && !loading && !accessError && !notMember;
 
-  const active = activeNavItem(pathname);
+  const active = activeScreen(pathname);
 
   const sidebar = (
     <StudioSidebar
@@ -130,21 +152,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
       onToggleCollapse={
         isMobile ? () => setMobileNavOpen(false) : () => setCollapsed((c) => !c)
       }
-      theme={theme}
-      onToggleTheme={toggleTheme}
-      user={studioUser}
-      // Straight from useUser, never from the `user` override above: what the
-      // server will actually allow is not something a display identity gets to
-      // change. See StudioSidebarProps.
-      //
-      // Withheld while nobody is signed in, while the role is still being
-      // looked up, when the app could not look it up, and from someone who is
-      // not a member. useUser reports DEFAULT_ROLE for all four. That is a
-      // sensible floor for code asking "may I", and a lie on screen, where a
-      // "Viewer" badge under "Not signed in" would read as a role somebody
-      // holds rather than the absence of one.
-      role={roleKnown ? role : undefined}
-      roleLabel={roleKnown ? roleLabel : undefined}
       bypass={bypass}
       // The View as picker, only while the bypass is on. With real sign-in a
       // person is their role and nothing else.
@@ -152,9 +159,81 @@ export function StudioShell({ children, user }: StudioShellProps) {
       // Which organization this is, and the others this person belongs to.
       // Drawn on every server; it hides itself when there is nothing to pick.
       orgSwitcher={<OrgSwitcher />}
-      onSignOut={() => void signOutEverywhere()}
-      className={isMobile ? "h-full" : ""}
+      className={isMobile ? "side-in-drawer" : ""}
     />
+  );
+
+  // Where "Your requests" and the Needs you button go. Not for someone who is
+  // not a member (there is nothing of theirs to see) or nobody signed in.
+  const requestsHref = !notMember && authUser ? orgPath("/requests") : undefined;
+  // The two pages only the account menu (and the command bar) lead to: what
+  // you did lately (History) and your phone and desktop links (Devices).
+  const activityHref = !notMember && authUser ? orgPath("/history") : undefined;
+  const devicesHref = !notMember && authUser ? orgPath("/devices") : undefined;
+  const commandPages: NavItem[] = [
+    ...navItems,
+    ...(activityHref
+      ? [{ screen: "Your activity", label: "Your activity", href: activityHref, icon: <ClockIcon size={16} /> }]
+      : []),
+    ...(devicesHref
+      ? [{ screen: "Phone and desktop", label: "Phone and desktop", href: devicesHref, icon: <PhoneIcon size={16} /> }]
+      : []),
+  ];
+  const signOut = () => void signOutEverywhere();
+
+  // The round buttons at the right end of the top bar. Ask AI first (it only
+  // shows where AI is switched on), then Help, which every page has.
+  const topActions = (
+    <>
+      <SchemaChatButton />
+      <HelpButton className="tb" />
+      {roleKnown && requestsHref && (
+        <Link
+          href={requestsHref}
+          className={`tb ny ${waitingRequests > 0 ? "ny-hot" : ""}`}
+          title={
+            waitingRequests > 0
+              ? `${waitingRequests} ${waitingRequests === 1 ? "request is" : "requests are"} waiting on you`
+              : "Nothing is waiting on you"
+          }
+        >
+          <BellIcon size={15} />
+          <span className="ny-t">Needs you</span>
+          <em>
+            {waitingRequests}
+            <span className="sr-only"> waiting</span>
+          </em>
+        </Link>
+      )}
+      <button
+        type="button"
+        className="tb"
+        onClick={toggleTheme}
+        aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+      >
+        {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+      </button>
+      <AccountMenu
+        user={studioUser}
+        // Straight from useUser, never from the `user` override above: what
+        // the server will actually allow is not something a display identity
+        // gets to change.
+        //
+        // Withheld while nobody is signed in, while the role is still being
+        // looked up, when the app could not look it up, and from someone who
+        // is not a member. useUser reports DEFAULT_ROLE for all four. That is
+        // a sensible floor for code asking "may I", and a lie on screen, where
+        // a "Viewer" under "Not signed in" would read as a role somebody holds.
+        role={roleKnown ? role : undefined}
+        roleLabel={roleKnown ? roleLabel : undefined}
+        orgName={orgName}
+        requestsHref={requestsHref}
+        activityHref={activityHref}
+        devicesHref={devicesHref}
+        onSignOut={signOut}
+      />
+    </>
   );
 
   return (
@@ -192,7 +271,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
         min-h-0 is what makes <main> the thing that scrolls. Without it this
         column grows to the height of the page inside it, the grid grows with
         it, and the whole window scrolls instead: the sidebar scrolls away
-        with the page, and its footer (the theme, Sign out, View as) ends up
+        with the page, and its footer (the organization, View as) ends up
         below the bottom of the screen on any long page.
 
         relative keeps absolutely placed things inside it, such as the text
@@ -205,14 +284,8 @@ export function StudioShell({ children, user }: StudioShellProps) {
           breadcrumbScreen={active.screen}
           showMenu={isMobile}
           onMenuClick={() => setMobileNavOpen(true)}
-          // Help first, then the schema chat: Help is on every page for
-          // everyone, the chat only shows where AI is switched on.
-          action={
-            <>
-              <HelpButton />
-              <SchemaChatButton />
-            </>
-          }
+          onOpenCommand={() => setCommandOpen(true)}
+          action={topActions}
         />
         {/* tabIndex -1: the skip link can put focus here, Tab never stops on it. */}
         <main
@@ -238,6 +311,41 @@ export function StudioShell({ children, user }: StudioShellProps) {
         </Drawer>
       )}
     </div>
+    {commandOpen && (
+      <ShellCommandBar
+        onClose={() => setCommandOpen(false)}
+        pages={commandPages}
+        activeHref={orgPath(active.href)}
+        waiting={roleKnown ? waitingRequests : 0}
+        requestsHref={requestsHref}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onSignOut={signOut}
+      />
+    )}
+    <LogoIntro />
     </HelpProvider>
   );
+}
+
+type ShellCommandBarProps = {
+  onClose: () => void;
+  pages: NavItem[];
+  activeHref: string;
+  waiting: number;
+  requestsHref?: string;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+  onSignOut: () => void;
+};
+
+/**
+ * The command bar with the two things only the inside of HelpProvider can
+ * know: how to open Help, and whether Ask AI is switched on. Drawn only while
+ * the bar is open, so the AI check waits until someone opens it.
+ */
+function ShellCommandBar(props: ShellCommandBarProps) {
+  const help = useHelp();
+  const askAi = useAiFeature("schema-chat") === true;
+  return <CommandBar open {...props} onHelp={help?.open} askAi={askAi} />;
 }

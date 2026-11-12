@@ -6,6 +6,10 @@ import { cleanup, render, screen } from "@testing-library/react";
 
 import DemoPage from "@/app/demo/page";
 
+// The page sits in the onboarding frame, which can hold Sign out. Nobody is
+// signed in here, so it never shows, but the module still loads.
+jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
+
 // The page the FYP poster's QR code opens. Anyone can reach it without signing
 // in (lib/public-paths.ts), so it may only show words and a way home.
 

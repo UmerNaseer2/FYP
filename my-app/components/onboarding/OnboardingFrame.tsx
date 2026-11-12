@@ -2,18 +2,23 @@
 
 import type { ReactNode } from "react";
 import { LandingThemeToggle } from "@/components/landing/LandingThemeToggle";
-import { LogoIcon, SignOutIcon } from "@/components/ui/icons";
+import { BrandMark } from "@/components/ui/BrandMark";
+import { SignOutIcon } from "@/components/ui/icons";
 import { signOutEverywhere } from "@/lib/sign-out";
+import "@/app/styles/atelier-onboarding.css";
 
 /**
  * The page around "Your organizations" (components/onboarding/OnboardingPage.tsx)
  * and an invitation (components/invite/InvitePage.tsx).
  *
  * Both are where someone stands between signing in and being inside an
- * organization, so neither has the studio's rail around it. They look like the
- * sign-in page instead: the same backdrop, a small header with the theme
- * switch, and one card in the middle, headed by the logo, a title and a line
+ * organization, so neither has the studio's rail around it. They follow the
+ * sign-in page instead: a small header with the brand, the theme switch and
+ * Sign out, and one card in the middle, headed by the mark, a title and a line
  * under it. What goes in the card below that is the page's own.
+ *
+ * The look lives in app/styles/atelier-onboarding.css (classes start with ob-,
+ * plus the pages' own onb- and inv- pieces).
  *
  * `signedIn` puts Sign out in the header. It is false in the demo, where
  * nobody is signed in to sign out.
@@ -30,22 +35,13 @@ export function OnboardingFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="auth-stage">
-      <div className="bg-grid" aria-hidden="true" />
-      <div className="bg-wash-a" aria-hidden="true" />
-      <div className="bg-wash-b" aria-hidden="true" />
-
-      <header className="onb-header relative z-10 px-8 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="w-7 h-7 rounded-lg grid place-items-center text-white"
-            style={{ background: "var(--brand)" }}
-          >
-            <LogoIcon size={15} />
-          </div>
-          <div className="onb-brand-name font-semibold text-[13.5px]">Schema Studio</div>
+    <div className="ob-page">
+      <header className="ob-nav">
+        <div className="brand">
+          <BrandMark size={30} />
+          <span className="brand-name ob-brand-name">Schema Studio</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="ob-tools">
           <LandingThemeToggle />
           {signedIn && (
             <button
@@ -60,27 +56,15 @@ export function OnboardingFrame({
         </div>
       </header>
 
-      <main className="relative z-10 flex-1 grid place-items-center px-6 pb-10 pt-2">
-        <div className="w-full max-w-[440px]">
-          <article className="auth-card p-8">
-            <div className="flex flex-col items-center text-center">
-              <div
-                className="w-12 h-12 rounded-2xl grid place-items-center mb-4 text-white"
-                style={{
-                  background: "var(--brand)",
-                  boxShadow: "0 8px 24px -10px var(--brand), 0 0 0 6px var(--brand-soft)",
-                }}
-              >
-                <LogoIcon size={22} />
-              </div>
-              <h1 className="text-[24px] font-semibold tracking-[-0.015em]">{title}</h1>
-              <p className="text-[13.5px] mt-1.5" style={{ color: "var(--text-2)" }}>
-                {lede}
-              </p>
-            </div>
-            {children}
-          </article>
-        </div>
+      <main className="ob-main">
+        <article className="card ob-card">
+          <div className="ob-head">
+            <BrandMark size={44} className="ob-mark" />
+            <h1>{title}</h1>
+            <p>{lede}</p>
+          </div>
+          {children}
+        </article>
       </main>
     </div>
   );

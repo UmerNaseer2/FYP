@@ -161,8 +161,10 @@ describe("an address that matches no screen", () => {
   test("offers nothing to retry, because nothing failed", () => {
     // A 404 is an answer, not a fault. A "Try again" here would invite the
     // reader to keep pressing it on a URL that will never resolve.
+    // The theme switch in the header is the only button.
     render(<NotFound />);
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button")).toHaveLength(1);
     expect(screen.getByText("There is no page here")).toBeInTheDocument();
   });
 

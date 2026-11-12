@@ -1237,10 +1237,18 @@ function RenameChip({
 // Public component
 // ---------------------------------------------------------------------------
 
+/**
+ * Which kind of change the report is narrowed to. Compare's four tiles set it:
+ * "add", "chg" and "rem" keep only the cards holding that kind of change, and
+ * "same" keeps only the list of unchanged tables.
+ */
+export type DiffFilter = "add" | "chg" | "rem" | "same";
+
 export function DiffReport({
   report,
   allowDataLoss,
   sides = "source-target",
+  only = null,
 }: {
   report: CompareReport;
   /**
@@ -1254,9 +1262,11 @@ export function DiffReport({
    * /compare's reading; /drift passes "expected-live". See ReportSides.
    */
   sides?: ReportSides;
+  /** Show one kind of change only. Null (the default) shows everything. */
+  only?: DiffFilter | null;
 }) {
   const dropMode = dropModeFrom(allowDataLoss);
-  const changedTables = report.matchedTables.filter((m) => m.hasChanges);
+  const everyChangedTable = report.matchedTables.filter((m) => m.hasChanges);
   const unchanged = report.matchedTables.filter((m) => !m.hasChanges);
   const tableRenames = report.possibleTableMatches;
 
@@ -1288,7 +1298,7 @@ export function DiffReport({
   const anyChanges =
     report.tablesOnlyInA.length > 0 ||
     report.tablesOnlyInB.length > 0 ||
-    changedTables.length > 0 ||
+    everyChangedTable.length > 0 ||
     tableRenames.length > 0 ||
     report.objectDiffs.length > 0;
 
@@ -1312,6 +1322,34 @@ export function DiffReport({
       </div>
     );
   }
+
+  // What the filter leaves. A changed table stays when it holds at least one
+  // change of the kind asked for, counted the same way its own chips count.
+  const newTables = only === null || only === "add" ? report.tablesOnlyInA : [];
+  const extraTables = only === null || only === "rem" ? report.tablesOnlyInB : [];
+  const changedTables = everyChangedTable.filter((match) => {
+    if (only === null) return true;
+    const tally = matchTally(match);
+    if (only === "add") return tally.adds > 0;
+    if (only === "chg") return tally.chgs > 0;
+    if (only === "rem") return tally.rems > 0;
+    return false;
+  });
+  const objectDiffs = report.objectDiffs.filter((diff) => {
+    if (only === null) return true;
+    if (only === "add") return diff.status === "onlyA";
+    if (only === "rem") return diff.status === "onlyB";
+    if (only === "chg") return diff.status !== "onlyA" && diff.status !== "onlyB";
+    return false;
+  });
+  const showUnchanged = (only === null || only === "same") && unchanged.length > 0;
+  const nothingLeft =
+    only !== null &&
+    newTables.length === 0 &&
+    extraTables.length === 0 &&
+    changedTables.length === 0 &&
+    objectDiffs.length === 0 &&
+    !showUnchanged;
 
   return (
     <div className="space-y-3">
@@ -1345,7 +1383,15 @@ export function DiffReport({
         </HelpHint>
       </div>
 
-      {destructiveCount > 0 && (
+      {nothingLeft && (
+        <p className="help" role="status">
+          {only === "same"
+            ? "No table is the same on both sides."
+            : "Nothing of this kind. Press the tile again to see every change."}
+        </p>
+      )}
+
+      {only === null && destructiveCount > 0 && (
         // Same rule as DataCompare.tsx — colour tracks risk, so a script whose
         // drops are commented out does not spend the loudest signal on the page.
         <div className={dropMode === "armed" ? "banner" : "warn-inline"}>
@@ -1410,7 +1456,7 @@ export function DiffReport({
       )}
 
       {/* Possible renamed tables (full-width suggestions) */}
-      {tableRenames.map((cand) => (
+      {(only === null ? tableRenames : []).map((cand) => (
         <RenameChip
           key={`${cand.leftName}-${cand.rightName}`}
           candidate={cand}
@@ -1420,7 +1466,7 @@ export function DiffReport({
 
       {/* Tables only on the left — created by the migration on /compare,
           already gone from the live database on /drift. */}
-      {report.tablesOnlyInA.map((table) => (
+      {newTables.map((table) => (
         <NewTableCard key={`new-${table.name}`} table={table} sides={sides} />
       ))}
 
@@ -1436,7 +1482,7 @@ export function DiffReport({
 
       {/* Tables only on the right — dropped by the migration when armed on
           /compare, created outside the tracked schema on /drift. */}
-      {report.tablesOnlyInB.map((table) => (
+      {extraTables.map((table) => (
         <ExtraTableCard
           key={`extra-${table.name}`}
           table={table}
@@ -1447,10 +1493,10 @@ export function DiffReport({
 
       {/* Views, sequences, types and functions — after the tables, because they
           are usually consequences of a table change rather than the point. */}
-      <SchemaObjectsCard diffs={report.objectDiffs} sides={sides} dropMode={dropMode} />
+      <SchemaObjectsCard diffs={objectDiffs} sides={sides} dropMode={dropMode} />
 
       {/* Unchanged tables — collapsed summary so the diff stays focused */}
-      {unchanged.length > 0 && (
+      {showUnchanged && (
         <div
           className="panel p-3 flex items-center gap-3 text-[12.5px]"
           style={{ color: "var(--text-3)" }}

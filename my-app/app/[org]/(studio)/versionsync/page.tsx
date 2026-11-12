@@ -57,6 +57,8 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { apiFetch } from "@/lib/api-fetch";
+import { VersionLine, type LineStep } from "./VersionLine";
+import "@/app/styles/atelier-versionsync.css";
 
 // Version Sync (version replay). Pick a Source (ahead) and a Target (behind).
 // The page compares their applied-script ledgers (lib/version-sync) and shows:
@@ -563,7 +565,7 @@ export default function VersionSyncPage() {
   const bothReady = source.phase === "ready" && target.phase === "ready";
 
   return (
-    <div className="px-4 sm:px-8 py-6 sm:py-8 max-w-[1080px]">
+    <div className="vs-page">
       <PageHeader page="/versionsync" />
 
       {noConnections ? (
@@ -587,12 +589,11 @@ export default function VersionSyncPage() {
           />
         )
       ) : (
-        <>
+        <div className="vs-stack">
           {/* ── Source → Target pickers ──────────────────────────────────── */}
           {/* Locked while a replay runs: the run's banner and the ledgers it
               updates belong to the pair it was started on. */}
-          <div className="card p-5">
-            <div className="vsync-pickers">
+          <div className="card vs-pick">
               <SidePicker
                 side={source}
                 label="Source"
@@ -604,7 +605,7 @@ export default function VersionSyncPage() {
               />
               <button
                 type="button"
-                className="vsync-swap btn btn-ghost btn-sm"
+                className="vs-swap"
                 title="Swap Source and Target"
                 aria-label="Swap source and target"
                 disabled={applying}
@@ -621,20 +622,17 @@ export default function VersionSyncPage() {
                 environment={targetEnvironment}
                 locked={applying}
               />
-            </div>
           </div>
 
           {/* ── Result ───────────────────────────────────────────────────── */}
-          <div className="mt-5">
+          <div className="vs-stack">
             {!bothPicked ? (
-              <div className="card p-0 overflow-hidden">
-                <div style={{ height: 260 }}>
-                  <EmptyState
-                    icon={<VersionSyncIcon size={22} />}
-                    title="Pick a Source and a Target"
-                    description="Choose both schemas above and we'll show the versions the Target is missing."
-                  />
-                </div>
+              <div className="card vs-blank">
+                <EmptyState
+                  icon={<VersionSyncIcon size={22} />}
+                  title="Pick a Source and a Target"
+                  description="Choose both schemas above and we'll show the versions the Target is missing."
+                />
               </div>
             ) : anyError ? (
               <div className="banner">
@@ -653,16 +651,16 @@ export default function VersionSyncPage() {
                 </div>
               </div>
             ) : !bothReady ? (
-              <div className="card p-5 space-y-3">
+              <div className="card vs-wait">
                 <Skeleton width="40%" height={16} />
                 <Skeleton width="100%" height={44} radius={10} />
                 <Skeleton width="70%" height={14} />
-                <p className="help" style={{ color: "var(--text-3)" }}>Reading both ledgers…</p>
+                <p className="vs-hint" role="status">Reading both ledgers…</p>
               </div>
             ) : diff && reach ? (
               <>
                 {sameTarget && (
-                  <div className="banner mb-5">
+                  <div className="banner">
                     <InfoIcon size={16} className="ico" />
                     <div className="body">
                       <div className="title">Source and Target are the same schema</div>
@@ -697,7 +695,7 @@ export default function VersionSyncPage() {
               </>
             ) : null}
           </div>
-        </>
+        </div>
       )}
 
       <ReplayDialog
@@ -729,13 +727,12 @@ function SidePicker({
   locked: boolean;
 }) {
   return (
-    <div className="vsync-side">
-      <div className="vsync-side__head">
-        <h2 className="section-title">{label}</h2>
-        <span className="vsync-side__sub">{sub}</span>
-        {side.connectionId && <EnvironmentPill environment={environment} className="ml-auto" />}
+    <div className="vs-side">
+      <div className="vs-side-head">
+        <h2>{label}</h2>
+        <span className="vs-side-sub">{sub}</span>
+        {side.connectionId && <EnvironmentPill environment={environment} className="vs-side-env" />}
       </div>
-      <div className="space-y-2 mt-2">
         {!loaded ? (
           <>
             <Skeleton width="100%" height={36} radius={8} />
@@ -764,15 +761,14 @@ function SidePicker({
               options={side.schemas.map((s) => ({ value: s, label: s }))}
               onChange={(v) => side.setSchema(v)}
             />
-            {side.schemasError && <p className="help" style={{ color: "var(--break)" }}>{side.schemasError}</p>}
+            {side.schemasError && <p className="vs-hint vs-bad">{side.schemasError}</p>}
             {side.connectionId && environment === "unset" && (
-              <p className="help">
+              <p className="vs-hint">
                 Unlabelled — label it on Connections so this page can warn you.
               </p>
             )}
           </>
         )}
-      </div>
     </div>
   );
 }
@@ -794,15 +790,6 @@ type ApplyCtl = {
   mayRun: boolean;
   /** Why not, in the words the apply route would refuse with. */
   runRefusal: string;
-};
-
-const SYNC_BANNER = {
-  background: "var(--sync-soft)",
-  borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)",
-};
-const DRIFT_BANNER = {
-  background: "color-mix(in oklab, var(--drift) 8%, var(--surface))",
-  borderColor: "color-mix(in oklab, var(--drift) 35%, var(--border))",
 };
 
 // ── The diff result: status, missing list, what cannot run, timeline ────────
@@ -890,8 +877,29 @@ function Result({
           (waiting > 0 ? ", and the list carries on with the versions after it." : ".")
         : "";
 
+  // The Source's ledger as the steps of the version line: each version once,
+  // in the order the Source applied them, with where it stands on the Target.
+  const missingAt = new Map(missing.map((e, i) => [entryKey(e), i]));
+  const pastKeys = new Set(diff.belowTarget.map(entryKey));
+  const lineSteps: LineStep[] = [];
+  const drawn = new Set<string>();
+  for (const e of sourceEntries) {
+    const key = entryKey(e);
+    if (drawn.has(key)) continue;
+    drawn.add(key);
+    const at = missingAt.get(key);
+    lineSteps.push({
+      key,
+      label: runLabel(e),
+      state:
+        at === undefined
+          ? pastKeys.has(key) ? "past" : "has"
+          : at < reachable ? "next" : at === reachable ? "stop" : "wait",
+    });
+  }
+
   return (
-    <div className="space-y-5">
+    <div className="vs-stack">
       {/* Apply feedback */}
       {apply.progress && (
         <div className="banner">
@@ -917,10 +925,10 @@ function Result({
         </div>
       )}
       {apply.done && (
-        <div className="banner" style={SYNC_BANNER}>
+        <div className="banner vs-good">
           <CheckIcon size={16} className="ico" />
           <div className="body">
-            <div className="title" style={{ color: "var(--sync)" }}>{apply.done}</div>
+            <div className="title">{apply.done}</div>
             {/* Inside the success banner, not beside it: the registry write is
                 part of what this replay did, and a banner of its own would read
                 as a second, separate thing having happened. */}
@@ -942,144 +950,159 @@ function Result({
         </div>
       )}
 
-      {/* Status banner */}
-      {sourceEmpty ? (
-        <div className="banner">
-          <InfoIcon size={16} className="ico" />
-          <div className="body">
-            <div className="title">The Source has no applied scripts</div>
-            <div className="help mt-0.5">
-              Its ledger is empty — there&apos;s nothing to replay. Pick a Source that has migrations applied.
-            </div>
-          </div>
-        </div>
-      ) : inSync ? (
-        <div className="banner" style={SYNC_BANNER}>
-          <CheckIcon size={16} className="ico" />
-          <div className="body">
-            <div className="title" style={{ color: "var(--sync)" }}>You’re up-to-date!</div>
-            <div className="help mt-0.5">{upToDateHelp}</div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="pill pill-pending">{countOf(total, "version")} behind</span>
-          {diff.missingWithoutSql > 0 && (
-            <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
-              {diff.missingWithoutSql} without stored SQL
-            </span>
-          )}
-        </div>
-      )}
+      {!sourceEmpty && <VersionLine steps={lineSteps} />}
 
-      {/* Missing list */}
-      {total > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="flex items-center">
-              <h2 className="section-title">Missing on the Target ({total})</h2>
-              <HelpHint label="Missing on the Target">{listHelp}</HelpHint>
-            </div>
-            {showRunAll && (
-              <button
-                className={`btn btn-sm ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                disabled={apply.applying}
-                title="Replay every version in this list, in one transaction"
-                onClick={() => apply.onRun(missing)}
-              >
-                {apply.applying ? <RefreshIcon size={13} className="spin-icon" /> : null}
-                Run all ({total})…
-              </button>
-            )}
-          </div>
-          {/* Said once, above the list, rather than as a dead button on every row. */}
-          {!apply.mayRun && reachable > 0 && (
-            <div className="role-note mb-3">
-              <InfoIcon size={15} className="ico" />
+      <div className={`vs-cols${total > 0 ? " vs-cols--two" : ""}`}>
+        {/* ── Where things stand, and the one thing to do about it ───────── */}
+        <div className="card vs-sd">
+          {sourceEmpty ? (
+            <div className="vs-calm vs-calm--plain">
+              <span className="vs-calm-ico"><InfoIcon size={20} /></span>
               <div>
-                <div className="title">You can read this list, but not replay it</div>
-                <div className="body">
-                  {apply.runRefusal}
-                  <AskAdmin permission="deploy:run" />
-                </div>
+                <b>The Source has no applied scripts</b>
+                <p>
+                  Its ledger is empty — there&apos;s nothing to replay. Pick a Source that has migrations applied.
+                </p>
               </div>
             </div>
-          )}
-
-          {stop && (
-            <div className="warn-inline mb-3">
-              <span className="ico"><AlertTriangleIcon size={14} /></span>
-              <span>
-                <b>A run stops before {stopLabel}.</b>{" "}
-                {stopSentence(reach)}
-                {waiting > 0 ? ` The ${countOf(waiting, "version")} after it wait behind it.` : ""}{" "}
-                {stopFix}
-              </span>
+          ) : inSync ? (
+            <div className="vs-calm">
+              <span className="vs-calm-ico"><CheckIcon size={20} /></span>
+              <div>
+                <b>You’re up-to-date!</b>
+                <p>{upToDateHelp}</p>
+              </div>
             </div>
-          )}
-
-          <div className="space-y-3">
-            {missing.map((e, i) => {
-              // The Source's own title for this version, or null when it
-              // would only repeat the version number or the script group.
-              const title = versionTitle(e.title, e.version, e.scriptName);
-              return (
-                <div key={entryKey(e)} className="card p-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <ChangeLevelPill level={normalizeChangeLevel(e.changeType)} />
-                      <span className="mono text-[14px] font-semibold">{displayVersion(e.version, true)}</span>
-                      {title !== null && <span className="text-[13px] font-medium">{title}</span>}
-                      <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                        {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
-                      </span>
+          ) : (
+            <>
+              <h2>Catch the Target up</h2>
+              <div className="vs-chips">
+                <span className="pill pill-pending">{countOf(total, "version")} behind</span>
+                {diff.missingWithoutSql > 0 && (
+                  <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
+                    {diff.missingWithoutSql} without stored SQL
+                  </span>
+                )}
+              </div>
+              <p className="vs-lead">
+                A replay runs the Source&apos;s own scripts on the Target, in the Source&apos;s order, as one
+                transaction: all apply, or none.
+              </p>
+              {showRunAll && (
+                <button
+                  className={`btn ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                  disabled={apply.applying}
+                  title="Replay every version in this list, in one transaction"
+                  onClick={() => apply.onRun(missing)}
+                >
+                  {apply.applying ? <RefreshIcon size={13} className="spin-icon" /> : null}
+                  Run all ({total})…
+                </button>
+              )}
+              {/* Said once, here, rather than as a dead button on every row. */}
+              {!apply.mayRun && reachable > 0 && (
+                <div className="role-note">
+                  <InfoIcon size={15} className="ico" />
+                  <div>
+                    <div className="title">You can read this list, but not replay it</div>
+                    <div className="body">
+                      {apply.runRefusal}
+                      <AskAdmin permission="deploy:run" />
                     </div>
-                    {i < reachable ? (
-                      // The banner above the list says why there is none.
-                      apply.mayRun ? (
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          disabled={apply.applying}
-                          title={
-                            i === 0
-                              ? `Replay ${runLabel(e)} onto the Target`
-                              : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
-                                `through ${runLabel(e)}, onto the Target in one transaction`
-                          }
-                          onClick={() => apply.onRun(missing.slice(0, i + 1))}
-                        >
-                          {/* Named the way Deploy names its Run buttons: the one
-                              version, or the first and last with how many. */}
-                          {i === 0
-                            ? `Run ${runLabel(e)}…`
-                            : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
-                        </button>
-                      ) : null
-                    ) : i === reachable ? (
-                      <span className="vsync-stopnote">Runs stop before this version</span>
-                    ) : (
-                      <span className="vsync-stopnote">Can&apos;t be reached yet: runs stop before {stopLabel}</span>
-                    )}
                   </div>
-                  {e.hasSql ? (
-                    <pre className="vsync-sql mono mt-3">{e.sqlContent}</pre>
-                  ) : (
-                    <div className="vsync-nosql mt-3">
-                      <InfoIcon size={14} />
-                      No stored script — this version was applied before SQL was tracked, so it can&apos;t be replayed.
-                    </div>
-                  )}
                 </div>
-              );
-            })}
-          </div>
+              )}
+              {stop && (
+                <div className="warn-inline">
+                  <span className="ico"><AlertTriangleIcon size={14} /></span>
+                  <span>
+                    <b>A run stops before {stopLabel}.</b>{" "}
+                    {stopSentence(reach)}
+                    {waiting > 0 ? ` The ${countOf(waiting, "version")} after it wait behind it.` : ""}{" "}
+                    {stopFix}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
         </div>
-      )}
+
+        {/* ── Missing list ─────────────────────────────────────────────────── */}
+        {total > 0 && (
+          <div className="card vs-hist">
+            <div className="vs-hist-head">
+              <h2>Missing on the Target ({total})</h2>
+              <HelpHint label="Missing on the Target">{listHelp}</HelpHint>
+            </div>
+            <ol>
+              {missing.map((e, i) => {
+                // The Source's own title for this version, or null when it
+                // would only repeat the version number or the script group.
+                const title = versionTitle(e.title, e.version, e.scriptName);
+                return (
+                  <li key={entryKey(e)} className={`vs-row${i < reachable ? " vs-row--run" : ""}`}>
+                    <span className="vs-mm" aria-hidden="true">{i + 1}</span>
+                    <div className="vs-row-body">
+                      <div className="vs-row-top">
+                        <b>{displayVersion(e.version, true)}</b>
+                        <ChangeLevelPill level={normalizeChangeLevel(e.changeType)} />
+                        {title !== null && <span className="vs-row-title">{title}</span>}
+                      </div>
+                      <div className="vs-row-meta">
+                        {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
+                      </div>
+                      {e.hasSql ? (
+                        <details className="vs-more">
+                          <summary>Read the SQL</summary>
+                          <pre className="vs-sql">{e.sqlContent}</pre>
+                        </details>
+                      ) : (
+                        <div className="vs-nosql">
+                          <InfoIcon size={14} />
+                          No stored script — this version was applied before SQL was tracked, so it can&apos;t be replayed.
+                        </div>
+                      )}
+                      <div className="vs-row-act">
+                        {i < reachable ? (
+                          // The note beside the list says why there is none.
+                          apply.mayRun ? (
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={apply.applying}
+                              title={
+                                i === 0
+                                  ? `Replay ${runLabel(e)} onto the Target`
+                                  : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
+                                    `through ${runLabel(e)}, onto the Target in one transaction`
+                              }
+                              onClick={() => apply.onRun(missing.slice(0, i + 1))}
+                            >
+                              {/* Named the way Deploy names its Run buttons: the one
+                                  version, or the first and last with how many. */}
+                              {i === 0
+                                ? `Run ${runLabel(e)}…`
+                                : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
+                            </button>
+                          ) : null
+                        ) : i === reachable ? (
+                          <span className="vs-stopnote">Runs stop before this version</span>
+                        ) : (
+                          <span className="vs-stopnote">Can&apos;t be reached yet: runs stop before {stopLabel}</span>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
+      </div>
 
       {/* Versions the Target lacks but is already past */}
       {belowCount > 0 && (
-        <div className="banner" style={DRIFT_BANNER}>
-          <AlertTriangleIcon size={16} className="ico" style={{ color: "var(--drift)" }} />
+        <div className="banner vs-amber">
+          <AlertTriangleIcon size={16} className="ico" />
           <div className="body">
             <div className="title">Cannot be replayed forward ({belowCount})</div>
             <div className="help mt-0.5">
@@ -1087,12 +1110,12 @@ function Result({
               To bring one over, write it as a new version in the Script Editor.
             </div>
             {diff.belowTarget.map((e) => (
-              <details key={entryKey(e)} className="mt-1">
-                <summary className="help">
+              <details key={entryKey(e)} className="vs-more">
+                <summary>
                   {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)} · the Target runs{" "}
                   {scriptLabel(e.scriptName, targetHeads.get(e.scriptName) ?? "")}
                 </summary>
-                <pre className="vsync-sql mono mt-2">
+                <pre className="vs-sql">
                   {e.sqlContent ?? "No stored script for this version."}
                 </pre>
               </details>
@@ -1103,8 +1126,8 @@ function Result({
 
       {/* Divergence warning */}
       {diff.diverged.length > 0 && (
-        <div className="banner" style={DRIFT_BANNER}>
-          <AlertTriangleIcon size={16} className="ico" style={{ color: "var(--drift)" }} />
+        <div className="banner vs-amber">
+          <AlertTriangleIcon size={16} className="ico" />
           <div className="body">
             <div className="title">These schemas have diverged.</div>
             <div className="help mt-0.5">
@@ -1115,11 +1138,11 @@ function Result({
             {/* "Review before syncing" needs something to review, so the
                 stored script is one click away here. */}
             {diff.diverged.map((e) => (
-              <details key={entryKey(e)} className="mt-1">
-                <summary className="help">
+              <details key={entryKey(e)} className="vs-more">
+                <summary>
                   {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)}
                 </summary>
-                <pre className="vsync-sql mono mt-2">
+                <pre className="vs-sql">
                   {e.sqlContent ?? "No stored script for this version."}
                 </pre>
               </details>
@@ -1131,8 +1154,8 @@ function Result({
       {/* Both ledgers, side by side. Keyed on the pair: the table keeps which
           rows are open, and that belongs to one pair. */}
       {(sourceEntries.length > 0 || targetEntries.length > 0) && (
-        <div>
-          <h2 className="section-title mb-2">Source vs Target</h2>
+        <div className="vs-sec">
+          <h2>Source vs Target</h2>
           <VersionTimeline
             key={pairKey}
             leftLabel="Source"
@@ -1601,12 +1624,12 @@ function ReplayBody({
   const oneEnum = enumCount === 1;
 
   return (
-    <div className="vsync-dialog">
-      <div>
-        <h4 id={titleId} className="text-[15px] font-semibold">
+    <div className="vs-dialog">
+      <div className="vs-dialog-head">
+        <h4 id={titleId}>
           Replay {runName} onto {schema}?
         </h4>
-        <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
+        <p>
           {"This runs on "}
           <b className="mono">{schema}</b>
           {`${databaseName ? ` (${databaseName})` : ""}, a live database, as one transaction: every version in it applies, or none does${
@@ -1614,15 +1637,15 @@ function ReplayBody({
           }.`}
         </p>
         {diverged > 0 && (
-          <p className="text-[13px] mt-2" style={{ color: "var(--drift)" }}>
+          <p className="vs-warn-text">
             {`The schemas have diverged: the Target has ${countOf(diverged, "version")} the Source does not, so a replayed script may clash with the Target's own changes.`}
           </p>
         )}
       </div>
 
-      <div className="vsync-dialog__body">
-        <div className="section-title mb-2">What runs, in order</div>
-        <div className="vsync-runlist">
+      <div className="vs-dialog-body">
+        <div className="vs-dialog-sub">What runs, in order</div>
+        <div className="vs-runlist">
           {entries.map((e, i) => {
             // The level the Target records: the Source's, raised to what the
             // SQL itself reads as when that is louder (the apply route's rule,
@@ -1641,13 +1664,13 @@ function ReplayBody({
                       ? ` (the Source recorded ${sourceLevel}, but its SQL reads as ${recorded}, so the Target records ${recorded})`
                       : null}
                 </summary>
-                <pre className="vsync-sql mono mt-2">{e.sqlContent}</pre>
+                <pre className="vs-sql">{e.sqlContent}</pre>
               </details>
             );
           })}
         </div>
 
-        <div className="space-y-3 mt-4">
+        <div className="vs-gates">
           {record.state === "loading" && (
             <p className="help">{"Checking the Target's tracking record…"}</p>
           )}
@@ -1831,15 +1854,15 @@ function ReplayBody({
             />
           )}
           {approvalNotice && (
-            <p className="help" style={{ color: "var(--sync)" }}>{approvalNotice}</p>
+            <p className="vs-note-good">{approvalNotice}</p>
           )}
 
           {dryResult &&
             (dryResult.ok ? (
-              <div className="banner" style={SYNC_BANNER}>
+              <div className="banner vs-good">
                 <CheckIcon size={16} className="ico" />
                 <div className="body">
-                  <div className="title" style={{ color: "var(--sync)" }}>{dryResult.title}</div>
+                  <div className="title">{dryResult.title}</div>
                 </div>
               </div>
             ) : (
@@ -1854,9 +1877,9 @@ function ReplayBody({
         </div>
       </div>
 
-      <div className="vsync-dialog__foot">
-        {hint && <p className="help mb-2">{hint}</p>}
-        <div className="flex justify-end gap-2 flex-wrap">
+      <div className="vs-dialog-foot">
+        {hint && <p className="vs-hint">{hint}</p>}
+        <div className="vs-dialog-acts">
           <button className="btn btn-ghost btn-sm" onClick={onClose}>
             Cancel
           </button>

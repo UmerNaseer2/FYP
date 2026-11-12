@@ -44,11 +44,22 @@ export function ScoreBadge({ score, band }: { score: number; band: ScoreBand }) 
 export function ScorePanel({ score }: { score: QueryScore }) {
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        <ScoreBadge score={score.score} band={score.band} />
-        <span className="text-[13px]" style={{ color: "var(--text)" }}>
-          {BAND_MEANING[score.band]}
-        </span>
+      <div className="pf-score">
+        {/* The ring is the same number drawn as a picture, so it is hidden
+            from screen readers: the pill beside it already says the score. */}
+        <div
+          className={`pf-ring pf-ring--${score.band}`}
+          style={{ "--pf-score": score.score } as React.CSSProperties}
+          aria-hidden
+        >
+          <b>{score.score}</b>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <ScoreBadge score={score.score} band={score.band} />
+          <span className="text-[13px]" style={{ color: "var(--text)" }}>
+            {BAND_MEANING[score.band]}
+          </span>
+        </div>
       </div>
 
       <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>

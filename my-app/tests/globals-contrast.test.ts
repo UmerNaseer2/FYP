@@ -117,18 +117,32 @@ describe.each(["light", "dark"] as const)("text contrast in the %s theme", (them
     }
   });
 
-  it("keeps text on a coloured fill at 4.5:1 (buttons, the nav badge, step circles)", () => {
+  it("keeps text on a coloured fill at 4.5:1 (buttons, step circles)", () => {
     for (const fill of ["--brand", "--sync", "--drift", "--break"]) {
       expect(contrast(t["--text-inv"], t[fill])).toBeGreaterThanOrEqual(4.5);
     }
   });
+
+  it("keeps the dark ink on the orange go button at 4.5:1", () => {
+    expect(t["--accent"]).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(contrast(t["--on-accent"], t["--accent"])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps the ink on a solid ink pill (the page you are on) at 4.5:1", () => {
+    expect(contrast(t["--on-pill"], t["--pill"])).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 describe("rules that decide a text colour", () => {
-  it("writes on a coloured button in the theme's inverse text colour, not a fixed white", () => {
-    expect(rule(".btn-primary")).toMatch(/[;\s]color:var\(--text-inv\)/);
+  it("writes on a coloured button in a theme colour made for that fill, not a fixed white", () => {
+    expect(rule(".btn-primary")).toMatch(/[;\s]color:var\(--on-accent\)/);
     expect(rule(".btn-destructive")).toMatch(/[;\s]color:var\(--text-inv\)/);
-    expect(rule(".nav-item .badge")).toMatch(/[;\s]color:var\(--text-inv\)/);
+  });
+
+  it("writes the nav badge's number in the status colour on its own tint", () => {
+    const badge = rule(".nav-item .badge");
+    expect(badge).toMatch(/background:var\(--drift-soft\)/);
+    expect(badge).toMatch(/[;\s]color:var\(--drift\)/);
   });
 
   it("gives a field's placeholder the muted text colour at full strength", () => {
@@ -169,7 +183,6 @@ describe("the phone rules", () => {
 
   it("make the bare pickers, the text button and plain checkboxes big enough to tap", () => {
     expect(phone).toMatch(/\.ds-select__trigger \{ min-height:28px; \}/);
-    expect(phone).toMatch(/\.family-toggle \{ min-height:24px; \}/);
     expect(phone).toMatch(/input\[type="checkbox"\], input\[type="radio"\]\) \{ width:24px; height:24px; \}/);
   });
 });

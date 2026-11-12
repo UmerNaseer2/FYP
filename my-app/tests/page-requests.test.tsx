@@ -153,7 +153,7 @@ describe("asking for something", () => {
   it("names the page and says in one line what it is for", async () => {
     await draw(payload());
     // How an answer reaches you (the app sends no email) is in the page's help.
-    expect(await screen.findByRole("heading", { level: 1, name: "Requests" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "What needs you. What you asked for." })).toBeInTheDocument();
     expect(screen.getByText(HELP_TOPICS["/requests"].blurb)).toBeInTheDocument();
     expect(HELP_TOPICS["/requests"].purpose).toMatch(/does not send email/);
   });
@@ -196,7 +196,7 @@ describe("asking for something", () => {
     fireEvent.change(screen.getByLabelText("Why? (optional)"), { target: { value: "For the release." } });
     fireEvent.click(send);
 
-    expect(await screen.findByText(/The answer will show under Your requests/)).toBeInTheDocument();
+    expect(await screen.findByText(/the answer will show under Done/)).toBeInTheDocument();
     expect(saved(/\/api\/requests$/, "POST")).toEqual({
       permission: "deploy:run",
       message: "For the release.",
@@ -220,7 +220,7 @@ describe("asking for something", () => {
     expect(send).toBeEnabled();
     fireEvent.click(send);
 
-    await screen.findByText(/The answer will show under Your requests/);
+    await screen.findByText(/the answer will show under Done/);
     expect(saved(/\/api\/requests$/, "POST")).toEqual({
       permission: null,
       message: "A role in between.",
@@ -307,7 +307,7 @@ describe("asking for something", () => {
   it("does not offer an Admin the form, because an Admin already holds everything", async () => {
     setUser("admin");
     await draw(payload({ canAnswer: true }));
-    await screen.findByRole("heading", { level: 1, name: "Requests" });
+    await screen.findByRole("heading", { level: 1, name: "What needs you. What you asked for." });
     expect(screen.queryByRole("combobox", { name: "What do you need?" })).toBeNull();
   });
 });
@@ -756,13 +756,13 @@ describe("the section of things waiting", () => {
   it("isn't drawn empty above the form for someone who doesn't answer requests", async () => {
     await draw(payload());
     await screen.findByRole("combobox", { name: "What do you need?" });
-    expect(screen.queryByText("Waiting for you")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Needs you/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Nothing is waiting for you")).not.toBeInTheDocument();
   });
 
   it("is drawn for them once a run is ready", async () => {
     await draw(payload({ runsToRun: [aRun({ status: "approved", decided_by: "alice@example.com", decided_at: LATER })] }));
-    expect(await screen.findByText("Waiting for you")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Needs you 1" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Ready to run")).toBeInTheDocument();
     expect(screen.queryByText("Nothing is waiting for you")).not.toBeInTheDocument();
   });
@@ -781,5 +781,37 @@ describe("when the list can't be read", () => {
     setRoutes([{ match: /\/api\/requests$/, method: "GET", networkError: true }]);
     render(<RequestsPage />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load requests.");
+  });
+});
+
+describe("the three tabs", () => {
+  beforeEach(() => setUser("viewer"));
+
+  it("opens on what you asked, and shows an answer only once Done is picked", async () => {
+    await draw(
+      payload({
+        mine: [
+          ownRequest({ id: 1, status: "pending" }),
+          ownRequest({ id: 2, status: "declined", decided_by: "alice@example.com", decided_at: null }),
+        ],
+      })
+    );
+    const asked = await screen.findByRole("tab", { name: "You asked 1" });
+    expect(asked).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Withdraw" })).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "You asked 1" })).toBeVisible();
+    expect(screen.getByText("Declined")).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Done" }));
+    expect(screen.getByText("Declined")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Withdraw" })).not.toBeInTheDocument();
+  });
+
+  it("moves between tabs with the arrow keys", async () => {
+    await draw(payload({ mine: [ownRequest({ id: 1, status: "pending" })] }));
+    const asked = await screen.findByRole("tab", { name: "You asked 1" });
+    fireEvent.keyDown(asked, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Done" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Done" })).toHaveFocus();
   });
 });

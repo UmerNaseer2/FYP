@@ -137,10 +137,37 @@ export const NAV_ITEMS: NavItem[] = [
  * so "/acme/drift" is Drift, the same as the old address "/drift".
  */
 export function activeNavItem(pathname: string): NavItem {
-  const slug = orgSlugFromPath(pathname);
-  const route = slug === null ? pathname : pathname.slice(slug.length + 1);
+  const route = routeOf(pathname);
   const match = NAV_ITEMS.find(
     (item) => route === item.href || route.startsWith(item.href + "/")
   );
   return match ?? NAV_ITEMS[0];
+}
+
+/** The path with the organization at its front set aside: "/acme/drift" is "/drift". */
+function routeOf(pathname: string): string {
+  const slug = orgSlugFromPath(pathname);
+  return slug === null ? pathname : pathname.slice(slug.length + 1);
+}
+
+/**
+ * Pages that open from the account menu rather than the rail. They have no
+ * row to light up, but the breadcrumb still names them.
+ */
+export const ACCOUNT_SCREENS: { screen: string; href: string }[] = [
+  { screen: "Phone and desktop", href: "/devices" },
+  { screen: "Your activity", href: "/history" },
+];
+
+/**
+ * What the shell shows for the current path: the name in the breadcrumb and
+ * the address of the rail row to light up. On an account page that address
+ * matches no row, so nothing in the rail looks chosen.
+ */
+export function activeScreen(pathname: string): { screen: string; href: string } {
+  const route = routeOf(pathname);
+  const account = ACCOUNT_SCREENS.find(
+    (page) => route === page.href || route.startsWith(page.href + "/")
+  );
+  return account ?? activeNavItem(pathname);
 }

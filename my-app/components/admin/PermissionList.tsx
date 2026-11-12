@@ -75,7 +75,7 @@ export function PermissionList({
     const noteId = permission.note ? `${id}-note` : undefined;
     const describedBy = [riskId, noteId].filter(Boolean).join(" ") || undefined;
     return (
-      <div key={permission.key} className={changed ? "perm-line changed" : "perm-line"}>
+      <div key={permission.key} className={changed ? "ad-perm-line changed" : "ad-perm-line"}>
         <input
           id={id}
           type="checkbox"
@@ -84,18 +84,18 @@ export function PermissionList({
           aria-describedby={describedBy}
           onChange={(event) => onToggle(permission.key, event.target.checked)}
         />
-        <div className="perm-line__body">
-          <div className="perm-line__head">
+        <div className="ad-perm-line__body">
+          <div className="ad-perm-line__head">
             <label htmlFor={id}>{capitalise(permission.does)}</label>
             {permission.risk && (
               <Pill id={riskId} tone={RISK_TONE[permission.risk]} dot={false}>
                 {RISK_LABELS[permission.risk]}
               </Pill>
             )}
-            {changed && <span className="perm-unsaved">Unsaved</span>}
+            {changed && <span className="ad-perm-unsaved">Unsaved</span>}
           </div>
           {permission.note && (
-            <p id={noteId} className="help perm-note">
+            <p id={noteId} className="help ad-perm-note">
               {permission.note}
             </p>
           )}
@@ -106,13 +106,13 @@ export function PermissionList({
 
   function feature(lines: FeatureLines) {
     return (
-      <div key={lines.feature} className="perm-feature">
+      <div key={lines.feature} className="ad-perm-feature">
         {line(lines.read)}
-        {lines.others.length > 0 && <div className="perm-sub">{lines.others.map(line)}</div>}
+        {lines.others.length > 0 && <div className="ad-perm-sub">{lines.others.map(line)}</div>}
         {hint?.feature === lines.feature && (
-          <div className="perm-hint">
+          <div className="ad-perm-hint">
             <InfoIcon size={14} aria-hidden="true" />
-            <span className="perm-hint__text">{hint.text}</span>
+            <span className="ad-perm-hint__text">{hint.text}</span>
             <Button variant="ghost" size="sm" onClick={undo} disabled={disabled}>
               Undo
             </Button>
@@ -123,7 +123,7 @@ export function PermissionList({
   }
 
   return (
-    <div className="perm-list relative" role="group" aria-label={`What ${roleLabel} can do`}>
+    <div className="ad-perm-list relative" role="group" aria-label={`What ${roleLabel} can do`}>
       {/* Always in the page, so a screen reader hears each hint as it appears. */}
       <div className="sr-only" role="status">
         {hint?.text ?? ""}
@@ -137,11 +137,11 @@ export function PermissionList({
         if (features.length === 0 && !locked) return null;
         const headingId = `${baseId}screen-${group.screen.replace(/[^A-Za-z]+/g, "-")}`;
         return (
-          <div key={group.screen} className="perm-screen" role="group" aria-labelledby={headingId}>
+          <div key={group.screen} className="ad-perm-screen" role="group" aria-labelledby={headingId}>
             <h3 id={headingId}>{group.screen}</h3>
             {features.map(feature)}
             {locked && (
-              <p className="perm-locked">
+              <p className="ad-perm-locked">
                 <LockIcon size={14} aria-hidden="true" />
                 <span>{ADMIN_ONLY_LINE}</span>
               </p>

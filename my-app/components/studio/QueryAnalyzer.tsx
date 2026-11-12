@@ -194,7 +194,7 @@ export function QueryAnalyzer({
 
   return (
     <div className="space-y-4">
-      <Card className="p-4 space-y-3">
+      <Card className="pf-ed p-4 space-y-3">
         <div className="flex items-center gap-2">
           <label
             htmlFor="analyze-sql"
@@ -289,7 +289,7 @@ export function QueryAnalyzer({
       </Card>
 
       {error && (
-        <div className="warn-inline">
+        <div className="pf-note pf-note--warn">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">Could not analyse this query</div>
@@ -357,7 +357,7 @@ function Result({
       />
 
       <Card className="p-4 space-y-2.5">
-        <div className="section-title">How this query scored</div>
+        <div className="pf-h">How this query scored</div>
         <ScorePanel score={view.score} />
         {/* Only offered when the analysis was really filed. A link built from a
             null id would 404, and filing is best-effort by design. */}
@@ -382,7 +382,7 @@ function Result({
       <PlanSection plan={view.plan} findings={view.findings} />
 
       <div className="space-y-2.5">
-        <div className="section-title">What to do about it</div>
+        <div className="pf-h">What to do about it</div>
         {view.counts.total === 0 ? (
           <Card className="p-0 overflow-hidden">
             <div style={{ height: 220 }}>
@@ -454,7 +454,7 @@ function PlanWords({ plan }: { plan: PlanSummary }) {
   if (lines.length === 0) return null;
   return (
     <div className="space-y-2.5">
-      <div className="section-title">In plain words</div>
+      <div className="pf-h">In plain words</div>
       <Card className="p-4">
         <ol
           className="list-decimal pl-5 space-y-1.5 text-[13px] leading-[1.6]"
@@ -486,7 +486,7 @@ function PlanSection({ plan, findings }: { plan: PlanSummary; findings: QueryFin
   return (
     <div className="space-y-2.5">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <div className="section-title">
+        <div className="pf-h">
           {plan.measured ? "How the server ran this" : "How the server would run this"}
         </div>
         <ViewToggle value={shown} onChange={setShown} />

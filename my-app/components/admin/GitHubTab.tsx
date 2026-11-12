@@ -160,7 +160,7 @@ export function GitHubTab({ active }: { active: boolean }) {
 
   if (loadError && !view) {
     return (
-      <div className="role-note" role="alert">
+      <div className="ad-note" role="alert">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">{"Couldn't load the GitHub settings"}</div>
@@ -189,7 +189,7 @@ export function GitHubTab({ active }: { active: boolean }) {
   return (
     <div className="space-y-6">
       {actionError && (
-        <div className="role-note" role="alert">
+        <div className="ad-note" role="alert">
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">{actionError.what === "remove" ? "Couldn't remove" : "Couldn't save"}</div>
@@ -198,14 +198,14 @@ export function GitHubTab({ active }: { active: boolean }) {
         </div>
       )}
       {notice && (
-        <div className="role-note" role="status">
+        <div className="ad-note" role="status">
           <CheckIcon size={15} className="ico" />
           <div className="body">{notice}</div>
         </div>
       )}
 
       <Card className="p-4 sm:p-5">
-        <h3 className="section-title">Where scripts are kept</h3>
+        <h3 className="ad-h">Where scripts are kept</h3>
         <div className="mt-2 text-[13.5px]">
           {ownSettings ? (
             <>
@@ -231,7 +231,7 @@ export function GitHubTab({ active }: { active: boolean }) {
         </div>
 
         {view.tokenUnreadable && (
-          <div className="warn-inline mt-3">
+          <div className="ad-note ad-note--warn mt-3">
             <AlertTriangleIcon size={15} className="ico" />
             <div>
               <div className="title">{"The saved token can't be read"}</div>
@@ -244,7 +244,7 @@ export function GitHubTab({ active }: { active: boolean }) {
         )}
 
         {view.cannotSave !== null ? (
-          <div className="role-note mt-3">
+          <div className="ad-note mt-3">
             <InfoIcon size={15} className="ico" />
             <div>
               <div className="title">{"These settings can't be changed here"}</div>
@@ -253,7 +253,7 @@ export function GitHubTab({ active }: { active: boolean }) {
           </div>
         ) : (
           !view.canUpdate && (
-            <div className="role-note mt-3">
+            <div className="ad-note mt-3">
               <InfoIcon size={15} className="ico" />
               <div>
                 <div className="title">You can see these settings but not change them</div>
@@ -270,7 +270,7 @@ export function GitHubTab({ active }: { active: boolean }) {
       {editable && (
         <Card className="p-4 sm:p-5">
           <form onSubmit={(event) => void save(event)} noValidate>
-            <h3 className="section-title">{ownSettings ? "Change the repository or token" : "Connect a repository"}</h3>
+            <h3 className="ad-h">{ownSettings ? "Change the repository or token" : "Connect a repository"}</h3>
             <div className="mt-2 space-y-3">
               <div>
                 <div className="flex items-center mb-1">

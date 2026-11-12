@@ -148,7 +148,7 @@ export function QueryHistoryPanel({
   const view = current.view;
   if (!view) {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not read the query history</div>
@@ -236,7 +236,7 @@ export function QueryHistoryPanel({
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="section-title">
+          <div className="pf-h">
             {fingerprint ? "Every run" : "Recently analysed"}
           </div>
           <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
@@ -454,7 +454,7 @@ function TrendChart({
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="section-title">Median time per day</div>
+        <div className="pf-h">Median time per day</div>
         <div className="flex items-center gap-1">
           {WINDOWS.map((w) => (
             <button

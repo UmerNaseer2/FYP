@@ -243,7 +243,7 @@ describe("the page header", () => {
     setRoutes([invitesRoute(), listRoute()]);
     render(<AdminPage />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Admin" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Who can do what." })).toBeInTheDocument();
     expect(screen.getByText(HELP_TOPICS["/admin"].blurb)).toBeInTheDocument();
   });
 });
@@ -256,10 +256,31 @@ describe("the Users tab", () => {
     expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
     expect(screen.getByText("grace@example.com")).toBeInTheDocument();
     expect(screen.getByText("linus@example.com")).toBeInTheDocument();
-    // The counts are part of the header's job, and they distinguish "3 users"
-    // from "3 admins" — getting either wrong is the kind of thing nobody
-    // notices on a list they can also just count.
-    expect(screen.getByText(/Give people a role/)).toHaveTextContent("· 3 users, 1 admin");
+    // The counts sit in their own strip above the list, and they tell
+    // "3 people" from "3 admins": getting either wrong is the kind of thing
+    // nobody notices on a list they can also just count.
+    const numbers = screen.getByRole("list", { name: "This organization in numbers" });
+    expect(numbers).toHaveTextContent("3 people");
+    expect(numbers).toHaveTextContent("1 admin");
+  });
+
+  it("narrows the list as the search box is typed in, without asking the server", async () => {
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    const asked = fetchCalls.length;
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search people" }), {
+      target: { value: "GRACE" },
+    });
+    expect(screen.getByText("grace@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("ada@example.com")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search people" }), {
+      target: { value: "nobody at all" },
+    });
+    expect(screen.getByText("Nobody here matches that search.")).toBeInTheDocument();
+    expect(fetchCalls.length).toBe(asked);
   });
 
   it("says nothing twice on an empty list", async () => {
@@ -267,8 +288,9 @@ describe("the Users tab", () => {
     render(<AdminPage />);
 
     expect(await screen.findByText("No users yet")).toBeInTheDocument();
-    // No "· 0 users, 0 admins" above an empty state that already says so.
-    expect(screen.getByText(/Give people a role/)).not.toHaveTextContent("·");
+    // No "0 people" strip above an empty state that already says so.
+    expect(screen.getByText(/Give people a role/)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "This organization in numbers" })).not.toBeInTheDocument();
   });
 
   it("does not ask the admin API anything when the visitor is not an admin", async () => {
@@ -359,7 +381,7 @@ describe("the Users tab", () => {
     // The page changes the row before the server has agreed, so it has to go
     // back when the server says no — otherwise the screen says "Viewer" about
     // an account the server still treats as an admin.
-    const adaRow = screen.getByText("ada@example.com").closest(".card") as HTMLElement;
+    const adaRow = screen.getByText("ada@example.com").closest(".ad-p") as HTMLElement;
     expect(adaRow.querySelector(".pill")).toHaveTextContent("Admin");
     // The dropdown lags the pill by a commit: Select keeps its own value and
     // re-seeds from the prop in an effect, so the rollback reaches it on the
@@ -443,7 +465,7 @@ describe("the Users tab", () => {
     await screen.findByText("linus@example.com");
 
     // By the name the admin gave it, not the key it is stored under.
-    const linusRow = screen.getByText("linus@example.com").closest(".card") as HTMLElement;
+    const linusRow = screen.getByText("linus@example.com").closest(".ad-p") as HTMLElement;
     expect(linusRow.querySelector(".pill")).toHaveTextContent("QA Lead");
 
     fireEvent.click(screen.getByRole("combobox", { name: "Role for grace@example.com" }));
@@ -455,7 +477,7 @@ describe("the Users tab", () => {
         body: JSON.stringify({ userId: 2, role: "qa-lead" }),
       })
     );
-    const graceRow = screen.getByText("grace@example.com").closest(".card") as HTMLElement;
+    const graceRow = screen.getByText("grace@example.com").closest(".ad-p") as HTMLElement;
     expect(graceRow.querySelector(".pill")).toHaveTextContent("QA Lead");
     await flushAsync();
   });
@@ -488,7 +510,7 @@ describe("the Users tab", () => {
     render(<AdminPage />);
     await screen.findByText("ada@example.com");
 
-    const adaRow = screen.getByText("ada@example.com").closest(".card") as HTMLElement;
+    const adaRow = screen.getByText("ada@example.com").closest(".ad-p") as HTMLElement;
     expect(adaRow).toHaveTextContent("Admin can do things your role can't");
     expect(screen.queryByRole("combobox", { name: "Role for ada@example.com" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove ada@example.com" })).not.toBeInTheDocument();
@@ -1029,7 +1051,7 @@ describe("the Roles & permissions tab", () => {
     // as it appears.
     const note =
       "Also turned on “See saved connections”, because “Edit or test a saved connection” needs it.";
-    expect(screen.getByText(note, { selector: ".perm-hint__text" })).toBeInTheDocument();
+    expect(screen.getByText(note, { selector: ".ad-perm-hint__text" })).toBeInTheDocument();
     expect(
       within(screen.getByRole("group", { name: "What QA Lead can do" })).getByRole("status")
     ).toHaveTextContent(note);
@@ -1062,7 +1084,7 @@ describe("the Roles & permissions tab", () => {
       screen.getByText(
         "Also turned off “Add a connection” and “Edit or test a saved connection”, " +
           "because they need “See saved connections”.",
-        { selector: ".perm-hint__text" }
+        { selector: ".ad-perm-hint__text" }
       )
     ).toBeInTheDocument();
 

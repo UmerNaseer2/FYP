@@ -119,7 +119,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
   // Before "choose a connection", because choosing one would not help.
   if (!mayRead) {
     return (
-      <div className="role-note">
+      <div className="pf-note">
         <InfoIcon size={15} className="ico" />
         <div>
           <div className="title">{"You can't see the alert thresholds"}</div>
@@ -158,7 +158,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not read the alert thresholds</div>
@@ -248,7 +248,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
       </div>
 
       {!mayEdit && (
-        <div className="role-note">
+        <div className="pf-note">
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="body">
@@ -272,7 +272,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
       )}
 
       {mayEdit && (
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="pf-save">
           <button
             type="button"
             className="btn btn-primary btn-sm"
@@ -335,9 +335,9 @@ function ThresholdRow({
 }) {
   const inputId = `threshold-${definition.key}`;
   return (
-    <Card className="p-3.5 space-y-2">
+    <Card className="pf-a p-3.5 space-y-2">
       <div className="flex items-center gap-3 flex-wrap">
-        <label className="flex items-center gap-2 text-[13px] font-medium">
+        <label className="pf-a__name">
           <input
             type="checkbox"
             checked={value.enabled}

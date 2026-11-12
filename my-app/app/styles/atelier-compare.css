@@ -1,0 +1,232 @@
+/* ==========================================================================
+   Compare & Author, the Atelier look.
+
+   Every class here starts with cp- and belongs to app/[org]/(studio)/compare.
+   Colours, radii and timings are the tokens from app/globals.css, so both
+   themes follow on their own. The rules near the end restyle the shared
+   panels (set bar, diff cards, workbench) only while they sit inside
+   .cp-page, so no other page changes.
+   ========================================================================== */
+
+.cp-page { display: grid; gap: 16px; padding: 24px 16px 48px; min-width: 0; }
+.cp-page > * { min-width: 0; }
+.cp-page .page-header { margin-bottom: 0; }
+@media (min-width: 640px) { .cp-page { padding: 32px 32px 56px; } }
+
+.cp-h2 { margin: 0; font: 700 20px/26px var(--display); letter-spacing: -0.02em; color: var(--ink); }
+
+/* --- The picker card: source, a dashed line, the targets ----------------- */
+
+.cp-form { position: relative; padding: 0; animation: rise var(--dur-3) var(--ease-out) backwards; }
+.cp-pair { display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px 0; padding: 14px 16px; }
+.cp-targets { flex: 1 1 280px; display: grid; gap: 8px; min-width: 0; }
+.cp-db { flex: 1 1 280px; display: flex; align-items: flex-start; gap: 12px; padding: 12px;
+  border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
+.cp-db__icon { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+  flex: none; background: var(--tint); color: var(--ink); }
+.cp-db--target .cp-db__icon { background: var(--accent-soft); color: var(--accent-ink); }
+.cp-db__body { flex: 1; min-width: 0; display: grid; gap: 8px; }
+.cp-db__label { font: 700 16px/20px var(--display); color: var(--ink); }
+.cp-db__remove { flex: none; width: 44px; height: 44px; }
+
+.cp-pick { display: grid; gap: 6px; min-width: 0; }
+.cp-pick__role { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12.5px; line-height: 16px; color: var(--ink-2); }
+.cp-pick__problem { font-size: 12.5px; color: var(--change); }
+.cp-live { font: 600 11px/18px var(--sans); padding: 0 8px; border-radius: var(--r-pill);
+  background: var(--add-soft); color: var(--add); }
+.cp-pick .ds-select { width: 100%; }
+.cp-pick .ds-select__trigger { min-height: 44px; padding: 0 12px; border-radius: var(--r-md);
+  background: var(--surface); border: 1px solid var(--line); }
+.cp-pick .ds-select__trigger--sub { font-size: 12.5px; color: var(--ink-2); }
+
+.cp-flow { position: relative; flex: 0 0 96px; min-height: 40px; display: grid; place-items: center; }
+.cp-flow::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+  background: repeating-linear-gradient(90deg, var(--line-strong) 0 6px, transparent 6px 12px);
+  background-size: 12px 2px; animation: cp-flow 900ms linear infinite; }
+@keyframes cp-flow { to { background-position: 12px 0; } }
+.cp-swap { position: relative; min-height: 44px; padding: 0 14px; border-radius: var(--r-pill);
+  background: var(--pill); color: var(--on-pill); display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 600; font-size: 12.5px; text-decoration: none;
+  transition: transform var(--dur-2) var(--ease-spring); }
+.cp-swap svg { transition: transform var(--dur-3) var(--ease-spring); }
+.cp-swap:hover svg { transform: rotate(180deg); }
+.cp-swap:active { transform: scale(0.94); }
+.cp-swap:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* --- The option row: two switches, add target, Compare ------------------- */
+
+.cp-opts { display: flex; align-items: center; gap: 6px 18px; flex-wrap: wrap; padding: 0 18px 14px; }
+.cp-opt { display: inline-flex; align-items: center; font-size: 13.5px; color: var(--ink-2); }
+.cp-opts__limit { font-size: 12.5px; color: var(--ink-3); }
+.cp-opts .btn-sm { min-height: 44px; }
+
+/* A real checkbox drawn as a switch. The box itself stays in the page, on top
+   of the track and see-through, so the keyboard, screen readers and the form
+   all still use it. */
+.cp-switch { position: relative; display: inline-flex; align-items: center; gap: 10px;
+  min-height: 44px; cursor: pointer; font-weight: 500; color: var(--ink); }
+.cp-switch input { position: absolute; left: 0; top: 50%; width: 38px; height: 22px; margin: -11px 0 0;
+  opacity: 0; cursor: pointer; }
+.cp-switch__track { position: relative; flex: none; width: 38px; height: 22px; border-radius: var(--r-pill);
+  background: var(--line-strong); transition: background var(--dur-2); }
+.cp-switch__track::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--surface); box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-2) var(--ease-spring); }
+.cp-switch input:checked + .cp-switch__track { background: var(--accent); }
+.cp-switch input:checked + .cp-switch__track::after { transform: translateX(16px); }
+.cp-switch input:focus-visible + .cp-switch__track { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.cp-run { margin-left: auto; display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap;
+  justify-content: flex-end; }
+.cp-run .btn { min-height: 44px; }
+.cp-run__note { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--change); }
+
+.cp-bar { height: 3px; margin: 0 18px 12px; border-radius: 2px; background: var(--accent);
+  transform-origin: left; animation: grow-x 900ms var(--ease-in-out) infinite alternate; }
+
+/* --- While a re-run is on its way the last answer stays, faded ------------ */
+
+.cp-results { display: grid; gap: 16px; min-width: 0; transition: opacity var(--dur-2); }
+.cp-results > * { min-width: 0; }
+.cp-results:empty { display: none; }
+.cp-page--busy .cp-results { opacity: 0.35; }
+
+/* --- Quiet and failed states --------------------------------------------- */
+
+.cp-quiet { display: flex; gap: 14px; align-items: flex-start; padding: 18px 20px; }
+.cp-quiet__icon { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center;
+  flex: none; background: var(--tint); color: var(--ink); }
+.cp-quiet p { margin: 4px 0 0; font-size: 14px; line-height: 21px; color: var(--ink-2); max-width: 62ch; }
+
+.cp-state { max-width: 620px; margin: 6vh auto 0; padding: 34px 36px 30px;
+  animation: rise var(--dur-3) var(--ease-spring) backwards; }
+.cp-state--inline { max-width: none; margin: 0; padding: 22px 24px; }
+.cp-state__icon { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center;
+  background: var(--remove-soft); color: var(--remove); margin-bottom: 18px; }
+.cp-state small { display: block; font-size: 12.5px; font-weight: 700; color: var(--ink-3); }
+.cp-state h2 { font: 800 clamp(24px, 3.4vw, 32px)/1.1 var(--display); letter-spacing: -0.03em;
+  margin: 2px 0 8px; color: var(--ink); }
+.cp-state--inline h2 { font-size: 22px; }
+.cp-state p { margin: 0; color: var(--ink-2); max-width: 60ch; overflow-wrap: anywhere; }
+.cp-state__actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+.cp-state__actions .btn { min-height: 44px; }
+
+.cp-loading-say { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 13px;
+  font-weight: 600; color: var(--ink-2); }
+.cp-loading-say i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line);
+  border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+
+/* --- Results ------------------------------------------------------------- */
+
+.cp-run-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.cp-run-summary__count { font-size: 13.5px; color: var(--ink-2); margin-right: 6px; }
+
+.cp-outcome { display: grid; gap: 14px; min-width: 0; margin-top: 8px; }
+.cp-outcome > * { min-width: 0; }
+.cp-outcome__head { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.cp-outcome__count { font-size: 13.5px; color: var(--ink-2); }
+.cp-outcome__path { margin-left: auto; font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+.cp-outcome__head .btn-sm { min-height: 44px; }
+
+.cp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); gap: 22px; align-items: start; }
+.cp-grid > aside { min-width: 0; }
+.cp-col { display: grid; gap: 14px; min-width: 0; }
+.cp-col > * { min-width: 0; }
+@media (max-width: 1100px) { .cp-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* The four counts. Each is a button that narrows the diff under it. */
+.cp-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.cp-tile { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 12px 16px;
+  border-radius: var(--r-xl); border: 2px solid transparent; text-align: left; cursor: pointer;
+  color: var(--ink); font-family: inherit;
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2),
+    border-color var(--dur-2), opacity var(--dur-2); }
+.cp-tile:hover { transform: translateY(-3px); box-shadow: var(--lift); }
+.cp-tile:active { transform: scale(0.98); }
+.cp-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.cp-tile[aria-pressed="true"] { border-color: var(--ink); }
+.cp-tiles--filtered .cp-tile[aria-pressed="false"] { opacity: 0.55; }
+.cp-tile b { font: 800 38px/40px var(--display); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+.cp-tile > span { font-weight: 600; font-size: 13px; line-height: 16px; min-width: 0; }
+.cp-tile > span i { display: block; font-style: normal; font-weight: 400; font-size: 12px; color: var(--ink-2); }
+.cp-tile--add { background: var(--add-soft); }
+.cp-tile--add b { color: var(--add); }
+.cp-tile--chg { background: var(--change-soft); }
+.cp-tile--chg b { color: var(--change); }
+.cp-tile--rem { background: var(--remove-soft); }
+.cp-tile--rem b { color: var(--remove); }
+.cp-tile--same { background: var(--tint); }
+@media (max-width: 720px) {
+  .cp-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-tile b { font-size: 30px; }
+}
+
+/* --- Shared panels, restyled only inside this page ------------------------ */
+
+/* Saved sets read as a quiet strip of pills above the card. */
+.cp-sets .set-bar { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.cp-sets .set-bar .btn-sm, .cp-sets .set-bar .input, .cp-sets .set-bar .ds-select__trigger { min-height: 44px; }
+.cp-sets .set-bar .btn-sm, .cp-sets .set-bar .input { border-radius: var(--r-pill); }
+
+/* Diff cards: rounder, lifted, with the table name in the display face. */
+.cp-page .table-group { border-color: transparent; border-radius: var(--r-xl); box-shadow: var(--lift); }
+.cp-page .tg-header { background: var(--surface); padding: 14px 18px; min-height: 44px; }
+.cp-page .tg-header .name { font: 700 18px/24px var(--display); letter-spacing: -0.02em; }
+.cp-page .diff-row { border-left: 0; border-radius: var(--r-sm); }
+.cp-page .diff-row .sign { width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center;
+  font: 500 14px/1 var(--mono); background: var(--tint); }
+.cp-page .diff-add .sign { background: var(--add-soft); color: var(--add); }
+.cp-page .diff-chg .sign { background: var(--change-soft); color: var(--change); }
+.cp-page .diff-rem .sign { background: var(--remove-soft); color: var(--remove); }
+.cp-page .panel { border-color: transparent; border-radius: var(--r-xl); box-shadow: var(--lift); }
+.cp-page .export-bar { border-radius: var(--r-xl); }
+.cp-page .export-bar .btn { min-height: 44px; border-radius: var(--r-pill); }
+.cp-page .warn-inline, .cp-page .role-note, .cp-page .banner { border-radius: var(--r-lg); }
+
+/* The migration draft: the SQL sits on the dark code surface. */
+.cp-grid > aside .sql-textarea { background: var(--code-bg); color: var(--code-ink);
+  border-color: var(--code-line); border-radius: var(--r-lg); }
+.cp-grid > aside .sql-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.cp-grid > aside .btn-sm { min-height: 44px; }
+@media (max-width: 1100px) { .cp-grid > aside .sticky-panel { position: static; } }
+
+/* --- Phones --------------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .cp-pair { padding: 12px; }
+  .cp-flow { flex: 1 0 100%; min-height: 48px; }
+  .cp-db, .cp-targets { flex: 1 0 100%; }
+  .cp-opts { padding: 0 12px 12px; }
+  .cp-run { margin-left: 0; width: 100%; justify-content: space-between; }
+  .cp-run .btn { flex: 1 1 auto; }
+  .cp-outcome__path { margin-left: 0; flex: 1 0 100%; }
+  .cp-state { padding: 24px 20px; margin-top: 0; }
+}
+
+/* --- Motion --------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-flow::before, .cp-bar, .cp-loading-say i, .cp-form, .cp-state { animation: none; }
+  .cp-tile:hover, .cp-swap:hover svg { transform: none; }
+}
+
+/* --- Paper ---------------------------------------------------------------
+   globals.css already hides the shell and every .btn when printing. These
+   rules do the same job for this page's own pieces: the pickers and saved
+   sets are controls, and the migration draft is a text box that would print
+   only the lines scrolled into view. */
+
+@media print {
+  .cp-page { display: block; padding: 0; }
+  .cp-sets, .cp-form, .cp-quiet, .cp-swap, .cp-loading-say { display: none !important; }
+  .cp-grid { display: block !important; }
+  .cp-grid > aside { display: none !important; }
+  .cp-results, .cp-outcome, .cp-col { display: block; }
+  .cp-results > *, .cp-outcome > *, .cp-col > * { margin-bottom: 12px; }
+  .cp-results { opacity: 1 !important; }
+  .cp-tiles { break-inside: avoid; page-break-inside: avoid; }
+  .cp-tile { border: 1px solid var(--line); box-shadow: none !important; animation: none !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cp-page .table-group, .cp-page .panel { box-shadow: none !important; border-color: var(--line); }
+}

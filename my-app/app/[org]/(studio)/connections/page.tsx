@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { HelpHint } from "@/components/ui/HelpHint";
@@ -57,6 +57,7 @@ import {
   LockIcon,
   MonitorIcon,
   VersionSyncIcon,
+  SearchIcon,
 } from "@/components/ui/icons";
 import { EnvironmentPill, ExecuteRolePill, FilterPill } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
@@ -69,6 +70,7 @@ import {
 } from "@/lib/desktop-bridge";
 import { apiFetch } from "@/lib/api-fetch";
 import { isPrivateHost } from "@/lib/host-guard";
+import "@/app/styles/atelier-connections.css";
 
 // ——— Data shapes ———
 type Connection = {
@@ -323,6 +325,8 @@ export default function ConnectionsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [groupByEnv, setGroupByEnv] = useState(false);
+  // What is typed in "Search by name or host". Empty means no search.
+  const [search, setSearch] = useState("");
   const [rowResults, setRowResults] = useState<Record<number, RowResult>>({});
 
   // Who may press what. A role without a box still sees the button, switched
@@ -1243,7 +1247,11 @@ export default function ConnectionsPage() {
   }
 
   // ——— Derived view data ———
+  const wanted = search.trim().toLowerCase();
   const visible = connections.filter((c) => {
+    if (wanted && !c.name.toLowerCase().includes(wanted) && !c.host.toLowerCase().includes(wanted)) {
+      return false;
+    }
     if (filter === "local") return isLocalHost(c.host);
     if (filter === "remote") return !isLocalHost(c.host);
     if (filter === "ssl") return sslModeUsesTls(connSslMode(c));
@@ -1271,10 +1279,9 @@ export default function ConnectionsPage() {
   const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
   const envCount = (environment: Environment) =>
     connections.filter((c) => connEnvironment(c) === environment).length;
-  const prodCount = envCount("prod");
   const unlabelledCount = envCount("unset");
-  // Counted over the connections, not over `rowResults`: the tiles have to
-  // agree with the rows below them, and a row can be healthy because of a
+  // Counted over the connections, not over `rowResults`: the summary has to
+  // agree with the cards below it, and a card can be healthy because of a
   // result saved on it rather than one tested in this session.
   const results = connections.map((c) => rowResult(c, rowResults));
   const healthyCount = results.filter((r) => r?.status === "ok").length;
@@ -1335,14 +1342,14 @@ export default function ConnectionsPage() {
   const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
 
   return (
-    <div style={{ background: "var(--bg)", minHeight: "100%" }}>
-      {/* ——— Page header ——— */}
-      <section className="px-8 pt-8 pb-2">
+    <div className="cn-page">
+      <div className="cn-main">
+        {/* Page header */}
         <PageHeader
           page="/connections"
           actions={
             <button
-              className="btn btn-primary btn-sm"
+              className="btn btn-primary"
               onClick={openAdd}
               disabled={createRefusal !== null}
               title={createRefusal ?? undefined}
@@ -1352,48 +1359,20 @@ export default function ConnectionsPage() {
             </button>
           }
         >
+          {/* One sentence instead of counter tiles. It is left out while there
+              is nothing to count: on a first run, while loading and after a
+              failed load, zeros would be numbers nobody has read yet. */}
           {!noCountsToShow && (
-          <div className="flex flex-wrap gap-3 mt-4">
-            <SummaryTile label="Total" value={String(connections.length)} />
-            <SummaryTile
-              label="Production"
-              value={String(prodCount)}
-              dot={prodCount > 0 ? "var(--break)" : "var(--text-3)"}
-            />
-            <SummaryTile
-              label="Healthy"
-              // A bare "0" claimed every connection was unhealthy when the
-              // truth was that none had been tested. An em dash says
-              // "unknown"; once anything has been tested the count carries
-              // "of N" so 1 of 3 cannot be misread as 1 of 1.
-              value={untestedCount === connections.length ? "—" : String(healthyCount)}
-              unit={
-                untestedCount === connections.length
-                  ? undefined
-                  : `of ${connections.length}`
-              }
-              dot={
-                healthyCount > 0
-                  ? "var(--sync)"
-                  : failingCount > 0
-                    ? "var(--break)"
-                    : "var(--text-3)"
-              }
-            />
-            <SummaryTile
-              label="Avg latency"
-              value={avgLatency === null ? "—" : String(avgLatency)}
-              unit={avgLatency === null ? undefined : "ms"}
-            />
-          </div>
+            <p className="cn-sum" data-testid="connections-summary">
+              {summaryLine(connections.length, healthyCount, failingCount, untestedCount)}
+              {avgLatency !== null && <> Average reply {avgLatency} ms.</>}
+            </p>
           )}
         </PageHeader>
-      </section>
 
-      {/* Said once for the page rather than on every row's buttons. */}
-      {roleNote && (
-        <section className="px-8 pt-4 pb-2">
-          <div className="role-note">
+        {/* Said once for the page rather than on every card's buttons. */}
+        {roleNote && (
+          <div className="role-note cn-note">
             <InfoIcon size={15} className="ico" />
             <div className="body">
               <p>
@@ -1402,59 +1381,66 @@ export default function ConnectionsPage() {
               </p>
             </div>
           </div>
-        </section>
-      )}
+        )}
 
-      {/* ——— Filters ——— */}
-      {!noCountsToShow && (
-      <section className="px-8 pt-6 pb-3 flex items-center gap-1.5 flex-wrap">
-        <FilterPill active={filter === "all"} onClick={() => setFilter("all")} count={connections.length}>
-          All
-        </FilterPill>
-        <FilterPill active={filter === "local"} onClick={() => setFilter("local")} count={localCount}>
-          Local
-        </FilterPill>
-        <FilterPill active={filter === "remote"} onClick={() => setFilter("remote")} count={remoteCount}>
-          Remote
-        </FilterPill>
-        <span className="hsep mx-1.5" />
-        <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
-          SSL on
-        </FilterPill>
-        <span className="hsep mx-1.5" />
-        {ENVIRONMENTS.map((environment) => (
-          <FilterPill
-            key={environment}
-            active={filter === environment}
-            onClick={() => setFilter(environment)}
-            count={envCount(environment)}
-          >
-            {ENVIRONMENT_META[environment].label}
-          </FilterPill>
-        ))}
-        <label
-          className="flex items-center gap-2 ml-auto text-[12.5px] cursor-pointer"
-          style={{ color: "var(--text-2)" }}
-        >
-          <input
-            type="checkbox"
-            checked={groupByEnv}
-            onChange={(e) => setGroupByEnv(e.target.checked)}
-          />
-          Group by environment
-        </label>
-      </section>
-      )}
+        {/* Filters and search */}
+        {!noCountsToShow && (
+          <div className="cn-filters">
+            <div className="cn-filters__pills" role="group" aria-label="Filter connections">
+              <FilterPill active={filter === "all"} onClick={() => setFilter("all")} count={connections.length}>
+                All
+              </FilterPill>
+              <FilterPill active={filter === "local"} onClick={() => setFilter("local")} count={localCount}>
+                Local
+              </FilterPill>
+              <FilterPill active={filter === "remote"} onClick={() => setFilter("remote")} count={remoteCount}>
+                Remote
+              </FilterPill>
+              <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
+                SSL on
+              </FilterPill>
+              {ENVIRONMENTS.map((environment) => (
+                <FilterPill
+                  key={environment}
+                  active={filter === environment}
+                  onClick={() => setFilter(environment)}
+                  count={envCount(environment)}
+                >
+                  {ENVIRONMENT_META[environment].label}
+                </FilterPill>
+              ))}
+            </div>
+            <div className="cn-filters__tools">
+              <label className="cn-search">
+                <SearchIcon size={14} aria-hidden="true" />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name or host"
+                  aria-label="Search connections by name or host"
+                />
+              </label>
+              <label className="cn-group">
+                <input
+                  type="checkbox"
+                  checked={groupByEnv}
+                  onChange={(e) => setGroupByEnv(e.target.checked)}
+                />
+                Group by environment
+              </label>
+            </div>
+          </div>
+        )}
 
-      {/* One nudge, only while something is genuinely unlabelled. An unlabelled
-          target is the state where Compare and Deploy cannot warn about prod. */}
-      {!loading && !loadError && unlabelledCount > 0 && (
-        <section className="px-8 pb-1">
-          <div className="warn-inline">
+        {/* One nudge, only while something is genuinely unlabelled. An unlabelled
+            target is the state where Compare and Deploy cannot warn about prod. */}
+        {!loading && !loadError && unlabelledCount > 0 && (
+          <div className="warn-inline cn-note">
             <span className="ico">
               <InfoIcon size={14} />
             </span>
-            <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <div>
               <b>
                 {unlabelledCount} connection{unlabelledCount === 1 ? " has" : "s have"} no
                 environment.
@@ -1462,41 +1448,35 @@ export default function ConnectionsPage() {
               Compare and Deploy can only warn you that a target is production once it is
               labelled
               {updateRefusal === null
-                ? " — edit each one and pick Dev, Staging or Production."
+                ? ", so edit each one and pick Dev, Staging or Production."
                 : ". Ask someone who may edit connections to pick Dev, Staging or " +
                   "Production for each one."}
             </div>
           </div>
-        </section>
-      )}
+        )}
 
-      {/* Inside the desktop app: why the website's connections are locked. */}
-      {siteLocked && (
-        <section className="px-8 pb-3">
-          <div className="warn-inline">
+        {/* Inside the desktop app: why the website's connections are locked. */}
+        {siteLocked && (
+          <div className="warn-inline cn-note">
             <span className="ico">
               <LockIcon size={14} />
             </span>
-            <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <div>
               The website can&apos;t be reached right now, so its connections are locked on this computer
               until it is back. Testing them still works.
             </div>
           </div>
-        </section>
-      )}
+        )}
 
-      {/* Where a change went, when that was not where the person might expect. */}
-      {syncNotice && (
-        <section className="px-8 pb-3">
-          <div className="warn-inline" role="status">
+        {/* Where a change went, when that was not where the person might expect. */}
+        {syncNotice && (
+          <div className="warn-inline cn-note" role="status">
             <span className="ico">
               <InfoIcon size={14} />
             </span>
-            <div className="text-[12.5px] flex-1" style={{ color: "var(--text-2)" }}>
-              {syncNotice}
-            </div>
+            <div className="flex-1">{syncNotice}</div>
             <button
-              className="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-sm cn-tap"
               onClick={() => setSyncNotice(null)}
               aria-label="Dismiss"
               type="button"
@@ -1504,338 +1484,264 @@ export default function ConnectionsPage() {
               <XIcon size={12} />
             </button>
           </div>
-        </section>
-      )}
+        )}
 
-      {/* ——— Table ——— */}
-      <section className="px-8 pb-12">
-        <div className="card overflow-hidden">
-          {/* Scroll the table on narrow screens so the Actions column stays
-              reachable instead of being clipped by the card. */}
-          <div className="overflow-x-auto">
-          <table className="conns responsive-table text-[13px]">
-            {/* Eight column headings over one line of "none yet" label nothing.
-                They come back the moment there is a row to head. */}
-            {!noCountsToShow && (
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Environment</th>
-                <th>Endpoint</th>
-                <th>User</th>
-                <th>SSL</th>
-                <th>Server</th>
-                <th>Last tested</th>
-                <th style={{ textAlign: "right", width: 210 }}>Actions</th>
-              </tr>
-            </thead>
-            )}
-            <tbody>
-              {loading && (
-                <tr>
-                  <td colSpan={8} style={{ color: "var(--text-3)", textAlign: "center" }}>
-                    Loading connections…
-                  </td>
-                </tr>
+        {/* Loading: the shape of the cards that are on their way */}
+        {loading && (
+          <div className="cn-grid" role="status">
+            <span className="cn-loading">Loading connections…</span>
+            <div className="cn-bone" aria-hidden="true" />
+            <div className="cn-bone" aria-hidden="true" />
+            <div className="cn-bone" aria-hidden="true" />
+          </div>
+        )}
+
+        {/* The list could not be read */}
+        {!loading && loadError && (
+          <div className="cn-state" role="alert">
+            <span className="cn-state__ico cn-state__ico--bad" aria-hidden="true">
+              <AlertTriangleIcon size={20} />
+            </span>
+            <div>
+              <h2>{loadError}</h2>
+              <p>Your saved connections are still there. This screen just could not read them.</p>
+              <button
+                className="btn btn-secondary cn-tap"
+                onClick={() => {
+                  setLoading(true);
+                  reload();
+                }}
+                type="button"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* First run: nothing saved yet
+            Where the reader goes next, not just what is missing. Every other
+            screen (Compare, Drift, Deploy) needs a connection before it can
+            show anything at all. */}
+        {!loading && !loadError && connections.length === 0 && (
+          <div className="cn-first">
+            <div className="cn-first__art" aria-hidden="true">
+              <LogoIcon size={44} />
+            </div>
+            <div>
+              <p className="cn-first__label">Start here</p>
+              <h2>No connections yet.</h2>
+              <p>
+                Compare, Drift and Deploy all read through a connection, so add one first.
+              </p>
+              <button
+                className="btn btn-primary cn-tap"
+                onClick={openAdd}
+                disabled={createRefusal !== null}
+                title={createRefusal ?? undefined}
+              >
+                <PlusIcon size={14} />
+                Add your first connection
+              </button>
+              {/* One span per step: the li is a grid (number, words), and loose text
+                  beside the <b> would become a third cell squeezed under the number. */}
+              <ol className="cn-first__steps">
+                <li>
+                  <span><b>Add</b> a PostgreSQL database by its connection string or its host.</span>
+                </li>
+                <li>
+                  <span><b>Test</b> it, so you know it answers before you save.</span>
+                </li>
+                <li>
+                  <span><b>Compare</b> two of its schemas to see what differs.</span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        )}
+
+        {/* Filtered down to nothing
+            A different dead end from having nothing: the connections exist and
+            the filter is hiding them, so offer the way back. */}
+        {!loading && !loadError && connections.length > 0 && visible.length === 0 && (
+          <div className="cn-state">
+            <span className="cn-state__ico" aria-hidden="true">
+              <SearchIcon size={20} />
+            </span>
+            <div>
+              <h2>No connections match this filter.</h2>
+              <p>Clear the search or pick another filter.</p>
+              <button
+                className="btn btn-secondary cn-tap"
+                onClick={() => {
+                  setFilter("all");
+                  setSearch("");
+                }}
+                type="button"
+              >
+                Show all connections
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* The cards */}
+        {!loading &&
+          !loadError &&
+          groups.map((group) => (
+            <section key={group.environment ?? "all"} className="cn-group-block">
+              {group.environment !== null && (
+                <h2 className="cn-group-head">
+                  <EnvironmentPill environment={group.environment} />
+                  <span>
+                    {group.rows.length} connection{group.rows.length === 1 ? "" : "s"}
+                  </span>
+                </h2>
               )}
-
-              {!loading && loadError && (
-                <tr>
-                  <td colSpan={8} style={{ padding: "40px 16px", textAlign: "center" }}>
-                    <div className="flex flex-col items-center gap-3">
-                      <div style={{ color: "var(--break)" }}>{loadError}</div>
-                      <div className="help">
-                        Your saved connections are still there — this screen just could not read
-                        them.
+              <div className="cn-grid">
+                {group.rows.map((conn) => {
+                  const result = rowResult(conn, rowResults);
+                  const local = isLocalHost(conn.host);
+                  const sslMode = connSslMode(conn);
+                  const lock = siteLock(conn);
+                  const elsewhere = elsewhereLock(conn);
+                  return (
+                    <article key={conn.id} className="cn-card">
+                      <div className="cn-card__top">
+                        <span className="cn-card__ico" aria-hidden="true">
+                          <LogoIcon size={18} />
+                        </span>
+                        <h3>{conn.name}</h3>
+                        {/* Environment, and beside it who may deploy here: the
+                            two things about a target that change what Deploy
+                            will let you do. The role only gets a badge when it
+                            is not the default. */}
+                        <EnvironmentPill environment={connEnvironment(conn)} />
+                        <ExecuteRolePill role={toExecuteRole(conn.execute_role)} />
                       </div>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => {
-                          setLoading(true);
-                          reload();
-                        }}
-                        type="button"
-                      >
-                        Try again
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              )}
 
-              {!loading && !loadError && visible.length === 0 && (
-                <tr>
-                  <td colSpan={8} style={{ padding: "40px 16px", textAlign: "center" }}>
-                    <div className="flex flex-col items-center gap-3">
-                      <div style={{ color: "var(--text-3)" }}>
-                        {connections.length === 0
-                          ? "No connections yet."
-                          : "No connections match this filter."}
-                      </div>
-                      {connections.length === 0 && (
-                        <>
-                          {/* Where the reader goes next, not just what is
-                              missing. This is the first screen of the app with
-                              nothing on it, and every other one — Compare,
-                              Drift, Deploy — needs a connection before it can
-                              show anything at all. */}
-                          <div className="help max-w-[46ch]">
-                            Compare, Drift and Deploy all read through a connection, so add one
-                            first.
-                          </div>
-                          <button
-                            className="btn btn-primary btn-sm"
-                            onClick={openAdd}
-                            disabled={createRefusal !== null}
-                            title={createRefusal ?? undefined}
-                          >
-                            <PlusIcon size={14} />
-                            Add your first connection
-                          </button>
-                        </>
-                      )}
-                      {/* Filtered down to nothing is a different dead end from
-                          having nothing: the rows exist, the filter is hiding
-                          them, so offer the way back. */}
-                      {connections.length > 0 && (
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setFilter("all")}
-                          type="button"
-                        >
-                          Show all connections
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              )}
+                      <code className="cn-card__where">
+                        {conn.host}:{conn.port}/{conn.database_name}
+                      </code>
+                      <p className="cn-card__meta">
+                        {conn.username ? `user ${conn.username}` : "no user"} ·{" "}
+                        {conn.has_connection_string ? "connection string" : "host and fields"} · {conn.type}
+                      </p>
 
-              {!loading &&
-                !loadError &&
-                groups.map((group) => (
-                  <Fragment key={group.environment ?? "all"}>
-                    {group.environment !== null && (
-                      <tr className="group-head">
-                        <td colSpan={8}>
-                          <div className="flex items-center gap-2">
-                            <EnvironmentPill environment={group.environment} />
-                            <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-                              {group.rows.length} connection
-                              {group.rows.length === 1 ? "" : "s"}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    {group.rows.map((conn) => {
-                    const result = rowResult(conn, rowResults);
-                    const dot =
-                      result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
-                    const local = isLocalHost(conn.host);
-                    const sslMode = connSslMode(conn);
-                    const lock = siteLock(conn);
-                    const elsewhere = elsewhereLock(conn);
-                    return (
-                      <tr key={conn.id}>
-                        {/* Name */}
-                        <td data-label="Name">
-                          <div className="flex items-center gap-3">
-                            <span className={`ind ${dot}`} aria-hidden="true" />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-                                <span className="font-medium" style={{ whiteSpace: "nowrap" }}>
-                                  {conn.name}
-                                </span>
-                                {local ? (
-                                  <span className="pill pill-neutral">
-                                    <span className="dot" style={{ background: "var(--text-3)" }} />
-                                    Local
-                                  </span>
-                                ) : (
-                                  <span className="pill pill-brand">
-                                    <span className="dot" />
-                                    Remote
-                                  </span>
-                                )}
-                                {showWhere &&
-                                  (conn.site_id != null ? (
-                                    <span
-                                      className="pill pill-sync"
-                                      title={lock ?? `Kept on the website and shared with ${orgName}.`}
-                                    >
-                                      {lock ? <LockIcon size={11} /> : <span className="dot" />}
-                                      Website
-                                    </span>
-                                  ) : (
-                                    <span className="pill pill-outline" title="Kept on this computer only.">
-                                      <MonitorIcon size={11} />
-                                      This computer
-                                    </span>
-                                  ))}
-                                {conn.lives_on && (
-                                  <span
-                                    className="pill pill-outline"
-                                    title={
-                                      elsewhere ??
-                                      `Its password is kept on ${conn.lives_on} only. Everyone in ${orgName} sees it by name.`
-                                    }
-                                  >
-                                    <MonitorIcon size={11} />
-                                    On {conn.lives_on}
-                                  </span>
-                                )}
-                                {showWhere &&
-                                  conn.site_id != null &&
-                                  conn.has_password === false &&
-                                  !conn.has_connection_string && (
-                                    <span
-                                      className="pill pill-pending"
-                                      title="The website only sends a connection's password to roles that may change connections."
-                                    >
-                                      No password on this computer
-                                    </span>
-                                  )}
-                              </div>
-                              <div className="mono text-[11.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
-                                {conn.has_connection_string ? "connection string" : "host & fields"} ·{" "}
-                                <span style={{ color: "var(--text-2)" }}>{conn.database_name}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        {/* Environment, and beside it who may deploy here —
-                            the two things about a target that change what
-                            Deploy will let you do. Only the settings that are
-                            NOT the default get a badge: a pill on every row
-                            saying "anyone who may deploy" would be the same
-                            words on every row, which reads as decoration. */}
-                        <td data-label="Environment">
-                          <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-                            <EnvironmentPill environment={connEnvironment(conn)} />
-                            <ExecuteRolePill role={toExecuteRole(conn.execute_role)} />
-                          </div>
-                        </td>
-                        {/* Endpoint */}
-                        <td data-label="Endpoint">
-                          <div className="mono text-[12.5px] truncate" style={{ maxWidth: 320 }}>
-                            {conn.host}
-                            <span style={{ color: "var(--text-3)" }}>:{conn.port}/</span>
-                            {conn.database_name}
-                          </div>
-                          <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
-                            {local ? "loopback" : "remote"} · {conn.type}
-                          </div>
-                        </td>
-                        {/* User */}
-                        <td data-label="User">
-                          <span className="mono text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                            {conn.username || "—"}
+                      <div className="cn-card__pills">
+                        {local ? (
+                          <span className="pill pill-neutral">Local</span>
+                        ) : (
+                          <span className="pill pill-brand">Remote</span>
+                        )}
+                        {sslMode === "disable" ? (
+                          <span className="pill pill-neutral">SSL off</span>
+                        ) : (
+                          <span className="pill pill-sync">
+                            SSL {sslMode === "verify-full" ? "verify" : "require"}
                           </span>
-                        </td>
-                        {/* SSL */}
-                        <td data-label="SSL">
-                          {sslMode === "disable" ? (
-                            <span className="pill pill-neutral">
-                              <span className="dot" style={{ background: "var(--text-3)" }} />
-                              off
+                        )}
+                        {showWhere &&
+                          (conn.site_id != null ? (
+                            <span
+                              className="pill pill-sync"
+                              title={lock ?? `Kept on the website and shared with ${orgName}.`}
+                            >
+                              {lock ? <LockIcon size={11} /> : <span className="dot" />}
+                              Website
                             </span>
                           ) : (
-                            <span className="pill pill-sync">
-                              <span className="dot" />
-                              {sslMode === "verify-full" ? "verify" : "require"}
+                            <span className="pill pill-outline" title="Kept on this computer only.">
+                              <MonitorIcon size={11} />
+                              This computer
+                            </span>
+                          ))}
+                        {conn.lives_on && (
+                          <span
+                            className="pill pill-outline"
+                            title={
+                              elsewhere ??
+                              `Its password is kept on ${conn.lives_on} only. Everyone in ${orgName} sees it by name.`
+                            }
+                          >
+                            <MonitorIcon size={11} />
+                            On {conn.lives_on}
+                          </span>
+                        )}
+                        {showWhere &&
+                          conn.site_id != null &&
+                          conn.has_password === false &&
+                          !conn.has_connection_string && (
+                            <span
+                              className="pill pill-pending"
+                              title="The website only sends a connection's password to roles that may change connections."
+                            >
+                              No password on this computer
                             </span>
                           )}
-                        </td>
-                        {/* Server */}
-                        <td data-label="Server">
-                          <span className="mono text-[11.5px]" style={{ color: "var(--text-2)" }}>
-                            {result?.status === "ok" ? result.version : "—"}
-                          </span>
-                        </td>
-                        {/* Last tested */}
-                        <td data-label="Last tested">
-                          <RowTested result={result} />
-                        </td>
-                        {/* Actions */}
-                        <td className="cell-actions" style={{ textAlign: "right" }}>
-                          <div className="row-actions inline-flex gap-1 justify-end">
-                            <button
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => testRow(conn)}
-                              disabled={result?.status === "testing" || updateRefusal !== null || elsewhere !== null}
-                              title={updateRefusal ?? elsewhere ?? undefined}
-                            >
-                              <CheckIcon size={12} />
-                              Test
-                            </button>
-                            <button
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => openEdit(conn)}
-                              disabled={updateRefusal !== null || lock !== null || elsewhere !== null}
-                              title={updateRefusal ?? lock ?? elsewhere ?? undefined}
-                            >
-                              <EditIcon size={12} />
-                              Edit
-                            </button>
-                            {canSendUp && conn.site_id == null && !local && (
-                              <button
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => setSendUpTarget(conn)}
-                                disabled={createRefusal !== null}
-                                title={createRefusal ?? `Move it to the website, for everyone in ${orgName}`}
-                                aria-label={`Send ${conn.name} to the website`}
-                              >
-                                <VersionSyncIcon size={12} />
-                              </button>
-                            )}
-                            <button
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => openDelete(conn)}
-                              disabled={deleteRefusal !== null || lock !== null}
-                              title={deleteRefusal ?? lock ?? undefined}
-                              style={{ color: "var(--break)" }}
-                              aria-label={`Delete ${conn.name}`}
-                            >
-                              <TrashIcon size={12} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                    })}
-                  </Fragment>
-                ))}
-            </tbody>
-          </table>
-          </div>
-        </div>
+                      </div>
+
+                      <CardHealth result={result} />
+
+                      <div className="cn-card__acts">
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => testRow(conn)}
+                          disabled={result?.status === "testing" || updateRefusal !== null || elsewhere !== null}
+                          title={updateRefusal ?? elsewhere ?? undefined}
+                        >
+                          <CheckIcon size={12} />
+                          Test
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => openEdit(conn)}
+                          disabled={updateRefusal !== null || lock !== null || elsewhere !== null}
+                          title={updateRefusal ?? lock ?? elsewhere ?? undefined}
+                        >
+                          <EditIcon size={12} />
+                          Edit
+                        </button>
+                        {canSendUp && conn.site_id == null && !local && (
+                          <button
+                            className="btn btn-ghost btn-sm btn-icon"
+                            onClick={() => setSendUpTarget(conn)}
+                            disabled={createRefusal !== null}
+                            title={createRefusal ?? `Move it to the website, for everyone in ${orgName}`}
+                            aria-label={`Send ${conn.name} to the website`}
+                          >
+                            <VersionSyncIcon size={12} />
+                          </button>
+                        )}
+                        <button
+                          className="btn btn-ghost btn-sm btn-icon cn-card__del"
+                          onClick={() => openDelete(conn)}
+                          disabled={deleteRefusal !== null || lock !== null}
+                          title={deleteRefusal ?? lock ?? undefined}
+                          aria-label={`Delete ${conn.name}`}
+                        >
+                          <TrashIcon size={12} />
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
 
         {!loading && !loadError && connections.length > 0 && (
-          <div className="mt-5 flex items-end justify-between gap-6 flex-wrap">
-            <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
-              Showing{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>
-                {visible.length} of {connections.length}
-              </span>{" "}
-              connections.
-            </div>
-            {/* Saving a connection used to be a dead end: this screen is the
-                first thing anybody sets up, and then it just sat there. Every
-                other screen already links BACK here for its empty state, so
-                this was the one direction the app never offered.
-
-                Compare and not Deploy, because comparing is the step that
-                produces something to deploy — and because one connection is
-                enough for it, so the link is never a promise this page cannot
-                keep. See the empty state on the compare page for why one is
-                enough: the two sides are two schemas, and they may share a
-                server. */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                Next:
-              </span>
-              <Link href={orgPath("/compare")} className="btn btn-secondary btn-sm">
+          <div className="cn-foot">
+            <p>
+              Showing {visible.length} of {connections.length} connections.
+            </p>
+            {/* Compare and not Deploy, because comparing is the step that
+                produces something to deploy, and because one connection is
+                enough for it: the two sides are two schemas, and they may
+                share a server. */}
+            <div className="cn-foot__next">
+              <span>Next:</span>
+              <Link href={orgPath("/compare")} className="btn btn-secondary btn-sm cn-tap">
                 <CompareIcon size={14} />
                 Compare two schemas
               </Link>
@@ -1847,57 +1753,52 @@ export default function ConnectionsPage() {
             linked in the organization. Those never come here (their passwords
             stay on the computer), but everyone sees where they live. */}
         {computersWithConnections.length > 0 && (
-          <div className="mt-8">
-            <div className="flex items-center gap-2">
-              <MonitorIcon size={14} />
-              <h2 className="text-[14px] font-semibold">On linked computers</h2>
+          <section className="cn-linked">
+            <div className="cn-linked__head">
+              <MonitorIcon size={16} />
+              <h2>On linked computers</h2>
               <HelpHint label="On linked computers">
                 Connections kept in the desktop app on computers linked to {orgName}. Their passwords
                 stay on that computer, so they can&apos;t be changed or used here. Its owner can
                 compare them from here while it is on.
               </HelpHint>
             </div>
-            <p className="help max-w-[70ch] mt-1 mb-3">
+            <p className="help cn-linked__sub">
               A linked computer can open this organization&apos;s saved connections. Its owner or an
               Admin can unlink it.
             </p>
-            <div className="card overflow-hidden">
-              {computersWithConnections.map((computer, index) => (
-                <div
-                  key={computer.id}
-                  className="px-4 py-3"
-                  style={index === 0 ? undefined : { borderTop: "1px solid var(--border)" }}
-                >
-                  <div className="flex items-center gap-2 flex-wrap text-[13px]">
-                    <span className="font-medium">{computer.name}</span>
-                    <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                      {computer.mine ? "yours" : computer.owner}
+            <div className="cn-grid">
+              {computersWithConnections.map((computer) => (
+                <div key={computer.id} className="cn-card cn-card--computer">
+                  <div className="cn-card__top">
+                    <span className="cn-card__ico" aria-hidden="true">
+                      <MonitorIcon size={18} />
                     </span>
+                    <h3>{computer.name}</h3>
                     {computer.online ? (
                       <span className="pill pill-sync">
                         <span className="dot" />
                         Online
                       </span>
                     ) : (
-                      <span className="pill pill-neutral">
-                        <span className="dot" style={{ background: "var(--text-3)" }} />
-                        Offline
-                      </span>
-                    )}
-                    {!computer.online && computer.lastSeenAt && (
-                      <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-                        last seen {timeAgo(computer.lastSeenAt)}
-                      </span>
+                      <span className="pill pill-neutral">Offline</span>
                     )}
                   </div>
+                  <p className="cn-card__meta">
+                    <span>{computer.mine ? "yours" : computer.owner}</span>
+                    {!computer.online && computer.lastSeenAt && (
+                      <>
+                        {" · "}
+                        <span>last seen {timeAgo(computer.lastSeenAt)}</span>
+                      </>
+                    )}
+                  </p>
                   {computer.connections.length === 0 ? (
-                    <div className="mt-2 text-[12.5px]" style={{ color: "var(--text-3)" }}>
-                      Keeps no connections of its own.
-                    </div>
+                    <p className="cn-card__meta">Keeps no connections of its own.</p>
                   ) : (
-                    <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5" aria-label={`Connections on ${computer.name}`}>
+                    <ul className="cn-linked__list" aria-label={`Connections on ${computer.name}`}>
                       {computer.connections.map((c) => (
-                        <li key={c.id} className="flex items-center gap-1.5 text-[12.5px]">
+                        <li key={c.id}>
                           <span>{c.name}</span>
                           <EnvironmentPill environment={toEnvironment(c.environment)} />
                         </li>
@@ -1913,11 +1814,11 @@ export default function ConnectionsPage() {
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         )}
-      </section>
+      </div>
 
-      {/* ——— Scrim + Drawer ——— */}
+      {/* Scrim + Drawer */}
       <div className={`scrim ${drawerOpen ? "open" : ""}`} onClick={() => setDrawerOpen(false)} />
       {/*
         This panel is always in the DOM — it slides in and out with a CSS
@@ -2753,7 +2654,7 @@ function UnlinkComputer({ computer, onGone }: { computer: Computer; onGone: () =
     return (
       <div className="mt-2">
         <button
-          className="btn btn-ghost btn-xs"
+          className="btn btn-ghost btn-sm cn-tap"
           type="button"
           aria-label={`Unlink ${computer.name}`}
           onClick={() => setAsking(true)}
@@ -2775,10 +2676,10 @@ function UnlinkComputer({ computer, onGone }: { computer: Computer; onGone: () =
         </div>
       )}
       <div className="flex gap-2">
-        <button className="btn btn-destructive btn-xs" type="button" disabled={busy} onClick={() => void unlink()}>
+        <button className="btn btn-destructive btn-sm cn-tap" type="button" disabled={busy} onClick={() => void unlink()}>
           {busy ? "Unlinking…" : "Unlink this computer"}
         </button>
-        <button className="btn btn-ghost btn-xs" type="button" disabled={busy} onClick={() => setAsking(false)}>
+        <button className="btn btn-ghost btn-sm cn-tap" type="button" disabled={busy} onClick={() => setAsking(false)}>
           Keep it linked
         </button>
       </div>
@@ -2796,82 +2697,58 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   );
 }
 
-function SummaryTile({
-  label,
-  value,
-  unit,
-  dot,
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  dot?: string;
-}) {
-  return (
-    <div className="card px-4 py-3" style={{ minWidth: 110 }}>
-      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
-        {label}
-      </div>
-      <div className="text-[20px] font-semibold mono mt-0.5 flex items-center gap-2">
-        {dot && <span className="w-2 h-2 rounded-full" style={{ background: dot }} />}
-        {value}
-        {unit && (
-          <span className="text-[12px]" style={{ color: "var(--text-3)", marginLeft: 2 }}>
-            {unit}
-          </span>
-        )}
-      </div>
-    </div>
-  );
+/**
+ * The counts under the page title, as one sentence. "None checked yet" instead
+ * of "0 healthy": a zero would claim every connection is unhealthy when the
+ * truth is that nobody has tested one. Once anything has been tested the count
+ * carries "of N", so 1 of 3 cannot be misread as 1 of 1.
+ */
+function summaryLine(total: number, healthy: number, failing: number, untested: number): string {
+  const all = total === 1 ? "1 connection" : `${total} connections`;
+  if (untested === total) return `${all}. None checked yet.`;
+  return `${all}. ${healthy} of ${total} healthy, ${failing} failing, ${untested} not checked yet.`;
 }
 
-function RowTested({ result }: { result?: RowResult }) {
+/** The health line on a connection's card: a dot, what the last test found, and when. */
+function CardHealth({ result }: { result?: RowResult }) {
   if (!result) {
     return (
-      <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
-        Never
-      </span>
+      <p className="cn-health">
+        <span className="cn-dot" aria-hidden="true" />
+        Never checked. Press Test to check it.
+      </p>
     );
   }
   if (result.status === "testing") {
     return (
-      <div className="flex items-center gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-        <span className="spin" style={{ width: 14, height: 14 }} />
-        testing…
-      </div>
+      <p className="cn-health">
+        <span className="spin cn-spin" aria-hidden="true" />
+        Testing… asking the database
+      </p>
     );
   }
   // A result with no timestamp never reached the server, so there is no instant
-  // to report — the second line stays empty rather than inventing "just now".
+  // to report. Nothing is shown rather than inventing "just now".
   const when = result.testedAt === null ? "" : timeAgo(result.testedAt);
   if (result.status === "err") {
     return (
-      <div className="leading-tight" title={result.error}>
-        <div
-          className="flex items-center gap-2 text-[12.5px]"
-          style={{ color: "var(--break)" }}
-        >
-          <AlertCircleIcon size={12} />
-          failed
-        </div>
-        {when && (
-          <div className="text-[10.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
-            {when}
-          </div>
-        )}
-      </div>
+      <>
+        <p className="cn-health cn-health--bad">
+          <span className="cn-dot cn-dot--bad" aria-hidden="true" />
+          Test failed{when && ` · ${when}`}
+        </p>
+        <p className="cn-why">{result.error}</p>
+      </>
     );
   }
   return (
-    <div className="flex items-center gap-2">
-      <CheckIcon size={12} style={{ color: "var(--sync)" }} />
-      <div className="leading-tight">
-        <div className="text-[12.5px]">{when || "reached"}</div>
-        <div className="mono text-[10.5px]" style={{ color: "var(--text-3)" }}>
-          {result.latencyMs} ms
-        </div>
-      </div>
-    </div>
+    <p className="cn-health">
+      <span className="cn-dot cn-dot--ok" aria-hidden="true" />
+      <span>
+        Healthy · {result.latencyMs} ms{when && ` · checked ${when}`}
+        <span className="cn-health__server">{result.version}</span>
+      </span>
+    </p>
   );
 }
 

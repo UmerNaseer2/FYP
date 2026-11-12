@@ -3,18 +3,20 @@ import type { HelpTopic } from "./types";
 /** Help for Dashboard. Shown in the Help panel; the blurb is the page header's one line. */
 export const studioHelp: HelpTopic = {
   title: "Dashboard",
-  blurb: "Every tracked schema, with its lineage version and its latest drift check.",
+  blurb: "Every tracked schema as a building, with its latest drift check.",
   purpose:
-    "The Dashboard lists every schema your organization tracks. Each card shows the schema's environment, its lineage version and what the last drift check found. Start here to see what needs attention.",
+    "The Dashboard lists every schema your organization tracks. Each schema is drawn as a building in a small city. The roof colour is what the last drift check found, and you choose what the height shows. Press a building to read about it. Start here to see what needs attention.",
   steps: [
     "Save a connection on the Connections page first. Schema Studio can only track a schema on a PostgreSQL server you have saved.",
     "Press Track a schema, pick a Connection, then pick one of its schemas.",
     "Check the Environment. It starts as the connection's, and you can change it if this schema is a different one.",
-    "Add a Label if you want a friendly name on the card, then press Track schema. A baseline snapshot is taken straight away and recorded as v1.0.0.",
-    "Use the chips above the cards to show one environment at a time. The tiles at the top count what is on screen.",
-    "Press Check drift on a card to compare the live database with its baseline. Press Review drift when a card says Drifted.",
-    "Press Open on a card to see the schema's details and its history of versions.",
-    "Press the stop tracking button on a card when you no longer need to watch a schema.",
+    "Add a Label if you want a friendly name beside the schema, then press Track schema. A baseline snapshot is taken straight away and recorded as v1.0.0.",
+    "Use the environment buttons above the city to show one environment at a time. The numbers under the city count what is on screen.",
+    "Use Height shows to choose what a building's height means: its recorded versions, or the tables in its latest recorded version.",
+    "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.",
+    "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.",
+    "Press Open to see the picked schema's details and its history of versions.",
+    "Press the stop tracking button when you no longer need to watch the picked schema.",
   ],
   terms: [
     {
@@ -48,9 +50,14 @@ export const studioHelp: HelpTopic = {
         "What kind of database this is: Dev, Staging or Production. Compare and Deploy read it to warn you before you touch production.",
     },
     {
+      term: "Needs you",
+      meaning:
+        "The schemas on screen whose last drift check found drift or got no answer. Press one to pick its building.",
+    },
+    {
       term: "Label",
       meaning:
-        "An optional friendly name shown on the card. Production warnings come from the Environment setting, not from this label.",
+        "An optional friendly name shown beside the schema. Production warnings come from the Environment setting, not from this label.",
     },
     {
       term: "Stop tracking",
@@ -72,16 +79,20 @@ export const studioHelp: HelpTopic = {
       fix: "That database holds no schemas of its own. Check that the connection points at the right database.",
     },
     {
-      problem: "A card says Unreachable.",
+      problem: "A schema says Unreachable.",
       fix: "The database did not answer the last drift check. Test the connection on the Connections page, then press Check drift again.",
     },
     {
-      problem: "A card says Drifted but you changed nothing.",
+      problem: "A schema says Drifted but you changed nothing.",
       fix: "The database was changed outside Schema Studio, or an earlier change was forgotten. Press Review drift to see what changed. If the live structure is the one you want, re-baseline it on the Drift page.",
     },
     {
+      problem: "The Tables number says Couldn't read.",
+      fix: "The schema's details could not be read just now. Press Refresh, or open the schema to see why.",
+    },
+    {
       problem: "Refresh did not clear a drift.",
-      fix: "Refresh only reads the list again. It does not run a check or change a baseline. Press Check drift on the card.",
+      fix: "Refresh only reads the list again. It does not run a check or change a baseline. Press Check drift on the schema.",
     },
   ],
 };

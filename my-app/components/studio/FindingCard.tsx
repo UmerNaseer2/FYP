@@ -91,7 +91,7 @@ export function FindingCard({
   const orgPath = useOrgHref();
   const meta = SEVERITY_META[severity];
   return (
-    <Card className="p-0 overflow-hidden">
+    <Card className="pf-f p-0 overflow-hidden">
       {/* The stripe repeats the severity pill in a form you can scan a column
           of without reading any of them. */}
       <div className="flex" style={{ borderLeft: `3px solid ${meta.color}` }}>
@@ -113,7 +113,7 @@ export function FindingCard({
             </span>
           </div>
 
-          <div className="text-[14px] font-semibold tracking-[-0.01em]">{title}</div>
+          <div className="pf-f__title">{title}</div>
 
           <p className="text-[13px] leading-[1.6]" style={{ color: "var(--text-2)" }}>
             {detail}
@@ -225,14 +225,8 @@ function CodeBox({ heading, text }: { heading: string; text: string }) {
   }
 
   return (
-    <div
-      className="rounded-lg overflow-hidden"
-      style={{ border: "1px solid var(--border)", background: "var(--surface-2)" }}
-    >
-      <div
-        className="flex items-center justify-between gap-2 px-3 py-1.5"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
+    <div className="pf-code">
+      <div className="pf-code__head">
         <span className="text-[11.5px] font-semibold" style={{ color: "var(--text-2)" }}>
           {heading}
         </span>

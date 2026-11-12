@@ -31,7 +31,7 @@ function Cell({ yes }: { yes: boolean }) {
 
 function GroupRow({ title, span }: { title: string; span: number }) {
   return (
-    <tr className="role-compare__group">
+    <tr className="ad-cmp__group">
       <th scope="rowgroup" colSpan={span}>
         {title}
       </th>
@@ -52,11 +52,11 @@ export function RoleCompare({
     role.name === ADMIN_ROLE || role.permissions.includes(permission.key);
 
   return (
-    <div className="role-compare-wrap">
+    <div className="ad-cmp-wrap">
       {hasDrafts && (
         <p className="help">Shows what is saved. Unsaved changes count once they are saved.</p>
       )}
-      <div className="role-compare relative" role="region" aria-label="Compare roles" tabIndex={0}>
+      <div className="ad-cmp relative" role="region" aria-label="Compare roles" tabIndex={0}>
         <table>
           <caption className="sr-only">What each role can do</caption>
           <thead>

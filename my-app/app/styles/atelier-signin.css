@@ -1,0 +1,163 @@
+/* =====================================================================
+   Sign in (/login), the Atelier design.
+   A dark panel on the left that draws what the product does, and the
+   sign-in card on the right. Every class here starts with si-, so
+   nothing leaks onto other pages.
+   ===================================================================== */
+
+.si-page {
+  min-height: 100vh;
+  padding: 12px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans), ui-sans-serif, system-ui;
+}
+
+.si {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 24px;
+  min-height: calc(100vh - 24px);
+}
+
+/* ——— the panel ——— */
+.si-art {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--pill);
+  color: var(--on-pill);
+  padding: clamp(24px, 4vw, 48px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 32px;
+  animation: slide-r var(--dur-4) var(--ease-out) both;
+}
+.si-art > * { position: relative; }
+.si-art .brand { padding: 0; color: inherit; }
+.si-art .brand-v { color: color-mix(in srgb, var(--on-pill) 60%, transparent); }
+.si-art h2 {
+  margin: 0;
+  font: 800 clamp(34px, 4.6vw, 60px)/1 var(--display);
+  letter-spacing: -.04em;
+  max-width: 11ch;
+}
+.si-art ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-width: 400px; }
+.si-art li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--on-pill) 9%, transparent);
+  font-size: 13.5px;
+  font-family: var(--mono), ui-monospace;
+}
+.si-art li code { opacity: .75; margin-left: auto; white-space: nowrap; font-family: inherit; }
+.si-art li:nth-child(2) { margin-left: 28px; }
+.si-art li:nth-child(3) { margin-left: 56px; }
+.si-sq {
+  position: absolute;
+  right: -60px;
+  top: -60px;
+  width: 300px;
+  height: 300px;
+  opacity: .9;
+  animation: ms-bob 9s var(--ease-in-out) infinite;
+}
+
+/* ——— the card ——— */
+.si-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  padding: 56px 0 24px;
+}
+.si-top { position: absolute; top: 4px; right: 4px; }
+.si-card {
+  width: min(420px, 100%);
+  padding: 32px 30px 28px;
+  animation: pop var(--dur-3) var(--ease-spring) both;
+}
+.si-card h1 {
+  margin: 0 0 8px;
+  font: 800 clamp(28px, 3.4vw, 36px)/1.06 var(--display);
+  letter-spacing: -.035em;
+}
+.si-card .sub { margin: 0 0 22px; color: var(--ink-2); font-size: 14.5px; line-height: 22px; }
+
+.si-ways { display: grid; gap: 10px; }
+.si-ms {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  height: 52px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--pill);
+  color: var(--on-pill);
+  font: 700 15.5px/1 var(--display);
+  cursor: pointer;
+  transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2);
+}
+.si-ms:hover { transform: translateY(-2px); }
+.si-ms:active { transform: scale(.98); }
+.si-ms:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+/* Busy is waiting, not refused, so it stays readable. */
+.si-ms.busy:disabled { opacity: .85; cursor: wait; }
+.si-ms.busy .spin {
+  border-color: color-mix(in srgb, var(--on-pill) 30%, transparent);
+  border-top-color: var(--on-pill);
+}
+/* Any way after the first is outlined, so one button leads. */
+.si-alt {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1.5px var(--line);
+}
+.si-alt:hover { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+
+.si-note { margin: 12px 0 0; font-size: 12.5px; line-height: 18px; color: var(--ink-3); text-align: center; }
+.si-cancel { display: flex; justify-content: center; margin-top: 8px; }
+
+.si-sm { font-size: 12.5px; line-height: 18px; color: var(--ink-3); margin: 18px 0 0; }
+.si-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.si-lock { display: inline-flex; align-items: center; gap: 8px; }
+.si-foot .flink { cursor: pointer; }
+.si-help { margin: 12px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.si-what { font-size: 13px; }
+
+/* ——— narrow screens: the panel becomes a short header ——— */
+@media (max-width: 900px) {
+  .si { grid-template-columns: 1fr; min-height: 0; gap: 12px; }
+  .si-art { gap: 16px; padding: 22px 20px; }
+  .si-art h2 { font-size: clamp(26px, 7vw, 36px); max-width: 14ch; }
+  .si-art ul, .si-sq { display: none; }
+  .si-main { padding: 52px 0 24px; justify-content: flex-start; }
+}
+@media (max-width: 480px) {
+  .si-card { padding: 24px 18px 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .si-art, .si-card, .si-sq { animation: none; }
+  .si-ms, .si-ms:hover, .si-ms:active { transition: none; transform: none; }
+}

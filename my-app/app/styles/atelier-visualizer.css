@@ -1,0 +1,98 @@
+/* The Visualizer page (app/[org]/(studio)/visualizer/page.tsx). Every rule
+   sits under .vz-page so nothing here can change another page. The canvas
+   itself (tables, links, minimap) keeps its viz- classes from globals.css;
+   this file draws the frame around it. Colours come from the tokens in
+   globals.css, so both themes work without a second set of rules. */
+
+/* ---- Under the title: the view switch and the way on to Compare ---- */
+.vz-page .vz-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.vz-page .vz-bar__gap { flex: 1; }
+.vz-page .vz-bar .btn { min-height: 44px; }
+
+/* Single or Side by side. The picked one sits on the dark pill. */
+.vz-page .vz-seg {
+  display: inline-flex; gap: 2px; padding: 4px;
+  border-radius: var(--r-pill); background: var(--surface-2);
+}
+.vz-page .vz-seg button {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 36px; padding: 0 14px; border-radius: var(--r-pill);
+  font-size: 13.5px; font-weight: 600; color: var(--ink-2); white-space: nowrap;
+  transition: background var(--dur-2), color var(--dur-2);
+}
+.vz-page .vz-seg button:hover { color: var(--ink); }
+.vz-page .vz-seg button[aria-pressed="true"] { background: var(--pill); color: var(--on-pill); }
+.vz-page .vz-seg button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* ---- The stage: one lifted card that holds the pane or the two panes ---- */
+.vz-page .vz-stage {
+  margin: 14px 32px 32px; border-top: 0;
+  border-radius: var(--r-xl); background: var(--surface);
+  box-shadow: var(--lift); overflow: hidden;
+  animation: rise var(--dur-4) var(--ease-out) backwards;
+}
+
+/* The bar above each canvas, where the connection and schema are picked. */
+.vz-page .viz-pane__bar {
+  padding: 12px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.vz-page .viz-split .viz-split__pane + .viz-divider + .viz-split__pane .viz-pane { border-left: 0; }
+
+/* The canvas: a dotted sheet on the card's own surface. */
+.vz-page .viz-canvas { background: var(--surface); }
+.vz-page .viz-canvas .react-flow__background circle { fill: var(--line-strong); }
+
+/* The handle between the two panes. It grows and takes the accent when
+   pointed at or focused, so it is easy to find. */
+.vz-page .vz-div { width: 14px; background: var(--surface-2); }
+.vz-page .vz-div::before { display: none; }
+.vz-page .vz-div .viz-divider__grip {
+  width: 4px; height: 48px; border-radius: 2px; background: var(--line-strong);
+  transition: background var(--dur-2), height var(--dur-2);
+}
+.vz-page .vz-div:hover .viz-divider__grip,
+.vz-page .vz-div:focus-visible .viz-divider__grip { background: var(--accent); height: 80px; }
+.vz-page .vz-div:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* ---- One table on the canvas ---- */
+.vz-page .viz-table__header { background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.vz-page .viz-table__name { font-size: 13.5px; }
+.vz-page .viz-table__ico.is-fk { color: var(--accent-ink); }
+.vz-page .viz-canvas .react-flow__edge.viz-hot .react-flow__edge-path,
+.vz-page .viz-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); stroke-width: 2.25; }
+
+/* ---- The things that float over the canvas ---- */
+.vz-page .viz-panel--search {
+  padding: 0 12px; height: 40px; border: 0; border-radius: var(--r-md);
+  background: var(--surface); box-shadow: 0 0 0 1.5px var(--line), var(--lift);
+}
+.vz-page .viz-panel--search:focus-within { box-shadow: 0 0 0 1.5px var(--ink), var(--lift); }
+.vz-page .viz-search { font-size: 13.5px; }
+.vz-page .viz-canvas .react-flow__controls {
+  display: flex; padding: 3px; border: 0; border-radius: var(--r-pill);
+  box-shadow: 0 0 0 1px var(--line), var(--lift);
+}
+.vz-page .viz-canvas .react-flow__controls-button {
+  width: 30px; height: 30px; border: 0; border-radius: 50%;
+}
+.vz-page .viz-canvas .react-flow__minimap {
+  border: 0; border-radius: var(--r-md);
+  box-shadow: 0 0 0 1px var(--line), var(--lift);
+}
+
+/* ---- Phones: one pane, full width, bigger things to tap ---- */
+@media (max-width: 768px) {
+  .vz-page .vz-stage { margin: 12px 16px 16px; }
+  .vz-page .vz-bar .btn { width: 100%; justify-content: center; }
+  .vz-page .vz-bar__gap { display: none; }
+  .vz-page .viz-panel--search { height: 44px; }
+  .vz-page .viz-canvas .react-flow__controls-button { width: 44px; height: 44px; }
+  .vz-page .viz-pane__stage .btn { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vz-page .vz-stage { animation: none; }
+  .vz-page .vz-seg button,
+  .vz-page .vz-div .viz-divider__grip { transition: none; }
+}

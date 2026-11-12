@@ -1,0 +1,205 @@
+/* Your activity page. Every class starts with hi- so nothing here can touch
+   another page. Colours come only from the tokens in app/globals.css, so the
+   light and dark themes both work without extra rules. */
+
+.hi-page { display: block; }
+
+/* ----- the two buttons in the page header ----- */
+.hi-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.hi-btn {
+  min-height: 44px; padding: 0 18px; border-radius: var(--r-pill);
+  border: 1.5px solid var(--line-strong); background: var(--surface); color: var(--ink);
+  font-weight: 600; white-space: nowrap; cursor: pointer;
+  transition: transform var(--dur-1), border-color var(--dur-2);
+}
+.hi-btn:hover:not(:disabled) { border-color: var(--ink); }
+.hi-btn:active:not(:disabled) { transform: scale(.97); }
+.hi-btn:disabled { color: var(--text-3); cursor: not-allowed; }
+
+/* ----- the Last 30 days strip ----- */
+.hi-rib {
+  margin-top: 18px; padding: 18px 20px 14px; border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--lift, none); border: 1px solid var(--line);
+}
+.hi-rh { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.hi-rh h2 { font: 700 16px/22px var(--display); letter-spacing: -.01em; color: var(--ink); }
+.hi-rh small { color: var(--ink-3); font-size: 12.5px; }
+.hi-link {
+  min-height: 44px; padding: 0 4px; font-weight: 600; font-size: 13px; color: var(--accent-ink);
+  background: none; border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+}
+.hi-rh .hi-link { margin-left: auto; }
+.hi-days {
+  display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 3px;
+  margin-top: 12px; align-items: end;
+}
+.hi-day {
+  position: relative; display: flex; flex-direction: column-reverse; align-items: center; gap: 3px;
+  height: 126px; padding: 4px 0 22px; border-radius: 10px; border: 0; background: none;
+  color: var(--ink-3); transition: background var(--dur-2);
+}
+button.hi-day { cursor: pointer; }
+button.hi-day:hover { background: var(--surface-2); }
+.hi-day[aria-pressed="true"] { background: var(--surface-2); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.hi-day::after {
+  content: ""; position: absolute; left: 3px; right: 3px; bottom: 19px; height: 1.5px;
+  border-radius: 1px; background: var(--line);
+}
+.hi-mark {
+  width: min(14px, 70%); aspect-ratio: 1; border-radius: 4px; background: var(--ink-2); flex: none;
+  transition: opacity var(--dur-2);
+  animation: hi-pop var(--dur-3) var(--ease-spring) backwards;
+}
+.hi-mark[data-status="drifted"] { background: var(--drift); }
+.hi-mark[data-status="unreachable"] { background: var(--remove); border-radius: 50%; }
+.hi-mark[data-off="true"] { opacity: .16; }
+.hi-more { font: 600 10.5px/12px var(--sans); color: var(--ink-3); }
+.hi-day b {
+  position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
+  font: 600 10.5px/14px var(--sans); color: var(--ink-3); white-space: nowrap;
+}
+.hi-day.hi-now b { color: var(--accent-ink); }
+@keyframes hi-pop { from { transform: scale(0); } }
+.hi-key { display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+.hi-key span { display: inline-flex; align-items: center; gap: 6px; }
+.hi-key .hi-mark { width: 10px; border-radius: 3px; animation: none; }
+.hi-key .hi-mark[data-status="unreachable"] { border-radius: 50%; }
+
+/* ----- filters ----- */
+.hi-f { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+.hi-kind {
+  min-height: 36px; padding: 0 14px; border-radius: var(--r-pill); border: 0; cursor: pointer;
+  background: var(--surface-2); font-weight: 600; font-size: 13px; color: var(--ink-2);
+  transition: background var(--dur-2), color var(--dur-2);
+}
+.hi-kind[aria-pressed="true"] { background: var(--pill); color: var(--on-pill); }
+.hi-kind em { font-style: normal; font-weight: 700; font-size: 11.5px; margin-left: 6px; opacity: .6; }
+.hi-f2 { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.hi-f2 .ds-select { width: auto; min-width: 180px; max-width: 100%; }
+.hi-search {
+  flex: 1 1 220px; max-width: 320px; min-height: 40px; padding: 0 14px;
+  border-radius: var(--r-pill); border: 1.5px solid var(--line-strong);
+  background: var(--surface); color: var(--ink); font-size: 13.5px;
+}
+.hi-search::placeholder { color: var(--text-3); opacity: 1; }
+.hi-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--brand-soft); }
+
+/* ----- the list and the detail card ----- */
+.hi-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 22px; margin-top: 18px; align-items: start; }
+.hi-dh {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 10px;
+  padding: 10px 4px 8px; background: var(--bg); color: var(--ink);
+  font: 700 15px/20px var(--display); letter-spacing: -.01em;
+}
+.hi-dh small { font: 500 12.5px/18px var(--sans); color: var(--ink-3); letter-spacing: 0; }
+.hi-list { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
+.hi-row {
+  display: grid; grid-template-columns: 46px 34px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
+  width: 100%; min-height: 44px; text-align: left; padding: 12px 14px; border-radius: 18px; cursor: pointer;
+  background: var(--surface); color: var(--ink); box-shadow: var(--lift, none); border: 1.5px solid transparent;
+  transition: transform var(--dur-2) var(--ease-out), border-color var(--dur-2);
+}
+.hi-row:hover { transform: translateX(3px); }
+.hi-row[aria-current="true"] { border-color: var(--ink); }
+.hi-row time { font: 500 12.5px/18px var(--mono); color: var(--ink-3); }
+.hi-ic {
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-2); color: var(--ink); flex: none;
+}
+.hi-row[data-status="drifted"] .hi-ic { background: var(--drift-soft); color: var(--drift); }
+.hi-row[data-status="unreachable"] .hi-ic { background: var(--remove-soft); color: var(--remove); }
+.hi-tx { min-width: 0; }
+.hi-tx-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hi-tx-main b { font-weight: 600; }
+.hi-tx small { display: block; margin-top: 3px; font-size: 12.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hi-none { padding: 40px 16px; text-align: center; color: var(--ink-2); }
+.hi-none h2 { font: 700 17px/24px var(--display); color: var(--ink); }
+.hi-none p { margin-top: 6px; }
+.hi-none .hi-link, .hi-none .btn { margin-top: 10px; }
+.hi-cap { margin: 4px 4px 0; font-size: 12.5px; color: var(--ink-3); }
+.hi-skel { display: grid; gap: 6px; margin-top: 10px; }
+
+.hi-det {
+  position: sticky; top: 16px; padding: 22px; border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--lift, none); border: 1px solid var(--line);
+  animation: hi-in var(--dur-3) var(--ease-out);
+}
+@keyframes hi-in { from { opacity: 0; transform: translateY(8px); } }
+.hi-dk {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  font: 700 12px/16px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+}
+.hi-dk .pill { text-transform: none; letter-spacing: 0; }
+.hi-det h2 {
+  margin-top: 14px; font: 700 21px/27px var(--display); letter-spacing: -.02em; color: var(--ink);
+  text-wrap: balance; overflow-wrap: anywhere;
+}
+.hi-det dl {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 7px 12px; margin: 16px 0 0;
+  padding: 14px 0; border-block: 1px solid var(--line); font-size: 13.5px;
+}
+.hi-det dt { color: var(--ink-3); }
+.hi-det dd { margin: 0; font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+.hi-det h3 { margin-top: 16px; font: 700 13.5px/18px var(--sans); color: var(--ink); }
+.hi-counts { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+.hi-counts li { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
+.hi-counts li span { font: 600 12.5px/18px var(--mono); color: var(--ink); }
+.hi-note { margin-top: 14px; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.hi-go { margin-top: 18px; min-height: 44px; }
+.hi-lock { margin-top: 14px; font-size: 12.5px; color: var(--ink-3); }
+
+/* The heading that only paper sees. */
+.hi-print-head { display: none; }
+
+@media (max-width: 1120px) {
+  .hi-grid { grid-template-columns: minmax(0, 1fr); }
+  .hi-det { position: static; }
+}
+
+/* Phones. Thirty days cannot each be 44px wide in 375px, so the strip scrolls
+   sideways inside its own card and the page itself never does. */
+@media (max-width: 700px) {
+  .hi-acts { width: 100%; }
+  .hi-btn { flex: 1 1 0; padding: 0 12px; }
+  .hi-rib { padding: 16px 14px 12px; }
+  .hi-days { grid-template-columns: repeat(30, 44px); gap: 2px; overflow-x: auto; padding-bottom: 4px; }
+  .hi-kind { min-height: 44px; }
+  .hi-f2 .ds-select { width: 100%; }
+  .hi-search { flex: 1 1 100%; max-width: none; min-height: 44px; }
+  .hi-row { grid-template-columns: 34px minmax(0, 1fr); gap: 2px 12px; }
+  .hi-row time { grid-column: 2; grid-row: 2; }
+  .hi-row .hi-ic { grid-row: 1 / 4; }
+  .hi-row > .pill { grid-column: 2; justify-self: start; margin-top: 4px; }
+  .hi-tx-main { white-space: normal; overflow-wrap: anywhere; }
+  .hi-det { padding: 18px; }
+  .hi-go { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hi-mark, .hi-det { animation: none; }
+  .hi-row, .hi-btn, .hi-kind, .hi-day { transition: none; }
+  .hi-row:hover { transform: none; }
+  .hi-btn:active:not(:disabled) { transform: none; }
+}
+
+/* Paper. The global print rules already hide the sidebar, the top bar and
+   every .btn. Here the page drops its controls and prints the list on screen,
+   under a heading that says what was printed and when. Paper is white in
+   both themes, so the ink here is plain black and grey, the way the global
+   print rules set a plain white page. */
+@media print {
+  .hi-acts, .hi-rib, .hi-f, .hi-f2, .hi-det { display: none !important; }
+  .hi-print-head { display: block; margin-bottom: 12px; color: #000; }
+  .hi-print-head h2 { font: 700 18px/24px var(--display); }
+  .hi-print-head p { font-size: 12px; margin-top: 2px; }
+  .hi-grid { display: block; margin-top: 0; }
+  .hi-dh { position: static; background: none; color: #000; break-after: avoid; }
+  .hi-row {
+    box-shadow: none; border: 0; border-bottom: 1px solid #ccc; border-radius: 0;
+    padding: 6px 0; min-height: 0; color: #000; background: none; break-inside: avoid;
+  }
+  .hi-row time, .hi-tx small, .hi-dh small { color: #333; }
+  .hi-tx-main, .hi-tx small { white-space: normal; }
+  .hi-ic { display: none; }
+  .hi-row { grid-template-columns: 46px minmax(0, 1fr) auto; }
+}

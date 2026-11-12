@@ -345,6 +345,26 @@ export function MonitorIcon(props: IconProps) {
   );
 }
 
+/** Your activity: a clock face with its hands. */
+export function ClockIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </Svg>
+  );
+}
+
+/** The phone app: a phone with its speaker slot at the foot. */
+export function PhoneIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="6" y="2" width="12" height="20" rx="2.5" />
+      <path d="M11 18h2" />
+    </Svg>
+  );
+}
+
 /** A measurement over time: axes with a line climbing across them. */
 export function TrendIcon(props: IconProps) {
   return (
@@ -352,5 +372,14 @@ export function TrendIcon(props: IconProps) {
       <path d="M4 4v15a1 1 0 0 0 1 1h15" />
       <path d="M7.5 15l3.5-4 3 2.5 4.5-6" />
     </Svg>
+  );
+}
+
+/** A four-pointed spark: Atelier's mark for anything AI does. Filled, not stroked. */
+export function SparkIcon({ size = 16, ...props }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+      <path d="M8 0c.5 4.2 3.8 7.5 8 8-4.2.5-7.5 3.8-8 8-.5-4.2-3.8-7.5-8-8 4.2-.5 7.5-3.8 8-8z" />
+    </svg>
   );
 }

@@ -10,14 +10,12 @@ import {
   Skeleton,
   Timeline,
   TimelineNode,
-  type PillTone,
 } from "@/components/ui";
 import { isProduction } from "@/lib/environments";
 import { countOf } from "@/lib/plural";
 import { displayVersion } from "@/lib/version-timeline";
 import {
   ChevronLeftIcon,
-  CheckIcon,
   AlertTriangleIcon,
   AlertCircleIcon,
   CompareIcon,
@@ -38,46 +36,47 @@ import type {
   DriftStatus,
 } from "@/lib/lineage-db";
 import { apiFetch } from "@/lib/api-fetch";
+import "@/app/styles/atelier-schema.css";
 
 /**
- * Phase 8 — Schema detail / Lineage timeline.
+ * Phase 8, Schema detail / Lineage timeline.
  *
  * Opened from a dashboard card. Shows one tracked schema's lineage as a vertical
  * timeline (newest at top), each node with the snapshot it produced and an
  * honest treatment of its SQL (a script reference when we have one, otherwise a
- * plain note — we store snapshots and references, never fabricated SQL text).
+ * plain note: we store snapshots and references, never fabricated SQL text).
  * A drift banner reflects the latest check; the HEAD node is marked.
  *
  * Client component: it reads everything through GET /api/lineage/<id> instead
  * of querying the metadata store while rendering. Keeping the database behind
  * the API layer means one place reads a tracked schema and one place checks
- * the permission to read it — and the screen can reload itself after a drift
+ * the permission to read it, and the screen can reload itself after a drift
  * check or a relabel rather than asking the server to re-render.
  */
 
-// ── Small pure formatters (server-safe, no Date.now → no hydration risk) ─────
+// ── Small pure formatters (server-safe, no Date.now, so no hydration risk) ─────
 
-/** Four-digit migration sequence, e.g. 1 → "0001". */
+/** Four-digit migration sequence, e.g. 1 becomes "0001". */
 function fmtSeq(seq: number): string {
   return String(seq).padStart(4, "0");
 }
 
-/** Stable absolute timestamp, e.g. "2026-06-08 14:21 UTC" (utcStamp); "—" when there is none. */
+/** Stable absolute timestamp, e.g. "2026-06-08 14:21 UTC" (utcStamp). */
 function fmtDate(iso: string | null): string {
-  return utcStamp(iso) || "—";
+  return utcStamp(iso) || "No time recorded";
 }
 
-/** How each drift status reads: pill tone + label. */
-function driftMeta(status: DriftStatus | null): { tone: PillTone; label: string } {
+/** How each drift status reads: a word and a colour class for its dot. */
+function driftMeta(status: DriftStatus | null): { tone: string; label: string } {
   switch (status) {
     case "drifted":
       return { tone: "drift", label: "Drifted" };
     case "in_sync":
       return { tone: "sync", label: "In sync" };
     case "unreachable":
-      return { tone: "break", label: "Unreachable" };
+      return { tone: "down", label: "Unreachable" };
     default:
-      return { tone: "neutral", label: "Not checked" };
+      return { tone: "none", label: "Not checked" };
   }
 }
 
@@ -97,11 +96,11 @@ export default function SchemaDetailPage({
   const [error, setError] = useState<string | null>(null);
 
   // One read for the whole screen. It is a useCallback because the drift button
-  // and the environment picker call it again after they write something — this
+  // and the environment picker call it again after they write something. This
   // screen holds its own data, so refreshing the router would show nothing.
   const load = useCallback(async () => {
     if (!Number.isInteger(trackedSchemaId) || trackedSchemaId <= 0) {
-      // Invalid id → a clean in-shell "not found", never a crash.
+      // An invalid id gets a clean in-shell "not found", never a crash.
       setDetail(null);
       setLoading(false);
       return;
@@ -137,47 +136,48 @@ export default function SchemaDetailPage({
   // First paint: the shape of the page, so nothing jumps when the data lands.
   if (loading) {
     return (
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-6">
+      <div className="sc-page" aria-busy="true">
         <Skeleton width={130} height={13} />
-        <Skeleton width={320} height={30} />
-        <Skeleton height={104} radius={14} />
-        <Skeleton height={104} radius={14} />
-        <Skeleton height={220} radius={14} />
+        <Skeleton width={320} height={34} />
+        <div className="sc-top">
+          <Skeleton height={210} radius={22} />
+          <Skeleton height={210} radius={22} />
+        </div>
+        <Skeleton height={96} radius={22} />
+        <Skeleton height={240} radius={22} />
       </div>
     );
   }
 
   if (!detail) {
     return (
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
-        <Card className="p-0 overflow-hidden">
-          <div style={{ height: 320 }}>
-            <EmptyState
-              tone="break"
-              icon={<AlertCircleIcon size={22} />}
-              title={error ? "Could not load this schema" : "Schema not found"}
-              description={
-                error ??
-                "This tracked schema doesn't exist — it may have been removed. Head back to the dashboard to see what's tracked."
-              }
-              actions={
-                <div className="flex items-center gap-2">
-                  <Link href={orgPath("/studio")} className="btn btn-secondary btn-sm">
-                    <ChevronLeftIcon size={14} /> Back to dashboard
-                  </Link>
-                  {error && (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => void load()}
-                    >
-                      Try again
-                    </button>
-                  )}
-                </div>
-              }
-            />
-          </div>
+      <div className="sc-page">
+        <Card className="sc-empty">
+          <EmptyState
+            tone="break"
+            icon={<AlertCircleIcon size={22} />}
+            title={error ? "Could not load this schema" : "Schema not found"}
+            description={
+              error ??
+              "This tracked schema doesn't exist. It may have been removed. Head back to the dashboard to see what's tracked."
+            }
+            actions={
+              <div className="sc-empty__actions">
+                <Link href={orgPath("/studio")} className="btn btn-secondary btn-sm">
+                  <ChevronLeftIcon size={14} /> Back to dashboard
+                </Link>
+                {error && (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void load()}
+                  >
+                    Try again
+                  </button>
+                )}
+              </div>
+            }
+          />
         </Card>
       </div>
     );
@@ -185,11 +185,13 @@ export default function SchemaDetailPage({
 
   const drift = driftMeta(detail.drift?.status ?? null);
   const connectionGone = detail.connection === null;
+  // The name this schema goes by. With the connection gone and no label there
+  // is nothing to show here: the "Connection removed" pill already says it.
   const source =
     detail.label ??
     (detail.connection
-      ? `${detail.connection.name} — ${detail.connection.database || "?"}`
-      : "Connection removed");
+      ? `${detail.connection.name} · ${detail.connection.database || "?"}`
+      : null);
   const headNode = detail.migrations[0] ?? null;
   const headSummary = headNode?.snapshot ?? null;
 
@@ -203,174 +205,173 @@ export default function SchemaDetailPage({
     : null;
 
   return (
-    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
-      {/* Back link */}
-      <Link
-        href={orgPath("/studio")}
-        className="inline-flex items-center gap-1.5 text-[12.5px]"
-        style={{ color: "var(--text-3)" }}
-      >
+    <div className="sc-page">
+      <Link href={orgPath("/studio")} className="sc-up">
         <ChevronLeftIcon size={14} /> Tracked schemas
       </Link>
 
       {/* Header. The title is the schema's own name; the line under it comes
           from lib/help/schema-details.ts. */}
       <PageHeader page="/schemas" title={detail.schemaName}>
-        <div className="flex items-start justify-between gap-6 flex-wrap mt-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-2 flex-wrap">
-              <Pill tone={drift.tone}>{drift.label}</Pill>
-              <EnvironmentPill environment={detail.environment} />
-              {connectionGone ? (
-                <Pill tone="neutral">Connection removed</Pill>
-              ) : (
-                <Pill tone="brand" dot={false}>
-                  {detail.connection?.type ?? "PostgreSQL"}
-                </Pill>
-              )}
-              <Pill tone="neutral" dot={false}>
-                {detail.migrations.length} in lineage
-              </Pill>
-            </div>
-            <div className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
-              {source}
-              {detail.connection && (
-                <>
-                  {" · "}
-                  <span style={{ color: "var(--text-2)" }}>
-                    {detail.connection.host}:{detail.connection.port}/{detail.connection.database}
-                  </span>
-                </>
-              )}
-              {/*
-                These two counts come from the newest LINEAGE SNAPSHOT, not from
-                the live database — headSummary is migrations[0].snapshot. On a
-                drifted schema they are the numbers as they were captured, which
-                is exactly when a reader is most likely to take them for the
-                current shape. Say which one they are.
-              */}
-              {headSummary && (
-                <>
-                  {" · "}
-                  <span
-                    title="Counted from the newest lineage snapshot, not read live. After a drift the live schema can differ."
-                  >
-                    {countOf(headSummary.tableCount, "table")} ·{" "}
-                    {countOf(headSummary.columnCount, "column")} at HEAD
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
+        <div className="sc-sub">
+          <span className={`sc-stt sc-stt--${drift.tone}`}>
+            <i aria-hidden="true" />
+            <b>{drift.label}</b>
+          </span>
+          <EnvironmentPill environment={detail.environment} />
+          {connectionGone ? (
+            <Pill tone="neutral">Connection removed</Pill>
+          ) : (
+            <Pill tone="brand" dot={false}>
+              {detail.connection?.type ?? "PostgreSQL"}
+            </Pill>
+          )}
+          <Pill tone="neutral" dot={false}>
+            {detail.migrations.length} in lineage
+          </Pill>
+        </div>
+        <div className="sc-src">
+          {source && <span>{source}</span>}
+          {detail.connection && (
+            <code>
+              {detail.connection.host}:{detail.connection.port}/{detail.connection.database}
+            </code>
+          )}
+          {/*
+            These two counts come from the newest LINEAGE SNAPSHOT, not from
+            the live database: headSummary is migrations[0].snapshot. On a
+            drifted schema they are the numbers as they were captured, which
+            is exactly when a reader is most likely to take them for the
+            current shape. Say which one they are.
+          */}
+          {headSummary && (
+            <span title="Counted from the newest lineage snapshot, not read live. After a drift the live schema can differ.">
+              {countOf(headSummary.tableCount, "table")} ·{" "}
+              {countOf(headSummary.columnCount, "column")} at HEAD
+            </span>
+          )}
+        </div>
+      </PageHeader>
 
+      {/* Top row: the drift card beside the numbers. */}
+      <div className="sc-top">
+        <DriftCard
+          status={detail.drift?.status ?? null}
+          summary={detail.drift?.summary ?? null}
+          detectedAt={detail.drift?.detectedAt ?? null}
+          headVersion={detail.headVersion}
+          connectionName={detail.connection?.name ?? null}
+          trackedSchemaId={detail.trackedSchemaId}
+          compareHref={compareHref}
+          driftHref={orgPath(`/drift?tab=detail&schema=${detail.trackedSchemaId}`)}
+          onRechecked={() => void load()}
+        />
+
+        <div className="sc-nums">
           {/* Lineage card. Named "Lineage", not "Current": this is Schema
               Studio's own counter for the tracked schema, and it must not be
               read as the script version in GitHub or in script_patch. */}
-          <Card className="px-5 py-4 w-full sm:min-w-[260px]">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="section-title">Lineage</span>
+          <Card className="sc-num">
+            <small>
+              Lineage
               <HelpHint label="Lineage">
                 Schema Studio&apos;s own counter for this tracked schema. It counts structure
                 changes. It is not a script version from GitHub or from Deploy.
               </HelpHint>
-            </div>
-            <div className="flex items-baseline gap-2.5 mt-1">
-              <span className="mono text-[26px] font-semibold tracking-[-0.01em]">
-                {detail.headVersion ? displayVersion(detail.headVersion, true) : "—"}
-              </span>
-              {detail.headSeq !== null && (
-                <span className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
-                  · {fmtSeq(detail.headSeq)}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 mt-3">
-              <Pill tone={drift.tone}>{drift.label}</Pill>
-              {detail.drift && (
-                <span className="mono text-[11px] ml-auto" style={{ color: "var(--text-3)" }}>
-                  {fmtDate(detail.drift.detectedAt)}
-                </span>
-              )}
-            </div>
+            </small>
+            <b className="sc-num__ver">
+              {detail.headVersion ? displayVersion(detail.headVersion, true) : "None yet"}
+            </b>
+            {detail.headSeq !== null && <span>Entry {fmtSeq(detail.headSeq)}</span>}
           </Card>
-        </div>
-      </PageHeader>
-
-      {/* Environment — editable here because tracking only seeds it from the
-          connection, and a label nobody can correct is a label nobody trusts. */}
-      <Card className="p-4">
-        <div className="grid gap-4 sm:grid-cols-[minmax(0,340px)_1fr] items-start">
-          <SchemaEnvironmentPicker
-            trackedSchemaId={detail.trackedSchemaId}
-            environment={detail.environment}
-            onDone={() => void load()}
-          />
-          {/* Only the production warning. What the environment is for is in
-              the page's help (lib/help/schema-details.ts). */}
-          {isProduction(detail.environment) && (
-            <div className="warn-inline">
-              <span className="ico" style={{ color: "var(--break)" }}>
-                <AlertTriangleIcon size={14} />
-              </span>
-              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                <b>Production schema.</b> Re-baselining it on the Drift page accepts
-                whatever changed outside this app as correct, so look at what changed
-                before you do.
-              </div>
-            </div>
+          {/* The same snapshot numbers as the line above, so the same caveat. */}
+          {headSummary && (
+            <>
+              <NumberCard label="Tables" value={headSummary.tableCount} />
+              <NumberCard label="Columns" value={headSummary.columnCount} />
+              <NumberCard label="Constraints" value={headSummary.constraintCount} />
+            </>
           )}
         </div>
+      </div>
+
+      {/* Environment. Editable here because tracking only seeds it from the
+          connection, and a label nobody can correct is a label nobody trusts. */}
+      <Card className="sc-env">
+        <SchemaEnvironmentPicker
+          trackedSchemaId={detail.trackedSchemaId}
+          environment={detail.environment}
+          onDone={() => void load()}
+        />
+        {/* Only the production warning. What the environment is for is in
+            the page's help (lib/help/schema-details.ts). */}
+        {isProduction(detail.environment) && (
+          <div className="warn-inline">
+            <span className="ico sc-env__ico">
+              <AlertTriangleIcon size={14} />
+            </span>
+            <div>
+              <b>Production schema.</b> Re-baselining it on the Drift page accepts
+              whatever changed outside this app as correct, so look at what changed
+              before you do.
+            </div>
+          </div>
+        )}
       </Card>
 
-      {/* Drift banner — one honest state at a time */}
-      <DriftBanner
-        status={detail.drift?.status ?? null}
-        summary={detail.drift?.summary ?? null}
-        detectedAt={detail.drift?.detectedAt ?? null}
-        headVersion={detail.headVersion}
-        connectionName={detail.connection?.name ?? null}
-        trackedSchemaId={detail.trackedSchemaId}
-        compareHref={compareHref}
-        driftHref={orgPath(`/drift?tab=detail&schema=${detail.trackedSchemaId}`)}
-        onRechecked={() => void load()}
-      />
-
       {/* Lineage timeline */}
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="section-title mb-1">Lineage</div>
-            <h2 className="text-[18px] font-semibold tracking-[-0.005em]">
-              {detail.migrations.length === 1
-                ? "1 migration · the baseline"
-                : `${detail.migrations.length} migrations · newest at top`}
-            </h2>
+      <Card className="sc-snc">
+        <section>
+          <div className="sc-hd">
+            <div>
+              <small>Lineage</small>
+              <h2>
+                {detail.migrations.length === 1
+                  ? "1 migration · the baseline"
+                  : `${detail.migrations.length} migrations · newest at top`}
+              </h2>
+            </div>
+            {compareHref && (
+              <Link href={compareHref} className="btn btn-secondary btn-sm">
+                <CompareIcon size={13} /> Compare with another database
+              </Link>
+            )}
           </div>
-          {compareHref && (
-            <Link href={compareHref} className="btn btn-secondary btn-sm">
-              <CompareIcon size={13} /> Compare with another database
-            </Link>
-          )}
-        </div>
 
-        <Timeline>
-          {detail.migrations.map((node) => (
-            <LineageNodeCard
-              key={node.id}
-              node={node}
-              isHead={headNode?.id === node.id}
-              drifted={headNode?.id === node.id && detail.drift?.status === "drifted"}
-            />
-          ))}
-        </Timeline>
-      </section>
+          <Timeline>
+            {detail.migrations.map((node) => (
+              <LineageNodeCard
+                key={node.id}
+                node={node}
+                isHead={headNode?.id === node.id}
+                drifted={headNode?.id === node.id && detail.drift?.status === "drifted"}
+              />
+            ))}
+          </Timeline>
+        </section>
+      </Card>
     </div>
   );
 }
 
-// ── Drift banner ─────────────────────────────────────────────────────────────
+/** One big number from the newest lineage snapshot. */
+function NumberCard({ label, value }: { label: string; value: number }) {
+  return (
+    <Card
+      className="sc-num"
+      title="Counted from the newest lineage snapshot, not read live."
+    >
+      <small>{label}</small>
+      <b>{value}</b>
+      <span>in the newest snapshot</span>
+    </Card>
+  );
+}
 
-function DriftBanner({
+// ── Drift card ───────────────────────────────────────────────────────────────
+
+/** The drift card: one honest state at a time, with what to do about it. */
+function DriftCard({
   status,
   summary,
   detectedAt,
@@ -392,192 +393,95 @@ function DriftBanner({
   driftHref: string;
   onRechecked: () => void;
 }) {
-  // Drifted — the loud amber hero state.
+  const tone = driftMeta(status).tone;
+  const version = headVersion ? displayVersion(headVersion, true) : null;
+
+  // Drifted: the loud state, with the way to the drift screen.
   if (status === "drifted") {
     return (
-      <div
-        className="relative overflow-hidden p-5"
-        style={{
-          borderRadius: 14,
-          border: "1px solid color-mix(in oklab, var(--drift) 40%, var(--border))",
-          background:
-            "linear-gradient(180deg, color-mix(in oklab, var(--drift) 10%, var(--surface)), color-mix(in oklab, var(--drift) 4%, var(--surface)))",
-        }}
-      >
-        <div className="flex items-start gap-3">
-          <span
-            className="w-9 h-9 rounded-full grid place-items-center flex-none"
-            style={{ background: "var(--drift)", color: "#fff" }}
+      <Card className="sc-dr sc-dr--drift">
+        <small>Drift</small>
+        <h2>
+          The live schema has drifted from{" "}
+          {version ? (
+            <>
+              lineage <span className="mono">{version}</span>
+            </>
+          ) : (
+            "its baseline"
+          )}
+          .
+        </h2>
+        <p>
+          {summary ??
+            "The live schema differs from its baseline. Changes may have been made outside this app."}
+        </p>
+        <div className="sc-drf">
+          {/* The expected and actual schemas side by side, and the ways
+              to resolve the drift, live on the drift screen. */}
+          <Link
+            href={driftHref}
+            className="btn btn-primary btn-sm"
+            title="Opens the drift screen for this schema: what changed since the baseline, and the ways to resolve it."
           >
-            <AlertTriangleIcon size={16} />
-          </span>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-[15px] font-semibold tracking-[-0.005em]">
-              The live schema has drifted from{" "}
-              {headVersion ? (
-                <>
-                  lineage <span className="mono">{displayVersion(headVersion, true)}</span>
-                </>
-              ) : (
-                "its baseline"
-              )}
-              .
-            </h3>
-            <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
-              {summary ??
-                "The live schema differs from its baseline — changes may have been applied out-of-band."}
-            </p>
-            <div className="flex items-center gap-2 mt-3 flex-wrap">
-              {/* The expected and actual schemas side by side, and the ways
-                  to resolve the drift, live on the drift screen. */}
-              <Link
-                href={driftHref}
-                className="btn btn-primary btn-sm"
-                title="Opens the drift screen for this schema: what changed since the baseline, and the ways to resolve it."
-              >
-                <AlertTriangleIcon size={13} /> Review drift
-              </Link>
-              {/* Compare only ever runs on two live databases, so this link
-                  cannot show the baseline snapshot — it used to promise
-                  "expected ↔ actual", which is a view that lives on /drift. */}
-              {compareHref && (
-                <Link
-                  href={compareHref}
-                  className="btn btn-secondary btn-sm"
-                  title="Opens Compare with this database as the target. Compare works on two live databases — the expected snapshot is not one of them."
-                >
-                  <CompareIcon size={13} /> Compare with another database
-                </Link>
-              )}
-              <RecheckDriftButton
-                trackedSchemaId={trackedSchemaId}
-                label="Re-check drift"
-                onDone={onRechecked}
-              />
-              {detectedAt && (
-                <span
-                  className="mono text-[11.5px] ml-auto"
-                  style={{ color: "var(--text-3)" }}
-                >
-                  detected · {fmtDate(detectedAt)}
-                </span>
-              )}
-            </div>
-          </div>
+            <AlertTriangleIcon size={13} /> Review drift
+          </Link>
+          {/* Compare only ever runs on two live databases, so this link
+              cannot show the baseline snapshot. That view lives on /drift. */}
+          {compareHref && (
+            <Link
+              href={compareHref}
+              className="btn btn-secondary btn-sm"
+              title="Opens Compare with this database as the target. Compare works on two live databases, and the expected snapshot is not one of them."
+            >
+              <CompareIcon size={13} /> Compare with another database
+            </Link>
+          )}
+          <RecheckDriftButton
+            trackedSchemaId={trackedSchemaId}
+            label="Re-check drift"
+            onDone={onRechecked}
+          />
+          {detectedAt && <span className="sc-when">detected · {fmtDate(detectedAt)}</span>}
         </div>
-      </div>
+      </Card>
     );
   }
 
-  // Unreachable — couldn't read the live schema (often a removed connection).
+  // The calmer states share one layout and differ only in their words.
+  let title = "No drift check has run yet.";
+  let body = "Run a check to compare the live schema against its baseline.";
   if (status === "unreachable") {
-    return (
-      <Banner
-        tone="break"
-        icon={<AlertCircleIcon size={16} />}
-        title="This schema's database is unreachable."
-        body={
-          summary ??
-          (connectionName
-            ? `Could not read the live schema on "${connectionName}".`
-            : "The connection for this tracked schema has been removed.")
-        }
-        detectedAt={detectedAt}
-        trackedSchemaId={trackedSchemaId}
-        onRechecked={onRechecked}
-      />
-    );
+    // Couldn't read the live schema (often a removed connection).
+    title = "This schema's database is unreachable.";
+    body =
+      summary ??
+      (connectionName
+        ? `Could not read the live schema on "${connectionName}".`
+        : "The connection for this tracked schema has been removed.");
+  } else if (status === "in_sync") {
+    title = version
+      ? `Live schema matches lineage ${version}.`
+      : "Live schema matches its baseline.";
+    body = summary ?? "No structural drift was found at the last check.";
   }
 
-  // In sync — a calm, reassuring note.
-  if (status === "in_sync") {
-    return (
-      <Banner
-        tone="sync"
-        icon={<CheckIcon size={16} />}
-        title={
-          headVersion
-            ? `Live schema matches lineage ${displayVersion(headVersion, true)}.`
-            : "Live schema matches its baseline."
-        }
-        body={summary ?? "No structural drift was found at the last check."}
-        detectedAt={detectedAt}
-        trackedSchemaId={trackedSchemaId}
-        onRechecked={onRechecked}
-      />
-    );
-  }
-
-  // Never checked — prompt the first drift check.
   return (
-    <Banner
-      tone="neutral"
-      icon={<InfoIcon size={16} />}
-      title="No drift check has run yet."
-      body="Run a check to compare the live schema against its baseline."
-      detectedAt={null}
-      trackedSchemaId={trackedSchemaId}
-      onRechecked={onRechecked}
-    />
-  );
-}
-
-/** Shared compact banner for the calmer (non-drifted) states. */
-function Banner({
-  tone,
-  icon,
-  title,
-  body,
-  detectedAt,
-  trackedSchemaId,
-  onRechecked,
-}: {
-  tone: "sync" | "break" | "neutral";
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-  detectedAt: string | null;
-  trackedSchemaId: number;
-  onRechecked: () => void;
-}) {
-  const accent =
-    tone === "sync" ? "var(--sync)" : tone === "break" ? "var(--break)" : "var(--text-3)";
-  return (
-    <div
-      className="p-5"
-      style={{
-        borderRadius: 14,
-        border: `1px solid color-mix(in oklab, ${accent} 30%, var(--border))`,
-        background: `color-mix(in oklab, ${accent} 5%, var(--surface))`,
-      }}
-    >
-      <div className="flex items-start gap-3">
-        <span
-          className="w-9 h-9 rounded-full grid place-items-center flex-none"
-          style={{ background: accent, color: "#fff" }}
-        >
-          {icon}
-        </span>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-[14.5px] font-semibold tracking-[-0.005em]">{title}</h3>
-          <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
-            {body}
-          </p>
-          <div className="flex items-center gap-2 mt-3 flex-wrap">
-            <RecheckDriftButton
-              trackedSchemaId={trackedSchemaId}
-              label="Check drift now"
-              onDone={onRechecked}
-            />
-            {detectedAt && (
-              <span className="mono text-[11.5px] ml-auto" style={{ color: "var(--text-3)" }}>
-                last check · {fmtDate(detectedAt)}
-              </span>
-            )}
-          </div>
-        </div>
+    <Card className={`sc-dr sc-dr--${tone}`}>
+      <small>Drift</small>
+      <h2>{title}</h2>
+      <p>{body}</p>
+      <div className="sc-drf">
+        <RecheckDriftButton
+          trackedSchemaId={trackedSchemaId}
+          label="Check drift now"
+          onDone={onRechecked}
+        />
+        {status !== null && detectedAt && (
+          <span className="sc-when">last check · {fmtDate(detectedAt)}</span>
+        )}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -616,9 +520,9 @@ function LineageNodeCard({
 
   return (
     <TimelineNode state="applied" head={isHead} drift={drifted}>
-      <div className="pb-5">
+      <div className="sc-node">
         {isHead && (
-          <div className="mb-1.5">
+          <div className="sc-node__head">
             <Pill tone={drifted ? "drift" : "brand"} dot={false}>
               HEAD{drifted ? " · drift here" : ""}
             </Pill>
@@ -626,11 +530,9 @@ function LineageNodeCard({
         )}
 
         {/* Title row */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
-            {fmtSeq(node.seq)}
-          </span>
-          <span className="mono text-[14px] font-medium">{node.name}</span>
+        <div className="sc-node__title">
+          <span className="sc-node__seq">{fmtSeq(node.seq)}</span>
+          <b>{node.name}</b>
           {node.isBaseline ? (
             <Pill tone="brand">baseline</Pill>
           ) : (
@@ -641,45 +543,32 @@ function LineageNodeCard({
         </div>
 
         {/* Meta row */}
-        <div
-          className="flex items-center gap-2 text-[11.5px] mt-1.5"
-          style={{ color: "var(--text-3)" }}
-        >
-          <span className="mono" style={{ color: "var(--text-2)" }}>
-            lineage v{node.version}
-          </span>
-          <span>·</span>
+        <div className="sc-node__meta">
+          <span className="mono">lineage v{node.version}</span>
+          <span aria-hidden="true">·</span>
           <span>{fmtDate(node.createdAt)}</span>
         </div>
 
         {/* Snapshot summary */}
         {snap ? (
-          <div className="panel mt-3 p-3.5">
-            <div className="flex items-center justify-between mb-2">
-              <span className="section-title">Snapshot</span>
-              {snap.label && (
-                <span className="mono text-[11px]" style={{ color: "var(--text-3)" }}>
-                  {snap.label}
-                </span>
-              )}
+          <div className="sc-snap">
+            <div className="sc-snap__hd">
+              <small>Snapshot</small>
+              {snap.label && <span className="mono">{snap.label}</span>}
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="sc-stats">
               <SummaryStat value={snap.tableCount} label="TABLES" />
               <SummaryStat value={snap.columnCount} label="COLUMNS" />
               <SummaryStat value={snap.constraintCount} label="CONSTRAINTS" />
+              {/* The other things the comparison engine reads. Only the ones
+                  this snapshot actually holds get a tile, and only when there
+                  is at least one: a schema with no triggers needs no 0. */}
+              {objectStats.map((stat) => (
+                <SummaryStat key={stat.label} value={stat.value} label={stat.label} />
+              ))}
             </div>
-            {/* The other things the comparison engine reads. Only the ones this
-                snapshot actually holds get a tile, and only when there is at
-                least one — a schema with no triggers does not need a 0. */}
-            {objectStats.length > 0 && (
-              <div className="grid grid-cols-3 gap-2 text-center mt-2">
-                {objectStats.map((stat) => (
-                  <SummaryStat key={stat.label} value={stat.value} label={stat.label} />
-                ))}
-              </div>
-            )}
             {unrecorded.length > 0 && (
-              <p className="text-[11px] mt-2.5" style={{ color: "var(--text-3)" }}>
+              <p className="sc-snap__note">
                 Not recorded in this snapshot: {unrecorded.join(", ").toLowerCase()}.{" "}
                 <HelpHint label="Not recorded in this snapshot">
                   This snapshot was captured before this app read them. A comparison against it
@@ -688,53 +577,28 @@ function LineageNodeCard({
               </p>
             )}
             {previewNames.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-3">
+              <div className="sc-chips">
                 {previewNames.map((name) => (
-                  <span
-                    key={name}
-                    className="mono text-[11.5px] px-2 py-0.5 rounded-md"
-                    style={{
-                      background: "var(--surface-2)",
-                      border: "1px solid var(--border)",
-                      color: "var(--text-2)",
-                    }}
-                  >
-                    {name}
-                  </span>
+                  <code key={name}>{name}</code>
                 ))}
-                {moreCount > 0 && (
-                  <span
-                    className="mono text-[11.5px] px-2 py-0.5"
-                    style={{ color: "var(--text-3)" }}
-                  >
-                    +{moreCount} more
-                  </span>
-                )}
+                {moreCount > 0 && <span>+{moreCount} more</span>}
               </div>
             )}
           </div>
         ) : (
-          <p className="text-[12px] mt-3" style={{ color: "var(--text-3)" }}>
-            No snapshot is stored for this migration.
-          </p>
+          <p className="sc-snap__note">No snapshot is stored for this migration.</p>
         )}
 
-        {/* SQL / script — honest: a reference if we have one, else a plain note */}
-        <div
-          className="flex items-start gap-2 mt-3 p-2.5 rounded-lg"
-          style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
-        >
-          <InfoIcon size={13} style={{ color: "var(--text-3)", marginTop: 1, flex: "none" }} />
-          <span className="text-[12px]" style={{ color: "var(--text-2)" }}>
+        {/* SQL / script. Honest: a reference if we have one, else a plain note. */}
+        <div className="sc-script">
+          <InfoIcon size={13} />
+          <span>
             {node.sqlRef ? (
               <>
-                Migration script:{" "}
-                <span className="mono" style={{ color: "var(--text)" }}>
-                  {node.sqlRef}
-                </span>
+                Migration script: <code>{node.sqlRef}</code>
               </>
             ) : node.isBaseline ? (
-              "Captured directly from the live database — this baseline has no migration script of its own."
+              "Captured directly from the live database. This baseline has no migration script of its own."
             ) : (
               "No migration script is stored for this entry."
             )}
@@ -747,11 +611,9 @@ function LineageNodeCard({
 
 function SummaryStat({ value, label }: { value: number; label: string }) {
   return (
-    <div className="panel py-2.5" style={{ background: "var(--surface)" }}>
-      <div className="mono text-[18px] font-semibold">{value}</div>
-      <div className="text-[10px]" style={{ color: "var(--text-3)" }}>
-        {label}
-      </div>
+    <div className="sc-stat">
+      <b>{value}</b>
+      <span>{label}</span>
     </div>
   );
 }

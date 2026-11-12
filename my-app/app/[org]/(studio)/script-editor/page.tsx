@@ -58,6 +58,8 @@ import { useOrgHref } from "@/hooks/useOrg";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
+import { SqlEditor, type EditorStatus } from "./SqlEditor";
+import "@/app/styles/atelier-script-editor.css";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -120,6 +122,15 @@ type AttachStatus = { key: string; version: string; kind: "saving" | "ok" | "err
 
 /** What the last successful Save sent, so the same migration is not saved twice. */
 type LastSaved = { key: string; sql: string; rollbackSql: string; version: string; withRollback: boolean };
+
+/** What the version line says about each saved version's rollback. */
+const ROLLBACK_WORDS: Record<PulledRollbackState, string> = {
+  usable: "with rollback",
+  none: "no rollback",
+  no_statements: "rollback runs nothing",
+  transaction_control: "rollback can't run",
+  unreadable: "rollback unreadable",
+};
 
 const BUMP_LEVELS: BumpLevel[] = ["patch", "minor", "major"];
 // Shown on each button, so the person picking a level does not have to already
@@ -674,6 +685,11 @@ export default function ScriptEditorPage() {
         .sort((a, b) => compareVersions(b.version, a.version)),
     [familyRows],
   );
+  // Every saved version of this family, oldest first, for the version line.
+  const ribbonRows = useMemo(
+    () => [...familyRows].sort((a, b) => compareVersions(a.version, b.version)),
+    [familyRows],
+  );
   const fixRow = fix.key === familyKey ? fixRows.find((r) => r.version === fix.version) ?? null : null;
   const fixVersion = fixRow !== null ? bare(fixRow.version) : "";
   const fixText = fix.key === familyKey ? fix.text : "";
@@ -1034,13 +1050,35 @@ export default function ScriptEditorPage() {
     fixCount === 1 ? "has" : "have"
   } no rollback that runs, so Deploy can't undo ${fixCount === 1 ? "it" : "them"}.`;
 
+  // ── What the editor says about each box ──────────────────────────────────
+  const sqlStatus: EditorStatus =
+    sql.trim() === ""
+      ? { tone: "idle", text: "Nothing written yet" }
+      : !hasExecutableSql(sql)
+        ? { tone: "bad", text: "Only comments, so nothing would run" }
+        : txnInUp
+          ? { tone: "bad", text: "Has a transaction statement" }
+          : { tone: "ok", text: "Has statements that run" };
+  const rollbackStatus: EditorStatus =
+    rollbackSql.trim() === ""
+      ? { tone: "idle", text: "No rollback written" }
+      : !rollbackRuns
+        ? { tone: "bad", text: "Only comments, so nothing would run" }
+        : txnInDown
+          ? { tone: "bad", text: "Has a transaction statement" }
+          : { tone: "ok", text: "Has statements that run" };
+  // The names the files get once saved. Before the version is known they
+  // are plain names, so a download still has one.
+  const sqlFile = version !== null ? `v${version}.sql` : "migration.sql";
+  const rollbackFile = version !== null ? `v${version}.down.sql` : "rollback.sql";
+
   // ── Render ──────────────────────────────────────────────────────────────--
   return (
-    <div className="p-4 sm:p-6 max-w-[1080px]">
+    <div className="se-page">
       <PageHeader page="/script-editor" />
 
       {connectionsLoaded && connections.length === 0 ? (
-        <div style={{ minHeight: 360 }}>
+        <div className="se-empty">
           {connectionsFailed ? (
             <EmptyState
               icon={<EditIcon size={22} />}
@@ -1072,7 +1110,7 @@ export default function ScriptEditorPage() {
           )}
         </div>
       ) : (
-        <div className="grid gap-4">
+        <div className="se-stackall">
           {/* A script saved on a Performance tab, offered until loaded or discarded. */}
           <MigrationDraftBanner
             connections={connections}
@@ -1080,26 +1118,57 @@ export default function ScriptEditorPage() {
             editorHasContent={sql.trim() !== "" || rollbackSql.trim() !== "" || description.trim() !== ""}
             onLoad={loadDraft}
           />
-          {/* ── Target ─────────────────────────────────────────────────────── */}
-          <div className="card p-5">
-            <div className="section-title mb-3">
-              Where this script belongs
-              <HelpHint label="Where this script belongs">
-                Nothing runs against this database from here. The connection names the registry
-                folder and shows which versions are already applied, so the new version lands
-                above them. Running is done on Deploy.
-              </HelpHint>
-            </div>
-            {/* The labels are block, like the Script group one that shares its
-                row with a button: an inline label takes the page's taller line
-                height and set its picker 6px lower than that one. */}
-            <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
-              <div>
-                <label className="label block" htmlFor="se-conn">Connection</label>
+
+          {/* ── The versions this script group already has ─────────────────── */}
+          {familyKey !== "" && (
+            <section className="card se-line" aria-label="Saved versions of this script group">
+              <div className="se-lh">
+                <b>{scriptName}</b>
+                <span>
+                  {githubLoading
+                    ? "Reading the saved versions…"
+                    : githubError
+                      ? "The saved versions could not be listed."
+                      : ribbonRows.length === 0
+                        ? "No saved versions yet."
+                        : `${countOf(ribbonRows.length, "saved version")}, oldest first`}
+                </span>
+              </div>
+              {(ribbonRows.length > 0 || (version !== null && !sameMigration)) && (
+                <ol className="se-rib">
+                  {ribbonRows.map((row) => (
+                    <li key={row.version} className={row.rollback_state === "usable" ? undefined : "se-rib-warn"}>
+                      <b>{`v${bare(row.version)}`}</b>
+                      <small>{ROLLBACK_WORDS[row.rollback_state]}</small>
+                    </li>
+                  ))}
+                  {version !== null && !sameMigration && (
+                    <li className="se-rib-draft">
+                      <b>{`v${version}`}</b>
+                      <small>this draft, not saved</small>
+                    </li>
+                  )}
+                </ol>
+              )}
+            </section>
+          )}
+
+          <div className="se-grid">
+            {/* ── Target ───────────────────────────────────────────────────── */}
+            <div className="card se-card se-place">
+              <h2>
+                Where this script belongs
+                <HelpHint label="Where this script belongs">
+                  Nothing runs against this database from here. The connection names the registry
+                  folder and shows which versions are already applied, so the new version lands
+                  above them. Running is done on Deploy.
+                </HelpHint>
+              </h2>
+              <div className="se-field">
+                <label className="label" htmlFor="se-conn">Connection</label>
                 <Select
                   variant="input"
                   id="se-conn"
-                  className="mt-1"
                   ariaLabel="Connection"
                   value={connectionId}
                   placeholder="Select a connection…"
@@ -1117,12 +1186,11 @@ export default function ScriptEditorPage() {
                 />
               </div>
 
-              <div>
-                <label className="label block" htmlFor="se-schema">Schema</label>
+              <div className="se-field">
+                <label className="label" htmlFor="se-schema">Schema</label>
                 <Select
                   variant="input"
                   id="se-schema"
-                  className="mt-1"
                   ariaLabel="Schema"
                   value={schema}
                   disabled={schemasLoading || !connectionId}
@@ -1141,18 +1209,15 @@ export default function ScriptEditorPage() {
                     setSaveResult(null);
                   }}
                 />
-                {schemasError && (
-                  <p className="help mt-1" style={{ color: "var(--break)" }}>{schemasError}</p>
-                )}
+                {schemasError && <p className="se-hint se-bad">{schemasError}</p>}
               </div>
 
-              <div>
-                <div className="flex items-center justify-between">
+              <div className="se-field">
+                <div className="se-fieldhead">
                   <label className="label" htmlFor="se-family">Script group</label>
                   <button
                     type="button"
-                    className="family-toggle text-[11px]"
-                    style={{ color: "var(--brand)" }}
+                    className="se-toggle"
                     onClick={() => {
                       setFamilyMode((m) => (m === "existing" ? "new" : "existing"));
                       setSaveResult(null);
@@ -1165,7 +1230,6 @@ export default function ScriptEditorPage() {
                   <Select
                     variant="input"
                     id="se-family"
-                    className="mt-1"
                     mono
                     ariaLabel="Script group"
                     value={existingFamily}
@@ -1189,7 +1253,7 @@ export default function ScriptEditorPage() {
                   <>
                     <input
                       id="se-family"
-                      className="input mono mt-1"
+                      className="input mono"
                       placeholder="e.g. add_invoices"
                       value={newFamily}
                       disabled={!schema}
@@ -1199,192 +1263,269 @@ export default function ScriptEditorPage() {
                       }}
                       aria-label="New script group name"
                     />
-                    {newFamily.trim() && nameProblem && (
-                      <p className="help mt-1" style={{ color: "var(--break)" }}>
-                        {nameProblem}
-                      </p>
-                    )}
+                    {newFamily.trim() && nameProblem && <p className="se-hint se-bad">{nameProblem}</p>}
                     {caseClash && (
-                      <p className="help mt-1" style={{ color: "var(--drift)" }}>
+                      <p className="se-hint se-warn">
                         {`A script group "${caseClash}" already exists. Use that exact name to add to it.`}
                       </p>
                     )}
                   </>
                 )}
               </div>
-            </div>
-            {githubError && (
-              <p
-                className="help mt-3"
-                style={{ color: githubUnconfigured ? "var(--break)" : "var(--drift)" }}
-              >
-                {githubUnconfigured && desktop ? (
-                  <>
-                    The GitHub registry is not set up yet, so nothing can be listed and
-                    nothing can be saved. Add the registry repository and an access token
-                    in Settings.{" "}
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => desktop.openSettings()}
-                    >
-                      Open Settings
-                    </button>
-                  </>
-                ) : githubUnconfigured ? (
-                  <>
-                    The GitHub registry is not set up for this organization, so nothing
-                    can be listed and nothing can be saved. An admin can add the
-                    repository and an access token on the Admin screen, under GitHub,
-                    then reload this page.
-                  </>
-                ) : (
-                  <>
-                    {githubError}{" "}
-                    Existing script groups can&apos;t be listed, but you can still add a
-                    new one.
-                  </>
-                )}
-              </p>
-            )}
-            {/* The pull lists what it could and names what it could not, so a
-                family missing from the list is never a silent gap. */}
-            {pullWarnings.length > 0 && (
-              <div className="help mt-3" style={{ color: "var(--drift)" }}>
-                <p>Some of the registry could not be read:</p>
-                <ul className="list-disc pl-5 mt-1 space-y-0.5">
-                  {pullWarnings.slice(0, 5).map((warning, index) => (
-                    <li key={index} className="break-words">
-                      {warning}
-                    </li>
-                  ))}
-                </ul>
-                {pullWarnings.length > 5 && <p className="mt-1">{`…and ${pullWarnings.length - 5} more.`}</p>}
-                <p className="mt-1">
-                  Scripts in those places are missing from the lists on this page. The version
-                  below is still checked against GitHub directly.
+
+              {githubError && (
+                <p className={`se-hint ${githubUnconfigured ? "se-bad" : "se-warn"}`}>
+                  {githubUnconfigured && desktop ? (
+                    <>
+                      The GitHub registry is not set up yet, so nothing can be listed and
+                      nothing can be saved. Add the registry repository and an access token
+                      in Settings.{" "}
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => desktop.openSettings()}
+                      >
+                        Open Settings
+                      </button>
+                    </>
+                  ) : githubUnconfigured ? (
+                    <>
+                      The GitHub registry is not set up for this organization, so nothing
+                      can be listed and nothing can be saved. An admin can add the
+                      repository and an access token on the Admin screen, under GitHub,
+                      then reload this page.
+                    </>
+                  ) : (
+                    <>
+                      {githubError}{" "}
+                      Existing script groups can&apos;t be listed, but you can still add a
+                      new one.
+                    </>
+                  )}
                 </p>
+              )}
+              {/* The pull lists what it could and names what it could not, so a
+                  family missing from the list is never a silent gap. */}
+              {pullWarnings.length > 0 && (
+                <div className="se-hint se-warn">
+                  <p>Some of the registry could not be read:</p>
+                  <ul className="se-list">
+                    {pullWarnings.slice(0, 5).map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                  {pullWarnings.length > 5 && <p>{`…and ${pullWarnings.length - 5} more.`}</p>}
+                  <p>
+                    Scripts in those places are missing from the lists on this page. The version
+                    below is still checked against GitHub directly.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* ── Script ───────────────────────────────────────────────────── */}
+            <div className="se-main">
+              <SqlEditor
+                sql={sql}
+                rollbackSql={rollbackSql}
+                onSqlChange={(text) => {
+                  setSql(text);
+                  setSaveResult(null);
+                  setOfferStatus(null);
+                }}
+                onRollbackChange={(text) => {
+                  setRollbackSql(text);
+                  setSaveResult(null);
+                  setOfferStatus(null);
+                }}
+                onSaveKey={handleSave}
+                sqlFile={sqlFile}
+                rollbackFile={rollbackFile}
+                sqlStatus={sqlStatus}
+                rollbackStatus={rollbackStatus}
+              />
+
+              <div className="se-notes">
+                <div className="se-noteshead">
+                  About the rollback
+                  <HelpHint label="Rollback file">
+                    Deploy needs these statements to undo this version. They are saved beside the
+                    script as a .down.sql file. Where you can, undo by renaming or keeping a column
+                    instead of dropping it.
+                  </HelpHint>
+                </div>
+                <p className="se-hint">
+                  {rollbackRuns && !saveWithoutRollback
+                    ? "A rollback restores structure, not rows. One that drops a column deletes everything written into it since this version landed."
+                    : (rollbackProblem ??
+                      "This version will be saved without a rollback, so Deploy will not be able to undo it.")}
+                </p>
+                {txnError && <p className="se-hint se-bad">{txnError}</p>}
+                {/* Saving without a rollback is a choice, not a default. The box
+                    appears when there is no rollback that runs (or when it is
+                    ticked, so it can be unticked). */}
+                {(!rollbackRuns || saveWithoutRollback) && (
+                  <label className="se-check">
+                    <input
+                      type="checkbox"
+                      checked={saveWithoutRollback}
+                      onChange={(e) => {
+                        setSaveWithoutRollback(e.target.checked);
+                        clearStaleError();
+                      }}
+                    />
+                    <span>Save without a rollback — Deploy will not be able to undo this version</span>
+                  </label>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* ── Write it with AI (draws nothing without AI) ───────────────── */}
-          {connectionId && schema && (
-            <SqlGeneratePanel
-              connectionId={Number(connectionId)}
-              schemaName={schema}
-              editorHasText={Boolean(sql.trim() || rollbackSql.trim() || description.trim())}
-              onUse={loadGenerated}
-            />
-          )}
-
-          {/* ── Script ─────────────────────────────────────────────────────── */}
-          <div className="card p-5">
-            <div className="section-title mb-3">Script</div>
-            <label className="label" htmlFor="se-sql">SQL</label>
-            <textarea
-              id="se-sql"
-              className="input mono mt-1 se-textarea"
-              style={{ minHeight: 300, lineHeight: 1.6, resize: "vertical" }}
-              spellCheck={false}
-              placeholder={"ALTER TABLE invoices\n  ADD COLUMN due_date date;"}
-              value={sql}
-              onChange={(e) => {
-                setSql(e.target.value);
-                setSaveResult(null);
-                setOfferStatus(null);
-              }}
-            />
-            {/* The hint sits beside the label, not inside it, so the box keeps
-                the name "Rollback SQL". */}
-            <div className="mt-3 flex items-center flex-wrap">
-              <label className="label" htmlFor="se-down">Rollback SQL</label>
-              <HelpHint label="Rollback file">
-                Deploy needs these statements to undo this version. They are saved beside the
-                script as a .down.sql file. Where you can, undo by renaming or keeping a column
-                instead of dropping it.
-              </HelpHint>
-            </div>
-            <textarea
-              id="se-down"
-              className="input mono mt-1 se-textarea"
-              style={{ minHeight: 160, lineHeight: 1.6, resize: "vertical" }}
-              spellCheck={false}
-              placeholder={"ALTER TABLE invoices\n  DROP COLUMN due_date;"}
-              value={rollbackSql}
-              onChange={(e) => {
-                setRollbackSql(e.target.value);
-                setSaveResult(null);
-                setOfferStatus(null);
-              }}
-            />
-            <p className="help mt-1">
-              {rollbackRuns && !saveWithoutRollback
-                ? "A rollback restores structure, not rows. One that drops a column deletes everything written into it since this version landed."
-                : (rollbackProblem ??
-                  "This version will be saved without a rollback, so Deploy will not be able to undo it.")}
-            </p>
-            {txnError && (
-              <p className="help mt-1" style={{ color: "var(--break)" }}>{txnError}</p>
-            )}
-            {/* Saving without a rollback is a choice, not a default. The box
-                appears when there is no rollback that runs (or when it is
-                ticked, so it can be unticked). */}
-            {(!rollbackRuns || saveWithoutRollback) && (
-              <label
-                className="flex items-start gap-2 text-[12px] mt-2"
-                style={{ color: "var(--text-2)", cursor: "pointer" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={saveWithoutRollback}
-                  onChange={(e) => {
-                    setSaveWithoutRollback(e.target.checked);
-                    clearStaleError();
-                  }}
-                  style={{ marginTop: 2 }}
+              {/* ── Write it with AI (draws nothing without AI) ─────────────── */}
+              {connectionId && schema && (
+                <SqlGeneratePanel
+                  connectionId={Number(connectionId)}
+                  schemaName={schema}
+                  editorHasText={Boolean(sql.trim() || rollbackSql.trim() || description.trim())}
+                  onUse={loadGenerated}
                 />
-                <span>Save without a rollback — Deploy will not be able to undo this version</span>
-              </label>
-            )}
-            <div className="mt-3 flex items-center flex-wrap">
-              <label className="label" htmlFor="se-desc">
-                Change log <span style={{ color: "var(--text-3)" }}>(optional)</span>
-              </label>
-              <HelpHint label="Change log">
-                Says why this version exists. It is saved in the script and recorded when the
-                version is deployed.
-              </HelpHint>
+              )}
+
+              {/* ── Add a missing rollback ───────────────────────────────────── */}
+              {familyKey !== "" && (fixCount > 0 || (fixHere !== null && fixHere.kind !== "saving")) && (
+                <div className="card se-card">
+                  <h2>
+                    Add a missing rollback
+                    <HelpHint label="Add a missing rollback">
+                      Pick a version and write its rollback. It is saved beside that version as a
+                      .down.sql file, and the migration itself is not changed. Once saved, Deploy can
+                      undo the version, including where it is already applied.
+                    </HelpHint>
+                  </h2>
+                  {fixCount > 0 && (
+                    <>
+                      <p className="se-hint">{fixIntro}</p>
+                      <div className="se-field se-fix">
+                        <label className="label" htmlFor="se-fix-version">Saved version</label>
+                        <Select
+                          variant="input"
+                          id="se-fix-version"
+                          mono
+                          ariaLabel="Saved version to add a rollback to"
+                          value={fixRow !== null ? fixRow.version : ""}
+                          placeholder="Pick a version…"
+                          options={fixRows.map((r) => ({
+                            value: r.version,
+                            label:
+                              r.rollback_state === "none"
+                                ? `v${bare(r.version)} — no rollback`
+                                : `v${bare(r.version)} — rollback has no statements`,
+                          }))}
+                          onChange={(value) => {
+                            setFix((current) => ({
+                              key: familyKey,
+                              version: value,
+                              text: current.key === familyKey ? current.text : "",
+                            }));
+                            setFixStatus(null);
+                          }}
+                        />
+                      </div>
+                      {fixRow !== null && (
+                        <>
+                          <div className="se-field">
+                            <label className="label" htmlFor="se-fix-up">
+                              {`Migration SQL of v${fixVersion} (read-only)`}
+                            </label>
+                            <textarea
+                              id="se-fix-up"
+                              className="input mono se-fixbox"
+                              spellCheck={false}
+                              readOnly
+                              value={fixRow.sql_content}
+                            />
+                          </div>
+                          <div className="se-field">
+                            <label className="label" htmlFor="se-fix-down">
+                              {`Rollback SQL for v${fixVersion}`}
+                            </label>
+                            <textarea
+                              id="se-fix-down"
+                              className="input mono se-fixbox"
+                              spellCheck={false}
+                              value={fixText}
+                              onChange={(e) => {
+                                setFix({ key: familyKey, version: fixRow.version, text: e.target.value });
+                                setFixStatus(null);
+                              }}
+                            />
+                          </div>
+                          {fixText.trim() !== "" && !fixRuns && (
+                            <p className="se-hint se-bad">
+                              {`This rollback contains only comments, so it would undo nothing. Write the statements that undo v${fixVersion}'s migration.`}
+                            </p>
+                          )}
+                          {fixTxn && <p className="se-hint se-bad">{TXN_IN_ROLLBACK}</p>}
+                          <p className="se-hint">
+                            A saved rollback cannot be changed afterwards, so read it carefully.
+                          </p>
+                        </>
+                      )}
+                      <div className="se-fixfoot">
+                        {fixBlocker && !fixSaving && <p className="se-hint">{fixBlocker}</p>}
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={fixSaving || fixBlocker !== null}
+                          title={fixBlocker ?? undefined}
+                          onClick={saveFixRollback}
+                        >
+                          {fixSaving
+                            ? "Saving the rollback…"
+                            : fixRow !== null
+                              ? `Save rollback for v${fixVersion}`
+                              : "Save rollback"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  {fixHere !== null && fixHere.kind !== "saving" && (
+                    <p
+                      className={`se-p ${fixHere.kind === "ok" ? "se-good" : "se-warn"}`}
+                      role={fixHere.kind === "ok" ? "status" : "alert"}
+                    >
+                      {fixHere.message}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
-            <input
-              id="se-desc"
-              className="input mt-1"
-              placeholder="Why this version exists"
-              // The push route refuses a longer description.
-              maxLength={1000}
-              value={description}
-              onChange={(e) => {
-                setDescription(e.target.value);
-                clearStaleError();
-              }}
-            />
-          </div>
 
-          {/* ── Version ────────────────────────────────────────────────────── */}
-          <div className="card p-5">
-            <div className="section-title mb-3">Version</div>
+            <div className="se-rest">
+              {/* ── Version ──────────────────────────────────────────────────── */}
+              <div className="card se-card">
+                <div className="se-rh">
+                  <h2>Version</h2>
+                  {/* Keyed on the number, so a new one rolls in. */}
+                  {scriptName && version !== null && (
+                    <span key={version} className="se-vn">{`v${version}`}</span>
+                  )}
+                </div>
 
-            {scriptName ? (
-              <>
-                {nameProblem ? (
-                  <p className="help">The version is worked out once the script group name can be used.</p>
+                {!scriptName ? (
+                  // Until a family is picked there is no version to work out,
+                  // so say what is missing rather than show an empty card.
+                  <p className="se-hint">
+                    Pick a schema and a script group. The version and the Save button
+                    work once they are set.
+                  </p>
+                ) : nameProblem ? (
+                  <p className="se-hint">The version is worked out once the script group name can be used.</p>
                 ) : githubUnconfigured ? (
-                  <p className="help">
+                  <p className="se-hint">
                     {"The next version can't be worked out until the GitHub registry is configured (see above)."}
                   </p>
                 ) : (
                   <>
-                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                    <div className="se-pills">
                       {!familyError && (familyLoading || appliedLoading || versionsReady) && (
                         <span
                           className="pill pill-neutral"
@@ -1421,10 +1562,8 @@ export default function ScriptEditorPage() {
                     </div>
 
                     {familyError && (
-                      <div className="mb-3">
-                        <p className="text-[12px]" style={{ color: "var(--break)" }}>
-                          {familyError}
-                        </p>
+                      <div>
+                        <p className="se-p se-bad">{familyError}</p>
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm mt-2"
@@ -1436,40 +1575,23 @@ export default function ScriptEditorPage() {
                       </div>
                     )}
 
-                    <div className="ver-seg" role="group" aria-label="Version bump">
+                    <div className="se-seg" role="group" aria-label="Version bump">
                       {BUMP_LEVELS.map((level) => (
                         <button
                           key={level}
                           type="button"
                           aria-pressed={effectiveChoice === level}
-                          className={`ver-seg-btn${effectiveChoice === level ? " is-active" : ""}`}
-                          // Capped so the sentence below wraps inside the button
-                          // instead of stretching the row wider than the card.
-                          style={{ maxWidth: 200 }}
                           onClick={() => pickLevel(level)}
                         >
-                          <span className="ver-seg-label">
+                          <span className="se-seg-name">
                             {level}
                             {suggestedLevel === level && sql.trim() ? (
-                              <span className="ver-seg-suggest">suggested</span>
+                              <span className="se-seg-tip">suggested</span>
                             ) : null}
                           </span>
-                          {/* Inline styling, not a new class — app/globals.css is
-                              owned elsewhere, and this is the only place the line
-                              appears. */}
-                          <span
-                            style={{
-                              fontSize: "10.5px",
-                              color: "var(--text-3)",
-                              lineHeight: 1.3,
-                              textAlign: "left",
-                              whiteSpace: "normal",
-                            }}
-                          >
-                            {BUMP_DESC[level]}
-                          </span>
+                          <span className="se-seg-desc">{BUMP_DESC[level]}</span>
                           {/* No number until both reads are back: before that it would be a guess. */}
-                          <span className="ver-seg-ver mono">
+                          <span className="se-seg-ver">
                             {versionsReady ? `v${bumpVersion(floor, level)}` : "…"}
                           </span>
                         </button>
@@ -1477,16 +1599,16 @@ export default function ScriptEditorPage() {
                       <button
                         type="button"
                         aria-pressed={effectiveChoice === "custom"}
-                        className={`ver-seg-btn${effectiveChoice === "custom" ? " is-active" : ""}`}
                         onClick={() => pickLevel("custom")}
                       >
-                        <span className="ver-seg-label">custom</span>
-                        <span className="ver-seg-ver mono">x.y.z</span>
+                        <span className="se-seg-name">custom</span>
+                        <span className="se-seg-desc">type the number yourself</span>
+                        <span className="se-seg-ver">x.y.z</span>
                       </button>
                     </div>
 
                     {effectiveChoice === "custom" && (
-                      <div className="mt-3" style={{ maxWidth: 220 }}>
+                      <div className="se-custom">
                         <input
                           className="input mono"
                           placeholder={versionsReady ? (floor !== null ? `above v${floor}` : "1.0.0") : ""}
@@ -1497,15 +1619,13 @@ export default function ScriptEditorPage() {
                           }}
                           aria-label="Custom version"
                         />
-                        {versionError && (
-                          <p className="help mt-1" style={{ color: "var(--break)" }}>{versionError}</p>
-                        )}
+                        {versionError && <p className="se-hint se-bad">{versionError}</p>}
                       </div>
                     )}
 
                     {/* The level written into the file, and why it is that level. */}
                     {version !== null && (
-                      <p className="help mt-3">
+                      <p className="se-hint">
                         {effectiveChoice !== "custom"
                           ? `Recorded as ${levelWithArticle(changeLevel)} change — the level Deploy shows for this version.`
                           : floor !== null
@@ -1516,7 +1636,7 @@ export default function ScriptEditorPage() {
 
                     {/* A quieter level than the SQL reads as needs a tick naming why. */}
                     {quieterText && (
-                      <div className="prod-gate prod-gate--drift mt-3">
+                      <div className="prod-gate prod-gate--drift">
                         <label className="prod-gate__ack" style={{ marginTop: 0 }}>
                           <input
                             type="checkbox"
@@ -1532,33 +1652,60 @@ export default function ScriptEditorPage() {
                     )}
                   </>
                 )}
+              </div>
 
-                <div className="mt-4 pt-3 space-y-3" style={{ borderTop: "1px solid var(--border)" }}>
-                  {/* The push preview: the step, and the exact files. Hidden for
-                      the same migration again, which Save will not publish. */}
-                  {preview !== null && !sameMigration && (
-                    <div className="text-[12px] space-y-0.5" style={{ color: "var(--text-2)" }}>
-                      <div>{preview.stepLine}</div>
-                      <div className="min-w-0">
-                        Creates{" "}
-                        {preview.files.map((file, index) => (
-                          <span key={file}>
-                            {index > 0 && " and "}
-                            <span className="mono">{file}</span>
-                          </span>
-                        ))}{" "}
-                        in <span className="mono break-all">{folder}</span>
-                      </div>
-                      {preview.noRollbackLine && (
-                        <div style={{ color: "var(--drift)" }}>{preview.noRollbackLine}</div>
-                      )}
+              {/* ── Save ─────────────────────────────────────────────────────── */}
+              <div className="card se-card">
+                <h2>Save it</h2>
+                <div className="se-field">
+                  <div className="se-noteshead">
+                    <label className="label" htmlFor="se-desc">
+                      Change log <span className="se-hint">(optional)</span>
+                    </label>
+                    <HelpHint label="Change log">
+                      Says why this version exists. It is saved in the script and recorded when the
+                      version is deployed.
+                    </HelpHint>
+                  </div>
+                  <input
+                    id="se-desc"
+                    className="input"
+                    placeholder="Why this version exists"
+                    // The push route refuses a longer description.
+                    maxLength={1000}
+                    value={description}
+                    onChange={(e) => {
+                      setDescription(e.target.value);
+                      clearStaleError();
+                    }}
+                  />
+                </div>
+
+                {/* The push preview: the step, and the exact files. Hidden for
+                    the same migration again, which Save will not publish. */}
+                {scriptName && preview !== null && !sameMigration && (
+                  <div className="se-pre">
+                    <div>{preview.stepLine}</div>
+                    <div>
+                      Creates{" "}
+                      {preview.files.map((file, index) => (
+                        <span key={file}>
+                          {index > 0 && " and "}
+                          <span className="mono">{file}</span>
+                        </span>
+                      ))}{" "}
+                      in <span className="mono">{folder}</span>
                     </div>
-                  )}
-                  <div className="flex items-center gap-3 flex-wrap">
-                    {blocker && !saving && <p className="help min-w-0 flex-1">{blocker}</p>}
+                    {preview.noRollbackLine && <div className="se-warn">{preview.noRollbackLine}</div>}
+                  </div>
+                )}
+
+                {scriptName && (
+                  <div className="se-stack">
+                    {blocker && !saving && <p className="se-hint">{blocker}</p>}
                     <button
                       type="button"
-                      className="btn btn-primary ml-auto"
+                      className="btn btn-primary"
                       disabled={saving || blocker !== null}
                       title={blocker ?? undefined}
                       onClick={handleSave}
@@ -1566,231 +1713,81 @@ export default function ScriptEditorPage() {
                       {saving ? <RefreshIcon size={14} className="spin-icon" /> : <CheckIcon size={14} />}
                       {saving ? "Saving…" : version !== null ? `Save v${version} to GitHub` : "Save to GitHub"}
                     </button>
+                    <p className="se-hint">Nothing runs here. Saving only stores the script.</p>
                   </div>
-                </div>
-              </>
-            ) : (
-              // The Save button lives inside this card, so until a family is
-              // picked the page has no visible way to finish — say where it
-              // will appear rather than leaving the reader hunting for it.
-              <p className="help">
-                Pick a schema and a script group above. The version and the Save button
-                appear here once they are set.
-              </p>
-            )}
+                )}
 
-            {/* What Save did. This box is always on the page, even when empty,
-                so a screen reader says the result out loud when it arrives:
-                politely for a save, at once for a failure. */}
-            <div
-              ref={saveOutcomeRef}
-              tabIndex={-1}
-              role={saveResult?.kind === "err" ? "alert" : "status"}
-              style={{ outline: "none" }}
-            >
-              {saveResult && (
+                {/* What Save did. This box is always on the page, even when empty,
+                    so a screen reader says the result out loud when it arrives:
+                    politely for a save, at once for a failure. */}
                 <div
-                  className="mt-3 banner"
-                  style={
-                    saveResult.kind === "ok"
-                      ? { background: "var(--sync-soft)", borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)" }
-                      : saveResult.kind === "partial"
-                        ? { background: "var(--drift-soft)", borderColor: "color-mix(in oklab, var(--drift) 30%, transparent)" }
-                        : undefined
-                  }
+                  ref={saveOutcomeRef}
+                  tabIndex={-1}
+                  role={saveResult?.kind === "err" ? "alert" : "status"}
+                  className="se-outcome"
                 >
-                  {saveResult.kind === "ok" ? (
-                    <CheckIcon size={16} className="ico" />
-                  ) : (
-                    <AlertTriangleIcon size={16} className="ico" />
-                  )}
-                  <div className="body">
-                    <div
-                      className="title"
-                      style={
-                        saveResult.kind === "ok"
-                          ? { color: "var(--sync)" }
-                          : saveResult.kind === "partial"
-                            ? { color: "var(--text)" }
-                            : undefined
-                      }
-                    >
-                      {saveResult.message}
+                  {saveResult && (
+                    <div className={`se-result se-result--${saveResult.kind}`}>
+                      {saveResult.kind === "ok" ? <CheckIcon size={16} /> : <AlertTriangleIcon size={16} />}
+                      <div>
+                        <b>{saveResult.message}</b>
+                        {saveResult.kind === "ok" && saveResult.note && <span>{saveResult.note}</span>}
+                        {saveResult.kind === "partial" && <span>{saveResult.rollbackError}</span>}
+                        {saveResult.kind !== "err" && saveResult.url && (
+                          <a href={saveResult.url} target="_blank" rel="noopener noreferrer">
+                            View the file on GitHub →
+                          </a>
+                        )}
+                        {/* Saving publishes the version to the registry; it does not
+                            run it anywhere. Without this line the obvious reading of
+                            a green "Saved" is that the migration has been applied.
+
+                            Only on "ok". A partial save means the version went out
+                            without its rollback, and the box directly below offers
+                            to attach one, which is the better next step. */}
+                        {saveResult.kind === "ok" && (
+                          <Link href={orgPath("/deploy")}>
+                            Nothing has run yet — deploy it on the Deploy page →
+                          </Link>
+                        )}
+                      </div>
                     </div>
-                    {saveResult.kind === "ok" && saveResult.note && (
-                      <div style={{ color: "var(--text-2)" }}>{saveResult.note}</div>
-                    )}
-                    {saveResult.kind === "partial" && (
-                      <div style={{ color: "var(--text-2)" }}>{saveResult.rollbackError}</div>
-                    )}
-                    {saveResult.kind !== "err" && saveResult.url && (
-                      <a href={saveResult.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--text-2)" }}>
-                        View the file on GitHub →
-                      </a>
-                    )}
-                    {/* Saving publishes the version to the registry; it does not
-                        run it anywhere. Without this line the obvious reading of
-                        a green "Saved" is that the migration has been applied,
-                        and the actual next screen was only findable through the
-                        sidebar.
-
-                        Only on "ok". A partial save means the version went out
-                        without its rollback, and the panel directly below offers
-                        to attach one — which is the better next step, and two
-                        competing ones would just split the reader's attention. */}
-                    {saveResult.kind === "ok" && (
-                      <Link href={orgPath("/deploy")} style={{ color: "var(--text-2)" }}>
-                        Nothing has run yet — deploy it on the Deploy page →
-                      </Link>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Add the rollback in the box to the version just saved with this
-                same migration. Its outcome stays after the offer goes away. */}
-            {(attachOffer || (offerHere !== null && offerHere.kind !== "saving")) && (
-              <div className="panel p-3 mt-3" style={{ background: "var(--surface)" }}>
-                {attachOffer && savedHere !== null && (
-                  <>
-                    <p className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                      {`This adds the rollback above to v${bare(savedHere.version)} as v${bare(savedHere.version)}.down.sql; no new version is made. A saved rollback cannot be changed afterwards, so read it carefully first.`}
-                    </p>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm mt-2"
-                      disabled={offerSaving || saveRefusal !== null}
-                      title={saveRefusal ?? undefined}
-                      onClick={addRollbackToSaved}
-                    >
-                      {offerSaving ? "Saving the rollback…" : retryLabel}
-                    </button>
-                  </>
-                )}
-                {offerHere !== null && offerHere.kind !== "saving" && (
-                  <p
-                    className={`text-[12.5px]${attachOffer ? " mt-2" : ""}`}
-                    style={{ color: offerHere.kind === "ok" ? "var(--sync)" : "var(--drift)" }}
-                    role={offerHere.kind === "ok" ? "status" : "alert"}
-                  >
-                    {offerHere.message}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* ── Add a missing rollback ─────────────────────────────────────── */}
-          {familyKey !== "" && (fixCount > 0 || (fixHere !== null && fixHere.kind !== "saving")) && (
-            <div className="card p-5">
-              <div className="section-title mb-3">
-                Add a missing rollback
-                <HelpHint label="Add a missing rollback">
-                  Pick a version and write its rollback. It is saved beside that version as a
-                  .down.sql file, and the migration itself is not changed. Once saved, Deploy can
-                  undo the version, including where it is already applied.
-                </HelpHint>
-              </div>
-              {fixCount > 0 && (
-                <>
-                  <p className="help mb-3">{fixIntro}</p>
-                  <div style={{ maxWidth: 320 }}>
-                    <label className="label" htmlFor="se-fix-version">Saved version</label>
-                    <Select
-                      variant="input"
-                      id="se-fix-version"
-                      className="mt-1"
-                      mono
-                      ariaLabel="Saved version to add a rollback to"
-                      value={fixRow !== null ? fixRow.version : ""}
-                      placeholder="Pick a version…"
-                      options={fixRows.map((r) => ({
-                        value: r.version,
-                        label:
-                          r.rollback_state === "none"
-                            ? `v${bare(r.version)} — no rollback`
-                            : `v${bare(r.version)} — rollback has no statements`,
-                      }))}
-                      onChange={(value) => {
-                        setFix((current) => ({
-                          key: familyKey,
-                          version: value,
-                          text: current.key === familyKey ? current.text : "",
-                        }));
-                        setFixStatus(null);
-                      }}
-                    />
-                  </div>
-                  {fixRow !== null && (
-                    <>
-                      <label className="label mt-3 block" htmlFor="se-fix-up">
-                        {`Migration SQL of v${fixVersion} (read-only)`}
-                      </label>
-                      <textarea
-                        id="se-fix-up"
-                        className="input mono mt-1 se-textarea"
-                        style={{ minHeight: 120, lineHeight: 1.6, resize: "vertical" }}
-                        spellCheck={false}
-                        readOnly
-                        value={fixRow.sql_content}
-                      />
-                      <label className="label mt-3 block" htmlFor="se-fix-down">
-                        {`Rollback SQL for v${fixVersion}`}
-                      </label>
-                      <textarea
-                        id="se-fix-down"
-                        className="input mono mt-1 se-textarea"
-                        style={{ minHeight: 120, lineHeight: 1.6, resize: "vertical" }}
-                        spellCheck={false}
-                        value={fixText}
-                        onChange={(e) => {
-                          setFix({ key: familyKey, version: fixRow.version, text: e.target.value });
-                          setFixStatus(null);
-                        }}
-                      />
-                      {fixText.trim() !== "" && !fixRuns && (
-                        <p className="help mt-1" style={{ color: "var(--break)" }}>
-                          {`This rollback contains only comments, so it would undo nothing. Write the statements that undo v${fixVersion}'s migration.`}
-                        </p>
-                      )}
-                      {fixTxn && (
-                        <p className="help mt-1" style={{ color: "var(--break)" }}>{TXN_IN_ROLLBACK}</p>
-                      )}
-                      <p className="help mt-2">
-                        A saved rollback cannot be changed afterwards, so read it carefully.
-                      </p>
-                    </>
                   )}
-                  <div className="mt-3 flex items-center gap-3 flex-wrap">
-                    {fixBlocker && !fixSaving && <p className="help min-w-0 flex-1">{fixBlocker}</p>}
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm ml-auto"
-                      disabled={fixSaving || fixBlocker !== null}
-                      title={fixBlocker ?? undefined}
-                      onClick={saveFixRollback}
-                    >
-                      {fixSaving
-                        ? "Saving the rollback…"
-                        : fixRow !== null
-                          ? `Save rollback for v${fixVersion}`
-                          : "Save rollback"}
-                    </button>
+                </div>
+
+                {/* Add the rollback in the box to the version just saved with this
+                    same migration. Its outcome stays after the offer goes away. */}
+                {(attachOffer || (offerHere !== null && offerHere.kind !== "saving")) && (
+                  <div className="se-offer">
+                    {attachOffer && savedHere !== null && (
+                      <>
+                        <p className="se-p">
+                          {`This adds the rollback in the editor to v${bare(savedHere.version)} as v${bare(savedHere.version)}.down.sql; no new version is made. A saved rollback cannot be changed afterwards, so read it carefully first.`}
+                        </p>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={offerSaving || saveRefusal !== null}
+                          title={saveRefusal ?? undefined}
+                          onClick={addRollbackToSaved}
+                        >
+                          {offerSaving ? "Saving the rollback…" : retryLabel}
+                        </button>
+                      </>
+                    )}
+                    {offerHere !== null && offerHere.kind !== "saving" && (
+                      <p
+                        className={`se-p ${offerHere.kind === "ok" ? "se-good" : "se-warn"}`}
+                        role={offerHere.kind === "ok" ? "status" : "alert"}
+                      >
+                        {offerHere.message}
+                      </p>
+                    )}
                   </div>
-                </>
-              )}
-              {fixHere !== null && fixHere.kind !== "saving" && (
-                <p
-                  className={`text-[12.5px]${fixCount > 0 ? " mt-3" : ""}`}
-                  style={{ color: fixHere.kind === "ok" ? "var(--sync)" : "var(--drift)" }}
-                  role={fixHere.kind === "ok" ? "status" : "alert"}
-                >
-                  {fixHere.message}
-                </p>
-              )}
+                )}
+              </div>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>

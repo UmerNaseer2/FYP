@@ -66,9 +66,9 @@ function conn(over: Partial<Record<string, unknown>> & { id: number; name: strin
   };
 }
 
-/** The table row carrying `name`, so a query cannot match another row's cell. */
+/** The card carrying `name`, so a query cannot match another card's text. */
 function rowFor(name: string): HTMLElement {
-  const cell = screen.getByText(name).closest("tr");
+  const cell = screen.getByText(name).closest("article");
   if (!cell) throw new Error(`No row rendered for ${name}`);
   return cell as HTMLElement;
 }
@@ -115,7 +115,7 @@ describe("what the screen says about the list itself", () => {
     expect(screen.queryByText("No connections yet.")).not.toBeInTheDocument();
     // And no counters: "Total 0" three inches above "they are still there" is
     // the page arguing with itself.
-    expect(screen.queryByText("Total")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connections-summary")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
@@ -145,7 +145,7 @@ describe("what the screen says about the list itself", () => {
     // Four tiles reading 0 and seven filter pills reading 0 report that
     // everything is at zero, which is a different message from "you have not
     // set this up yet".
-    expect(screen.queryByText("Total")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connections-summary")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^All/ })).not.toBeInTheDocument();
   });
 
@@ -163,6 +163,37 @@ describe("what the screen says about the list itself", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show all connections" }));
     expect(screen.getByText("Orders DB")).toBeInTheDocument();
   });
+
+  it("finds a connection by its name or its host, and says so when nothing matches", async () => {
+    setRoutes([
+      {
+        match: "/api/connections",
+        body: [
+          conn({ id: 1, name: "Orders DB", host: "orders.internal" }),
+          conn({ id: 2, name: "Billing DB", host: "billing.internal" }),
+        ],
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    const search = screen.getByRole("searchbox", { name: "Search connections by name or host" });
+    fireEvent.change(search, { target: { value: "billing" } });
+    expect(screen.getByText("Billing DB")).toBeInTheDocument();
+    expect(screen.queryByText("Orders DB")).not.toBeInTheDocument();
+
+    // The host counts too, in any letter case.
+    fireEvent.change(search, { target: { value: "ORDERS.INT" } });
+    expect(screen.getByText("Orders DB")).toBeInTheDocument();
+    expect(screen.queryByText("Billing DB")).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "nothing like this" } });
+    expect(screen.getByText("No connections match this filter.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show all connections" }));
+    expect(search).toHaveValue("");
+    expect(screen.getByText("Orders DB")).toBeInTheDocument();
+    expect(screen.getByText("Billing DB")).toBeInTheDocument();
+  });
 });
 
 describe("what the screen says about each connection's health", () => {
@@ -178,9 +209,10 @@ describe("what the screen says about each connection's health", () => {
 
     // A bare "0" under "Healthy" claims every connection is unhealthy when the
     // truth is that none has been tested.
-    const healthy = screen.getByText("Healthy").closest(".card");
-    expect(healthy).toHaveTextContent("—");
-    expect(healthy).not.toHaveTextContent("of 2");
+    const summary = screen.getByTestId("connections-summary");
+    expect(summary).toHaveTextContent("2 connections. None checked yet.");
+    expect(summary).not.toHaveTextContent("healthy");
+    expect(summary).not.toHaveTextContent("of 2");
     expect(rowFor("One")).toHaveTextContent("Never");
   });
 
@@ -205,7 +237,9 @@ describe("what the screen says about each connection's health", () => {
     await loaded();
 
     // "of N" is what stops 1 of 3 being read as 1 of 1.
-    expect(screen.getByText("Healthy").closest(".card")).toHaveTextContent("of 2");
+    expect(screen.getByTestId("connections-summary")).toHaveTextContent(
+      "1 of 2 healthy, 0 failing, 1 not checked yet."
+    );
     expect(rowFor("One")).toHaveTextContent("PostgreSQL 17.2");
     expect(rowFor("One")).toHaveTextContent("5m ago");
     expect(rowFor("Two")).toHaveTextContent("Never");

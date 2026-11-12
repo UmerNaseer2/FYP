@@ -153,7 +153,7 @@ const ORG_SLUG = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 const RESERVED_SLUGS = new Set([
   "api", "login", "studio", "compare", "script-editor", "deploy", "versionsync", "drift",
   "performance", "visualizer", "connections", "admin", "schemas", "onboarding", "invite",
-  "requests", "phone", "link-computer", "demo", "invites", "new", "settings", "orgs",
+  "requests", "phone", "link-computer", "demo", "devices", "history", "styles", "invites", "new", "settings", "orgs",
   "organizations", "account", "signup", "logout", "auth", "help", "docs", "about", "pricing",
   "static", "public", "assets", "www", "app", "robots", "sitemap", "manifest",
 ]);

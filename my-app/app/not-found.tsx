@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { EmptyState } from "@/components/ui";
-import { CompareIcon, DashboardIcon, SearchIcon } from "@/components/ui/icons";
+import { LandingThemeToggle } from "@/components/landing/LandingThemeToggle";
+import { BrandMark } from "@/components/ui/BrandMark";
+import { CompareIcon, DashboardIcon } from "@/components/ui/icons";
+import "@/app/styles/atelier-onboarding.css";
 
 // ---------------------------------------------------------------------------
 // 404. Shown for any URL that matches no route at all — a stale bookmark, a
@@ -25,22 +27,38 @@ import { CompareIcon, DashboardIcon, SearchIcon } from "@/components/ui/icons";
 
 export default function NotFound() {
   return (
-    <div style={{ height: "100vh", background: "var(--bg)" }}>
-      <EmptyState
-        icon={<SearchIcon size={22} />}
-        title="There is no page here"
-        description="The address you opened doesn't match any screen in Schema Studio. It may be a link from an older version, or to an organization you are not a member of."
-        actions={
-          <div className="flex items-center gap-2">
-            <Link href="/studio" className="btn btn-primary btn-sm">
+    <div className="ob-page">
+      <header className="ob-nav">
+        <div className="brand">
+          <BrandMark size={30} />
+          <span className="brand-name">Schema Studio</span>
+        </div>
+        {/* Also puts the saved theme back: on this page React redraws the whole
+            document in the browser, which drops the head script's choice. */}
+        <div className="ob-tools">
+          <LandingThemeToggle />
+        </div>
+      </header>
+      <main className="ob-main">
+        <article className="card ob-card">
+          <div className="ob-head">
+            <span className="ob-code mono" aria-hidden="true">404</span>
+            <h1>There is no page here</h1>
+            <p>
+              The address you opened doesn&apos;t match any screen in Schema Studio. It may be a link
+              from an older version, or to an organization you are not a member of.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/studio" className="btn btn-primary">
               <DashboardIcon size={14} /> Dashboard
             </Link>
-            <Link href="/compare" className="btn btn-secondary btn-sm">
+            <Link href="/compare" className="btn btn-secondary">
               <CompareIcon size={14} /> Compare &amp; Author
             </Link>
           </div>
-        }
-      />
+        </article>
+      </main>
     </div>
   );
 }

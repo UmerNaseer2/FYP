@@ -62,6 +62,11 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "phone",
   "link-computer",
   "demo",
+  "devices",
+  "history",
+  // The Atelier stylesheets (app/styles) are not a page, but a slug of the
+  // same name would still look like one to a reader of the address.
+  "styles",
   // Kept back for pages to come.
   "invites",
   "new",

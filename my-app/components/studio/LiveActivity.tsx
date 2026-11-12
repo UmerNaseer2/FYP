@@ -140,7 +140,7 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not read this server&apos;s activity</div>
@@ -245,7 +245,7 @@ function HealthPanel({ health }: { health: DbHealth }) {
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <div className="text-[13px] font-medium" style={{ color: "var(--text)" }}>
+        <div className="pf-h2">
           Database health
         </div>
         <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
@@ -259,8 +259,7 @@ function HealthPanel({ health }: { health: DbHealth }) {
         {health.metrics.map((metric) => (
           <div
             key={metric.key}
-            className="rounded-lg p-3 space-y-1.5"
-            style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
+            className="pf-lt"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11.5px]" style={{ color: "var(--text-2)" }}>
@@ -270,7 +269,7 @@ function HealthPanel({ health }: { health: DbHealth }) {
                 <Pill tone={HEALTH_TONE[metric.level]}>{metric.level}</Pill>
               )}
             </div>
-            <div className="text-[17px] font-medium tabular-nums" style={{ color: "var(--text)" }}>
+            <div className="pf-lt__k">
               {metric.display ?? (
                 <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
                   Not measurable yet
@@ -289,7 +288,7 @@ function HealthPanel({ health }: { health: DbHealth }) {
 
 function SessionCard({ session }: { session: ActivitySession }) {
   return (
-    <Card className="p-3.5 space-y-2">
+    <Card className="pf-s p-3.5 space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
         <Pill tone={KIND_TONE[session.kind]}>{ACTIVITY_KIND_LABEL[session.kind]}</Pill>
         <span className="text-[12.5px] font-medium tabular-nums" style={{ color: "var(--text)" }}>

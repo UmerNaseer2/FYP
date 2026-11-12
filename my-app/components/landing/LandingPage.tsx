@@ -1,17 +1,19 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { APP_VERSION } from "@/lib/app-version";
 import {
   CompareIcon,
   DeployIcon,
   DriftIcon,
   LockIcon,
-  LogoIcon,
   MonitorIcon,
   SchemaMapIcon,
   UsersIcon,
 } from "@/components/ui/icons";
+import { BrandMark } from "@/components/ui/BrandMark";
 import { LandingThemeToggle } from "./LandingThemeToggle";
+import { LandingReveal, SectionButton } from "./LandingMotion";
+import "@/app/styles/atelier-landing.css";
 
 /**
  * The public front page at "/": what Schema Studio is, what it does, and two
@@ -20,14 +22,16 @@ import { LandingThemeToggle } from "./LandingThemeToggle";
  * A Server Component with no state of its own. app/page.tsx decides where the
  * two buttons go (the sign-in page, or straight into the studio on a demo
  * server) and whether this server encrypts the passwords it stores, and hands
- * both down as props, so this file only lays them out. The theme switch is
- * the one piece that runs in the browser (LandingThemeToggle).
+ * both down as props, so this file only lays them out. The theme switch, the
+ * section buttons and the scroll fade-in are the pieces that run in the
+ * browser (LandingThemeToggle, LandingMotion).
  *
  * Exactly two links on purpose, "Create account" and "Log in". The name in
- * the header is not a link: on the front page it would only lead back here.
+ * the header is not a link: on the front page it would only lead back here,
+ * and the header's section buttons only scroll.
  *
- * Styles are the .landing-* section of app/globals.css. The background grid
- * and color washes are the sign-in page's, so the two pages read as one place.
+ * The Atelier design. Styles are app/styles/atelier-landing.css (every class
+ * starts with lp-).
  */
 
 export type LandingPageProps = {
@@ -103,130 +107,168 @@ const EXAMPLE_ENVIRONMENTS = [
   { name: "Prod", version: "v2.3.0", tone: "pill-pending", status: "Outdated" },
 ];
 
+/** The three steps under "How it works". Each says only what FEATURES says. */
+const STEPS = [
+  {
+    title: "Compare",
+    body: "Pick two environments. Every table, column, index and constraint that differs is listed side by side.",
+  },
+  {
+    title: "Script",
+    body: "Get the SQL that brings one in line with the other, and check it for risks before anything runs.",
+  },
+  {
+    title: "Ship",
+    body:
+      "Rehearse it with a dry run, then deploy. By default production waits for a second person, " +
+      "and you can roll back to an earlier version.",
+  },
+];
+
+/** How wide each feature card is on the six-column grid, in FEATURES order. */
+const FEATURE_SPANS = ["s4 dark", "s2", "s2", "s4", "s3", "s3"];
+
+const TITLE = "Keep dev, staging and prod from drifting apart.";
+
+/** A delay in milliseconds for the CSS entrance animations (--d). */
+function delay(ms: number): CSSProperties {
+  return { "--d": ms } as CSSProperties;
+}
+
 export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, demo = false }: LandingPageProps) {
   return (
-    <div className="landing">
-      <div className="landing-backdrop" aria-hidden="true">
-        <div className="bg-grid" />
-        <div className="bg-wash-a" />
-        <div className="bg-wash-b" />
-      </div>
-
-      <header className="landing-header">
-        <div className="landing-wrap landing-header__inner">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg grid place-items-center text-white" style={{ background: "var(--brand)" }}>
-              <LogoIcon size={15} />
-            </div>
-            <div className="leading-tight">
-              <div className="font-semibold text-[13.5px]">Schema Studio</div>
-              <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>v{APP_VERSION}</div>
-            </div>
+    <div className="lp-page">
+      <LandingReveal />
+      <div className="lp">
+        <header className="lp-nav">
+          <div className="brand">
+            <BrandMark />
+            <span className="brand-name">Schema Studio</span>
+            <span className="brand-v mono">v{APP_VERSION}</span>
           </div>
+          <nav className="lp-links" aria-label="On this page">
+            <SectionButton target="lp-how">How it works</SectionButton>
+            <SectionButton target="lp-what">What it does</SectionButton>
+            <SectionButton target="lp-store">What gets stored</SectionButton>
+          </nav>
           <LandingThemeToggle />
-        </div>
-      </header>
+        </header>
 
-      <main className="landing-main">
-        <section className="landing-wrap landing-hero" aria-labelledby="landing-title">
-          <div>
-            <span className="pill pill-brand">
-              <span className="dot" />
-              Version control for database schemas
-            </span>
-            <h1 id="landing-title" className="landing-title">
-              Keep dev, staging and prod from drifting apart.
-            </h1>
-            <p className="landing-lede">
-              Schema Studio compares your database schemas across environments, tells you when one
-              changes behind your back, and by default deploys the fix to production only after a
-              second person signs off.
-            </p>
-            <div className="landing-ctas">
-              <Link href={createAccountHref} className="btn btn-primary btn-lg">
-                Create account
-              </Link>
-              <Link href={logInHref} className="btn btn-secondary btn-lg">
-                Log in
-              </Link>
+        <main>
+          <section className="lp-hero" aria-labelledby="landing-title">
+            <div>
+              <span className="lp-eyebrow">Version control for database schemas</span>
+              <h1 id="landing-title" tabIndex={-1} aria-label={TITLE}>
+                {TITLE.split(" ").map((word, index) => (
+                  <Fragment key={index}>
+                    {index > 0 && " "}
+                    <span className="lp-w">
+                      <span style={delay(60 + index * 70)}>{word}</span>
+                    </span>
+                  </Fragment>
+                ))}
+              </h1>
+              <p className="lp-sub lp-in" style={delay(560)}>
+                Schema Studio compares your database schemas across environments, tells you when one
+                changes behind your back, and by default deploys the fix to production only after a
+                second person signs off.
+              </p>
+              <div className="lp-cta lp-in" style={delay(640)}>
+                <Link href={createAccountHref} className="btn btn-primary btn-lg">
+                  Create account
+                </Link>
+                <Link href={logInHref} className="btn btn-secondary btn-lg">
+                  Log in
+                </Link>
+              </div>
+              <p className="lp-fine lp-in" style={delay(700)}>
+                {demo
+                  ? "This is a demo server with sign-in switched off, so both buttons open the studio."
+                  : "New here? Your account is created the first time you sign in."}
+              </p>
             </div>
-            <p className="landing-note">
-              {demo
-                ? "This is a demo server with sign-in switched off, so both buttons open the studio."
-                : "New here? Your account is created the first time you sign in."}
-            </p>
-          </div>
 
-          <figure className="landing-preview" aria-label="Example: one schema in three environments">
-            <div className="landing-preview__head">
-              <span className="landing-preview__schema">finance</span>
-              <span className="pill pill-neutral">Example</span>
-            </div>
-            <ul className="landing-envs">
-              {EXAMPLE_ENVIRONMENTS.map((env) => (
-                <li key={env.name} className="landing-env">
-                  <span className="landing-env__name">{env.name}</span>
-                  <span className="landing-env__version">{env.version}</span>
-                  <span className={`pill ${env.tone}`}>
-                    <span className="dot" />
-                    {env.status}
+            <figure className="card lp-stage" aria-label="Example: one schema in three environments">
+              <div className="lp-dh">
+                <b>finance</b>
+                <span className="pill pill-neutral">Example</span>
+              </div>
+              <ul className="lp-envs">
+                {EXAMPLE_ENVIRONMENTS.map((env, index) => (
+                  <li key={env.name} style={delay(420 + index * 90)}>
+                    <b>{env.name}</b>
+                    <code>{env.version}</code>
+                    <span className={`pill ${env.tone}`}>
+                      <span className="dot" />
+                      {env.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <ul className="lp-df">
+                <li style={delay(720)}>
+                  <i className="g chg" aria-hidden="true">~</i>
+                  <div>
+                    <b>invoices.amount numeric(10,2) → numeric(12,2)</b>
+                    <span>Staging, changed by hand</span>
+                  </div>
+                </li>
+                <li style={delay(800)}>
+                  <i className="g add" aria-hidden="true">+</i>
+                  <div>
+                    <b>invoice_lines.id uuid PRIMARY KEY</b>
+                    <span>Prod, waiting to deploy</span>
+                  </div>
+                </li>
+              </ul>
+              <figcaption className="lp-cap">
+                <span className="lp-lock">
+                  <LockIcon size={14} />
+                  Production deploys wait for a second person by default.
+                </span>
+                <span className="pill pill-pending">1 approval needed</span>
+              </figcaption>
+            </figure>
+          </section>
+
+          <section className="lp-sec lp-rv" id="lp-how" tabIndex={-1} aria-labelledby="landing-how">
+            <small id="landing-how">How it works</small>
+            <h2>Three steps, and none of them is a surprise.</h2>
+            <ol className="lp-3">
+              {STEPS.map((step, index) => (
+                <li key={step.title} className="card">
+                  <i className="n" aria-hidden="true">{index + 1}</i>
+                  <b>{step.title}</b>
+                  <p>{step.body}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          <section className="lp-sec lp-rv" id="lp-what" tabIndex={-1} aria-labelledby="landing-features">
+            <small id="landing-features">What it does</small>
+            <h2>Everything around the change, too.</h2>
+            <ul className="lp-bento">
+              {FEATURES.map((feature, index) => (
+                <li key={feature.title} className={`card ${FEATURE_SPANS[index] ?? "s2"}`}>
+                  <span className="lp-ic" aria-hidden="true">
+                    {feature.icon}
                   </span>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.body}</p>
                 </li>
               ))}
             </ul>
-            <div className="landing-diff">
-              <div className="diff-row diff-chg">
-                <span className="sign">~</span>
-                <span className="landing-diff__body">
-                  <span className="landing-diff__code">invoices.amount numeric(10,2) → numeric(12,2)</span>
-                  <span className="landing-diff__where">Staging, changed by hand</span>
-                </span>
-              </div>
-              <div className="diff-row diff-add">
-                <span className="sign">+</span>
-                <span className="landing-diff__body">
-                  <span className="landing-diff__code">invoice_lines.id uuid PRIMARY KEY</span>
-                  <span className="landing-diff__where">Prod, waiting to deploy</span>
-                </span>
-              </div>
-            </div>
-            <figcaption className="landing-preview__foot">
-              <span className="landing-preview__lock">
-                <LockIcon size={14} />
-                Production deploys wait for a second person by default.
+          </section>
+
+          <section className="lp-sec lp-rv" id="lp-store" tabIndex={-1} aria-labelledby="landing-storage">
+            <small id="landing-storage">What gets stored</small>
+            <h2>Where your passwords go.</h2>
+            <div className="card lp-store">
+              <span className="lp-ic" aria-hidden="true">
+                <LockIcon size={18} />
               </span>
-              <span className="pill pill-pending">1 approval needed</span>
-            </figcaption>
-          </figure>
-        </section>
-
-        <section className="landing-wrap landing-section" aria-labelledby="landing-features">
-          <h2 id="landing-features" className="section-title landing-section__title">
-            What it does
-          </h2>
-          <ul className="landing-features">
-            {FEATURES.map((feature) => (
-              <li key={feature.title} className="landing-feature">
-                <span className="landing-feature__icon" aria-hidden="true">
-                  {feature.icon}
-                </span>
-                <h3 className="landing-feature__title">{feature.title}</h3>
-                <p className="landing-feature__body">{feature.body}</p>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="landing-wrap landing-section" aria-labelledby="landing-storage">
-          <div className="landing-store">
-            <span className="landing-store__icon" aria-hidden="true">
-              <LockIcon size={16} />
-            </span>
-            <div>
-              <h2 id="landing-storage" className="landing-store__title">
-                What gets stored
-              </h2>
-              <p className="landing-store__body">
+              <p>
                 {encryptsPasswords
                   ? "Schema Studio stores the database connections you add, with each password " +
                     "encrypted using AES-256-GCM. Deleting a connection deletes its password too."
@@ -235,16 +277,21 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
                     "connection deletes its password too."}
               </p>
             </div>
-          </div>
-        </section>
-      </main>
+          </section>
 
-      <footer className="landing-footer">
-        <div className="landing-wrap landing-footer__inner">
+          <div className="lp-sec lp-rv lp-end">
+            <h2>Your next migration can be a quiet one.</h2>
+            <SectionButton target="landing-title" className="btn btn-lg lp-top">
+              Back to the top
+            </SectionButton>
+          </div>
+        </main>
+
+        <footer className="lp-ft">
           <span>Schema Studio</span>
           <span className="mono">v{APP_VERSION}</span>
-        </div>
-      </footer>
+        </footer>
+      </div>
     </div>
   );
 }

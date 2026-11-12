@@ -158,7 +158,7 @@ export function SchemaTrends({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="warn-inline">
+      <div className="pf-note pf-note--warn">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">Could not read this schema&apos;s history</div>
@@ -283,7 +283,7 @@ function Section({
 }) {
   return (
     <div className="space-y-2">
-      <div className="section-title">{title}</div>
+      <div className="pf-h">{title}</div>
       <div className={`grid gap-3 ${columns}`}>{children}</div>
     </div>
   );

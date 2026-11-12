@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import "@/app/styles/atelier-deploy.css";
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
@@ -48,7 +49,7 @@ import {
   type ScriptChangeType,
 } from "@/lib/change-type";
 import { changeNoteSummary, readChangeNote } from "@/lib/change-note";
-import { describeAttempt, type DeployAttemptRow } from "@/lib/deploy-attempts";
+import type { DeployAttemptRow } from "@/lib/deploy-attempts";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
@@ -88,6 +89,7 @@ import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { MigrationReviewPanel } from "@/components/studio/MigrationReviewPanel";
+import { RunTimeline } from "./RunTimeline";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
@@ -555,20 +557,20 @@ function nameTwoRuns(ran: ReadonlyArray<string>, now: ReadonlyArray<string>): [s
   return [listVersions(ran), listVersions(now)];
 }
 
-// The right-hand status cell of a mig-row.
+// The right-hand status cell of a migration row.
 function RightStatus({ cell }: { cell: RunCell }) {
   if (cell.status === "running") {
     return (
-      <span className="right-status">
-        <span className="spin" style={{ width: 12, height: 12 }} />
+      <span className="dp-stat">
+        <span className="spin" />
         running…
       </span>
     );
   }
   if (cell.status === "applied" || cell.status === "rehearsed") {
     return (
-      <span className="right-status" style={{ color: "var(--sync)" }}>
-        <span className="status-ico applied">
+      <span className="dp-stat dp-good">
+        <span className="dp-stat-i">
           <CheckIcon size={11} />
         </span>
         {cell.status}
@@ -578,8 +580,8 @@ function RightStatus({ cell }: { cell: RunCell }) {
   }
   if (cell.status === "failed") {
     return (
-      <span className="right-status" style={{ color: "var(--break)" }}>
-        <span className="status-ico failed">
+      <span className="dp-stat dp-bad">
+        <span className="dp-stat-i">
           <XIcon size={11} />
         </span>
         failed
@@ -588,8 +590,8 @@ function RightStatus({ cell }: { cell: RunCell }) {
   }
   if (cell.status === "skipped") {
     return (
-      <span className="right-status">
-        <span className="status-ico skipped">
+      <span className="dp-stat">
+        <span className="dp-stat-i">
           <XIcon size={11} />
         </span>
         skipped
@@ -598,8 +600,8 @@ function RightStatus({ cell }: { cell: RunCell }) {
   }
   if (cell.status === "unknown") {
     return (
-      <span className="right-status" style={{ color: "var(--drift)" }}>
-        <span className="status-ico unknown">
+      <span className="dp-stat dp-unsure">
+        <span className="dp-stat-i">
           <AlertTriangleIcon size={11} />
         </span>
         not known
@@ -607,15 +609,12 @@ function RightStatus({ cell }: { cell: RunCell }) {
     );
   }
   if (cell.status === "not-in-run") {
-    return <span className="right-status">not in this run</span>;
+    return <span className="dp-stat">not in this run</span>;
   }
   // queued — waiting to run is not a warning, so it gets a dot, not an alert.
   return (
-    <span className="right-status">
-      <span
-        className="w-[6px] h-[6px] rounded-full inline-block flex-none"
-        style={{ background: "var(--text-3)" }}
-      />
+    <span className="dp-stat">
+      <span className="dp-dot" />
       queued
     </span>
   );
@@ -670,58 +669,53 @@ function MigRow({
   /** A control under the notes. The pending list puts its "Run …" button here. */
   action?: ReactNode;
 }) {
-  const cls = ["mig-row", cell.status, selected ? "selected" : ""]
+  const cls = ["dp-mig-row", cell.status, selected ? "selected" : ""]
     .filter(Boolean)
     .join(" ");
   return (
-    <div className="mig-item">
+    <div className="dp-mig">
       <div className={cls}>
         {toggle ? (
           // The number stays visible beside the box: it is the run order, and
           // the order is the reason a middle version cannot be dropped.
-          <label className="seq-circle" title={toggle.label} style={{ cursor: toggle.disabled ? "default" : "pointer" }}>
+          <label className="dp-seq" title={toggle.label}>
             <input
               type="checkbox"
               checked={toggle.checked}
               disabled={toggle.disabled}
               aria-label={toggle.label}
               onChange={(e) => toggle.onChange(e.target.checked)}
-              style={{ position: "absolute", opacity: 0, width: 0, height: 0 }}
             />
             {toggle.checked ? <CheckIcon size={13} /> : seq}
           </label>
         ) : (
-          <div className="seq-circle">{seq}</div>
+          <div className="dp-seq">{seq}</div>
         )}
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="name">{name}</span>
+        <div className="dp-mig-text">
+          <div className="dp-mig-title">
+            <span className="dp-mig-name">{name}</span>
             <ChangeLevelPill level={kind} />
           </div>
-          <div className="sub mono">{sub}</div>
+          <div className="dp-mig-sub">{sub}</div>
           {notes?.map((note, index) => (
-            <div
-              key={index}
-              className="help mt-0.5"
-              style={note.warn ? { color: "var(--drift)" } : undefined}
-            >
+            <div key={index} className={note.warn ? "dp-mig-note dp-warn" : "dp-mig-note"}>
               {note.text}
             </div>
           ))}
-          {action && <div className="mig-row__action">{action}</div>}
+          {action && <div className="dp-mig-act">{action}</div>}
         </div>
         <span className="pill pill-outline mono">{rightPill}</span>
         <RightStatus cell={cell} />
       </div>
-      {cell.error && <pre className="err-pre">{cell.error}</pre>}
+      {cell.error && <pre className="dp-err">{cell.error}</pre>}
       {sql && (
-        <details className="mig-sql" open={sqlOpen}>
+        <details className="dp-sql" open={sqlOpen}>
           <summary>
-            <ChevronDownIcon className="chev" size={12} />
+            <ChevronDownIcon size={12} />
             <span>SQL</span>
             <span className="mono">{countOf(getSqlLineCount(sql), "line")}</span>
           </summary>
-          <pre className="sql">{sql.trim()}</pre>
+          <pre>{sql.trim()}</pre>
         </details>
       )}
     </div>
@@ -3078,11 +3072,8 @@ function DeployBody() {
   }
 
   function stepClass(n: 1 | 2 | 3): string {
-    if (n === stage) {
-      if (n === 2 && isDeploying) return "step running";
-      return "step active";
-    }
-    return n < stage ? "step done" : "step";
+    if (n === stage) return "dp-step dp-on";
+    return n < stage ? "dp-step dp-done" : "dp-step";
   }
 
   const STEPS: { n: 1 | 2 | 3; name: string; sub: string }[] = [
@@ -3091,15 +3082,46 @@ function DeployBody() {
     { n: 3, name: "Verify", sub: "ledger re-read" },
   ];
 
+  // The colour of the bar under the run's title on stage 2.
+  const runTone = isDeploying
+    ? "dp-busy"
+    : runOutcomeUnknown
+      ? "dp-mid"
+      : allApplied || allRehearsed
+        ? "dp-good"
+        : "dp-bad";
+
   return (
-    <div style={{ background: "var(--bg)", minHeight: "100%" }}>
-      {/* ——— Page header ——— */}
-      <section className="px-4 sm:px-8 pt-8 pb-2">
+    <div className="dp-page">
+      {/* Page header, with the three steps on its right */}
+      <div className="dp-head">
         {/* The title and its one line come from lib/help/deploy.ts. How the
             page works is in Help, not here. */}
-        <PageHeader page="/deploy" />
+        <PageHeader
+          page="/deploy"
+          actions={
+            <div className="dp-steps" role="group" aria-label="Deploy steps">
+              {STEPS.map((s) => (
+                <button
+                  key={s.n}
+                  type="button"
+                  className={stepClass(s.n)}
+                  disabled={!canGoStage(s.n)}
+                  title={s.sub}
+                  aria-current={s.n === stage ? "step" : undefined}
+                  onClick={() => canGoStage(s.n) && setStage(s.n)}
+                >
+                  <span className="dp-step-n">
+                    {s.n === 2 && isDeploying ? <span className="spin" /> : s.n}
+                  </span>
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          }
+        />
         {runRefusal && (
-          <div className="role-note mt-4 max-w-[80ch]">
+          <div className="role-note dp-note">
             <InfoIcon size={15} className="ico" />
             <div className="body space-y-0.5">
               <p>
@@ -3115,7 +3137,7 @@ function DeployBody() {
           </div>
         )}
         {pullError && (
-          <div className="banner mt-3">
+          <div className="banner">
             <span className="ico">
               <AlertCircleIcon size={16} />
             </span>
@@ -3125,7 +3147,7 @@ function DeployBody() {
         {/* The pull lists what it could and names what it could not, so a
             version missing below is never a silent gap. */}
         {pullWarnings.length > 0 && (
-          <div className="help mt-3 max-w-[80ch]" style={{ color: "var(--drift)" }}>
+          <div className="help dp-note dp-warn-text">
             <p>Some of the registry could not be read:</p>
             <ul className="list-disc pl-5 mt-1 space-y-0.5">
               {pullWarnings.slice(0, 5).map((warning, index) => (
@@ -3141,44 +3163,15 @@ function DeployBody() {
             </p>
           </div>
         )}
-      </section>
-
-      {/* ——— Stepper ——— */}
-      <section className="px-4 sm:px-8 pt-6 pb-4">
-        <div className="stepper">
-          {STEPS.map((s, i) => (
-            <Fragment key={s.n}>
-              {i > 0 && (
-                <div
-                  className={`step-sep${stage > i ? " done" : stage === i ? " active" : ""}`}
-                />
-              )}
-              <button
-                type="button"
-                className={stepClass(s.n)}
-                disabled={!canGoStage(s.n)}
-                onClick={() => canGoStage(s.n) && setStage(s.n)}
-              >
-                <div className="n">
-                  {s.n === 2 && isDeploying ? <span className="spin" /> : s.n}
-                </div>
-                <div className="label">
-                  <div className="name">{s.name}</div>
-                  <div className="sub">{s.sub}</div>
-                </div>
-              </button>
-            </Fragment>
-          ))}
-        </div>
-      </section>
+      </div>
 
       {/* ═══════════════════ STAGE 1 — PRE-FLIGHT ═══════════════════ */}
       {stage === 1 && (
-        <section className="px-4 sm:px-8 pb-12 space-y-6">
+        <section className="dp-stage">
           {/* Selection */}
-          <div className="card p-5">
-            <div className="section-title mb-3">Target</div>
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+          <div className="card dp-card">
+            <h2 className="dp-h-sm">Target</h2>
+            <div className="dp-fields">
               <div>
                 <label className="label" htmlFor="dep-conn">Connection</label>
                 <Select
@@ -3225,7 +3218,7 @@ function DeployBody() {
                   </p>
                 )}
                 {activeConn && (
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <div className="dp-field-notes">
                     <EnvironmentPill environment={targetEnvironment} />
                     <ExecuteRolePill role={targetExecuteRole} />
                     {targetEnvironment === "unset" && (
@@ -3234,7 +3227,7 @@ function DeployBody() {
                       </span>
                     )}
                     {targetIsReadOnly && (
-                      <span className="help" style={{ color: "var(--break)" }}>
+                      <span className="help dp-bad-text">
                         Marked read-only on Connections — this app will not run migrations
                         against it. Everything else on this page still works.
                       </span>
@@ -3242,7 +3235,7 @@ function DeployBody() {
                     {/* A missing "Deploy: Run" is already said at the top of the page,
                         so only the rule this connection adds is said here. */}
                     {targetExecuteRole === "admin" && !mayExecuteOnTarget && (
-                      <span className="help" style={{ color: "var(--break)" }}>
+                      <span className="help dp-bad-text">
                         {/* The apply route's own words, so this line and the
                             refusal a press would get read the same. */}
                         {executeRefusal(activeConn.name, roleLabel, targetExecuteRole)}
@@ -3254,7 +3247,7 @@ function DeployBody() {
                       </span>
                     )}
                     {environmentUnknown && (
-                      <span className="help" style={{ color: "var(--drift)" }}>
+                      <span className="help dp-warn-text">
                         {"This schema's own label could not be read, so the target " +
                           "may be production even though this reads " +
                           targetEnvironment +
@@ -3293,7 +3286,7 @@ function DeployBody() {
                     resetDrift();
                   }}
                 />
-                {schemasError && <p className="help mt-1" style={{ color: "var(--break)" }}>{schemasError}</p>}
+                {schemasError && <p className="help mt-1 dp-bad-text">{schemasError}</p>}
               </div>
 
               <div>
@@ -3347,14 +3340,14 @@ function DeployBody() {
               </div>
             </div>
 
-            <div className="flex items-center gap-3 mt-4">
+            <div className="dp-actions">
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
                 disabled={!connectionId || !schema || !scriptGroup || preflightLoading || pullLoading}
                 onClick={handlePreflight}
               >
-                {preflightLoading ? <span className="spin" style={{ width: 13, height: 13 }} /> : <RefreshIcon size={13} />}
+                {preflightLoading ? <span className="spin" /> : <RefreshIcon size={13} />}
                 {preflightLoading ? "Checking…" : "Check database"}
               </button>
             </div>
@@ -3370,39 +3363,42 @@ function DeployBody() {
           {/* Target context card + pending grid — once pre-flight has run */}
           {preflightResult && activeConn && (
             <>
-              <div className="target-card flex-wrap">
-                <div
-                  className="w-11 h-11 rounded-xl grid place-items-center flex-none"
-                  style={{ background: "var(--brand-soft)", color: "var(--brand)" }}
-                >
+              {/* Everything run on this schema from here, by date. Built from
+                  the attempt rows only, so failed and refused runs show too. */}
+              <RunTimeline
+                attempts={attempts}
+                schema={preflightResult.schema}
+                nextLabel={selectionCount > 0 ? `up to ${selectionLastLabel}` : null}
+              />
+
+              <div className="card dp-card dp-ships">
+                <div className="dp-db">
                   <LogoIcon size={20} />
                 </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                    <span className="mono text-[16px] font-semibold">{preflightResult.schema}</span>
-                    <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>@</span>
-                    <span className="mono text-[14px]" style={{ color: "var(--text-2)" }}>{activeConn.name}</span>
+                <div className="dp-where">
+                  <div className="dp-where-name">
+                    <span>{preflightResult.schema}</span>
+                    <span className="dp-at">@</span>
+                    <span className="dp-conn">{activeConn.name}</span>
                     <EnvironmentPill environment={targetEnvironment} />
                     <span className="pill pill-sync"><span className="dot" />reachable</span>
                   </div>
-                  <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                    <span className="mono">{activeConn.host}:{activeConn.port}/{activeConn.database_name}</span>
+                  <div className="dp-where-host">
+                    {activeConn.host}:{activeConn.port}/{activeConn.database_name}
                   </div>
                 </div>
-                <div className="ml-auto flex items-center gap-4 flex-wrap">
-                  <div className="text-center">
+                <div className="dp-route">
+                  <div className="dp-route-end">
                     {/* "Applied": the highest script version recorded in the
                         target's script_patch, the same word Compare and the
                         Script Editor use. Not the lineage number. */}
-                    <div className="section-title">Applied to target</div>
-                    <div className="mono text-[18px] font-semibold mt-1">{currentLabel}</div>
+                    <small>Applied to target</small>
+                    <span className="dp-chip">{currentLabel}</span>
                   </div>
                   <ChevronRightIcon size={20} />
-                  <div className="text-center">
-                    <div className="section-title">Deploy to</div>
-                    <div className="mono text-[18px] font-semibold mt-1" style={{ color: "var(--brand)" }}>
-                      {selectionLastLabel}
-                    </div>
+                  <div className="dp-route-end">
+                    <small>Deploy to</small>
+                    <span className="dp-chip dp-next">{selectionLastLabel}</span>
                   </div>
                 </div>
               </div>
@@ -3415,12 +3411,12 @@ function DeployBody() {
                   "Roll back to here…" only picks that version in the Roll back
                   card below, which does the undoing. */}
               {versionLedger.length > 0 && (
-                <div className="card p-4">
-                  <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                    <div className="section-title">
+                <div className="card dp-card">
+                  <div className="dp-card-top mb-3">
+                    <h2 className="dp-h-sm">
                       Version timeline · <span className="mono">{scriptGroup}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
+                    </h2>
+                    <div className="dp-pills">
                       <span className="pill pill-sync"><span className="dot" />{appliedCount} applied</span>
                       <span className="pill pill-pending"><span className="dot" />{pendingCount} pending</span>
                       {/* The same colour as the Skipped status in the rows. */}
@@ -3457,25 +3453,21 @@ function DeployBody() {
                   tick, a tick for rollbacks that delete rows, a tick for other
                   scripts applied since, and on production a second person's
                   approval of this exact rollback SQL. */}
-              {/* attempts.length is in this test on purpose. Every other term
-                  here is something that SUCCEEDED, so a schema whose only
-                  event is a deploy that failed or was refused would hide the
-                  card — and with it the only record that anything was tried,
-                  which is precisely the case the attempt history exists for. */}
+              {/* The list of every attempt, failed and refused ones too, now
+                  sits in the timeline card at the top, which always shows. */}
               {(appliedNewestFirst.length > 0 ||
                 rollbackDone ||
-                revertedHistory.length > 0 ||
-                attempts.length > 0) && (
-                <div className="card p-4" ref={rollbackCardRef} tabIndex={-1}>
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="section-title">
+                revertedHistory.length > 0) && (
+                <div className="card dp-card" ref={rollbackCardRef} tabIndex={-1}>
+                  <div className="dp-card-top">
+                    <h2 className="dp-h-sm">
                       Roll back · <span className="mono">{scriptGroup}</span>
                       <HelpHint label="Roll back">
                         Pick a version to go back to. Every applied version above it is
                         undone, newest first, in one transaction: all of them or none.
                         Outside production it runs as soon as you press the button.
                       </HelpHint>
-                    </div>
+                    </h2>
                     {appliedNewestFirst.length > 0 && (
                       <button
                         type="button"
@@ -3496,8 +3488,8 @@ function DeployBody() {
 
                   {rollbackDone && (
                     <div className="mt-3 space-y-3">
-                      <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                        <span className="flex-none mt-0.5" style={{ color: "var(--sync)" }}>
+                      <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--ink-2)" }}>
+                        <span className="flex-none mt-0.5" style={{ color: "var(--add)" }}>
                           <CheckIcon size={14} />
                         </span>
                         <span>{rollbackDone.message}</span>
@@ -3515,13 +3507,13 @@ function DeployBody() {
 
                   {/* A sticky message (see rollbackError) is shown even with the planner shut. */}
                   {!rollbackPlannerShown && rollbackErrorShown && (
-                    <pre className="err-pre mt-3">{rollbackErrorShown}</pre>
+                    <pre className="dp-err mt-3">{rollbackErrorShown}</pre>
                   )}
 
                   {rollbackPlannerShown && (
                     <div className="mt-3 space-y-3">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[12px]" style={{ color: "var(--text-3)" }}>Roll back to</span>
+                        <span className="text-[12px]" style={{ color: "var(--ink-3)" }}>Roll back to</span>
                         <Select
                           variant="input"
                           ariaLabel="Roll back to version"
@@ -3534,7 +3526,7 @@ function DeployBody() {
                         />
                       </div>
                       {rollbackListCapped && (
-                        <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                        <p className="text-[12px]" style={{ color: "var(--ink-3)" }}>
                           This list stops at {vLabel(appliedNewestFirst[MAX_ROLLBACK_VERSIONS])}: a
                           rollback undoes at most {MAX_ROLLBACK_VERSIONS} versions at a time. To go
                           further back, run this one, then roll back again.
@@ -3553,15 +3545,11 @@ function DeployBody() {
                             (loss) => loss.version === step.version
                           );
                           return (
-                            <div
-                              key={step.version}
-                              className="py-2"
-                              style={{ borderTop: "1px solid var(--border)" }}
-                            >
+                            <div key={step.version} className="dp-hist">
                               <div className="flex items-center justify-between gap-3">
                                 <span className="mono text-[13px]">{`${index + 1}. Undo ${v}`}</span>
                                 {step.appliedAt && (
-                                  <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                                  <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
                                     {`applied ${fmtDate(step.appliedAt)}`}
                                   </span>
                                 )}
@@ -3574,23 +3562,23 @@ function DeployBody() {
                                       : `Runs ${v}.down.sql from the registry. No rollback was saved when ${v} was applied.`}
                                   </div>
                                   {step.registryDiffers && (
-                                    <div className="help mt-0.5" style={{ color: "var(--drift)" }}>
+                                    <div className="help mt-0.5 dp-warn-text">
                                       {`The registry's ${v}.down.sql differs from the copy saved when ${v} was applied. The saved copy is the one that runs.`}
                                     </div>
                                   )}
-                                  <details className="mig-sql" open={deletesRows}>
+                                  <details className="dp-sql" open={deletesRows}>
                                     <summary>
-                                      <ChevronDownIcon className="chev" size={12} />
+                                      <ChevronDownIcon size={12} />
                                       <span>Rollback SQL</span>
                                       <span className="mono">
                                         {countOf(getSqlLineCount(step.resolved.sql), "line")}
                                       </span>
                                     </summary>
-                                    <pre className="sql">{step.resolved.sql.trim()}</pre>
+                                    <pre>{step.resolved.sql.trim()}</pre>
                                   </details>
                                 </>
                               ) : problem ? (
-                                <div className="help mt-0.5" style={{ color: "var(--break)" }}>
+                                <div className="help mt-0.5 dp-bad-text">
                                   {problem.text}
                                   {problem.editor && (
                                     <>
@@ -3717,10 +3705,10 @@ function DeployBody() {
                         />
                       )}
 
-                      {rollbackErrorShown && <pre className="err-pre">{rollbackErrorShown}</pre>}
+                      {rollbackErrorShown && <pre className="dp-err">{rollbackErrorShown}</pre>}
                       {rollbackDryRun && rollbackDryRun.key === rollbackKey && (
-                        <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                          <span className="flex-none mt-0.5" style={{ color: "var(--sync)" }}>
+                        <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--ink-2)" }}>
+                          <span className="flex-none mt-0.5" style={{ color: "var(--add)" }}>
                             <CheckIcon size={14} />
                           </span>
                           <span>{rollbackDryRun.message}</span>
@@ -3750,7 +3738,7 @@ function DeployBody() {
                               : "Roll back every version"}
                         </button>
                       </div>
-                      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                      <div className="text-[11px]" style={{ color: "var(--ink-3)" }}>
                         {rollbackHint}
                       </div>
                     </div>
@@ -3762,11 +3750,10 @@ function DeployBody() {
                       {revertedHistory.slice(0, 10).map((row) => (
                         <div
                           key={`${row.version}@${row.reverted_at}`}
-                          className="flex items-center justify-between gap-3 py-1.5"
-                          style={{ borderTop: "1px solid var(--border)" }}
+                          className="dp-hist dp-hist-top"
                         >
                           <span className="mono text-[13px]">{vLabel(row.version)}</span>
-                          <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                          <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
                             {`${
                               row.applied_at
                                 ? `applied ${fmtDate(row.applied_at)}${
@@ -3785,71 +3772,6 @@ function DeployBody() {
                     </div>
                   )}
 
-                  {/* Spec feature 07 — "Track SQL execution history for
-                      auditing". Everything above this reads the TARGET, and so
-                      can only show what worked: the applied ledger and the
-                      rollback ledger are both written inside the transaction
-                      that did the work. A run that failed, that was refused,
-                      or that timed out waiting for a lock leaves the target
-                      with no memory of it at all. These rows come from the
-                      app's own database, which is why they survive. */}
-                  {attempts.length > 0 && (
-                    <div className="mt-4">
-                      <div className="section-title mb-1">
-                        Deploy history (all attempts)
-                        <HelpHint label="Deploy history">
-                          Everything run against this schema from here, whether or not it
-                          landed. Failed and refused runs are listed too, with the reason.
-                        </HelpHint>
-                      </div>
-                      {attempts.slice(0, 10).map((row) => (
-                        <div
-                          key={row.id}
-                          className="py-1.5"
-                          style={{ borderTop: "1px solid var(--border)" }}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="mono text-[13px]">
-                              {row.scripts.length === 0
-                                ? "—"
-                                : row.scripts.length === 1
-                                  ? `${row.scripts[0].script_name} ${vLabel(row.scripts[0].version)}`
-                                  : `${row.scripts.length} migrations, through ${vLabel(
-                                      row.scripts[row.scripts.length - 1].version
-                                    )}`}
-                            </span>
-                            <span
-                              className="text-[11px]"
-                              style={{
-                                color:
-                                  row.outcome === "applied"
-                                    ? "var(--text-3)"
-                                    : row.outcome === "unknown"
-                                      ? "var(--warn, var(--text-2))"
-                                      : "var(--text-2)",
-                              }}
-                            >
-                              {`${describeAttempt(row.outcome, row.dry_run)} · ${fmtDate(
-                                row.created_at
-                              )}${row.actor ? ` by ${row.actor}` : ""}`}
-                            </span>
-                          </div>
-                          {/* The reason, for the outcomes that have one. This is
-                              the whole value of the row: a refusal the operator
-                              has since closed the tab on is otherwise
-                              unrecoverable. */}
-                          {row.detail && (
-                            <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
-                              {row.detail}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {attempts.length > 10 && (
-                        <div className="help mt-1">{`…and ${attempts.length - 10} more.`}</div>
-                      )}
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -3869,11 +3791,11 @@ function DeployBody() {
               )}
 
               {pendingScripts.length === 0 ? (
-                <div className="card p-8 text-center">
-                  <div className="w-12 h-12 rounded-full grid place-items-center mx-auto mb-3" style={{ background: "var(--sync-soft)", color: "var(--sync)" }}>
-                    <CheckIcon size={22} />
+                <div className="card dp-card dp-center">
+                  <div className="dp-big-check">
+                    <CheckIcon size={26} />
                   </div>
-                  <div className="text-[15px] font-semibold">You’re up-to-date!</div>
+                  <h2 className="dp-h">You’re up-to-date!</h2>
                   <p className="help mt-1">
                     No pending migrations for <span className="mono">{scriptGroup}</span> in{" "}
                     <span className="mono">{preflightResult.schema}</span>. The ledger is at{" "}
@@ -3890,10 +3812,11 @@ function DeployBody() {
                   )}
                 </div>
               ) : (
-                <div className="grid gap-6 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="dp-grid">
                   {/* Left: pending list + drift pre-check */}
-                  <div className="space-y-4">
-                    <div className="flex items-end justify-between gap-3 flex-wrap">
+                  <div className="dp-col">
+                    <div className="card dp-card">
+                    <div className="dp-card-top">
                       <div>
                         <div className="section-title">
                           Pending migrations
@@ -3910,7 +3833,7 @@ function DeployBody() {
                             </HelpHint>
                           )}
                         </div>
-                        <h2 className="text-[18px] font-semibold tracking-[-0.005em] mt-1">
+                        <h2 className="dp-h mt-1">
                           {pendingScripts.length} pending · {scriptsUpToTarget.length} in this run
                         </h2>
                         {/* Taken out of the run by their own "Applies-to"
@@ -3958,7 +3881,7 @@ function DeployBody() {
                       )}
                     </div>
 
-                    <div>
+                    <div className="dp-mig-list">
                       {pendingScripts.map((script, i) => {
                         const reading = describeChangeType(script.sql_content);
                         const kind = reading.recorded;
@@ -4031,8 +3954,10 @@ function DeployBody() {
                         );
                       })}
                     </div>
+                    </div>
 
                     {/* Drift pre-check — real lineage compare when the target is tracked */}
+                    <div className="card dp-card">
                     <DriftPanel
                       phase={driftPhase}
                       result={driftResult}
@@ -4040,40 +3965,247 @@ function DeployBody() {
                       context="precheck"
                       targetVersion={targetVersion}
                     />
+                    </div>
+
+                    <div className="card dp-card">
+                      <h2 className="dp-h">Before you ship</h2>
+                      <ul className="dp-pre">
+                        <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
+                        {/* Only the settings that stop or narrow a run get a
+                            row. The default one is what a checklist reader
+                            assumes, and a line confirming the assumption is a
+                            line they learn to skip. */}
+                        {targetIsReadOnly ? (
+                          <ChecklistItem ok={false}>
+                            Execution · read-only — this app will not write to this database
+                          </ChecklistItem>
+                        ) : !mayExecuteOnTarget ? (
+                          <ChecklistItem ok={false}>
+                            {targetExecuteRole === "admin"
+                              ? `Execution · admins only · your role is ${roleLabel}`
+                              : `Execution · needs "${permissionLabel("deploy:run")}" · ${roleLabel} does not have it`}
+                          </ChecklistItem>
+                        ) : targetExecuteRole === "admin" ? (
+                          <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
+                        ) : null}
+                        {targetIsProduction ? (
+                          <ChecklistItem ok={deployAcknowledged}>
+                            Environment · production —{" "}
+                            {deployAcknowledged ? "confirmed" : "needs an explicit confirmation"}
+                          </ChecklistItem>
+                        ) : targetEnvironment === "unset" ? (
+                          <ChecklistItem info>
+                            Environment · unlabelled — nothing here can warn you about this target
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>
+                            Environment · {targetEnvironment}
+                          </ChecklistItem>
+                        )}
+                        <ChecklistItem ok>
+                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
+                        </ChecklistItem>
+                        <ChecklistItem ok={blockedByApplication.length === 0}>
+                          {/* Silent when nothing is restricted, which is every
+                              run until somebody writes the header — but a tick
+                              rather than nothing, so a reader who has used the
+                              feature can see it was checked. */}
+                          {blockedByApplication.length > 0
+                            ? `Restriction could not be checked · ${blockedByApplication
+                                .map((script) => vLabel(script.version))
+                                .join(", ")} — see the note on the row`
+                            : addressedElsewhere.length > 0
+                              ? `Applications · ${addressedElsewhere.length} pending ${
+                                  addressedElsewhere.length === 1 ? "version is" : "versions are"
+                                } for other applications and ${
+                                  addressedElsewhere.length === 1 ? "is" : "are"
+                                } not in this run`
+                            : preflightResult.applications.known
+                              ? `Applications · this database hosts ${
+                                  preflightResult.applications.names.length > 0
+                                    ? preflightResult.applications.names.join(", ")
+                                    : "none by name"
+                                }`
+                              : "No script in this run is restricted to an application"}
+                        </ChecklistItem>
+                        <ChecklistItem ok={!hasTxnViolation}>
+                          {/* A count leaves the reader to open every script and
+                              hunt. The versions are already in scope — name them,
+                              and state the rule the apply route enforces. */}
+                          {hasTxnViolation
+                            ? `COMMIT or ROLLBACK found in ${txnViolationScripts
+                                .map((s) => vLabel(s.version))
+                                .join(", ")} — the run is already one transaction, so ` +
+                              "remove them from the SQL"
+                            : "No transaction-control in SQL"}
+                        </ChecklistItem>
+                        {breakingCount > 0 ? (
+                          <ChecklistItem ok={breakingAcknowledged}>
+                            {/* Counted as describeChangeType counts: marked
+                                breaking, or containing SQL that is always
+                                breaking whatever the mark says. */}
+                            Breaking changes · {breakingCount}
+                            {louderCount > 0
+                              ? `, including ${louderCount} marked less than breaking whose SQL is always breaking`
+                              : ""}{" "}
+                            {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>
+                            Nothing in this run drops or rewrites structure
+                          </ChecklistItem>
+                        )}
+                        {dataLossScripts.length > 0 ? (
+                          <ChecklistItem ok={dataLossAcknowledged}>
+                            {dataLossSure
+                              ? `Deletes rows · ${dataLossKinds}${dataLoss.unread ? ", and part of the SQL could not be read" : ""}`
+                              : "May delete rows · part of the SQL could not be read"}{" "}
+                            in{" "}
+                            {countOf(dataLossScripts.length, "script")}{" "}
+                            {dataLossAcknowledged ? "· acknowledged" : "· needs acknowledging"}
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>No statement found that deletes rows</ChecklistItem>
+                        )}
+                        {mightFailScripts.length > 0 ? (
+                          // `info`, not a failed tick: this is a thing that might
+                          // happen, not a thing that is wrong.
+                          <ChecklistItem info>
+                            May be refused by existing rows · {mightFailKinds} in{" "}
+                            {countOf(mightFailScripts.length, "script")} · rolls back if
+                            it is
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>
+                            Nothing in this run can be refused by existing rows
+                          </ChecklistItem>
+                        )}
+                        {enumAdditions.length > 0 && (
+                          <ChecklistItem info>
+                            {countOf(enumAdditions.length, "enum value")}{" "}
+                            {enumAdditions.length === 1 ? "commits" : "commit"} before the
+                            transaction · not undone by a rollback
+                          </ChecklistItem>
+                        )}
+                        {targetIsProduction &&
+                          (approvalsReadError && !approvedRun ? (
+                            // "not requested yet" would be a reading of a list
+                            // this page never managed to read.
+                            <ChecklistItem info>Approval · could not be read</ChecklistItem>
+                          ) : (
+                            <ChecklistItem ok={Boolean(approvedRun)}>
+                              {/* Under the auth bypass the one principal clears its
+                                  own request, and the row says so (self_approved). */}
+                              {approvedRun
+                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}` +
+                                  (approvedRun.self_approved ? " · self-approved under the auth bypass" : "")
+                                : pendingRun
+                                  ? bypass && mayApprove
+                                    ? "Approval requested · waiting for you to clear it"
+                                    : "Approval requested · waiting for a second person"
+                                  : "Approval · not requested yet"}
+                            </ChecklistItem>
+                          ))}
+                        {preflightResult.needsInit ? (
+                          <ChecklistItem info>
+                            {/* The apply route creates it before BEGIN, so it is
+                                not covered by the run's rollback either. */}
+                            Ledger table will be created on first deploy — it is
+                            created before the transaction opens, so it stays even if
+                            the run fails
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>Ledger table present · <span className="mono">script_patch</span></ChecklistItem>
+                        )}
+                        {driftPhase === "loading" && (
+                          <ChecklistItem info>Drift check · checking the target…</ChecklistItem>
+                        )}
+                        {driftPhase === "untracked" && (
+                          <ChecklistItem stub>Drift check · target not tracked</ChecklistItem>
+                        )}
+                        {driftPhase === "error" &&
+                          (driftGateFromRecord ? (
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · check failed, and the last check on record found
+                              the target {driftGateStatus === "drifted" ? "drifted" : "unreachable"}
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
+                          ) : (
+                            <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
+                          ))}
+                        {driftPhase === "ready" && driftResult && (
+                          driftResult.status === "in_sync" ? (
+                            <ChecklistItem ok>
+                              Drift check · in sync
+                              {driftResult.expectedVersion ? (
+                                <> with lineage <span className="mono">{vLabel(driftResult.expectedVersion)}</span></>
+                              ) : null}
+                            </ChecklistItem>
+                          ) : driftResult.status === "drifted" ? (
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · live schema has drifted
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
+                          ) : (
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · target unreachable
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
+                          )
+                        )}
+                        {driftPhase === "idle" && (
+                          <ChecklistItem stub>Drift check · run a check to see status</ChecklistItem>
+                        )}
+                      </ul>
+                    </div>
                   </div>
 
-                  {/* Right: summary + checklist */}
-                  <aside className="space-y-4">
-                    <div className="card p-5" ref={runPanelRef} tabIndex={-1}>
-                      <div className="section-title mb-2">Summary</div>
-                      <div className="vline mt-2">
-                        <span className="vchip">{currentLabel}</span>
-                        <ChevronRightIcon size={16} />
-                        <span className="vchip next"><b>{selectionLastLabel}</b></span>
+                  {/* Right: the run */}
+                  <aside className="dp-col">
+                    <div className="card dp-card dp-run" ref={runPanelRef} tabIndex={-1}>
+                      <div className="dp-card-top">
+                        <h2 className="dp-h">Run it</h2>
+                        <EnvironmentPill environment={targetEnvironment} />
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-2 gap-x-4 mt-4 text-[12.5px]">
+                      <div className="dp-route mt-3">
+                        <span className="dp-chip">{currentLabel}</span>
+                        <ChevronRightIcon size={16} />
+                        <span className="dp-chip dp-next"><b>{selectionLastLabel}</b></span>
+                      </div>
+                      <dl className="dp-kv">
                         {/* The target is named at the top of the page, which is
                             not where the button is. */}
-                        <div className="flex justify-between col-span-2">
-                          <span style={{ color: "var(--text-3)" }}>Target</span>
-                          <span className="mono">{schema} @ {activeConn.name}</span>
-                        </div>
-                        <div className="col-span-2 text-[11px] mono" style={{ color: "var(--text-3)" }}>
+                        <dt>Target</dt>
+                        <dd className="mono">{schema} @ {activeConn.name}</dd>
+                        <dt>Database</dt>
+                        <dd className="mono">
                           {activeConn.host}:{activeConn.port}/{activeConn.database_name}
-                        </div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Migrations</span><span className="mono">{scriptsUpToTarget.length}</span></div>
-                        <div className="flex justify-between" title="What the migrations' change types call for: major = breaking, minor = additive, patch = small change. A version number that says otherwise is noted on its row."><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
+                        </dd>
+                        <dt>Migrations</dt>
+                        <dd className="mono">{scriptsUpToTarget.length}</dd>
+                        <dt title="What the migrations' change types call for: major = breaking, minor = additive, patch = small change. A version number that says otherwise is noted on its row.">
+                          Bump
+                        </dt>
+                        <dd>{bumps}</dd>
                         {/* Two rows, because they are two questions. Breaking
                             is what stops working after this succeeds; deletes
                             rows is what you need a backup for. A rename is the
                             first and not the second. */}
-                        <div className="flex justify-between" title="Migrations marked breaking, or containing SQL that is always breaking"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>{dataLossScripts.length > 0 && !dataLossSure ? "May delete rows" : "Deletes rows"}</span><span className="mono">{dataLossScripts.length}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Lines of SQL</span><span className="mono">{linesOfSql}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
-                      </div>
+                        <dt title="Migrations marked breaking, or containing SQL that is always breaking">
+                          Breaking
+                        </dt>
+                        <dd className="mono">{breakingCount}</dd>
+                        <dt>
+                          {dataLossScripts.length > 0 && !dataLossSure ? "May delete rows" : "Deletes rows"}
+                        </dt>
+                        <dd className="mono">{dataLossScripts.length}</dd>
+                        <dt>Lines of SQL</dt>
+                        <dd className="mono">{linesOfSql}</dd>
+                        <dt>Strategy</dt>
+                        <dd>one transaction</dd>
+                      </dl>
 
-                      <div className="space-y-3 mt-4">
+                      <div className="dp-gates">
                         {targetIsProduction && (
                           <ProductionGate
                             what={`run ${scriptsUpToTarget.length} migration${scriptsUpToTarget.length === 1 ? "" : "s"}`}
@@ -4276,35 +4408,46 @@ function DeployBody() {
                         )}
                       </div>
 
-                      <div className="flex items-center justify-end mt-5">
-                        <EnvironmentPill environment={targetEnvironment} />
+                      <div className="dp-zone">
+                        <h3 className="dp-h-sm">Rehearse</h3>
+                        <p>
+                          Runs this SQL on the target inside one transaction, then rolls it
+                          back. Nothing is written.
+                        </p>
+                        {/* A rehearsal writes nothing, but it really runs the SQL,
+                            including any statement that takes a heavy lock, so it
+                            sits behind the same production confirmation. */}
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={runBlocked}
+                          onClick={() => handleRun(true)}
+                        >
+                          <EyeIcon size={14} />
+                          {dryRunLabel}
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        className={`btn btn-lg w-full mt-2 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                        disabled={deployBlocked}
-                        onClick={() => handleRun(false)}
-                        ref={deployButtonRef}
-                      >
-                        <DeployIcon size={14} />
-                        {/* Names the range it deploys, as the "Run …" button that
-                            picked it did: "Deploy v5.0.1 → v5.0.2 (2)". */}
-                        {deployLabel}
-                      </button>
-                      {/* A rehearsal writes nothing, but it really runs the SQL —
-                          including any statement that takes a heavy lock — so it
-                          sits behind the same production confirmation. */}
-                      <button
-                        type="button"
-                        className="btn btn-secondary w-full mt-2"
-                        disabled={runBlocked}
-                        onClick={() => handleRun(true)}
-                        title="Runs this SQL on the target inside one transaction, then rolls it back: nothing is written."
-                      >
-                        <EyeIcon size={14} />
-                        {dryRunLabel}
-                      </button>
-                      <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
+                      <div className="dp-or">then</div>
+                      <div className={deployBlocked ? "dp-zone dp-live" : "dp-zone dp-live dp-armed"}>
+                        <h3 className="dp-h-sm">Ship for real</h3>
+                        <p>
+                          Writes to <span className="mono">{schema}</span>. This is the real run.
+                        </p>
+                        <button
+                          type="button"
+                          className={`btn btn-lg ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                          disabled={deployBlocked}
+                          onClick={() => handleRun(false)}
+                          ref={deployButtonRef}
+                        >
+                          <DeployIcon size={14} />
+                          {/* Names the range it deploys, as the "Run …" button that
+                              picked it did: "Deploy v5.0.1 → v5.0.2 (2)". */}
+                          {deployLabel}
+                        </button>
+                      </div>
+                      {/* Why the buttons are off, or what pressing them does. */}
+                      <p className="dp-why">
                         {targetIsReadOnly
                           ? "This connection is marked read-only on Connections, so nothing " +
                             "here will run against it — not a deploy and not a dry run"
@@ -4329,200 +4472,9 @@ function DeployBody() {
                               ? "All migrations run in one transaction — all of them or " +
                                 "none, apart from the enum values noted above"
                               : "All migrations run in one transaction — all of them or none"}
-                      </div>
+                      </p>
                     </div>
 
-                    <div className="card p-5">
-                      <div className="section-title mb-3">Pre-flight checklist</div>
-                      <ul className="space-y-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                        <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
-                        {/* Only the settings that stop or narrow a run get a
-                            row. The default one is what a checklist reader
-                            assumes, and a line confirming the assumption is a
-                            line they learn to skip. */}
-                        {targetIsReadOnly ? (
-                          <ChecklistItem ok={false}>
-                            Execution · read-only — this app will not write to this database
-                          </ChecklistItem>
-                        ) : !mayExecuteOnTarget ? (
-                          <ChecklistItem ok={false}>
-                            {targetExecuteRole === "admin"
-                              ? `Execution · admins only · your role is ${roleLabel}`
-                              : `Execution · needs "${permissionLabel("deploy:run")}" · ${roleLabel} does not have it`}
-                          </ChecklistItem>
-                        ) : targetExecuteRole === "admin" ? (
-                          <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
-                        ) : null}
-                        {targetIsProduction ? (
-                          <ChecklistItem ok={deployAcknowledged}>
-                            Environment · production —{" "}
-                            {deployAcknowledged ? "confirmed" : "needs an explicit confirmation"}
-                          </ChecklistItem>
-                        ) : targetEnvironment === "unset" ? (
-                          <ChecklistItem info>
-                            Environment · unlabelled — nothing here can warn you about this target
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>
-                            Environment · {targetEnvironment}
-                          </ChecklistItem>
-                        )}
-                        <ChecklistItem ok>
-                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
-                        </ChecklistItem>
-                        <ChecklistItem ok={blockedByApplication.length === 0}>
-                          {/* Silent when nothing is restricted, which is every
-                              run until somebody writes the header — but a tick
-                              rather than nothing, so a reader who has used the
-                              feature can see it was checked. */}
-                          {blockedByApplication.length > 0
-                            ? `Restriction could not be checked · ${blockedByApplication
-                                .map((script) => vLabel(script.version))
-                                .join(", ")} — see the note on the row`
-                            : addressedElsewhere.length > 0
-                              ? `Applications · ${addressedElsewhere.length} pending ${
-                                  addressedElsewhere.length === 1 ? "version is" : "versions are"
-                                } for other applications and ${
-                                  addressedElsewhere.length === 1 ? "is" : "are"
-                                } not in this run`
-                            : preflightResult.applications.known
-                              ? `Applications · this database hosts ${
-                                  preflightResult.applications.names.length > 0
-                                    ? preflightResult.applications.names.join(", ")
-                                    : "none by name"
-                                }`
-                              : "No script in this run is restricted to an application"}
-                        </ChecklistItem>
-                        <ChecklistItem ok={!hasTxnViolation}>
-                          {/* A count leaves the reader to open every script and
-                              hunt. The versions are already in scope — name them,
-                              and state the rule the apply route enforces. */}
-                          {hasTxnViolation
-                            ? `COMMIT or ROLLBACK found in ${txnViolationScripts
-                                .map((s) => vLabel(s.version))
-                                .join(", ")} — the run is already one transaction, so ` +
-                              "remove them from the SQL"
-                            : "No transaction-control in SQL"}
-                        </ChecklistItem>
-                        {breakingCount > 0 ? (
-                          <ChecklistItem ok={breakingAcknowledged}>
-                            {/* Counted as describeChangeType counts: marked
-                                breaking, or containing SQL that is always
-                                breaking whatever the mark says. */}
-                            Breaking changes · {breakingCount}
-                            {louderCount > 0
-                              ? `, including ${louderCount} marked less than breaking whose SQL is always breaking`
-                              : ""}{" "}
-                            {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>
-                            Nothing in this run drops or rewrites structure
-                          </ChecklistItem>
-                        )}
-                        {dataLossScripts.length > 0 ? (
-                          <ChecklistItem ok={dataLossAcknowledged}>
-                            {dataLossSure
-                              ? `Deletes rows · ${dataLossKinds}${dataLoss.unread ? ", and part of the SQL could not be read" : ""}`
-                              : "May delete rows · part of the SQL could not be read"}{" "}
-                            in{" "}
-                            {countOf(dataLossScripts.length, "script")}{" "}
-                            {dataLossAcknowledged ? "· acknowledged" : "· needs acknowledging"}
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>No statement found that deletes rows</ChecklistItem>
-                        )}
-                        {mightFailScripts.length > 0 ? (
-                          // `info`, not a failed tick: this is a thing that might
-                          // happen, not a thing that is wrong.
-                          <ChecklistItem info>
-                            May be refused by existing rows · {mightFailKinds} in{" "}
-                            {countOf(mightFailScripts.length, "script")} · rolls back if
-                            it is
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>
-                            Nothing in this run can be refused by existing rows
-                          </ChecklistItem>
-                        )}
-                        {enumAdditions.length > 0 && (
-                          <ChecklistItem info>
-                            {countOf(enumAdditions.length, "enum value")}{" "}
-                            {enumAdditions.length === 1 ? "commits" : "commit"} before the
-                            transaction · not undone by a rollback
-                          </ChecklistItem>
-                        )}
-                        {targetIsProduction &&
-                          (approvalsReadError && !approvedRun ? (
-                            // "not requested yet" would be a reading of a list
-                            // this page never managed to read.
-                            <ChecklistItem info>Approval · could not be read</ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={Boolean(approvedRun)}>
-                              {/* Under the auth bypass the one principal clears its
-                                  own request, and the row says so (self_approved). */}
-                              {approvedRun
-                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}` +
-                                  (approvedRun.self_approved ? " · self-approved under the auth bypass" : "")
-                                : pendingRun
-                                  ? bypass && mayApprove
-                                    ? "Approval requested · waiting for you to clear it"
-                                    : "Approval requested · waiting for a second person"
-                                  : "Approval · not requested yet"}
-                            </ChecklistItem>
-                          ))}
-                        {preflightResult.needsInit ? (
-                          <ChecklistItem info>
-                            {/* The apply route creates it before BEGIN, so it is
-                                not covered by the run's rollback either. */}
-                            Ledger table will be created on first deploy — it is
-                            created before the transaction opens, so it stays even if
-                            the run fails
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>Ledger table present · <span className="mono">script_patch</span></ChecklistItem>
-                        )}
-                        {driftPhase === "loading" && (
-                          <ChecklistItem info>Drift check · checking the target…</ChecklistItem>
-                        )}
-                        {driftPhase === "untracked" && (
-                          <ChecklistItem stub>Drift check · target not tracked</ChecklistItem>
-                        )}
-                        {driftPhase === "error" &&
-                          (driftGateFromRecord ? (
-                            <ChecklistItem ok={driftAcknowledged}>
-                              Drift check · check failed, and the last check on record found
-                              the target {driftGateStatus === "drifted" ? "drifted" : "unreachable"}
-                              {driftAcknowledged ? " · acknowledged" : ""}
-                            </ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
-                          ))}
-                        {driftPhase === "ready" && driftResult && (
-                          driftResult.status === "in_sync" ? (
-                            <ChecklistItem ok>
-                              Drift check · in sync
-                              {driftResult.expectedVersion ? (
-                                <> with lineage <span className="mono">{vLabel(driftResult.expectedVersion)}</span></>
-                              ) : null}
-                            </ChecklistItem>
-                          ) : driftResult.status === "drifted" ? (
-                            <ChecklistItem ok={driftAcknowledged}>
-                              Drift check · live schema has drifted
-                              {driftAcknowledged ? " · acknowledged" : ""}
-                            </ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={driftAcknowledged}>
-                              Drift check · target unreachable
-                              {driftAcknowledged ? " · acknowledged" : ""}
-                            </ChecklistItem>
-                          )
-                        )}
-                        {driftPhase === "idle" && (
-                          <ChecklistItem stub>Drift check · run a check to see status</ChecklistItem>
-                        )}
-                      </ul>
-                    </div>
                   </aside>
                 </div>
               )}
@@ -4533,17 +4485,11 @@ function DeployBody() {
 
       {/* ═══════════════════ STAGE 2 — RUN ═══════════════════ */}
       {stage === 2 && (
-        <section className="px-4 sm:px-8 pb-12">
-          <div
-            className="card p-5 mb-5 flex items-center gap-3 flex-wrap"
-            style={{
-              background: "color-mix(in oklab, var(--brand) 4%, var(--surface))",
-              borderColor: "color-mix(in oklab, var(--brand) 35%, var(--border))",
-            }}
-          >
-            <DeployIcon size={18} />
-            <div className="flex-1 min-w-0">
-              <div className="text-[14px] font-semibold">
+        <section className="dp-stage">
+          <div className="card dp-card">
+            <div className="dp-run-head">
+              <div>
+                <h2 className="dp-h">
                 {/* "nothing was applied" is a verdict, and on an unknown outcome
                     it is the wrong one — it used to sit directly above an error
                     saying the run may still have landed. */}
@@ -4568,8 +4514,8 @@ function DeployBody() {
                             : runIsDryRun
                               ? "Dry run halted"
                               : "Run halted — nothing was applied"}
-              </div>
-              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                </h2>
+                <p className="dp-sub">
                 {/* The enum values are lifted out and committed before the
                     transaction opens, so the unqualified promise is false for
                     exactly this run — the same exception the gate above states.
@@ -4584,38 +4530,36 @@ function DeployBody() {
                       "the whole run back — all of them or none, apart from the enum " +
                       "values that were committed first."
                     : "Every migration runs inside one transaction. A failure rolls the whole run back — all of them or none."}
+                </p>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
+              <div className="dp-pills">
               {/* Which database this is landing on, while it is landing. */}
               <EnvironmentPill environment={targetEnvironment} />
-              {runIsDryRun && (
-                <span className="pill pill-neutral">
-                  <span className="dot" style={{ background: "var(--text-3)" }} />
-                  dry run
-                </span>
-              )}
-              <span className="mono text-[12.5px]" style={{ color: "var(--text-3)" }}>elapsed {fmtSecs(elapsedMs)}</span>
+                {runIsDryRun && (
+                  <span className="pill pill-neutral">
+                    <span className="dot" />
+                    dry run
+                  </span>
+                )}
+                <span className="dp-elapsed">elapsed {fmtSecs(elapsedMs)}</span>
+              </div>
+            </div>
+            {/* The app is not told about each statement as it runs, so while a
+                run is going the bar only shows that it is going. */}
+            <div className={`dp-prog ${runTone}`} aria-hidden="true">
+              <i />
             </div>
           </div>
 
           {/* A failure that belongs to the run, not to any one migration. */}
           {runError && (
-            <div
-              className="card p-4 mb-5 flex items-start gap-3"
-              style={{
-                borderColor: "color-mix(in oklab, var(--break) 40%, var(--border))",
-                background: "color-mix(in oklab, var(--break) 5%, var(--surface))",
-              }}
-            >
-              <AlertTriangleIcon size={16} />
-              <div className="text-[12.5px] min-w-0" style={{ color: "var(--text-2)" }}>
-                {runError}
-              </div>
+            <div className="dp-result dp-bad">
+              <div className="dp-result-body">{runError}</div>
             </div>
           )}
 
-          <div>
+          <div className="card dp-card">
+          <div className="dp-mig-list">
             {runScripts.map((script, i) => {
               // The same reading as the pending list: the pill is the recorded
               // level, and a script counted as breaking for its SQL says so.
@@ -4631,7 +4575,7 @@ function DeployBody() {
                 running: "running · in the run's transaction",
                 applied: `applied · committed with the run${ran}`,
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
-                // The row says what happened; the err-pre below says what
+                // The row says what happened; the dp-err below says what
                 // Postgres said — one each, not both twice.
                 // A refused run, or one that never started, never got going,
                 // so there is nothing to have rolled back; the row names what
@@ -4664,7 +4608,7 @@ function DeployBody() {
             })}
           </div>
 
-          <div className="mt-6 flex items-center justify-between text-[12px] flex-wrap gap-2" style={{ color: "var(--text-3)" }}>
+          <div className="dp-foot">
             <span>
               {runOutcomeUnknown
                 ? `outcome of ${countOf(runScripts.length, "migration")} not known`
@@ -4678,13 +4622,14 @@ function DeployBody() {
                 : "one transaction · a failure rolls the whole run back"}
             </span>
           </div>
+          </div>
 
           {/* The GitHub registry, when the run changed it or failed to (spec 07).
               Normally silent: Deploy's scripts came out of the registry, so it
               already lists them and there is nothing to record. */}
           {runComplete && runRegistry?.saved && (
-            <div className="warn-inline mt-4" style={{ borderColor: "var(--sync)" }}>
-              <CheckIcon size={16} className="ico" style={{ color: "var(--sync)" }} />
+            <div className="warn-inline">
+              <CheckIcon size={16} className="ico dp-good-text" />
               <div className="body">
                 <div className="title">Recorded in GitHub</div>
                 <div>{runRegistry.saved}</div>
@@ -4692,7 +4637,7 @@ function DeployBody() {
             </div>
           )}
           {runComplete && runRegistry?.problem && (
-            <div className="warn-inline mt-4">
+            <div className="warn-inline">
               <AlertTriangleIcon size={16} className="ico" />
               <div className="body">
                 {/* Not an error: the migrations applied. What is wrong is that
@@ -4706,19 +4651,12 @@ function DeployBody() {
 
           {/* Clean rehearsal — say what it proved, and offer the real thing. */}
           {runComplete && allRehearsed && (
-            <div
-              className="card p-4 mt-4 flex items-center gap-3 flex-wrap"
-              style={{
-                borderColor: "color-mix(in oklab, var(--sync) 40%, var(--border))",
-                background: "color-mix(in oklab, var(--sync) 5%, var(--surface))",
-              }}
-            >
-              <CheckIcon size={16} />
-              <div className="flex-1 min-w-0">
-                <div className="text-[13.5px] font-semibold">
+            <div className="dp-result dp-good">
+              <h3>
+                <CheckIcon size={20} />
                   Rehearsal clean — the target accepted every migration.
-                </div>
-                <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
+              </h3>
+              <p>
                   Then it was rolled back: no ledger rows, no lineage advance, no schema
                   change.{" "}
                   {ledgerReread === "read" ? (
@@ -4733,9 +4671,9 @@ function DeployBody() {
                   ) : (
                     ledgerRereadFailed
                   )}
-                </div>
+              </p>
                 {targetIsProduction && !approvedRun && (
-                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                  <div className="dp-warn-text">
                     {/* Names no approver: under the auth bypass you clear it
                         yourself, and the Pre-flight panel says which it is. */}
                     A clean rehearsal is not an approval. Go back to Pre-flight to
@@ -4746,7 +4684,7 @@ function DeployBody() {
                     so it waits while the two differ: another range picked, the
                     SQL re-pulled, or the re-read ledger moved what is pending. */}
                 {rehearsalChange !== null && (
-                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                  <div className="dp-warn-text">
                     {rehearsalChange === "range"
                       ? `You rehearsed ${ranName}; the selection is now ${nowName}. Rehearse this selection, or pick the rehearsed range again.`
                       : rehearsalChange === "scripts"
@@ -4755,15 +4693,15 @@ function DeployBody() {
                   </div>
                 )}
                 {rehearsalChange === null && untickedOnPreflight && (
-                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                  <div className="dp-warn-text">
                     Pre-flight has boxes that are not ticked for this run. Go back to
                     Pre-flight to tick them.
                   </div>
                 )}
-              </div>
+              <div className="dp-row">
               <button
                 type="button"
-                className={`btn btn-sm ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                className={`btn ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
                 disabled={deployBlocked || rehearsalChange !== null}
                 onClick={() => handleRun(false)}
               >
@@ -4771,24 +4709,18 @@ function DeployBody() {
                 {/* The drift check re-runs after every run (see driftChecking). */}
                 {driftChecking ? "Checking the target for drift…" : "Deploy for real"}
               </button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setStage(1)}>
+              <button type="button" className="btn btn-secondary" onClick={() => setStage(1)}>
                 Back to Pre-flight
               </button>
+              </div>
             </div>
           )}
 
           {/* Recovery bar — only after a failed run */}
           {runComplete && !allApplied && !allRehearsed && (
-            <div
-              className="card p-4 mt-4 flex items-center gap-3 flex-wrap"
-              style={{
-                borderColor: "color-mix(in oklab, var(--break) 40%, var(--border))",
-                background: "color-mix(in oklab, var(--break) 5%, var(--surface))",
-              }}
-            >
-              <AlertCircleIcon size={16} />
-              <div className="flex-1 min-w-0">
-                <div className="text-[13.5px] font-semibold">
+            <div className={runOutcomeUnknown ? "dp-result dp-mid" : "dp-result dp-bad"}>
+              <h3>
+                <AlertCircleIcon size={20} />
                   {runOutcomeUnknown
                     ? "Run outcome not known."
                     : runRefused
@@ -4796,8 +4728,8 @@ function DeployBody() {
                       : runNotStarted
                         ? "Run did not start."
                         : "Run did not complete."}
-                </div>
-                <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
+              </h3>
+              <p>
                   {/* Only a response we actually read licenses the claim that
                       nothing changed. "Fix the script" is gone too — a lock
                       timeout and a duplicate version have no script to fix, and
@@ -4826,7 +4758,7 @@ function DeployBody() {
                         : ledgerReread === "reading"
                           ? " Reading the ledger again…"
                           : ` ${ledgerRereadFailed}`)}
-                </div>
+              </p>
                 {/* Run again starts the selection, not the batch above, so it
                     waits while the two differ. That also keeps a run whose
                     commit may have landed from going out twice: the re-read
@@ -4835,7 +4767,7 @@ function DeployBody() {
                     could not be read, and the line above already says to press
                     Check database. "Nothing is selected" would hide that. */}
                 {repeatChange !== null && !(repeatChange === "nothing" && ledgerReread === "failed") && (
-                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                  <div className="dp-warn-text">
                     {repeatChange === "range"
                       ? `Pre-flight now selects ${nowName}, and this ${runIsDryRun ? "rehearsal" : "run"} was ${ranName}, so it cannot be repeated from here. Go back to Pre-flight to start the one you want.`
                       : repeatChange === "scripts"
@@ -4844,7 +4776,7 @@ function DeployBody() {
                   </div>
                 )}
                 {repeatChange === null && untickedOnPreflight && (
-                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                  <div className="dp-warn-text">
                     Pre-flight has boxes that are not ticked for this run. Go back to
                     Pre-flight to tick them.
                   </div>
@@ -4855,17 +4787,17 @@ function DeployBody() {
                   !runIsDryRun &&
                   targetIsProduction &&
                   !approvedRun && (
-                    <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    <div className="dp-warn-text">
                       {/* Names no approver: under the auth bypass you clear it
                           yourself, and the Pre-flight panel says which it is. */}
                       Deploy on production needs an approval. Go back to Pre-flight to
                       request one.
                     </div>
                   )}
-              </div>
+              <div className="dp-row">
               <button
                 type="button"
-                className="btn btn-secondary btn-sm"
+                className="btn btn-secondary"
                 disabled={(runIsDryRun ? runBlocked : deployBlocked) || repeatChange !== null}
                 onClick={() => handleRun(runIsDryRun)}
               >
@@ -4875,9 +4807,10 @@ function DeployBody() {
                     ? "Rehearse again"
                     : "Run again"}
               </button>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => setStage(1)}>
+              <button type="button" className="btn btn-primary" onClick={() => setStage(1)}>
                 Back to Pre-flight
               </button>
+              </div>
             </div>
           )}
         </section>
@@ -4885,35 +4818,33 @@ function DeployBody() {
 
       {/* ═══════════════════ STAGE 3 — VERIFY ═══════════════════ */}
       {stage === 3 && (
-        <section className="px-4 sm:px-8 pb-12">
+        <section className="dp-stage">
           {/* The ledger re-read is the only thing that knows what the target
               reports now. When it failed, its error belongs on this stage too —
               until now it only ever rendered on Pre-flight. */}
           {preflightError && (
-            <div className="banner mb-4">
+            <div className="banner">
               <span className="ico"><AlertCircleIcon size={16} /></span>
               <span>{preflightError}</span>
             </div>
           )}
-          <div className="verify-hero">
-            <div className="verify-glow" />
-            <div className="relative flex items-start gap-5 flex-wrap">
-              <div className="check-big">
+          <div className="dp-result dp-good dp-hero">
+              <div className="dp-big-check">
                 <CheckIcon size={28} />
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="section-title" style={{ color: "color-mix(in oklab, var(--sync) 70%, var(--text-3))" }}>
+              <div >
+                <div className="section-title">
                   Deployed
                 </div>
-                <h2 className="text-[26px] font-semibold tracking-[-0.015em] mt-1">
+                <h2>
                   Migrations applied to the target.
                 </h2>
                 {preflightResult ? (
-                  <p className="text-[14px] mt-2" style={{ color: "var(--text-2)" }}>
-                    <span className="mono" style={{ color: "var(--text)" }}>{schema}</span> on{" "}
-                    <span className="mono" style={{ color: "var(--text)" }}>{activeConn?.name}</span>{" "}
+                  <p>
+                    <span className="mono" style={{ color: "var(--ink)" }}>{schema}</span> on{" "}
+                    <span className="mono" style={{ color: "var(--ink)" }}>{activeConn?.name}</span>{" "}
                     now reports{" "}
-                    <span className="mono" style={{ color: "var(--text)" }}>
+                    <span className="mono" style={{ color: "var(--ink)" }}>
                       {preflightResult.currentVersion
                         ? vLabel(preflightResult.currentVersion)
                         : "no versions yet"}
@@ -4921,23 +4852,23 @@ function DeployBody() {
                     in its migration ledger.
                   </p>
                 ) : (
-                  <p className="text-[14px] mt-2" style={{ color: "var(--text-2)" }}>
+                  <p>
                     The deploy committed, but the ledger could not be read back
                     afterwards — this page cannot confirm what the target now
                     reports.
                   </p>
                 )}
-                <div className="vline mt-4">
-                  <span className="vchip">{runFromVersion}</span>
+                <div className="dp-pills mt-4">
+                  <span className="dp-chip">{runFromVersion}</span>
                   <ChevronRightIcon size={16} />
                   {/* The batch that ran, not the selection: Pre-flight can move
                       the selection after a deploy. */}
-                  <span className="vchip ok"><b>{runLastVersion ? vLabel(runLastVersion) : "—"}</b></span>
-                  <span className="text-[12px] ml-2" style={{ color: "var(--text-3)" }}>
+                  <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "—"}</b></span>
+                  <span className="dp-quiet text-[12px]">
                     {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
                   </span>
                 </div>
-                <div className="flex gap-2 mt-5 flex-wrap">
+                <div className="dp-row">
                   <button type="button" className="btn btn-primary" onClick={handlePreflight}>
                     Re-check target
                   </button>
@@ -4961,7 +4892,6 @@ function DeployBody() {
                   </Link>
                 </div>
               </div>
-            </div>
           </div>
 
           {/* Spec feature 11 — the patches, offered rather than started. The
@@ -4970,11 +4900,11 @@ function DeployBody() {
               preview and the same approval, and chaining straight on would
               turn one confirmed run into two. */}
           {afterInitPrompt && (
-            <div className="card p-5 mt-5" style={{ borderColor: "var(--brand)" }}>
+            <div className="card dp-card">
               <div className="section-title mb-1">Next</div>
-              <div className="text-[15px] font-semibold">{afterInitPrompt.title}</div>
+              <div className="dp-h-sm">{afterInitPrompt.title}</div>
               <p className="help mt-1">{afterInitPrompt.body}</p>
-              <div className="flex gap-2 mt-3 flex-wrap">
+              <div className="dp-row">
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
@@ -4989,15 +4919,15 @@ function DeployBody() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
-            <div className="card p-5">
-              <div className="section-title mb-3">What was applied</div>
-              <div className="space-y-1">
+          <div className="dp-two">
+            <div className="card dp-card">
+              <h2 className="dp-h-sm">What was applied</h2>
+              <div className="mt-2">
                 {appliedScripts.map((s, i) => (
-                  <div key={scriptKey(s)} className="ssr">
+                  <div key={scriptKey(s)} className="dp-applied">
                     <span className="mono">
-                      <span style={{ color: "var(--text-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
-                      {s.script_name} <span style={{ color: "var(--text-3)" }}>{vLabel(s.version)}</span>
+                      <span style={{ color: "var(--ink-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
+                      {s.script_name} <span style={{ color: "var(--ink-3)" }}>{vLabel(s.version)}</span>
                     </span>
                     <span className="pill pill-sync">
                       <span className="dot" />
@@ -5009,8 +4939,8 @@ function DeployBody() {
             </div>
 
             {/* Verify re-diff — real lineage compare when the target is tracked */}
-            <div className="card p-5">
-              <div className="section-title mb-3">Verify diff</div>
+            <div className="card dp-card">
+              <h2 className="dp-h-sm mb-3">Verify diff</h2>
               <DriftPanel
                 phase={driftPhase}
                 result={driftResult}
@@ -5056,8 +4986,9 @@ function DriftPanel({
   targetVersion: string;
 }) {
   // Defaults cover the loading state; each case below overrides what it needs.
-  let icon = <span className="spin" style={{ width: 16, height: 16 }} />;
-  let circle: React.CSSProperties = { background: "var(--surface-3)", color: "var(--text-3)" };
+  let icon = <span className="spin" />;
+  // The colour of the round icon: plain, good (dp-good) or a warning (dp-warn).
+  let tone = "";
   let title =
     context === "precheck" ? "Checking the target for drift…" : "Re-checking the schema…";
   let body: React.ReactNode = "Comparing the live schema against its tracked snapshot.";
@@ -5086,16 +5017,13 @@ function DriftPanel({
     const v = result.expectedVersion ? `lineage ${displayVersion(result.expectedVersion, true)}` : "its snapshot";
     if (result.status === "unreachable") {
       icon = <AlertTriangleIcon size={16} />;
-      circle = {
-        background: "color-mix(in oklab, var(--drift) 12%, var(--surface))",
-        color: "var(--drift)",
-      };
+      tone = "dp-warn";
       title = "Target unreachable";
       body = result.summary;
       pillText = "unreachable";
     } else if (result.status === "in_sync") {
       icon = <CheckIcon size={16} />;
-      circle = { background: "var(--sync-soft)", color: "var(--sync)" };
+      tone = "dp-good";
       title =
         context === "precheck"
           ? `No drift — target matches ${v}`
@@ -5106,10 +5034,7 @@ function DriftPanel({
     } else {
       // drifted
       icon = <DriftIcon size={16} />;
-      circle = {
-        background: "color-mix(in oklab, var(--drift) 12%, var(--surface))",
-        color: "var(--drift)",
-      };
+      tone = "dp-warn";
       title = "Schema drift detected";
       body = (
         <>
@@ -5139,18 +5064,11 @@ function DriftPanel({
   }
 
   return (
-    <div className="precheck-muted">
-      <div
-        className="w-9 h-9 rounded-full grid place-items-center flex-none"
-        style={circle}
-      >
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-[13.5px] font-semibold">{title}</div>
-        <div className="text-[12.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
-          {body}
-        </div>
+    <div className="dp-drift">
+      <div className={`dp-drift-i ${tone}`}>{icon}</div>
+      <div className="dp-drift-text">
+        <b>{title}</b>
+        <div>{body}</div>
       </div>
       <span className={pillClass}>{pillText}</span>
     </div>
@@ -5169,14 +5087,22 @@ function ChecklistItem({
   stub?: boolean;
   children: React.ReactNode;
 }) {
-  let icon = <CheckIcon size={13} style={{ color: "var(--sync)" }} />;
-  if (stub) icon = <span className="w-[13px] h-[13px] rounded-full inline-block flex-none" style={{ border: "1.5px dashed var(--text-3)" }} />;
-  else if (info) icon = <InfoIcon size={13} style={{ color: "var(--pending)" }} />;
-  else if (ok === false) icon = <AlertTriangleIcon size={13} style={{ color: "var(--drift)" }} />;
+  let iconClass = "dp-ic dp-ok-i";
+  let icon: React.ReactNode = <CheckIcon size={12} />;
+  if (stub) {
+    iconClass = "dp-ic dp-stub-i";
+    icon = null;
+  } else if (info) {
+    iconClass = "dp-ic dp-wait-i";
+    icon = <InfoIcon size={12} />;
+  } else if (ok === false) {
+    iconClass = "dp-ic dp-bad-i";
+    icon = <AlertTriangleIcon size={12} />;
+  }
   return (
-    <li className="flex items-center gap-2">
-      <span className="flex-none grid place-items-center">{icon}</span>
-      <span style={stub ? { color: "var(--text-3)" } : undefined}>{children}</span>
+    <li className={stub ? "dp-stub" : undefined}>
+      <span className={iconClass}>{icon}</span>
+      <span>{children}</span>
     </li>
   );
 }

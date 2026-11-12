@@ -13,9 +13,10 @@ import { LiveActivity } from "@/components/studio/LiveActivity";
 import { AlertThresholds } from "@/components/studio/AlertThresholds";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { useOrgHref } from "@/hooks/useOrg";
+import "@/app/styles/atelier-performance.css";
 
 /**
- * Performance — spec features 08, 09 and 10.
+ * Performance: spec features 08, 09 and 10.
  *
  * Six tabs over one target. The picker sits above them, not inside any of
  * them, because all six ask the same two questions and moving between them
@@ -31,14 +32,14 @@ import { useOrgHref } from "@/hooks/useOrg";
  * The tabs divide by where their answer comes from, and that is the thing to
  * keep straight when reading this file:
  *
- *   • Suggestions, Analyse and Activity are read live and store nothing about
+ *   - Suggestions, Analyse and Activity are read live and store nothing about
  *     the schema. Advice about a schema that has been changed since is worse
  *     than no advice, because it reads as current.
- *   • History and Trends can only show what was collected earlier — an
+ *   - History and Trends can only show what was collected earlier: an
  *     analysis writes its own row, and the drift check writes the schema
  *     readings. Neither can be produced on demand, which is why both say so
  *     when they are empty instead of drawing a chart of nothing.
- *   • Alerts writes rather than reads: it is the only tab that changes what
+ *   - Alerts writes rather than reads: it is the only tab that changes what
  *     the others will say.
  */
 
@@ -83,37 +84,34 @@ function PerformanceScreen() {
   const [target, setTarget] = useState<PerfTarget | null>(null);
 
   return (
-    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
-      <PageHeader page="/performance" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]} />
+    <div className="pf-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
+      {/* The tabs are links, not buttons, so each one has its own address and
+          the browser's Back button moves between them. Six pills do not fit a
+          phone, so the strip scrolls sideways inside itself. */}
+      <PageHeader page="/performance" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]}>
+        <nav className="pf-tabs" aria-label="Performance sections">
+          <Tab href={orgPath("/performance?tab=suggestions")} active={tab === "suggestions"}>
+            Suggestions
+          </Tab>
+          <Tab href={orgPath("/performance?tab=analyse")} active={tab === "analyse"}>
+            Analyse a query
+          </Tab>
+          <Tab href={orgPath("/performance?tab=history")} active={tab === "history"}>
+            History
+          </Tab>
+          <Tab href={orgPath("/performance?tab=activity")} active={tab === "activity"}>
+            Live activity
+          </Tab>
+          <Tab href={orgPath("/performance?tab=trends")} active={tab === "trends"}>
+            Trends
+          </Tab>
+          <Tab href={orgPath("/performance?tab=alerts")} active={tab === "alerts"}>
+            Alerts
+          </Tab>
+        </nav>
+      </PageHeader>
 
-      {/* Six tabs no longer fit a phone, so the strip scrolls sideways rather
-          than wrapping onto a second line that would leave the underline of the
-          active tab sitting in the middle of the page. */}
-      <div
-        className="flex items-center gap-1 overflow-x-auto"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
-        <Tab href={orgPath("/performance?tab=suggestions")} active={tab === "suggestions"}>
-          Suggestions
-        </Tab>
-        <Tab href={orgPath("/performance?tab=analyse")} active={tab === "analyse"}>
-          Analyse a query
-        </Tab>
-        <Tab href={orgPath("/performance?tab=history")} active={tab === "history"}>
-          History
-        </Tab>
-        <Tab href={orgPath("/performance?tab=activity")} active={tab === "activity"}>
-          Live activity
-        </Tab>
-        <Tab href={orgPath("/performance?tab=trends")} active={tab === "trends"}>
-          Trends
-        </Tab>
-        <Tab href={orgPath("/performance?tab=alerts")} active={tab === "alerts"}>
-          Alerts
-        </Tab>
-      </div>
-
-      {/* setTarget is a useState setter, so it is stable — which is what the
+      {/* setTarget is a useState setter, so it is stable, which is what the
           picker's report effect needs. The two seeds come from links made on
           other screens, so a "see every run of this query" link lands on the
           database the query was run against and not on whichever connection
@@ -124,21 +122,23 @@ function PerformanceScreen() {
         initialSchema={params.get("schema")}
       />
 
-      {/* ?table=schema.table comes from a Suggestions finding ("almost every
-          read of this table is a sequential scan"); the analyser starts from
-          a commented note about that table instead of an empty box. */}
-      {tab === "analyse" && (
-        <QueryAnalyzer target={target} initialTable={params.get("table")} />
-      )}
-      {/* ?fingerprint= comes from the analyser's "see every run of this query"
-          link, and narrows the list to that one query. */}
-      {tab === "history" && (
-        <QueryHistoryPanel target={target} fingerprint={params.get("fingerprint")} />
-      )}
-      {tab === "activity" && <LiveActivity target={target} />}
-      {tab === "trends" && <SchemaTrends target={target} />}
-      {tab === "alerts" && <AlertThresholds target={target} />}
-      {tab === "suggestions" && <PerfAdviceList target={target} />}
+      <div className="pf-body">
+        {/* ?table=schema.table comes from a Suggestions finding ("almost every
+            read of this table is a sequential scan"); the analyser starts from
+            a commented note about that table instead of an empty box. */}
+        {tab === "analyse" && (
+          <QueryAnalyzer target={target} initialTable={params.get("table")} />
+        )}
+        {/* ?fingerprint= comes from the analyser's "see every run of this query"
+            link, and narrows the list to that one query. */}
+        {tab === "history" && (
+          <QueryHistoryPanel target={target} fingerprint={params.get("fingerprint")} />
+        )}
+        {tab === "activity" && <LiveActivity target={target} />}
+        {tab === "trends" && <SchemaTrends target={target} />}
+        {tab === "alerts" && <AlertThresholds target={target} />}
+        {tab === "suggestions" && <PerfAdviceList target={target} />}
+      </div>
     </div>
   );
 }
@@ -167,19 +167,9 @@ function Tab({
   children: React.ReactNode;
 }) {
   return (
-    // active was styling only — a screen reader heard two identical links and
-    // no clue which tab was open, so aria-current and a weight change carry it.
-    <Link
-      href={href}
-      aria-current={active ? "page" : undefined}
-      className={`text-[13.5px] px-3.5 py-2.5 -mb-px whitespace-nowrap shrink-0 transition-colors ${
-        active ? "font-semibold" : "font-medium"
-      }`}
-      style={{
-        borderBottom: active ? "2px solid var(--brand)" : "2px solid transparent",
-        color: active ? "var(--text)" : "var(--text-3)",
-      }}
-    >
+    // The look alone would not tell a screen reader which tab is open, so
+    // aria-current carries it, and the stylesheet draws the pill from that.
+    <Link href={href} aria-current={active ? "page" : undefined} className="pf-tab">
       {children}
     </Link>
   );
@@ -192,7 +182,7 @@ function Tab({
  */
 function PerformanceFallback() {
   return (
-    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
+    <div className="pf-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
       <PageHeader
         page="/performance"
         title={TAB_TITLES.suggestions}
