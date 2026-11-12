@@ -17,7 +17,6 @@ import {
   type PillTone,
 } from "@/components/ui";
 import {
-  DEFAULT_ENVIRONMENT,
   ENVIRONMENTS,
   ENVIRONMENT_META,
   isProduction,
@@ -197,10 +196,6 @@ export default function DashboardPage() {
   const latestSchemaRequest = useRef(0);
   const [trackSchema, setTrackSchema] = useState("");
   const [trackLabel, setTrackLabel] = useState("");
-  // Seeded from the chosen connection, then editable: one server can host a
-  // staging schema and a production one.
-  const [trackEnv, setTrackEnv] = useState<Environment>(DEFAULT_ENVIRONMENT);
-  const [trackEnvTouched, setTrackEnvTouched] = useState(false);
   const [trackSubmitting, setTrackSubmitting] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
 
@@ -295,8 +290,6 @@ export default function DashboardPage() {
     setSchemaError(null);
     setTrackSchema("");
     setTrackLabel("");
-    setTrackEnv(DEFAULT_ENVIRONMENT);
-    setTrackEnvTouched(false);
     setTrackError(null);
   }
 
@@ -313,13 +306,6 @@ export default function DashboardPage() {
 
   async function onPickConnection(id: string) {
     setTrackConnId(id);
-    // Inherit the connection's environment — the user already said which
-    // environment this server is, so asking again would be asking twice. Once
-    // they change it by hand we stop overwriting their answer.
-    if (!trackEnvTouched) {
-      const picked = connections.find((c) => String(c.id) === id);
-      setTrackEnv(toEnvironment(picked?.environment));
-    }
     setTrackSchema("");
     setSchemaOptions([]);
     setSchemaError(null);
@@ -369,7 +355,6 @@ export default function DashboardPage() {
           connectionId: Number(trackConnId),
           schemaName: trackSchema,
           label: trackLabel.trim() || undefined,
-          environment: trackEnv,
         }),
       });
       const data = await res.json();
@@ -446,7 +431,6 @@ export default function DashboardPage() {
   const total = items.length;
   const envCount = (environment: Environment) =>
     items.filter((i) => toEnvironment(i.environment) === environment).length;
-  const unlabelledCount = envCount("unset");
 
   const visible =
     envFilter === "all"
@@ -551,26 +535,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Only while something is genuinely unlabelled. That is the state in
-          which nothing downstream can warn you that a target is production. */}
-      {listPhase === "ready" && unlabelledCount > 0 && (
-        <div className="warn-inline">
-          <span className="ico">
-            <AlertCircleIcon size={14} />
-          </span>
-          <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-            <b>
-              {unlabelledCount} tracked schema{unlabelledCount === 1 ? " has" : "s have"} no
-              environment.
-            </b>{" "}
-            {sessionLoading || can("drift:update")
-              ? "Label them so Compare and Deploy can tell you when a target is production."
-              : "Compare and Deploy can't tell you when a target is production until they are " +
-                "labelled. Ask someone who may change schema environments to label them."}
-          </div>
-        </div>
-      )}
-
       {listPhase === "loading" && (
         <div role="status" aria-label="Loading the dashboard">
           <Skeleton width="100%" height={380} radius={24} />
@@ -631,7 +595,10 @@ export default function DashboardPage() {
                 >
                   All <span>{total}</span>
                 </button>
-                {ENVIRONMENTS.map((environment) => (
+                {/* Only labels in use. No label is not a group worth a chip. */}
+                {ENVIRONMENTS.filter(
+                  (e) => e !== "unset" && (envCount(e) > 0 || envFilter === e)
+                ).map((environment) => (
                   <button
                     key={environment}
                     type="button"
@@ -892,41 +859,6 @@ export default function DashboardPage() {
           {schemaPhase === "ready" && schemaOptions.length === 0 && (
             <p className="help mt-1">This connection has no user schemas to track.</p>
           )}
-        </div>
-
-        {/* Environment — inherited from the connection, still editable, because
-            one server can host a staging schema and a production one. */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <Label>Environment</Label>
-            <span className="help">
-              {trackEnvTouched ? "Set for this schema" : "Inherited from the connection"}
-            </span>
-          </div>
-          <div
-            className="seg"
-            role="radiogroup"
-            aria-label="Environment"
-            style={{ display: "flex" }}
-          >
-            {ENVIRONMENTS.map((environment) => (
-              <button
-                key={environment}
-                className={trackEnv === environment ? "active" : ""}
-                role="radio"
-                aria-checked={trackEnv === environment}
-                onClick={() => {
-                  setTrackEnv(environment);
-                  setTrackEnvTouched(true);
-                }}
-                type="button"
-                style={{ flex: 1 }}
-              >
-                {ENVIRONMENT_META[environment].label}
-              </button>
-            ))}
-          </div>
-          <p className="help mt-1.5">{ENVIRONMENT_META[trackEnv].help}</p>
         </div>
 
         <div>

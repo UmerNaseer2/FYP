@@ -155,7 +155,7 @@ export const adminHelp: HelpTopic = {
       title: "Organization tab",
       body: [
         "Name: the address stays the same when the name changes, so saved links keep working.",
-        "Two-person rule: switching it off lets people approve their own production deploys. Each one is recorded as a self-approval.",
+        "Two-person rule: while it is on, real runs on production need a second person's approval. Switching it off drops approvals entirely.",
         "Delete this organization: type its name to confirm. It can't be undone. People's accounts stay, and so do scripts already in GitHub.",
       ],
     },

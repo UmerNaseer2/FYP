@@ -52,6 +52,7 @@ jest.mock("../lib/registry-archive", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockReleaseApproval = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
+  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockReleaseApproval(...args),
 }));

@@ -9,9 +9,8 @@ export const studioHelp: HelpTopic = {
   steps: [
     "Save a connection on the Connections page first. Schema Studio can only track a schema on a PostgreSQL server you have saved.",
     "Press Track a schema, pick a Connection, then pick one of its schemas.",
-    "Check the Environment. It starts as the connection's, and you can change it if this schema is a different one.",
     "Add a Label if you want a friendly name beside the schema, then press Track schema. A baseline snapshot is taken straight away and recorded as v1.0.0.",
-    "Use the environment buttons above the city to show one environment at a time. The numbers under the city count what is on screen.",
+    "Use the environment buttons above the city to show one environment at a time. They appear once a connection has a label. The numbers under the city count what is on screen.",
     "Use Height shows to choose what a building's height means: its recorded versions, or the tables in its latest recorded version.",
     "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.",
     "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.",
@@ -47,7 +46,7 @@ export const studioHelp: HelpTopic = {
     {
       term: "Environment",
       meaning:
-        "What kind of database this is: Dev, Staging or Production. Compare and Deploy read it to warn you before you touch production.",
+        "The label of the schema's connection: Dev, Staging or Production. It is optional and set on Connections. Only Production changes anything.",
     },
     {
       term: "Needs you",
@@ -57,7 +56,7 @@ export const studioHelp: HelpTopic = {
     {
       term: "Label",
       meaning:
-        "An optional friendly name shown beside the schema. Production warnings come from the Environment setting, not from this label.",
+        "An optional friendly name shown beside the schema. Production warnings come from the connection's Environment, not from this label.",
     },
     {
       term: "Stop tracking",

@@ -1,19 +1,20 @@
 // Who may take the Production label off a target, and what counts as one.
 //
-// The Production label is what makes a deploy or a rollback wait for a second
-// person's approval (the two-person rule in lib/approvals-db). Anyone who may
-// edit a connection may change its label, so without a rule here an Editor
-// could relabel a production connection "dev", run the script with no
-// approval, and put the label back. Two ways round it are closed here:
+// These rules matter only while the organization has approvals switched on
+// (the two-person rule in lib/approvals-db). Then the Production label is what
+// makes a deploy or a rollback wait for a second person, and anyone who may
+// edit a connection could otherwise relabel it "dev", run with no approval,
+// and put the label back. Two ways round it are closed here:
 //
-//   1. Taking the label off (a connection's or a tracked schema's), or
-//      deleting a connection that carries it, needs the permission that
-//      approves production deploys. Putting the label on stays open to every
-//      editor, because an over-cautious label costs nobody anything.
+//   1. Taking the label off a connection, or deleting a connection that
+//      carries it, needs the permission that approves production deploys.
+//      Putting the label on stays open to every editor.
 //   2. A second saved connection that reaches the same database as one
 //      labelled Production counts as Production too, whatever its own label
-//      says. Otherwise saving the same database again as "dev" would do the
-//      same job as relabelling it.
+//      says.
+//
+// With approvals off the label only adds one confirmation, so neither rule is
+// applied: there is no approval to dodge.
 import pool from "@/lib/version-db";
 import { buildPgConfig, type ConnectionInput } from "@/lib/connection-config";
 import { isProduction, type Environment } from "@/lib/environments";

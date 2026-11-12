@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
-import { findOpenApproval, runFingerprint } from "@/lib/approvals-db";
+import { approvalsOn, findOpenApproval, runFingerprint } from "@/lib/approvals-db";
 import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { isProduction, louderEnvironment, toEnvironment } from "@/lib/environments";
+import { isProduction, toEnvironment } from "@/lib/environments";
 import { GITHUB_UNCONFIGURED_CODE } from "@/lib/github-registry";
 import { findTrackedSchema } from "@/lib/lineage-db";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
@@ -167,11 +167,11 @@ export async function POST(request: NextRequest) {
     console.error("Phone deploy — failed to read the tracked schema:", error instanceof Error ? error.message : error);
     return refuse(503, "Could not read how that schema is tracked.");
   }
-  const environment = louderEnvironment(
-    toEnvironment(connection.environment),
-    tracked?.environment ?? toEnvironment(null),
-  );
+  // The connection's label is the only one. A second person is needed only on
+  // production, and only when the organization has approvals switched on.
+  const environment = toEnvironment(connection.environment);
   const production = isProduction(environment);
+  const approvalNeeded = production && approvalsOn(principal);
 
   const target = { connectionId: id, schemaName, scriptName, targetVersion: targetVersion as string | null };
   const draft =
@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
       : draftRollback(target, family, ledger);
 
   let approval: "approved" | "pending" | null = null;
-  if (production && draft.problem === null) {
+  if (approvalNeeded && draft.problem === null) {
     try {
       approval = await findOpenApproval({
         orgId: principal.orgId,
@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
   const executeRole = toExecuteRole(connection.execute_role);
   const mayRun = hasPermission(principal, "deploy:run");
   const { next, blockedReason } = nextStep(draft.problem, {
-    production,
+    approvalNeeded,
     approval,
     readOnly: executeRole === "none",
     // Both things that let someone run: their role, and the connection's own rule.

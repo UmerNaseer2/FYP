@@ -153,7 +153,7 @@ export async function findTrackedSchemas(
        ts.connection_id,
        ts.schema_name,
        ts.id,
-       ts.environment,
+       c.environment,
        head.version AS head_version,
        drift.status AS drift_status
      FROM unnest($1::int[], $2::text[]) AS want(connection_id, schema_name)
@@ -161,6 +161,7 @@ export async function findTrackedSchemas(
        ON ts.connection_id = want.connection_id
       AND ts.schema_name = want.schema_name
       AND ts.org_id = $3
+     LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
      LEFT JOIN LATERAL (
        SELECT version FROM lineage_migrations lm
        WHERE lm.tracked_schema_id = ts.id AND lm.org_id = ts.org_id
@@ -551,7 +552,7 @@ export async function getLineageDetail(
     connection_type: string | null;
   }>(
     `SELECT
-       ts.id, ts.schema_name, ts.label, ts.environment, ts.created_at, ts.connection_id,
+       ts.id, ts.schema_name, ts.label, c.environment, ts.created_at, ts.connection_id,
        ts.drift_check_interval_minutes,
        c.name          AS connection_name,
        c.host          AS connection_host,
@@ -809,7 +810,7 @@ export async function computeDriftDetail(
   await syncMetadataTables();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
-       ts.schema_name, ts.label, ts.environment, ts.connection_id,
+       ts.schema_name, ts.label, c.environment, ts.connection_id,
        ts.drift_check_interval_minutes,
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
        c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
@@ -1229,7 +1230,7 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
       ts.connection_id,
       ts.schema_name,
       ts.label,
-      ts.environment,
+      c.environment,
       ts.drift_check_interval_minutes,
       ts.last_drift_check_at,
       ts.created_at,

@@ -58,9 +58,7 @@ import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-acce
 import { permissionLabel, refusalMessage } from "@/lib/permissions";
 import {
   isProduction,
-  louderEnvironment,
   toEnvironment,
-  DEFAULT_ENVIRONMENT,
   type Environment,
 } from "@/lib/environments";
 import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
@@ -1039,18 +1037,6 @@ function DeployBody() {
   const deployButtonRef = useRef<HTMLButtonElement>(null);
   const rollbackCardRef = useRef<HTMLDivElement>(null);
 
-  // ── Environment of the chosen target ─────────────────────────────────────
-  // The connection carries one label; the tracked schema can carry a louder one
-  // (a prod schema on a box nobody labelled). We learn the schema's only when
-  // the lineage lookup runs, so this starts unset and is filled in by the
-  // pre-flight check — the connection's label alone is enough to warn with in
-  // the meantime.
-  const [schemaEnvironment, setSchemaEnvironment] =
-    useState<Environment>(DEFAULT_ENVIRONMENT);
-  // True when the lineage lookup failed, so the schema's own label was never
-  // read. The pill then shows only the connection's label, which is the quieter
-  // of the two — the page has to say that rather than let it pass as the answer.
-  const [environmentUnknown, setEnvironmentUnknown] = useState(false);
   // Ticked in the ProductionGate. One per destructive action, never shared.
   const [deployAcknowledged, setDeployAcknowledged] = useState(false);
 
@@ -1258,14 +1244,12 @@ function DeployBody() {
     [connections, connectionId]
   );
 
-  // What we warn about. louderEnvironment is the same rule the compare screen
-  // uses, so a target cannot look calmer here — where the SQL actually runs —
-  // than it does there.
-  const targetEnvironment = louderEnvironment(
-    toEnvironment(activeConn?.environment),
-    schemaEnvironment
-  );
+  // What we warn about: the connection's label, the only one there is. Only
+  // Production asks anything. Its risk boxes need ticking, and a real run waits
+  // for a second person only when the organization has approvals switched on.
+  const targetEnvironment = toEnvironment(activeConn?.environment);
   const targetIsProduction = isProduction(targetEnvironment);
+  const approvalNeeded = targetIsProduction && twoPersonRule && !bypass;
 
   // The selected target's execution setting, and whether this caller clears it.
   //
@@ -1582,7 +1566,8 @@ function DeployBody() {
 
   // What stops both rollback buttons. The server asks for the production tick
   // on a dry run too, because a dry run runs every statement against the
-  // real target before undoing them.
+  // real target before undoing them. The row-loss tick is asked only on
+  // production; elsewhere the warning is shown and nothing more.
   const rollbackBlocked =
     !rollbackReady ||
     // A target this caller may not execute against refuses a rollback for the
@@ -1592,14 +1577,13 @@ function DeployBody() {
     rollbackBusy !== null ||
     isDeploying ||
     (targetIsProduction && !rollbackProdAck) ||
-    (rollbackDataLoss.length > 0 && !rollbackDataLossAck) ||
-    // The server asks for the production approval on a dry run too, and hands
-    // it back afterwards, so one approval covers the rehearsal and the rollback.
-    (targetIsProduction && !approvedRollback);
-  // What additionally stops the real rollback. The server checks the other
-  // scripts only on a real run, so the page does the same.
+    (targetIsProduction && rollbackDataLoss.length > 0 && !rollbackDataLossAck);
+  // What additionally stops the real rollback: the approval (production with
+  // approvals on, never for a dry run) and, on production, the other scripts.
   const rollbackRunBlocked =
-    rollbackBlocked || (rollbackOthers.length > 0 && !rollbackOtherAck);
+    rollbackBlocked ||
+    (approvalNeeded && !approvedRollback) ||
+    (targetIsProduction && rollbackOthers.length > 0 && !rollbackOtherAck);
   // The line under the buttons: the first reason they are disabled, or what
   // pressing will do. Same order as the checks above.
   const rollbackHint = !rollbackReady
@@ -1611,13 +1595,11 @@ function DeployBody() {
     : isDeploying
       ? "A deploy is running on this target — wait for it to finish"
       : (targetIsProduction && !rollbackProdAck) ||
-          (rollbackDataLoss.length > 0 && !rollbackDataLossAck)
+          (targetIsProduction && rollbackDataLoss.length > 0 && !rollbackDataLossAck)
         ? "Tick every box above to enable this"
-        : targetIsProduction && !approvedRollback
-          ? // The panel above says who clears it: a second person, or you
-            // yourself under the auth bypass.
-            "Rolling back on production needs an approval, and so does its dry run"
-          : rollbackOthers.length > 0 && !rollbackOtherAck
+        : approvalNeeded && !approvedRollback
+          ? "Rolling back on production needs an approval. The dry run does not"
+          : targetIsProduction && rollbackOthers.length > 0 && !rollbackOtherAck
             ? "Tick the box about the other scripts to roll back — a dry run does not need it"
             : "The rollback runs in one transaction — every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
@@ -1727,7 +1709,7 @@ function DeployBody() {
     // Cleared first, so the previous plan's hash never matches for a moment.
     setRollbackHash(null);
     setRollbackHashError(null);
-    if (!targetIsProduction || !rollbackReady) return;
+    if (!approvalNeeded || !rollbackReady) return;
     const body = rollbackFingerprintBody(
       rollbackSteps.map((step) => ({
         scriptName: scriptGroup.trim(),
@@ -1750,7 +1732,7 @@ function DeployBody() {
     return () => {
       cancelled = true;
     };
-  }, [targetIsProduction, rollbackReady, rollbackSteps, scriptGroup]);
+  }, [approvalNeeded, rollbackReady, rollbackSteps, scriptGroup]);
 
   // The runs the AI review reads, spelled the way the approval request spells
   // them, so the review and an approval are about the same scripts.
@@ -1785,13 +1767,6 @@ function DeployBody() {
     setDataLossAcknowledged(false);
     setDriftAcknowledged(false);
   }, [connectionId, schema, scriptGroup, targetVersion, selectionBody]);
-
-  // The schema's own label belongs to one (connection, schema) pair. Drop it the
-  // moment that pair changes, so a prod schema's label can never linger over a
-  // dev one picked next.
-  useEffect(() => {
-    setSchemaEnvironment(DEFAULT_ENVIRONMENT);
-  }, [connectionId, schema]);
 
   // The last of a link from the Requests page: its script, then the same read of
   // the target that "Check database" does, which is what the reader came to see.
@@ -1961,7 +1936,7 @@ function DeployBody() {
   // saying why up front reads better than a 403. The panel then calls the
   // state unknown rather than "nothing requested yet", which is the truth.
   useEffect(() => {
-    if (!targetIsProduction || !connectionId || !schema || !scriptGroup) {
+    if (!approvalNeeded || !connectionId || !schema || !scriptGroup) {
       setApprovals([]);
       setApprovalsReadError(null);
       return;
@@ -2002,7 +1977,7 @@ function DeployBody() {
       cancelled = true;
     };
   }, [
-    targetIsProduction,
+    approvalNeeded,
     connectionId,
     schema,
     scriptGroup,
@@ -2103,11 +2078,14 @@ function DeployBody() {
   // data-loss box disabled the button while the line under it went on
   // announcing that all migrations run in one transaction, leaving the reader
   // with a dead button and no reason for it.
+  // Only production asks for ticks. Elsewhere the same warnings are shown and
+  // the reader is trusted to have read them.
   const unacknowledgedGates =
-    (targetIsProduction && !deployAcknowledged) ||
-    (breakingCount > 0 && !breakingAcknowledged) ||
-    (dataLossScripts.length > 0 && !dataLossAcknowledged) ||
-    (driftBlocks && !driftAcknowledged);
+    targetIsProduction &&
+    (!deployAcknowledged ||
+      (breakingCount > 0 && !breakingAcknowledged) ||
+      (dataLossScripts.length > 0 && !dataLossAcknowledged) ||
+      (driftBlocks && !driftAcknowledged));
   const runBlocked =
     scriptsUpToTarget.length === 0 ||
     // Dry runs included, because the route refuses those too: a rehearsal
@@ -2120,15 +2098,10 @@ function DeployBody() {
     // A rollback in flight is changing the same ledger.
     rollbackBusy !== null ||
     driftChecking ||
-    unacknowledgedGates ||
-    // Production needs an approval for a dry run as well as a real deploy,
-    // because the server asks for it on both: a rehearsal still runs the
-    // script on production, holds its locks, and uses up sequence numbers
-    // that a rollback does not give back. The same approval covers both.
-    (targetIsProduction && !approvedRun);
-  // Deploy and Dry run are stopped by the same things now. The second name
-  // stays so each button still says which run it starts.
-  const deployBlocked = runBlocked;
+    unacknowledgedGates;
+  // A real deploy on production also waits for a second person, when the
+  // organization has approvals switched on. A dry run never does.
+  const deployBlocked = runBlocked || (approvalNeeded && !approvedRun);
   // The target pickers hold still while a rollback runs: its outcome, and the
   // ledger it reads afterwards, belong to the target it was started on.
   const targetLocked = rollbackBusy !== null;
@@ -2619,7 +2592,6 @@ function DeployBody() {
     setDriftResult(null);
     setDriftError(null);
     setStoredDriftStatus(null);
-    setEnvironmentUnknown(false);
     // An acknowledgement belongs to one drift result. Dropping it here means a
     // fresh check always has to be read again, rather than inheriting a tick
     // given for a report that no longer exists.
@@ -2645,7 +2617,6 @@ function DeployBody() {
     setDriftResult(null);
     setStoredDriftStatus(null);
     setDriftAcknowledged(false);
-    setEnvironmentUnknown(false);
     try {
       const lookupRes = await apiFetch(
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
@@ -2657,7 +2628,6 @@ function DeployBody() {
       // metadata database would quietly remove both warnings.
       if (!lookupRes.ok) {
         setDriftPhase("error");
-        setEnvironmentUnknown(true);
         return;
       }
       const lookup = (await lookupRes.json()) as {
@@ -2669,10 +2639,6 @@ function DeployBody() {
       };
       // Above all here: the old target's label must not land on the new one.
       if (!current()) return;
-      // Worth keeping even when the drift check itself can't run: the warning
-      // above the Deploy button needs this, and an untracked schema simply has
-      // no label of its own to add.
-      setSchemaEnvironment(toEnvironment(lookup.environment));
       // Kept for the same reason: if the drift check below fails, this record
       // is what the apply route will hold the run to.
       setStoredDriftStatus(lookup.driftStatus ?? null);
@@ -3221,11 +3187,6 @@ function DeployBody() {
                   <div className="dp-field-notes">
                     <EnvironmentPill environment={targetEnvironment} />
                     <ExecuteRolePill role={targetExecuteRole} />
-                    {targetEnvironment === "unset" && (
-                      <span className="help">
-                        Unlabelled — label it on Connections so this page can warn you.
-                      </span>
-                    )}
                     {targetIsReadOnly && (
                       <span className="help dp-bad-text">
                         Marked read-only on Connections — this app will not run migrations
@@ -3244,14 +3205,6 @@ function DeployBody() {
                     {targetExecuteRole === "admin" && mayExecuteOnTarget && (
                       <span className="help">
                         Restricted to admins — which includes you.
-                      </span>
-                    )}
-                    {environmentUnknown && (
-                      <span className="help dp-warn-text">
-                        {"This schema's own label could not be read, so the target " +
-                          "may be production even though this reads " +
-                          targetEnvironment +
-                          ". Press Check database again before you run anything."}
                       </span>
                     )}
                   </div>
@@ -3628,7 +3581,7 @@ function DeployBody() {
                                 "back: it rebuilds structure, not data. Have a backup you " +
                                 "can restore from before running this.")
                           }
-                          ack={rowLossAck(rollbackLossSure)}
+                          ack={targetIsProduction ? rowLossAck(rollbackLossSure) : undefined}
                           acknowledged={rollbackDataLossAck}
                           onAcknowledge={setRollbackDataLossAck}
                         />
@@ -3643,7 +3596,7 @@ function DeployBody() {
                             "undoes. They may use what the rollback removes, and a DROP " +
                             "... CASCADE takes their objects with it."
                           }
-                          ack="I have checked these scripts and mean to roll back anyway."
+                          ack={targetIsProduction ? "I have checked these scripts and mean to roll back anyway." : undefined}
                           acknowledged={rollbackOtherAck}
                           onAcknowledge={setRollbackOtherAck}
                         >
@@ -3677,7 +3630,7 @@ function DeployBody() {
                           resetKey={rollbackKey}
                         />
                       )}
-                      {targetIsProduction && (
+                      {approvalNeeded && (
                         <ApprovalPanel
                           action="revert"
                           migrationCount={rollbackReady ? rollbackSteps.length : 0}
@@ -3993,11 +3946,7 @@ function DeployBody() {
                             Environment · production —{" "}
                             {deployAcknowledged ? "confirmed" : "needs an explicit confirmation"}
                           </ChecklistItem>
-                        ) : targetEnvironment === "unset" ? (
-                          <ChecklistItem info>
-                            Environment · unlabelled — nothing here can warn you about this target
-                          </ChecklistItem>
-                        ) : (
+                        ) : targetEnvironment === "unset" ? null : (
                           <ChecklistItem ok>
                             Environment · {targetEnvironment}
                           </ChecklistItem>
@@ -4087,7 +4036,7 @@ function DeployBody() {
                             transaction · not undone by a rollback
                           </ChecklistItem>
                         )}
-                        {targetIsProduction &&
+                        {approvalNeeded &&
                           (approvalsReadError && !approvedRun ? (
                             // "not requested yet" would be a reading of a list
                             // this page never managed to read.
@@ -4236,7 +4185,11 @@ function DeployBody() {
                                     "have a statement that is always breaking, so they are " +
                                     "counted here.")
                             }
-                            ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`}
+                            ack={
+                              targetIsProduction
+                                ? `I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`
+                                : undefined
+                            }
                             acknowledged={breakingAcknowledged}
                             onAcknowledge={setBreakingAcknowledged}
                           />
@@ -4271,7 +4224,7 @@ function DeployBody() {
                                     "the only warning they get. ") +
                               "Have a backup you can restore from before running this."
                             }
-                            ack={rowLossAck(dataLossSure)}
+                            ack={targetIsProduction ? rowLossAck(dataLossSure) : undefined}
                             acknowledged={dataLossAcknowledged}
                             onAcknowledge={setDataLossAcknowledged}
                           />
@@ -4357,11 +4310,13 @@ function DeployBody() {
                                     "still connect — this only means it starts unverified."
                             }
                             ack={
-                              driftGateFromRecord
-                                ? "I mean to run without a drift check that passed."
-                                : driftGateStatus === "drifted"
-                                  ? "I have read the drift and mean to run anyway."
-                                  : "I mean to run without a drift check."
+                              !targetIsProduction
+                                ? undefined
+                                : driftGateFromRecord
+                                  ? "I mean to run without a drift check that passed."
+                                  : driftGateStatus === "drifted"
+                                    ? "I have read the drift and mean to run anyway."
+                                    : "I mean to run without a drift check."
                             }
                             acknowledged={driftAcknowledged}
                             onAcknowledge={setDriftAcknowledged}
@@ -4376,7 +4331,7 @@ function DeployBody() {
                             resetKey={`${connectionId}|${schema}|${selectionBody}`}
                           />
                         )}
-                        {targetIsProduction && (
+                        {approvalNeeded && (
                           <ApprovalPanel
                             migrationCount={scriptsUpToTarget.length}
                             targetVersion={targetVersion}
@@ -4466,8 +4421,8 @@ function DeployBody() {
                             ? "Checking the target for drift first — these unlock when the check finishes"
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
-                            : targetIsProduction && !approvedRun
-                              ? "Deploy on production needs an approval, and so does a dry run"
+                            : approvalNeeded && !approvedRun
+                              ? "Deploy on production needs an approval. A dry run does not"
                               : enumAdditions.length > 0
                               ? "All migrations run in one transaction — all of them or " +
                                 "none, apart from the enum values noted above"
@@ -4672,7 +4627,7 @@ function DeployBody() {
                     ledgerRereadFailed
                   )}
               </p>
-                {targetIsProduction && !approvedRun && (
+                {approvalNeeded && !approvedRun && (
                   <div className="dp-warn-text">
                     {/* Names no approver: under the auth bypass you clear it
                         yourself, and the Pre-flight panel says which it is. */}
@@ -4785,7 +4740,7 @@ function DeployBody() {
                   !untickedOnPreflight &&
                   !driftChecking &&
                   !runIsDryRun &&
-                  targetIsProduction &&
+                  approvalNeeded &&
                   !approvedRun && (
                     <div className="dp-warn-text">
                       {/* Names no approver: under the auth bypass you clear it

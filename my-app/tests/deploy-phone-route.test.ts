@@ -408,7 +408,7 @@ describe("POST: production", () => {
     expect(json).toMatchObject({ next: "blocked", blockedReason: "role", approvalRequest: null });
   });
 
-  it("how the schema is tracked counts as well as the connection's own setting", async () => {
+  it("only the connection's own label counts, not the one stored on the tracked schema", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [CONNECTION] });
     mockFindTracked.mockResolvedValue({
       trackedSchemaId: 9,
@@ -417,8 +417,7 @@ describe("POST: production", () => {
       environment: "prod",
     });
     const { json } = await plan();
-    expect(json.environment).toBe("prod");
-    expect(json.next).toBe("ask-approval");
-    expect(mockFindTracked).toHaveBeenCalledWith(TEST_ORG.id, 3, "public");
+    expect(json.environment).toBe(CONNECTION.environment);
+    expect(json.next).not.toBe("ask-approval");
   });
 });

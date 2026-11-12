@@ -24,14 +24,15 @@ import {
 } from "@/lib/rollback-plan";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { analyseRunRisk } from "@/lib/deploy-risk";
-import { claimApproval, releaseApproval } from "@/lib/approvals-db";
+import { approvalsOn, claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
-import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
 import {
   isProduction,
-  louderEnvironment,
+  needsApproval,
   productionBlockReason,
+  risksNeedTicks,
   toEnvironment,
 } from "@/lib/environments";
 import type { ChangeLevel } from "@/lib/change-level";
@@ -374,33 +375,12 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     }
   }
 
-  // Same rule as the apply route (productionBlockReason), and it applies to a
-  // dry run too: a dry run still runs the rollback SQL on production, it only
-  // undoes it afterwards. A rollback is not the gentler of the two operations:
-  // it drops what the migration added, so on a live database it loses rows.
-  let schemaEnvironment = toEnvironment(null);
-  try {
-    const tracked = await findTrackedSchema(gate.principal.orgId, connectionId, schemaName);
-    if (tracked) schemaEnvironment = tracked.environment;
-  } catch (error) {
-    // This used to log and carry on with the default label, "unset" — the
-    // quietest one there is. A metadata database that was merely unreachable
-    // therefore turned a production schema into an unlabelled one, and the
-    // confirmation below is skipped for unlabelled schemas: a rollback would
-    // have dropped what a migration added on production without ever asking.
-    // Apply answers the same failure with 503, and so does this.
-    console.error("Revert — could not read the tracked schema's environment:", error);
-    return failBeforeRun(503, {
-      error:
-        "Could not read this schema's tracking record, so its environment label is " +
-        "unknown. Nothing was run. Try again in a moment; if it keeps failing, check " +
-        "that the app's metadata database is running.",
-    });
-  }
-  const targetEnvironment = louderEnvironment(
-    toEnvironment(connRow.environment),
-    schemaEnvironment
-  );
+  // Same rule as the apply route (productionBlockReason): production asks for
+  // one tick, on a dry run too. The label is the connection's; a tracked
+  // schema has none of its own.
+  const targetEnvironment = toEnvironment(connRow.environment);
+  const ticksNeeded = risksNeedTicks(targetEnvironment);
+  const approvalsRequired = approvalsOn(gate.principal);
   const blocked = productionBlockReason(targetEnvironment, parsed.acknowledgeProduction);
   if (blocked) return fail(409, { error: blocked, environment: targetEnvironment });
 
@@ -426,9 +406,10 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     return failBeforeRun(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
   }
 
-  // The same check as the apply route: another saved connection to this
-  // database labelled Production makes this one count as production.
-  if (!isProduction(targetEnvironment)) {
+  // The same check as the apply route, and only when approvals are on: another
+  // saved connection to this database labelled Production makes this one
+  // count as production.
+  if (approvalsRequired && !isProduction(targetEnvironment)) {
     let twin: Awaited<ReturnType<typeof findProductionTwin>>;
     try {
       twin = await findProductionTwin(gate.principal.orgId, connectionId, configIdentity(targetConfig));
@@ -658,7 +639,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       plan.push({ row, sql: resolved.sql, source: resolved.source });
     }
 
-    // ─── 8b. A rollback that deletes rows needs a tick ─────────────────────
+    // ─── 8b. On production, a rollback that deletes rows needs a tick ───────
     // Undoing a version often means DROP TABLE or DROP COLUMN, and the rows
     // those take go with them: deploying the version again brings the
     // structure back, not the rows. The Deploy screen asks for a tick about
@@ -670,7 +651,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     const lost = analyseRunRisk(
       plan.map((step) => ({ scriptName: name, version: step.row.version, sqlContent: step.sql }))
     ).dataLoss;
-    if (lost.length > 0 && !parsed.acknowledgeDataLoss) {
+    if (ticksNeeded && lost.length > 0 && !parsed.acknowledgeDataLoss) {
       const named = lost.map((entry) => `${vLabel(entry.version)} runs ${entry.kinds.join(", ")}`);
       return await refuse(409, {
         code: "data_loss",
@@ -715,7 +696,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       [name, plan.map((step) => step.row.id)]
     );
     const otherScripts: OtherScript[] = later.rows;
-    if (otherScripts.length > 0 && !parsed.acknowledgeOtherScripts && !dryRun) {
+    if (ticksNeeded && otherScripts.length > 0 && !parsed.acknowledgeOtherScripts && !dryRun) {
       const shown = otherScripts
         .slice(0, 5)
         .map((other) => `${other.script_name} ${vLabel(other.version)}`);
@@ -731,16 +712,14 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       });
     }
 
-    // ─── 10. Production: spend a second person's approval ──────────────────
+    // ─── 10. Production: spend an approval, when approvals are on ──────────
     // After the ledger read, because the approved text is the resolved,
     // ledger-first rollback SQL, newest version first — the same list the
     // Deploy screen hashes with rollbackFingerprintBody when it asks.
     //
-    // A dry run needs it too, for the same reasons as in the apply route: a
-    // ROLLBACK does not undo sequence changes, the rehearsal holds real locks
-    // on production, and an error can show row values. A dry run never commits,
-    // so the finally block hands the claim back for the real rollback.
-    if (isProduction(targetEnvironment)) {
+    // Only for a real rollback in an organization whose two-person rule is
+    // on. A dry run rolls back, so it needs the production tick and no more.
+    if (needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
       let claimed;
       try {
         claimed = await claimApproval({
@@ -765,25 +744,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
         });
       }
       if (!claimed) {
-        // The same wording for a real rollback and its dry run, apart from the
-        // first words and the button to press afterwards.
-        const what = dryRun ? "A rollback dry run on production" : "Rolling back on production";
-        const again = dryRun ? "start the dry run again" : "press Roll back again";
         return await refuse(403, {
           needsApproval: true,
-          // Under the auth bypass there is one principal, and it may clear its
-          // own request (mayDecideOwn in lib/approvals-db), so there is no
-          // second person to ask. With the two-person rule off there may be,
-          // but there needn't be.
-          error: gate.principal.bypass
-            ? `${what} needs an approval. Request it in the Approvals ` +
-              `panel and approve it there yourself (the auth bypass is on), then ${again}.`
-            : !gate.principal.orgTwoPersonRule
-            ? `${what} needs an approval. Request it in the Approvals ` +
-              `panel and approve it there (this organization's two-person rule is off, so ` +
-              `you may approve it yourself), then ${again}.`
-            : `${what} needs a second person's approval. Ask for it in the ` +
-              `Approvals panel, then ${again}.`,
+          error:
+            "Rolling back on production needs a second person's approval. Ask for it in the " +
+            "Approvals panel, then press Roll back again.",
         });
       }
       claimedApprovalId = claimed.id;

@@ -103,7 +103,7 @@ function sentenceFor(change: RoleChange): string {
         : `renamed the organization to ${change.subject ?? "a new name"}`;
     case "two-person-rule":
       return change.detail === "off"
-        ? "switched the two-person rule off, so people can approve their own production deploys"
+        ? "switched the two-person rule off, so production runs no longer need an approval"
         : "switched the two-person rule on, so production deploys wait for a second person";
     case "github-settings": {
       // subject is the repository as owner/name, and detail what was saved.

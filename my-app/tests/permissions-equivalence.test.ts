@@ -42,7 +42,6 @@ const BEFORE: Record<string, OldRole> = {
   "GET /api/github/pull": "viewer",
   "POST /api/github/push": "editor",
   "GET /api/lineage": "viewer",
-  "PATCH /api/lineage": "editor",
   "DELETE /api/lineage": "editor",
   "GET /api/lineage/[id]": "viewer",
   "POST /api/lineage/acknowledge": "editor",

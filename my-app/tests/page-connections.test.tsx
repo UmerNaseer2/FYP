@@ -149,19 +149,15 @@ describe("what the screen says about the list itself", () => {
     expect(screen.queryByRole("button", { name: /^All/ })).not.toBeInTheDocument();
   });
 
-  it("separates a filter that hides everything from having nothing", async () => {
+  it("offers a filter only for the labels in use", async () => {
     setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
     render(<ConnectionsPage />);
     await loaded();
 
-    fireEvent.click(screen.getByRole("button", { name: /Production/ }));
-    expect(screen.getByText("No connections match this filter.")).toBeInTheDocument();
-    expect(screen.queryByText("No connections yet.")).not.toBeInTheDocument();
-
-    // The rows exist and the filter is hiding them, so the way back is offered
-    // rather than left to be guessed at.
-    fireEvent.click(screen.getByRole("button", { name: "Show all connections" }));
-    expect(screen.getByText("Orders DB")).toBeInTheDocument();
+    // One Dev connection: a Dev chip, and no chip that could only hide everything.
+    expect(screen.getByRole("button", { name: /^Dev/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Production/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Staging/ })).not.toBeInTheDocument();
   });
 
   it("finds a connection by its name or its host, and says so when nothing matches", async () => {
@@ -270,7 +266,7 @@ describe("what the screen says about each connection's health", () => {
     expect(tests[0].body).toBe(JSON.stringify({ id: 2 }));
   });
 
-  it("nudges only while something is genuinely unlabelled", async () => {
+  it("does not nag about a connection with no label", async () => {
     setRoutes([
       {
         match: "/api/connections",
@@ -280,10 +276,9 @@ describe("what the screen says about each connection's health", () => {
     render(<ConnectionsPage />);
     await loaded();
 
-    // An unlabelled target is the state where Compare and Deploy cannot warn
-    // that a database is production, so the nudge says which way out.
-    expect(screen.getByText(/1 connection has/)).toBeInTheDocument();
-    expect(screen.getByText(/edit each one and pick Dev, Staging or Production/)).toBeInTheDocument();
+    // No label means a normal database: no banner asking for one.
+    expect(screen.queryByText(/1 connection has/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pick Dev, Staging or Production/)).not.toBeInTheDocument();
   });
 
   it("lets a test run now overrule the one saved on the row", async () => {
@@ -558,7 +553,7 @@ describe("the add drawer", () => {
     fireEvent.click(drawer.getByRole("button", { name: /^Hosted/ }));
     expect(nameBox()).toHaveValue("Hosted Postgres");
     expect(uriBox()).toHaveValue("");
-    expect(checked("Unlabelled")).toBe("true");
+    expect(checked("No label")).toBe("true");
 
     // Hosted used to wipe a pasted string as well. A typed name stays too.
     fireEvent.change(uriBox(), { target: { value: "postgres://app@db.shop.test:5432/shop" } });
@@ -888,7 +883,7 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(rowFor("Orders DB")).not.toHaveTextContent("failed");
   });
 
-  it("does not tell a role that may not edit to edit each unlabelled one", async () => {
+  it("does not ask a role that may not edit to label anything", async () => {
     setUser("viewer");
     setRoutes([
       { match: "/api/connections", body: [conn({ id: 1, name: "One", environment: null })] },
@@ -896,8 +891,7 @@ describe("for a role that may not add, change or delete connections", () => {
     render(<ConnectionsPage />);
     await loaded();
 
-    expect(screen.getByText(/1 connection has/)).toBeInTheDocument();
-    expect(screen.getByText(/Ask someone who may edit connections/)).toBeInTheDocument();
+    expect(screen.queryByText(/1 connection has/)).toBeNull();
     expect(screen.queryByText(/edit each one/)).toBeNull();
   });
 });

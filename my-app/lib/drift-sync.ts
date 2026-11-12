@@ -32,7 +32,7 @@ export async function listOwnDrift(orgId: number): Promise<WebsiteDriftSchema[]>
     last_checked_at: Date | string | null;
     checks: unknown;
   }>(
-    `SELECT t.connection_id, c.name AS connection_name, t.environment, t.schema_name, t.label,
+    `SELECT t.connection_id, c.name AS connection_name, c.environment, t.schema_name, t.label,
             t.drift_check_interval_minutes AS interval_minutes, t.last_drift_check_at AS last_checked_at,
             COALESCE((
               SELECT json_agg(json_build_object(

@@ -16,6 +16,7 @@ import {
 import { deleteLocalSecret, saveLocalSecret } from "@/lib/local-store";
 import { hasPermission } from "@/lib/permissions";
 import { toEnvironment } from "@/lib/environments";
+import { approvalsOn } from "@/lib/approvals-db";
 import { loosenRefusal, loosensExecuteRole, toExecuteRole } from "@/lib/connection-access";
 import {
   UNLABEL_PRODUCTION_PERMISSION,
@@ -385,11 +386,13 @@ export async function updateConnection(
       return conflict(principal, id);
     }
 
-    // Taking the Production label off is what would let a deploy skip its
-    // approval, so it needs the permission that gives approvals. See
+    // With approvals switched on, taking the Production label off is what
+    // would let a deploy skip its approval, so it needs the permission that
+    // gives approvals. With them off the label only adds a confirmation, and
+    // anyone who may edit the connection may change it. See
     // lib/environment-guard.
     const environmentBefore = toEnvironment(existing.rows[0].environment);
-    if (lowersProduction(environmentBefore, value.environment)) {
+    if (approvalsOn(principal) && lowersProduction(environmentBefore, value.environment)) {
       if (!hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)) {
         return reply(
           { error: unlabelRefusal(`connection "${existing.rows[0].name}"`) },
@@ -680,8 +683,9 @@ export async function deleteConnection(
 
     // Deleting a production connection and saving the database again as "dev"
     // would take the label off as surely as editing it, so it needs the same
-    // permission. See lib/environment-guard.
+    // permission, again only while approvals are on. See lib/environment-guard.
     if (
+      approvalsOn(principal) &&
       toEnvironment(existing.rows[0].environment) === "prod" &&
       !hasPermission(principal, UNLABEL_PRODUCTION_PERMISSION)
     ) {

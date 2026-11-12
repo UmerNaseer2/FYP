@@ -277,7 +277,7 @@ describe("someone removed, and the organization changed", () => {
     [
       "the two-person rule switched off",
       { kind: "two-person-rule", detail: "off", ...admin },
-      "switched the two-person rule off, so people can approve their own production deploys",
+      "switched the two-person rule off, so production runs no longer need an approval",
     ],
     [
       "the two-person rule switched on",

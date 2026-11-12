@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { claimApproval, mayDecideOwn, releaseApproval } from "@/lib/approvals-db";
+import { approvalsOn, claimApproval, releaseApproval } from "@/lib/approvals-db";
 import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
 import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
@@ -37,8 +37,9 @@ import {
 } from "@/lib/deploy-risk";
 import {
   isProduction,
-  louderEnvironment,
+  needsApproval,
   productionBlockReason,
+  risksNeedTicks,
   toEnvironment,
 } from "@/lib/environments";
 
@@ -847,48 +848,30 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
 
   // ─── 4b. Refuse an unconfirmed run against production ─────────────────────
   //
-  // Before opening a single connection to the target. The label is the louder of
-  // the connection's and the tracked schema's, the same rule both screens use to
-  // decide whether to show the warning — so what the button demanded and what
-  // this route requires can never drift apart.
+  // Before opening a single connection to the target. The label is the
+  // connection's: a tracked schema has none of its own. Production asks for
+  // one tick, on a dry run too (a dry run still runs the SQL on the live
+  // database before rolling it back). Nothing else asks for one.
   //
-  // A tracked-schemas read that fails stops the run with a 503. Carrying on
-  // with the connection's label alone would turn an outage into permission
-  // twice over: a "prod" label set on the schema would be missed, and so
-  // would the drift state step 4b-2 checks.
-  //
-  // A dry run is gated too, deliberately. It commits nothing, but it really runs
-  // the script: a migration that rewrites a large table holds ACCESS EXCLUSIVE on
-  // it for the whole rewrite and only then rolls back, so "nothing was written"
-  // is not the same as "nothing happened to production". Exempting rehearsals
-  // would make the quiet way to lock a production table the one nobody has to
-  // confirm.
-  let schemaEnvironment = toEnvironment(null);
   // What the last drift check saved for this schema. Null when the schema is
   // not tracked or has never been checked.
   let storedDriftStatus: DriftStatus | null = null;
   try {
     const tracked = await findTrackedSchema(orgId, connectionId, schemaName);
-    if (tracked) {
-      schemaEnvironment = tracked.environment;
-      storedDriftStatus = tracked.driftStatus;
-    }
+    if (tracked) storedDriftStatus = tracked.driftStatus;
   } catch (error) {
     console.error("Apply — could not read the tracked schema:", error);
     return answerBeforeRun(
       {
         error:
-          "Could not read this schema's tracking record, so its environment label and " +
-          "drift state are unknown. Nothing ran. Try again in a moment; if it keeps " +
+          "Could not read this schema's tracking record, so its drift state is " +
+          "unknown. Nothing ran. Try again in a moment; if it keeps " +
           "failing, check that the app's metadata database is running.",
       },
       { status: 503 }
     );
   }
-  const targetEnvironment = louderEnvironment(
-    toEnvironment(connRow.environment),
-    schemaEnvironment
-  );
+  const targetEnvironment = toEnvironment(connRow.environment);
   const blocked = productionBlockReason(
     targetEnvironment,
     body.acknowledgeProduction === true
@@ -897,7 +880,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     return answerBeforeRun({ error: blocked, environment: targetEnvironment }, { status: 409 });
   }
 
-  // ─── 4b-2. Every risk in the run has a tick ──────────────────────────────
+  // ─── 4b-2. On production, every risk in the run has a tick ───────────────
   //
   // The Deploy screen asks for a tick under each risk it finds: a breaking
   // migration, a migration that deletes rows, a target whose last drift check
@@ -912,15 +895,19 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   //
   // job.changeType is already the louder of the SQL's level and the caller's,
   // so it counts as breaking exactly when the caller's own value would.
+  //
+  // Outside production the screen shows these as warnings and asks for no
+  // tick, so this route does not ask either.
   const risk = analyseRunRisk(queue);
+  const ticksNeeded = risksNeedTicks(targetEnvironment);
   const needsAcknowledgement: Array<"breaking" | "data_loss" | "drift"> = [];
   const unticked: string[] = [];
-  if (risk.breaking.length > 0 && body.acknowledgeBreaking !== true) {
+  if (ticksNeeded && risk.breaking.length > 0 && body.acknowledgeBreaking !== true) {
     needsAcknowledgement.push("breaking");
     const labels = risk.breaking.map((entry) => entry.label);
     unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "is" : "are"} breaking`);
   }
-  if (risk.dataLoss.length > 0 && body.acknowledgeDataLoss !== true) {
+  if (ticksNeeded && risk.dataLoss.length > 0 && body.acknowledgeDataLoss !== true) {
     needsAcknowledgement.push("data_loss");
     const labels = risk.dataLoss.map((entry) => `${entry.label} (${entry.kinds.join(", ")})`);
     unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "deletes" : "delete"} rows`);
@@ -928,7 +915,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // The drift state is the one the last check saved, and it may be old, so
   // the message says how to refresh it.
   const driftUnsettled = storedDriftStatus === "drifted" || storedDriftStatus === "unreachable";
-  if (driftUnsettled && body.acknowledgeDrift !== true) {
+  if (ticksNeeded && driftUnsettled && body.acknowledgeDrift !== true) {
     needsAcknowledgement.push("drift");
     unticked.push(
       storedDriftStatus === "drifted"
@@ -989,11 +976,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     );
   }
   // A second saved connection to a production database, labelled anything
-  // else, must not be the way round the label (see lib/environment-guard).
-  // Refused outright rather than treated as production, because the screens
-  // decide what to ask for from the label: fixing the label is what makes
-  // them ask. A failed read stops the run, like the tracked-schema read in 4b.
-  if (!isProduction(targetEnvironment)) {
+  // else, must not be the way round an approval (see lib/environment-guard).
+  // Only checked when approvals are on: with them off, the label asks for one
+  // tick and there is nothing to get round.
+  const approvalsRequired = approvalsOn(gate.principal);
+  if (approvalsRequired && !isProduction(targetEnvironment)) {
     let twin: Awaited<ReturnType<typeof findProductionTwin>>;
     try {
       twin = await findProductionTwin(orgId, connectionId, configIdentity(targetConfig));
@@ -1015,7 +1002,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
 
   const targetPool = getPoolForConfig(targetConfig);
 
-  // ─── 4c. Production needs a second person, not a second checkbox ──────────
+  // ─── 4c. Production needs an approval, when approvals are on ─────────────────
   //
   // The acknowledgement above says "the operator knows this is production". It
   // does not say anyone else agreed, and it cannot: the same hand ticks it and
@@ -1028,17 +1015,10 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // first also means two operators pressing Deploy together cannot both proceed.
   // If the run does not commit, the claim is handed back in the finally block.
   //
-  // A dry run needs the approval too. It used to be exempt, on the idea that a
-  // rehearsal writes nothing. That is not quite true on a real database:
-  //   - PostgreSQL does not undo sequence changes on ROLLBACK, so a script that
-  //     calls setval or nextval leaves the new number behind,
-  //   - the script holds its locks on production for as long as it runs,
-  //   - a failing statement can put row values in the error text.
-  // So a production dry run is treated like a real run. It costs no extra
-  // approval: a dry run never commits, so the finally block hands the claim
-  // back and the same approval then covers the real deploy.
+  // Only for a real run in an organization whose two-person rule is on. A dry
+  // run rolls back, so it needs the production tick but no approval.
   let claimedApprovalId: number | null = null;
-  if (isProduction(targetEnvironment)) {
+  if (needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
     try {
       const claimed = await claimApproval({
         // Only an approval given in the caller's organization. The connection
@@ -1057,11 +1037,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         action: "deploy",
       });
       if (!claimed) {
-        // Under the auth bypass there is one principal, and with the
-        // two-person rule off people may clear their own requests (mayDecideOwn
-        // in lib/approvals-db), so "someone other than you" would send the
-        // reader looking for nobody.
-        const approver = mayDecideOwn(gate.principal) ? "" : " from someone other than you";
+        // Approvals are on here (needsApproval), so it is always someone else.
+        const approver = " from someone other than you";
         // One migration or several, so the sentence reads as English either
         // way ("these exact 1 migration" did not).
         const one = queue.length === 1;

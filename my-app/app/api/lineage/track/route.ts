@@ -19,10 +19,8 @@ import { requestImmediateCheck } from "@/lib/drift-scheduler";
  *   { connectionId: number, schemaName: string, label?: string,
  *     environment?: "unset" | "dev" | "staging" | "prod" }
  *
- * `environment` is inherited from the connection when the body leaves it out,
- * which is the normal case — the caller already picked the connection, so it
- * has already said which environment this is. It can still be overridden
- * because one server can host a staging schema and a production one.
+ * `environment` is optional and only stored. Every page reads the label from
+ * the connection, so the app's own client no longer sends it.
  *
  * Everything happens inside the caller's organization: the connection must be
  * one of its own, and the tracked schema, its baseline snapshot and its first
@@ -55,9 +53,7 @@ export async function POST(request: NextRequest) {
       ? body.label.trim()
       : null;
   // undefined means "inherit from the connection". A value that was sent but
-  // is not one of ours is refused rather than narrowed: "production" would
-  // become "unset", the lowest rank, and a schema the user believes they
-  // labelled live would never warn anybody. Same rule as PATCH /api/lineage.
+  // is not one of ours is refused rather than quietly narrowed.
   const rawEnvironment =
     body.environment === undefined ? null : String(body.environment).trim().toLowerCase();
   if (rawEnvironment !== null && !(ENVIRONMENTS as readonly string[]).includes(rawEnvironment)) {

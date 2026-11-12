@@ -1,6 +1,6 @@
 /**
- * Deployment environments — the typed label on a connection and on a tracked
- * schema.
+ * Deployment environments — the typed label on a connection. A tracked schema
+ * has no label of its own: it reads its connection's.
  *
  * Before this existed, "which environment is this?" lived only in a free-text
  * name ("Staging — Neon", "Prod — RDS"). That reads fine to a human and is
@@ -10,9 +10,11 @@
  * screens agree on.
  *
  * `unset` is a real member rather than a NULL so the column can be NOT NULL and
- * every query, filter and group can treat it like any other value. It also says
- * something honest: nobody has labelled this target yet, so we must not pretend
- * it is safe.
+ * every query, filter and group can treat it like any other value. A label is
+ * optional: an unlabelled target is treated like any database that is not
+ * production, and the screens show nothing for it.
+ *
+ * Only production asks anything of you. Outside it, warnings are just warnings.
  */
 
 export const ENVIRONMENTS = ["unset", "dev", "staging", "prod"] as const;
@@ -31,24 +33,24 @@ export const ENVIRONMENT_META: Record<
   { label: string; tone: "neutral" | "brand" | "pending" | "break"; help: string }
 > = {
   unset: {
-    label: "Unlabelled",
+    label: "No label",
     tone: "neutral",
-    help: "No environment set. Nothing can warn you about this target, so label it.",
+    help: "No label. Optional: only Production changes how the app behaves.",
   },
   dev: {
     label: "Dev",
     tone: "brand",
-    help: "A development database. Safe to rebuild from scratch.",
+    help: "A development database.",
   },
   staging: {
     label: "Staging",
     tone: "pending",
-    help: "A pre-production rehearsal. Treat migrations here as a dry run for prod.",
+    help: "A pre-production copy.",
   },
   prod: {
     label: "Production",
     tone: "break",
-    help: "Live data. Every destructive change here is announced loudly before it runs.",
+    help: "Live data. Runs here ask for one confirmation first.",
   },
 };
 
@@ -71,30 +73,10 @@ export function environmentRank(environment: Environment): number {
 }
 
 /**
- * The louder of two labels.
- *
- * A target has up to two: the connection's (a property of the whole database)
- * and the tracked schema's (set when it was tracked, editable since). They can
- * disagree. We take the louder, because a warning that turns out to be
- * over-cautious costs a moment's attention and a missing one costs data.
- * "unset" ranks lowest, so an unlabelled schema on a production connection
- * still reads as production.
- */
-export function louderEnvironment(a: Environment, b: Environment): Environment {
-  return environmentRank(a) >= environmentRank(b) ? a : b;
-}
-
-/**
  * Why a run against this target must be refused, or null when it may proceed.
  *
- * The screens already put a checkbox in front of anything that touches a live
- * database, but a disabled button only governs the one path that draws it. The
- * routes are reachable directly, Deploy and Version Sync both reach them, and a
- * future screen will too — so the last word belongs on the server, next to the
- * connection that says which database this actually is.
- *
- * The message is written for a person, because it is shown to one: it lands in
- * the red banner on Deploy the same way a connection failure does.
+ * Production asks for one tick, checked here on the server as well as on the
+ * screen, because the routes are reachable directly. Nothing else does.
  */
 export function productionBlockReason(
   environment: Environment,
@@ -103,8 +85,30 @@ export function productionBlockReason(
   if (!isProduction(environment) || acknowledged) return null;
   return (
     "This target is labelled production and the run was not confirmed. " +
-    "Reload the page and tick the production warning before running it."
+    "Tick the production box and run it again."
   );
+}
+
+/**
+ * Whether a risk found in a run (a breaking change, deleted rows, drift, other
+ * scripts applied since) needs a tick before it runs. Only on production;
+ * everywhere else the screen shows the warning and lets you get on with it.
+ */
+export function risksNeedTicks(environment: Environment): boolean {
+  return isProduction(environment);
+}
+
+/**
+ * Whether a run needs someone's approval first: a real run (not a dry run) on
+ * production, in an organization whose two-person rule is on. With the rule
+ * off, production asks for the one tick and nothing more.
+ */
+export function needsApproval(
+  environment: Environment,
+  approvalsOn: boolean,
+  dryRun = false
+): boolean {
+  return isProduction(environment) && approvalsOn && !dryRun;
 }
 
 /**

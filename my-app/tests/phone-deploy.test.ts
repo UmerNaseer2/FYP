@@ -271,7 +271,7 @@ describe("draftRollback", () => {
 });
 
 describe("nextStep", () => {
-  const free = { production: false, approval: null, readOnly: false, mayRun: true, mayAsk: true } as const;
+  const free = { approvalNeeded: false, approval: null, readOnly: false, mayRun: true, mayAsk: true } as const;
 
   it("lets a run go straight off production", () => {
     expect(nextStep(null, free)).toEqual({ next: "run", blockedReason: null });
@@ -289,7 +289,7 @@ describe("nextStep", () => {
     });
   });
 
-  const production = { ...free, production: true };
+  const production = { ...free, approvalNeeded: true };
 
   it("sends production to the queue when nobody has been asked", () => {
     expect(nextStep(null, production)).toEqual({ next: "ask-approval", blockedReason: null });

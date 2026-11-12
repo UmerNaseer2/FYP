@@ -658,3 +658,15 @@ export async function releaseApproval(orgId: number, id: number): Promise<void> 
 export function mayDecideOwn(principal: { bypass: boolean; orgTwoPersonRule: boolean }): boolean {
   return principal.bypass || !principal.orgTwoPersonRule;
 }
+
+/**
+ * Whether approvals are on for this person's organization: the two-person
+ * rule is on and sign-in is real. When they are off, a production run asks
+ * for its tick and nothing more, and the rules that only exist to stop
+ * someone getting round an approval (the Production-twin check, Admin-only
+ * unlabelling) step aside too. Asking someone to approve their own request
+ * protected nothing.
+ */
+export function approvalsOn(principal: { bypass: boolean; orgTwoPersonRule: boolean }): boolean {
+  return !mayDecideOwn(principal);
+}

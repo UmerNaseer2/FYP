@@ -52,7 +52,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 import { PerfTargetPicker, type PerfTarget } from "@/components/studio/PerfTargetPicker";
 import {
@@ -508,11 +508,13 @@ describe("the environment of the server being analysed", () => {
     expect(screen.queryByText("Dev")).not.toBeInTheDocument();
   });
 
-  it("says a server was never labelled rather than guessing one", async () => {
+  it("shows no label for a server that was never labelled, rather than guessing one", async () => {
     setRoutes(baseRoutes([{ ...PG, environment: null }]));
     mount();
     await settle();
 
-    await waitFor(() => expect(screen.getByText("Unlabelled")).toBeInTheDocument());
+    expect(screen.queryByText("Unlabelled")).not.toBeInTheDocument();
+    expect(screen.queryByText("Production")).not.toBeInTheDocument();
+    expect(screen.queryByText("Dev")).not.toBeInTheDocument();
   });
 });

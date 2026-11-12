@@ -51,9 +51,7 @@ import { countOf } from "@/lib/plural";
 import { utcStamp } from "@/lib/format-date";
 import {
   isProduction,
-  louderEnvironment,
   toEnvironment,
-  DEFAULT_ENVIRONMENT,
   type Environment,
 } from "@/lib/environments";
 import { apiFetch } from "@/lib/api-fetch";
@@ -101,11 +99,6 @@ function useLedgerSource() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
-  // The tracked schema's own environment label, if this pair is tracked. A
-  // schema can be labelled louder than the connection it lives on (a prod
-  // schema on a box called "shared"), so both halves are needed before this
-  // side can be called production.
-  const [schemaEnvironment, setSchemaEnvironment] = useState<Environment>(DEFAULT_ENVIRONMENT);
 
   useEffect(() => {
     setSchemas([]);
@@ -130,28 +123,6 @@ function useLedgerSource() {
       active = false;
     };
   }, [connectionId]);
-
-  useEffect(() => {
-    setSchemaEnvironment(DEFAULT_ENVIRONMENT);
-    if (!connectionId || !schema) return;
-    let active = true;
-    (async () => {
-      try {
-        const res = await apiFetch(
-          `/api/lineage/lookup?connectionId=${encodeURIComponent(connectionId)}&schemaName=${encodeURIComponent(schema)}`,
-          { cache: "no-store" },
-        );
-        const data = res.ok ? ((await res.json()) as { environment?: string }) : null;
-        if (active) setSchemaEnvironment(toEnvironment(data?.environment));
-      } catch {
-        // An unreachable lookup leaves the label unset, which reads as
-        // "nothing here can warn you" rather than as "safe".
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [connectionId, schema]);
 
   useEffect(() => {
     setEntries(null);
@@ -191,7 +162,7 @@ function useLedgerSource() {
 
   return {
     connectionId, setConnectionId, schema, setSchema,
-    schemas, schemasLoading, schemasError, schemaEnvironment,
+    schemas, schemasLoading, schemasError,
     entries, phase, error, retry: () => setRetry((n) => n + 1),
     // Optimistically mark a version as now-applied (after a successful replay),
     // so the diff/timeline update instantly without a re-fetch + loading flash.
@@ -201,17 +172,10 @@ function useLedgerSource() {
 
 type Side = ReturnType<typeof useLedgerSource>;
 
-/**
- * What environment one side is really pointing at.
- *
- * The connection carries a label for the whole database and the tracked schema
- * carries one of its own; we take the louder, exactly as Deploy does. Both
- * screens end up running the same SQL through the same route, so they must not
- * be able to disagree about whether that route is aimed at production.
- */
+/** What environment one side points at: its connection's label, as on Deploy. */
 function sideEnvironment(side: Side, connections: Connection[]): Environment {
   const conn = connections.find((c) => String(c.id) === side.connectionId);
-  return louderEnvironment(toEnvironment(conn?.environment), side.schemaEnvironment);
+  return toEnvironment(conn?.environment);
 }
 
 /** How far a replay of some versions, in order, gets before the apply route would refuse one. */
@@ -762,11 +726,6 @@ function SidePicker({
               onChange={(v) => side.setSchema(v)}
             />
             {side.schemasError && <p className="vs-hint vs-bad">{side.schemasError}</p>}
-            {side.connectionId && environment === "unset" && (
-              <p className="vs-hint">
-                Unlabelled — label it on Connections so this page can warn you.
-              </p>
-            )}
           </>
         )}
     </div>
@@ -1290,10 +1249,10 @@ function ReplayBody({
   }, [connectionId, schema, recordTry]);
 
   const ready = record.state === "ready";
-  // The louder of the page's reading and the record's, as the route does.
-  const environment =
-    record.state === "ready" ? louderEnvironment(pageEnvironment, record.environment) : pageEnvironment;
-  const production = isProduction(environment);
+  // The connection's label, the only one. A real replay on production waits for
+  // a second person only when the organization has approvals switched on.
+  const production = isProduction(pageEnvironment);
+  const approvalNeeded = production && twoPersonRule && !bypass;
   const drift = record.state === "ready" && (record.drift === "drifted" || record.drift === "unreachable");
 
   // ── What the run risks (the same reading the route makes) ─────────────────
@@ -1321,11 +1280,13 @@ function ReplayBody({
   const [breakingAck, setBreakingAck] = useState(false);
   const [dataLossAck, setDataLossAck] = useState(false);
   const [driftAck, setDriftAck] = useState(false);
+  // Only production asks for ticks; elsewhere the warnings are shown and that is all.
   const unticked =
-    (production && !prodAck) ||
-    (breakingCount > 0 && !breakingAck) ||
-    (dataLossCount > 0 && !dataLossAck) ||
-    (drift && !driftAck);
+    production &&
+    (!prodAck ||
+      (breakingCount > 0 && !breakingAck) ||
+      (dataLossCount > 0 && !dataLossAck) ||
+      (drift && !driftAck));
   // Each flag is true only for a risk this run has AND a box the reader ticked.
   const flags: ReplayFlags = {
     acknowledgeProduction: production && prodAck,
@@ -1397,7 +1358,7 @@ function ReplayBody({
 
   // "" when the target is not production. Nothing is read then, so no stored
   // key can match and the panel falls back to an empty list on its own.
-  const approvalsKey = production ? `${connectionId} ${schema}` : "";
+  const approvalsKey = approvalNeeded ? `${connectionId} ${schema}` : "";
   const currentApprovals =
     loadedApprovals && loadedApprovals.key === approvalsKey ? loadedApprovals : null;
   const approvals = mayReadApprovals ? (currentApprovals?.rows ?? []) : [];
@@ -1586,14 +1547,12 @@ function ReplayBody({
   }
 
   // ── What the buttons may do ───────────────────────────────────────────────
-  // The same rule as Deploy: every box ticked for both buttons, and on
-  // production an approval for exactly this run before Replay.
+  // The same rule as Deploy: on production every box ticked for both buttons,
+  // and, with approvals on, an approval for exactly this run before Replay.
+  // A dry run never waits for an approval.
   const runBlocked = !ready || unticked || dryRunning || approvalBusy;
-  // On production the server asks for the approval on a dry run as well as on
-  // a real replay (a rehearsal still takes locks and can move sequences), so
-  // both buttons wait for it. A dry run hands the approval back afterwards.
-  const awaitingApproval = production && approved === null;
-  const dryRunBlocked = runBlocked || awaitingApproval;
+  const awaitingApproval = approvalNeeded && approved === null;
+  const dryRunBlocked = runBlocked;
   const replayBlocked = runBlocked || awaitingApproval;
   const replayLabel = `Replay ${countOf(count, "version")}${production ? " on production" : ""}`;
   const hint =
@@ -1604,7 +1563,7 @@ function ReplayBody({
         : unticked
           ? "Tick every box above to turn on Dry run and Replay."
           : awaitingApproval
-            ? "Dry run and Replay both need the approval above. A dry run does not use it up."
+            ? "Replay needs the approval above. A dry run does not."
             : "";
 
   const louderSentence =
@@ -1714,7 +1673,11 @@ function ReplayBody({
                 "will run." +
                 louderSentence
               }
-              ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`}
+              ack={
+                production
+                  ? `I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`
+                  : undefined
+              }
               acknowledged={breakingAck}
               onAcknowledge={setBreakingAck}
             />
@@ -1742,9 +1705,11 @@ function ReplayBody({
                 "Have a backup you can restore from before running this."
               }
               ack={
-                dataLossSure
-                  ? "I have read these statements and know which rows they delete."
-                  : "I have read this SQL and know whether it deletes rows."
+                !production
+                  ? undefined
+                  : dataLossSure
+                    ? "I have read these statements and know which rows they delete."
+                    : "I have read this SQL and know whether it deletes rows."
               }
               acknowledged={dataLossAck}
               onAcknowledge={setDataLossAck}
@@ -1811,11 +1776,14 @@ function ReplayBody({
                   record.drift === "drifted"
                     ? `found ${schema} different from the snapshot it is tracked against`
                     : `could not reach ${schema}`
-                }. The server holds every run on ${schema} to that result, a dry run included, ` +
-                "until a drift check passes. Run the drift check again on the Drift screen, or " +
-                "tick below to run anyway."
+                }. ` +
+                (production
+                  ? `The server holds every run on ${schema} to that result, a dry run included, ` +
+                    "until a drift check passes. Run the drift check again on the Drift screen, or " +
+                    "tick below to run anyway."
+                  : "Run the drift check again on the Drift screen if you want to be sure.")
               }
-              ack="I mean to run without a drift check that passed."
+              ack={production ? "I mean to run without a drift check that passed." : undefined}
               acknowledged={driftAck}
               onAcknowledge={setDriftAck}
             >
@@ -1827,7 +1795,7 @@ function ReplayBody({
             </RiskGate>
           )}
 
-          {production && (
+          {approvalNeeded && (
             <ApprovalPanel
               migrationCount={count}
               targetVersion={families.length === 1 ? last.version.trim() : ""}

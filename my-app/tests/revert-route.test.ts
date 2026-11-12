@@ -62,17 +62,14 @@ jest.mock("../lib/connection-config", () => ({
 }));
 
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
-// Untracked by default — the connection row's own label then decides. One test
-// makes this throw to play a metadata database that has gone away.
-const mockFindTracked = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 jest.mock("../lib/lineage-db", () => ({
-  findTrackedSchema: (...args: unknown[]) => mockFindTracked(...args),
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 jest.mock("../lib/approvals-db", () => ({
+  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
@@ -189,8 +186,6 @@ beforeEach(() => {
   mockRecordAttempt.mockClear();
   mockRecordLineage.mockReset();
   mockRecordLineage.mockResolvedValue({ advanced: false });
-  mockFindTracked.mockReset();
-  mockFindTracked.mockResolvedValue(null);
   // Calls only: its stand-in stays, and the one test that makes it throw does
   // so for a single call.
   mockBuildPgConfig.mockClear();
@@ -284,19 +279,6 @@ describe("production", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
-  it("stops at 503 when the schema's tracking record cannot be read", async () => {
-    // The environment label is the only thing standing between "Roll back" and
-    // a production database losing rows, and a schema can carry a louder label
-    // than its connection does. This lookup failing used to be logged and
-    // ignored, which left the schema looking unlabelled — the one state that
-    // needs no acknowledgement at all. Apply answers 503 here; so does revert.
-    mockFindTracked.mockRejectedValue(new Error("metadata database is unreachable"));
-    const res = await revert({ ...BASE, versions: ["3.0.0"] });
-    expect(res.status).toBe(503);
-    expect(String(res.body.error)).toContain("Nothing was run");
-    expect(mockClient.queries).toEqual([]);
-  });
-
   it("needs a second person's approval for a real run, and runs nothing without one", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
@@ -312,33 +294,30 @@ describe("production", () => {
     expect(mockClient.listenersAtRelease).toBe(0);
   });
 
-  it("asks for an approval, not a second person, under the auth bypass", async () => {
-    // With the bypass on there is one principal, and it clears its own
-    // request, so the refusal must not send it looking for someone else.
+  it("asks for no approval under the auth bypass", async () => {
+    // With the bypass on there is no second person to ask, so approvals are off.
     mockBypass = true;
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(403);
-    expect(res.body.needsApproval).toBe(true);
-    expect(res.body.error).toBe(
-      "Rolling back on production needs an approval. Request it in the Approvals " +
-        "panel and approve it there yourself (the auth bypass is on), then press " +
-        "Roll back again."
-    );
-    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+    expect(res.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
   });
 
-  it("says the requester may approve it themselves with the two-person rule off", async () => {
+  it("asks for no approval with the two-person rule off", async () => {
     mockRuleOff = true;
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe(
-      "Rolling back on production needs an approval. Request it in the Approvals " +
-        "panel and approve it there (this organization's two-person rule is off, so " +
-        "you may approve it yourself), then press Roll back again."
-    );
-    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+    expect(res.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
+  });
+
+  it("asks for no tick and no approval off production", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("staging")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
   });
 
   it("claims a 'revert' approval for the ledger SQL, newest first, and keeps it spent", async () => {
@@ -370,20 +349,15 @@ describe("production", () => {
 });
 
 describe("dry run", () => {
-  it("needs the production approval too, and runs nothing without one", async () => {
+  it("needs no production approval, and spends none", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true, acknowledgeProduction: true });
-    expect(res.status).toBe(403);
-    expect(res.body.needsApproval).toBe(true);
-    expect(res.body.error).toBe(
-      "A rollback dry run on production needs a second person's approval. Ask for it in the " +
-        "Approvals panel, then start the dry run again."
-    );
-    expect(mockClaim).toHaveBeenCalledTimes(1);
-    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+    expect(res.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(count(mockClient, "COMMIT")).toBe(0);
   });
 
-  it("runs the rollback, reports its NOTICEs, then rolls back and hands the approval back", async () => {
+  it("runs the rollback, reports its NOTICEs, then rolls back", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
@@ -404,9 +378,9 @@ describe("dry run", () => {
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(true);
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(count(mockClient, "COMMIT")).toBe(0);
-    // Claimed for the rehearsal, then given back so it still covers the real rollback.
-    expect(mockClaim).toHaveBeenCalledTimes(1);
-    expect(mockRelease).toHaveBeenCalledWith(TEST_ORG.id, 42);
+    // A rehearsal never touches an approval.
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockRelease).not.toHaveBeenCalled();
     expect(mockClient.listenersAtRelease).toBe(0);
   });
 });
@@ -619,9 +593,11 @@ describe("a batch rollback", () => {
 describe("other script families", () => {
   const others = [{ script_name: "billing_fix", version: "1.1.0", applied_at: "2026-03-15T00:00:00.000Z" }];
 
-  it("refuses a real run until they are acknowledged, and asks from the oldest version undone", async () => {
+  it("refuses a real run on production until they are acknowledged, and asks from the oldest version undone", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(ledger({ others }));
-    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
+    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"], acknowledgeProduction: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("other_scripts_after");
     expect(res.body.otherScripts).toEqual(others);
@@ -650,10 +626,12 @@ describe("other script families", () => {
 });
 
 describe("rows the rollback deletes", () => {
-  it("refuses until they are ticked, dry run included, before any rollback SQL runs", async () => {
+  it("refuses on production until they are ticked, dry run included, before any rollback SQL runs", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
     for (const dryRun of [false, true]) {
       mockClient = createFakeClient(ledger());
-      const res = await revert({ ...UNTICKED, versions: ["3.0.0"], dryRun });
+      const res = await revert({ ...UNTICKED, versions: ["3.0.0"], dryRun, acknowledgeProduction: true });
       expect(res.status).toBe(409);
       expect(res.body).toMatchObject({
         ok: false,
@@ -675,10 +653,12 @@ describe("rows the rollback deletes", () => {
   });
 
   it("names only the rollbacks that delete rows", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
     mockClient = createFakeClient(
       ledger({ rows: [V1, V2, { ...V3, down_sql: "CREATE TABLE t3_restored (id int);" }] })
     );
-    const res = await revert({ ...UNTICKED, versions: ["2.0.0", "3.0.0"] });
+    const res = await revert({ ...UNTICKED, versions: ["2.0.0", "3.0.0"], acknowledgeProduction: true });
     expect(res.status).toBe(409);
     expect(res.body.dataLoss).toEqual([{ version: "2.0.0", kinds: ["DROP TABLE"] }]);
     expect(String(res.body.error)).toContain('Rolling back v2.0.0 of "orders_fix" deletes rows');
@@ -692,6 +672,12 @@ describe("rows the rollback deletes", () => {
     expect(res.body.code).toBe("data_loss");
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockRelease).not.toHaveBeenCalled();
+  });
+
+  it("asks for no tick off production, even when rows go", async () => {
+    mockClient = createFakeClient(ledger());
+    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
+    expect(res.status).toBe(200);
   });
 
   it("asks for no tick when no rollback deletes rows, a commented-out DROP included", async () => {
@@ -1057,8 +1043,17 @@ describe("the audit trail", () => {
   });
 
   it("marks a 503 given before the target was touched, so it is not read as a failed run", async () => {
-    mockFindTracked.mockRejectedValue(new Error("metadata database is unreachable"));
+    // The twin check (approvals on, a dev connection) cannot reach the metadata DB.
+    mockBuildPgConfig.mockImplementation((input) => {
+      const { host, port, database } = input as Record<string, unknown>;
+      return { host, port, database };
+    });
+    mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
+      if (/environment = 'prod'/.test(String(args[0]))) throw new Error("metadata database went away");
+      return { rows: [connectionRow("dev")] };
+    });
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    mockBuildPgConfig.mockImplementation(() => ({}));
     expect(res.status).toBe(503);
     expect(res.body.nothingRan).toBe(true);
     expect(recorded()[2].nothingRan).toBe(true);

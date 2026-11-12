@@ -7,8 +7,8 @@ import { ENVIRONMENT_META, type Environment } from "@/lib/environments";
  * a comparison. One component so a production target can never look calmer on
  * one screen than on another.
  *
- * The title is the environment's own one-line explanation, so hovering an
- * "Unlabelled" pill says why that is worth fixing.
+ * The title is the environment's own one-line explanation. No label draws
+ * nothing: a label is optional, and an empty one is not a warning.
  */
 export function EnvironmentPill({
   environment,
@@ -17,6 +17,7 @@ export function EnvironmentPill({
   environment: Environment;
   className?: string;
 }) {
+  if (environment === "unset") return null;
   const meta = ENVIRONMENT_META[environment];
   return (
     <Pill tone={meta.tone} className={className} title={meta.help}>

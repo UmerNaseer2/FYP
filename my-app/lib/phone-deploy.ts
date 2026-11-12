@@ -325,7 +325,8 @@ export function draftRollback(
 export function nextStep(
   problem: PhoneBlockedReason | null,
   who: {
-    production: boolean;
+    /** Production with the organization's approvals switched on. */
+    approvalNeeded: boolean;
     /** The request for exactly this run, when there is one. */
     approval: "approved" | "pending" | null;
     readOnly: boolean;
@@ -336,7 +337,7 @@ export function nextStep(
   const blocked = (blockedReason: PhoneBlockedReason) => ({ next: "blocked" as const, blockedReason });
   if (problem !== null) return blocked(problem);
   if (who.readOnly) return blocked("read-only");
-  if (!who.production) return who.mayRun ? { next: "run", blockedReason: null } : blocked("role");
+  if (!who.approvalNeeded) return who.mayRun ? { next: "run", blockedReason: null } : blocked("role");
   if (who.approval === "approved") return who.mayRun ? { next: "run-approved", blockedReason: null } : blocked("role");
   if (who.approval === "pending") return { next: "waiting", blockedReason: null };
   return who.mayAsk ? { next: "ask-approval", blockedReason: null } : blocked("role");

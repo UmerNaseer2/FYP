@@ -55,7 +55,6 @@ import {
 import {
   environmentRank,
   isProduction,
-  louderEnvironment,
   toEnvironment,
   type Environment,
 } from "@/lib/environments";
@@ -791,15 +790,12 @@ async function compareOneTarget(
     };
   }
 
-  // The lineage head — the schema's own environment label and its current
-  // version — was resolved for every target in one query before this fan-out
+  // The lineage head (the schema's current version) was resolved for every target in one query before this fan-out
   // started, so all that is left here is the target database itself.
   const snapshot = await fetchSchemaSnapshot(target.config, slot.schema);
 
-  const environment = louderEnvironment(
-    connectionEnvironment,
-    head ? head.environment : "unset",
-  );
+  // The connection's label is the only one.
+  const environment = connectionEnvironment;
 
   if (!snapshot.ok) {
     return {

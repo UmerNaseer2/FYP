@@ -1279,7 +1279,6 @@ export default function ConnectionsPage() {
   const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
   const envCount = (environment: Environment) =>
     connections.filter((c) => connEnvironment(c) === environment).length;
-  const unlabelledCount = envCount("unset");
   // Counted over the connections, not over `rowResults`: the summary has to
   // agree with the cards below it, and a card can be healthy because of a
   // result saved on it rather than one tested in this session.
@@ -1399,7 +1398,10 @@ export default function ConnectionsPage() {
               <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
                 SSL on
               </FilterPill>
-              {ENVIRONMENTS.map((environment) => (
+              {/* Only labels in use. No label is not a group worth a chip. */}
+              {ENVIRONMENTS.filter(
+                (e) => e !== "unset" && (envCount(e) > 0 || filter === e)
+              ).map((environment) => (
                 <FilterPill
                   key={environment}
                   active={filter === environment}
@@ -1429,28 +1431,6 @@ export default function ConnectionsPage() {
                 />
                 Group by environment
               </label>
-            </div>
-          </div>
-        )}
-
-        {/* One nudge, only while something is genuinely unlabelled. An unlabelled
-            target is the state where Compare and Deploy cannot warn about prod. */}
-        {!loading && !loadError && unlabelledCount > 0 && (
-          <div className="warn-inline cn-note">
-            <span className="ico">
-              <InfoIcon size={14} />
-            </span>
-            <div>
-              <b>
-                {unlabelledCount} connection{unlabelledCount === 1 ? " has" : "s have"} no
-                environment.
-              </b>{" "}
-              Compare and Deploy can only warn you that a target is production once it is
-              labelled
-              {updateRefusal === null
-                ? ", so edit each one and pick Dev, Staging or Production."
-                : ". Ask someone who may edit connections to pick Dev, Staging or " +
-                  "Production for each one."}
             </div>
           </div>
         )}
@@ -1592,7 +1572,11 @@ export default function ConnectionsPage() {
             <section key={group.environment ?? "all"} className="cn-group-block">
               {group.environment !== null && (
                 <h2 className="cn-group-head">
-                  <EnvironmentPill environment={group.environment} />
+                  {group.environment === "unset" ? (
+                    <b>{ENVIRONMENT_META.unset.label}</b>
+                  ) : (
+                    <EnvironmentPill environment={group.environment} />
+                  )}
                   <span>
                     {group.rows.length} connection{group.rows.length === 1 ? "" : "s"}
                   </span>

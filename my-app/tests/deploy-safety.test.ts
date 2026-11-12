@@ -2,7 +2,8 @@ import {
   environmentRank,
   isProduction,
   looksLikeProduction,
-  louderEnvironment,
+  needsApproval,
+  risksNeedTicks,
   productionBlockReason,
   toEnvironment,
 } from "@/lib/environments";
@@ -32,10 +33,22 @@ describe("environments", () => {
     expect(toEnvironment("live")).toBe("unset");
   });
 
-  it("ranks environments so the loudest of a pair wins", () => {
+  it("ranks environments with production loudest", () => {
     expect(environmentRank("prod")).toBeGreaterThan(environmentRank("staging"));
-    expect(louderEnvironment("dev", "prod")).toBe("prod");
-    expect(louderEnvironment("unset", "dev")).toBe("dev");
+    expect(environmentRank("dev")).toBeGreaterThan(environmentRank("unset"));
+  });
+
+  it("asks for risk ticks only on production", () => {
+    expect(risksNeedTicks("prod")).toBe(true);
+    for (const env of ["staging", "dev", "unset"] as const) expect(risksNeedTicks(env)).toBe(false);
+  });
+
+  it("needs an approval only for a real production run with approvals on", () => {
+    expect(needsApproval("prod", true)).toBe(true);
+    expect(needsApproval("prod", true, true)).toBe(false);
+    expect(needsApproval("prod", false)).toBe(false);
+    expect(needsApproval("staging", true)).toBe(false);
+    expect(needsApproval("unset", true)).toBe(false);
   });
 
   it("blocks an unconfirmed production run and nothing else", () => {

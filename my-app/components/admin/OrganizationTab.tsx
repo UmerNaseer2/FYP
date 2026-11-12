@@ -20,8 +20,8 @@ import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
  * is shown so nobody expects it to follow the name.
  *
  * The two-person rule is on for every new organization. While it is on, a
- * production deploy waits for someone other than the person who asked for it.
- * Switching it off lets people approve their own, which is the one change here
+ * real production run waits for someone other than the person who asked for it.
+ * Switching it off drops approvals altogether, which is the one change here
  * that lowers a safeguard, so it asks first. Both directions go in the change
  * log on the Roles & permissions tab.
  *
@@ -224,8 +224,8 @@ export function OrganizationTab({ active }: { active: boolean }) {
             <span className="font-medium">Production deploys wait for a second person</span>
             <span className="block mt-0.5" style={{ color: "var(--text-2)" }}>
               {org.twoPersonRule
-                ? "On. Someone other than the person who asked has to approve each production deploy."
-                : "Off. People can approve their own production deploys, and each one is recorded as a self-approval."}
+                ? "On. Someone other than the person who asked has to approve each real production run. Dry runs never wait."
+                : "Off. Production runs go ahead without an approval. People are still asked to tick the risks first."}
             </span>
           </span>
         </label>
@@ -248,7 +248,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
         onClose={() => setConfirmRuleOff(false)}
         onConfirm={() => void save("rule", { twoPersonRule: false })}
         title="Switch the two-person rule off?"
-        description="People will be able to approve their own production deploys. Each one is still recorded, as a self-approval, and the switch goes in the change log."
+        description="Production runs will no longer wait for an approval. The switch goes in the change log."
         confirmLabel="Switch off"
         destructive
       />

@@ -451,11 +451,9 @@ describe("who may replay", () => {
         name: "I understand, and I mean to replay 1 version against production.",
       })
     );
-    // On production a rehearsal needs the approval too, so both buttons wait.
-    expect(
-      await screen.findByText("Dry run and Replay both need the approval above. A dry run does not use it up.")
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Dry run" })).toBeDisabled();
+    // A rehearsal needs no approval, so only Replay waits.
+    expect(await screen.findByText("Replay needs the approval above. A dry run does not.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Dry run" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Replay 1 version on production" })).toBeDisabled();
   });
 });

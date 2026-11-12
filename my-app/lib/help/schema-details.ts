@@ -9,7 +9,6 @@ export const schemaDetailsHelp: HelpTopic = {
   steps: [
     "Open the page from the Dashboard by pressing Open on a schema's card.",
     "Read the pills at the top: the drift state, the environment, the database type and how many entries the lineage has.",
-    "Set the Environment if it is wrong. Tracking only copies it from the connection, so correct it here.",
     "Press Check drift now, or Re-check drift, to compare the live database with the baseline.",
     "If the schema has drifted, press Review drift. The Drift page shows what changed and the ways to resolve it.",
     "Read the Lineage list, newest at the top. Each entry shows its snapshot counts and its migration script where one is stored.",
@@ -44,7 +43,7 @@ export const schemaDetailsHelp: HelpTopic = {
     {
       term: "Environment",
       meaning:
-        "A typed field, not a word inside a name. Compare and Deploy read it to decide whether to warn you before generating or running SQL against this schema.",
+        "The label of the schema's connection, set on Connections. Only Production changes anything: runs there ask you to tick the risks first.",
     },
     {
       term: "Not recorded in this snapshot",
@@ -70,10 +69,6 @@ export const schemaDetailsHelp: HelpTopic = {
     {
       problem: "The counts under the title do not match the live database.",
       fix: "They come from the newest lineage snapshot. Press Re-check drift, then Review drift to see what is different now.",
-    },
-    {
-      problem: "The Environment buttons are switched off.",
-      fix: "Your role may not change a schema's environment. Ask an admin to turn that permission on for your role.",
     },
     {
       problem: "The page says no drift check has run yet.",

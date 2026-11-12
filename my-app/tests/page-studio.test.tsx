@@ -334,14 +334,13 @@ describe("for a role that may not track, check or stop tracking", () => {
     expect(screen.queryByText(/run a drift check/)).toBeNull();
   });
 
-  it("does not tell a role that may not relabel to label them", async () => {
-    // The environment picker on each card needs Drift tracking: Update.
+  it("does not nag about a tracked schema with no label", async () => {
     setUser("viewer");
     setRoutes(baseRoutes([{ ...TRACKED, environment: "unset" }]));
     render(<StudioPage />);
 
-    expect(await screen.findByText(/1 tracked schema has/)).toBeInTheDocument();
-    expect(screen.getByText(/Ask someone who may change schema environments/)).toBeInTheDocument();
+    await screen.findByRole("button", { name: /^shop/ });
+    expect(screen.queryByText(/1 tracked schema has/)).toBeNull();
     expect(screen.queryByText(/Label them so Compare/)).toBeNull();
   });
 
@@ -446,16 +445,13 @@ describe("the skyline", () => {
     expect((await screen.findAllByText("Couldn't read")).length).toBeGreaterThan(0);
   });
 
-  it("shows one environment at a time, and says when it is empty", async () => {
+  it("offers a filter only for the labels in use", async () => {
     setRoutes(baseRoutes([TRACKED]));
     render(<StudioPage />);
 
     await screen.findByRole("button", { name: /^shop, Dev/ });
-    fireEvent.click(screen.getByRole("button", { name: /^Production/ }));
-    expect(screen.getByText("Nothing tracked in Production")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^shop, Dev/ })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Show all environments" }));
+    expect(screen.queryByRole("button", { name: /^Production/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Dev/ }));
     expect(screen.getByRole("button", { name: /^shop, Dev/ })).toBeInTheDocument();
   });
 });

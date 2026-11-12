@@ -319,9 +319,10 @@ describe("who is allowed to run anything here", () => {
         name: "I understand, and I mean to run 2 migrations against production.",
       })
     );
-    // A rehearsal on production needs the approval too, so it stays shut as well.
+    // A rehearsal needs no approval, so it opens; the real run stays shut.
     await flushAsync();
-    expect(await dryRunButton()).toBeDisabled();
+    const dry = await dryRunButton();
+    await waitFor(() => expect(dry).toBeEnabled());
     expect(await deployButton(" to production")).toBeDisabled();
   });
 
@@ -387,7 +388,7 @@ describe("the boxes in front of a run", () => {
     expect(await dryRunButton()).toBeEnabled();
   });
 
-  it("asks for a tick when the target has drifted, and tells the server it got one", async () => {
+  it("shows the drift off production without asking for a tick", async () => {
     // Drift means the target is not the database these migrations were written
     // against, so a statement may hit an object that is not the one it expects.
     // That is a reason to stop and read, not a reason to forbid the run — so it
@@ -424,29 +425,25 @@ describe("the boxes in front of a run", () => {
     render(<DeployPage />);
     await selectBothVersions(/Dev box/);
 
-    expect(await deployButton()).toBeDisabled();
-    expect(screen.getByText("Tick every box above to enable this")).toBeInTheDocument();
-    expect(screen.getByText("The target has drifted")).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
-    );
+    // Off production the drift is shown, but nothing has to be ticked.
+    expect(await screen.findByText("The target has drifted")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
+    ).not.toBeInTheDocument();
     const deploy = await deployButton();
     await waitFor(() => expect(deploy).toBeEnabled());
     fireEvent.click(deploy);
 
     await screen.findByText("Deploy complete \u00b7 up to v1.0.2", undefined, { timeout: 3000 });
-    expect(lastApply()).toMatchObject({ acknowledgeDrift: true, acknowledgeProduction: false });
+    expect(lastApply()).toMatchObject({ acknowledgeProduction: false });
     // The run re-reads the ledger and re-checks drift on its way out; let those
     // land inside act rather than after the test has finished with the page.
     await flushAsync();
   });
 
-  it("holds the rehearsal too, first for the production tick and then for the approval", async () => {
-    // Two separate rules land on the same screen, and both cover a rehearsal
-    // as well as the real run: a rehearsal really executes the SQL on
-    // production, can take the same heavy lock, and uses up sequence numbers
-    // that a rollback does not give back.
+  it("holds the rehearsal for the production tick, but not for the approval", async () => {
+    // A rehearsal runs the SQL on production, so the tick covers it; it never
+    // commits, so it needs no approval.
     setRoutes(baseRoutes());
     render(<DeployPage />);
     await selectBothVersions(/Prod box/);
@@ -461,9 +458,10 @@ describe("the boxes in front of a run", () => {
     );
 
     expect(
-      await screen.findByText("Deploy on production needs an approval, and so does a dry run")
+      await screen.findByText("Deploy on production needs an approval. A dry run does not")
     ).toBeInTheDocument();
-    expect(await dryRunButton()).toBeDisabled();
+    const dry = await dryRunButton();
+    await waitFor(() => expect(dry).toBeEnabled());
     expect(await deployButton(" to production")).toBeDisabled();
   });
 });
@@ -489,7 +487,8 @@ describe("what the page says about deleting rows", () => {
   it("says a TRUNCATE deletes rows", async () => {
     setRoutes(routesWithSecondScript("TRUNCATE invoices;"));
     render(<DeployPage />);
-    await selectBothVersions(/Dev box/);
+    // Production, where the tick is asked for.
+    await selectBothVersions(/Prod box/);
 
     expect(await screen.findByText("1 migration deletes rows")).toBeInTheDocument();
     expect(screen.getByText(/This run contains TRUNCATE\. Those take rows out of a live table/)).toBeInTheDocument();
@@ -504,7 +503,7 @@ describe("what the page says about deleting rows", () => {
       routesWithSecondScript("DO $$\nBEGIN\n  EXECUTE 'ALTER TABLE ' || 'invoices' || ' ADD COLUMN notes text';\nEND\n$$;")
     );
     render(<DeployPage />);
-    await selectBothVersions(/Dev box/);
+    await selectBothVersions(/Prod box/);
 
     expect(await screen.findByText("1 migration may delete rows")).toBeInTheDocument();
     expect(screen.getByText(/Part of the SQL could not be read: an EXECUTE inside a DO block/)).toBeInTheDocument();
@@ -557,14 +556,12 @@ describe("the two-person rule", () => {
       })
     );
     await flushAsync();
-    expect(await dryRunButton()).toBeDisabled();
     expect(await deployButton(" to production")).toBeDisabled();
   });
 
-  it("tells the panel when this organization has switched the rule off", async () => {
-    // The page reads the rule from the organization it is open in and hands it
-    // to the panel. If it stopped, the panel would keep asking for a second
-    // person that this organization no longer requires.
+  it("asks for no approval when this organization has switched the rule off", async () => {
+    // The page reads the rule from the organization it is open in. With it
+    // off, production runs need only the tick.
     setRoutes(baseRoutes());
     render(
       <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name} twoPersonRule={false}>
@@ -573,9 +570,15 @@ describe("the two-person rule", () => {
     );
     await selectBothVersions(/Prod box/);
 
-    const panel = (await screen.findByText("Needs an approval")).closest(".appr") as HTMLElement;
-    expect(panel).toHaveTextContent("The two-person rule is off in this organization");
+    fireEvent.click(
+      await screen.findByRole("checkbox", {
+        name: "I understand, and I mean to run 2 migrations against production.",
+      })
+    );
+    const deploy = await deployButton(" to production");
+    await waitFor(() => expect(deploy).toBeEnabled());
     expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs an approval")).not.toBeInTheDocument();
   });
 
   it("clears the deploy when the approval covers exactly the SQL on screen", async () => {

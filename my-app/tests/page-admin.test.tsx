@@ -1308,7 +1308,7 @@ describe("the Organization tab", () => {
     confirmIn("Switch the two-person rule off?", "Switch off");
     await waitFor(() => expect(rule).not.toBeChecked());
     expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ twoPersonRule: false });
-    expect(screen.getByText(/recorded as a self-approval/)).toBeInTheDocument();
+    expect(screen.getByText(/Production runs go ahead without an approval/)).toBeInTheDocument();
 
     fireEvent.click(rule);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

@@ -40,6 +40,7 @@ jest.mock("../lib/registry-archive", () => ({
   archiveAppliedVersions: async () => null,
 }));
 jest.mock("../lib/approvals-db", () => ({
+  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
   claimApproval: async () => null,
   releaseApproval: async () => undefined,
 }));

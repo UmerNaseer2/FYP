@@ -10,7 +10,7 @@ export const connectionsHelp: HelpTopic = {
     "Press Add connection. On an empty list the button reads Add your first connection.",
     "Under Quick start, pick Local Postgres or Hosted to fill in a name and the SSL mode each one needs. Hosted leaves the connection string to you.",
     "Type a Friendly name, such as production or dev local. It is the name shown in lists and breadcrumbs.",
-    "Pick the Environment: Unlabelled, Dev, Staging or Production.",
+    "If you like, pick an Environment: Dev, Staging or Production. It is optional.",
     "Give the details either way round: paste a postgres:// connection string, or fill in Host, Port, Database, User and Password.",
     "Pick the SSL mode, then choose who may run migrations here.",
     "Press Test now to check that the database answers, then press Save connection.",
@@ -24,12 +24,7 @@ export const connectionsHelp: HelpTopic = {
     {
       term: "Environment",
       meaning:
-        "A label: Dev, Staging or Production. It is only a label, but Compare and Deploy read it to warn you before they touch production and to ask for approval before a deploy there. A schema tracked through the connection starts with the same label.",
-    },
-    {
-      term: "Unlabelled",
-      meaning:
-        "A connection with no environment. Nothing can warn you that it is production, so edit it and pick a label.",
+        "An optional label: Dev, Staging or Production. Only Production changes anything: runs there ask you to tick the risks first, and need a second person's approval when your organization has the two-person rule on. Every schema tracked through the connection shares its label.",
     },
     {
       term: "Connection string",

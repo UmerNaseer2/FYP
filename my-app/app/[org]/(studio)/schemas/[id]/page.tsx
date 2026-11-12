@@ -24,7 +24,6 @@ import {
 import { HelpHint } from "@/components/ui/HelpHint";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
-import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { utcStamp } from "@/lib/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -96,7 +95,7 @@ export default function SchemaDetailPage({
   const [error, setError] = useState<string | null>(null);
 
   // One read for the whole screen. It is a useCallback because the drift button
-  // and the environment picker call it again after they write something. This
+  // calls it again after they write something. This
   // screen holds its own data, so refreshing the router would show nothing.
   const load = useCallback(async () => {
     if (!Number.isInteger(trackedSchemaId) || trackedSchemaId <= 0) {
@@ -295,17 +294,10 @@ export default function SchemaDetailPage({
         </div>
       </div>
 
-      {/* Environment. Editable here because tracking only seeds it from the
-          connection, and a label nobody can correct is a label nobody trusts. */}
-      <Card className="sc-env">
-        <SchemaEnvironmentPicker
-          trackedSchemaId={detail.trackedSchemaId}
-          environment={detail.environment}
-          onDone={() => void load()}
-        />
-        {/* Only the production warning. What the environment is for is in
-            the page's help (lib/help/schema-details.ts). */}
-        {isProduction(detail.environment) && (
+      {/* The label is the connection's (set on Connections). Only production
+          says anything here. */}
+      {isProduction(detail.environment) && (
+        <Card className="sc-env">
           <div className="warn-inline">
             <span className="ico sc-env__ico">
               <AlertTriangleIcon size={14} />
@@ -316,8 +308,8 @@ export default function SchemaDetailPage({
               before you do.
             </div>
           </div>
-        )}
-      </Card>
+        </Card>
+      )}
 
       {/* Lineage timeline */}
       <Card className="sc-snc">

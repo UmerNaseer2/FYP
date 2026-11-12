@@ -11,7 +11,7 @@ export const deployHelp: HelpTopic = {
     "On Pre-flight, pick the connection, the schema and the script group, then press Check database.",
     "Read Applied to target, the version timeline and the list of pending migrations.",
     "Choose how far to go. Tick a version, press its Run button, or press Run all. This only picks the range. Nothing runs yet.",
-    "Read the Pre-flight checklist and tick every box the page asks for.",
+    "Read the Pre-flight checklist. On a production target, tick every box the page asks for.",
     "Press Dry run to rehearse. The scripts run on the target and are then rolled back, so nothing is written.",
     "Press Deploy to run for real. The Run step shows how each migration went.",
     "On Verify, read what was applied, then record it on Version Sync or watch the database on Drift.",
@@ -94,14 +94,14 @@ export const deployHelp: HelpTopic = {
       body: [
         "On Pre-flight, press Plan a rollback and pick the version to go back to. Every applied version above it is undone, newest first, in one transaction.",
         "A rollback restores structure, not rows. Deleted rows do not come back, so keep a backup. One rollback undoes at most 50 versions. To go further back, run it and then roll back again.",
-        "Dry run the rollback rehearses it without changing anything. Outside production a rollback runs as soon as you press its button. No second person is needed.",
+        "Dry run the rollback rehearses it without changing anything. A rollback runs as soon as you press its button, unless the target is production and your organization has the two-person rule on.",
       ],
     },
     {
       title: "Production approvals",
       body: [
-        "A target labelled production needs an approval from a second person for each run, each rollback and each dry run. Nobody can approve their own request unless an admin has switched the two-person rule off, and then it is recorded as a self-approval.",
-        "An approval covers one run of the exact SQL it was given, for up to 7 days. Change the SQL, or wait longer, and it needs approving again. A dry run does not use the approval up.",
+        "Only while an admin has the two-person rule on: a target labelled production needs an approval from a second person for each real run and each rollback. Dry runs never need one. Nobody can approve their own request. With the rule off, nobody needs an approval at all.",
+        "An approval covers one run of the exact SQL it was given, for up to 7 days. Change the SQL, or wait longer, and it needs approving again. A dry run does not need it or use it up.",
         "The note you type with a request is shown to whoever approves it. The note typed with a decision is stored with the approval and shown in the audit log.",
       ],
     },
