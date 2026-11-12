@@ -186,7 +186,10 @@
 
 /* The migration draft: the SQL sits on the dark code surface. */
 .cp-grid > aside .sql-textarea { background: var(--code-bg); color: var(--code-ink);
-  border-color: var(--code-line); border-radius: var(--r-lg); }
+  border-color: var(--code-line); border-radius: var(--r-lg);
+  /* A narrow column: smaller text, and long lines scroll sideways instead of
+     wrapping, the way every SQL editor shows them. */
+  font-size: 12.5px; line-height: 1.6; white-space: pre; overflow-x: auto; }
 .cp-grid > aside .sql-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .cp-grid > aside .btn-sm { min-height: 44px; }
 @media (max-width: 1100px) { .cp-grid > aside .sticky-panel { position: static; } }

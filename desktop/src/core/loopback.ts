@@ -181,28 +181,35 @@ const TONE_ICONS: Record<"good" | "bad" | "plain", string> = {
   plain: '<circle cx="12" cy="12" r="10"/><path d="M12 7v5l3 2"/>',
 };
 
-/** The app's icon: a database drawn in white on the brand's indigo. */
+/**
+ * The app's mark: two rounded squares, one in the accent and one in ink,
+ * with the place they overlap cut out. The colours come from the page's
+ * style, so the mark follows light and dark.
+ */
 const APP_MARK =
-  '<svg class="mark" viewBox="0 0 32 32" aria-hidden="true">' +
-  '<defs><linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">' +
-  '<stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#4f52e0"/></linearGradient></defs>' +
-  '<rect width="32" height="32" rx="8" fill="url(#brand)"/>' +
-  '<g transform="translate(4 4)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-  '<ellipse cx="12" cy="6" rx="8" ry="3"/>' +
-  '<path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/>' +
-  '<path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></g></svg>';
+  '<svg class="mark" viewBox="0 0 30 30" aria-hidden="true">' +
+  '<defs><clipPath id="mark-overlap"><rect x="2" y="2" width="18" height="18" rx="6"/></clipPath></defs>' +
+  '<rect class="mark-a" x="2" y="2" width="18" height="18" rx="6"/>' +
+  '<rect class="mark-b" x="10" y="10" width="18" height="18" rx="6"/>' +
+  '<rect class="mark-cut" x="10" y="10" width="18" height="18" rx="6" clip-path="url(#mark-overlap)"/></svg>';
 
+/**
+ * The colours of the app's own pages (renderer/app.css). The page loads no
+ * files, so it uses the system's font rather than the app's.
+ */
 const PAGE_STYLE = `
 :root {
-  --bg: #f7f7f8; --surface: #ffffff; --border: #e7e7eb;
-  --text: #18181b; --text-2: #52525b;
-  --good: #16a34a; --bad: #dc2626; --plain: #6366f1;
+  --bg: #fbf5ea; --surface: #ffffff; --border: #e6dccb;
+  --text: #2a1a3e; --text-2: #54456a; --accent: #f55a1c;
+  --good: #076a58; --bad: #a01d51; --plain: #b03a08;
+  --lift: 0 2px 0 #2a1a3e14, 0 14px 30px -12px #2a1a3e33;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a0a0c; --surface: #15161a; --border: #26272d;
-    --text: #f3f3f5; --text-2: #b0b0ba;
-    --good: #22c55e; --bad: #f87171; --plain: #7c7fff;
+    --bg: #0c0b0a; --surface: #161513; --border: #2b2824;
+    --text: #f2ede3; --text-2: #c4bdb0; --accent: #ff6a2b;
+    --good: #5fd0aa; --bad: #ff7fa6; --plain: #ff9b6b;
+    --lift: 0 0 0 1px #2b2824;
   }
 }
 * { box-sizing: border-box; }
@@ -214,19 +221,22 @@ body {
 }
 main {
   width: 100%; max-width: 30rem; padding: 28px 28px 30px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface); border-radius: 24px; box-shadow: var(--lift);
 }
 .brand {
   display: flex; align-items: center; gap: 10px; margin-bottom: 24px;
-  font-size: 14px; font-weight: 600; letter-spacing: 0.01em; color: var(--text-2);
+  font-size: 15px; font-weight: 800; letter-spacing: -0.02em; color: var(--text);
 }
 .mark { display: block; width: 28px; height: 28px; }
+.mark-a { fill: var(--accent); }
+.mark-b { fill: var(--text); }
+.mark-cut { fill: var(--surface); }
 h1 {
   display: flex; align-items: flex-start; gap: 10px; margin: 0 0 8px;
-  font-size: 21px; line-height: 1.3; font-weight: 650; text-wrap: balance;
+  font-size: 22px; line-height: 1.3; font-weight: 800; letter-spacing: -0.02em; text-wrap: balance;
 }
 .tone {
-  flex: none; width: 24px; height: 24px; margin-top: 1px;
+  flex: none; width: 24px; height: 24px; margin-top: 2px;
   fill: none; stroke: var(--tone); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 .good { --tone: var(--good); }

@@ -2,9 +2,10 @@
  * The look of the app's own two pages: the splash, shown while Schema
  * Studio starts, and Settings.
  *
- * They match Schema Studio itself: the same grays and indigo, the same
- * database mark, and the system's own font, which on Ubuntu is the Ubuntu
- * font. Light or dark follows the theme chosen in the app, which Electron
+ * They match Schema Studio itself (the "Atelier" look of the web app,
+ * my-app/app/globals.css): cream, aubergine and tangerine in the light, a
+ * neutral near-black in the dark, the two-squares mark, and the same three
+ * fonts. Light or dark follows the theme chosen in the app, which Electron
  * hands the pages as prefers-color-scheme.
  *
  * The pages are served with a strict security policy (src/main/protocol.ts):
@@ -14,62 +15,110 @@
  * code's drawing from plain elements.
  */
 
+/*
+ * The fonts, from renderer/fonts (their license is OFL.txt in that folder).
+ * The app works offline, so they come with it. Each file must also be on the
+ * list in src/core/page-files.ts, or the page is told it does not exist.
+ * They cover Latin letters, and anything else falls back to the system's
+ * font.
+ */
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("fonts/figtree-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 700 800;
+  font-display: block;
+  src: url("fonts/bricolage-grotesque-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/dm-mono-400-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/dm-mono-500-latin.woff2") format("woff2");
+}
+
 /* Colors. The light set is the default, and the dark set replaces it when the app is dark. */
 :root {
   color-scheme: light;
-  --bg: #f7f7f8;
+  --bg: #fbf5ea;
   --surface: #ffffff;
-  --surface-2: #fafafa;
-  --surface-3: #f3f3f5;
-  --border: #e7e7eb;
-  --border-strong: #d4d4d8;
-  --text: #18181b;
-  --text-2: #52525b;
-  --text-3: #8a8a93;
-  --brand: #6366f1;
-  --brand-soft: #eef0ff;
-  /* Filled buttons use a deeper indigo, so that white text on them stays easy to read. */
-  --accent-fill: #4f52e0;
-  --accent-fill-hover: #4346cf;
-  --on-accent: #ffffff;
-  --good: #16a34a;
-  --bad: #dc2626;
-  --bad-soft: #fdeded;
+  --surface-2: #f3ebdc;
+  --surface-3: #eee5d5;
+  --line: #e6dccb;
+  --line-strong: #94866f;
+  --ink: #2a1a3e;
+  --ink-2: #54456a;
+  --ink-3: #625574;
+  /* Tangerine fills, with dark text on them. Text and links in the accent use the deeper --accent-ink. */
+  --accent: #f55a1c;
+  --on-accent: #2a1a3e;
+  --accent-ink: #b03a08;
+  --accent-soft: #ffe8db;
+  --good: #076a58;
+  --good-soft: #d9f4e8;
+  --warn: #6e4d00;
+  --warn-soft: #fdf1c4;
+  --bad: #a01d51;
+  --bad-soft: #fce0ea;
   /* The check and the "!" drawn on a filled step mark. */
   --on-mark: #ffffff;
-  /* The dots of the schema canvas, behind the splash. */
-  --dot: #dedee5;
-  --shadow: 0 1px 2px rgb(24 24 27 / 0.05), 0 12px 32px rgb(24 24 27 / 0.06);
+  --lift: 0 2px 0 #2a1a3e14, 0 14px 30px -12px #2a1a3e33;
 
-  --radius: 12px;
-  --radius-small: 8px;
-  --font: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
-  --mono: ui-monospace, "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* The system's own font stays as the fallback, which on Ubuntu is the Ubuntu font. */
+  --sans: "Figtree", system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --display: "Bricolage Grotesque", var(--sans);
+  --mono: "DM Mono", ui-monospace, "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
 }
 
+/* Neutral near-black: no purple, no glows, and a hairline where the light theme has a shadow. */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #0a0a0c;
-    --surface: #15161a;
-    --surface-2: #1b1c21;
-    --surface-3: #232428;
-    --border: #26272d;
-    --border-strong: #363740;
-    --text: #f3f3f5;
-    --text-2: #b0b0ba;
-    --text-3: #7a7a85;
-    --brand: #7c7fff;
-    --brand-soft: #1d1e34;
-    --accent-fill: #5558e8;
-    --accent-fill-hover: #6366f1;
-    --on-accent: #ffffff;
-    --good: #22c55e;
-    --bad: #f87171;
-    --bad-soft: #2a1618;
-    --on-mark: #0a0a0c;
-    --dot: #1e1f25;
-    --shadow: none;
+    --bg: #0c0b0a;
+    --surface: #161513;
+    --surface-2: #1f1d1a;
+    --surface-3: #26241f;
+    --line: #2b2824;
+    --line-strong: #7d776c;
+    --ink: #f2ede3;
+    --ink-2: #c4bdb0;
+    --ink-3: #9e978b;
+    --accent: #ff6a2b;
+    --on-accent: #140d08;
+    --accent-ink: #ff9b6b;
+    --accent-soft: #3a1d0f;
+    --good: #5fd0aa;
+    --good-soft: #10291f;
+    --warn: #e8c25a;
+    --warn-soft: #2e2508;
+    --bad: #ff7fa6;
+    --bad-soft: #3a1422;
+    --on-mark: #0c0b0a;
+    --lift: 0 0 0 1px #2b2824;
   }
 }
 
@@ -94,12 +143,14 @@ body {
   min-height: 100%;
   margin: 0;
   background: var(--bg);
-  color: var(--text);
-  font: 14px/1.5 var(--font);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
 h1,
 h2,
+h3,
 p,
 ol,
 dl,
@@ -126,7 +177,7 @@ input {
 }
 
 :focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }
 
@@ -143,41 +194,55 @@ input {
   border: 0;
 }
 
+/* Buttons are pills. A plain one is quiet, the main one of a group is filled with the accent. */
 .button {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-small);
-  background: var(--surface);
-  font-weight: 500;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  font-weight: 600;
   white-space: nowrap;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms var(--ease-out);
 }
 
 .button:hover {
+  border-color: var(--line-strong);
   background: var(--surface-3);
 }
 
 .button:active {
-  background: var(--border);
+  transform: scale(0.97);
 }
 
 .button-primary {
-  border-color: var(--accent-fill);
-  background: var(--accent-fill);
+  border-color: var(--accent);
+  background: var(--accent);
   color: var(--on-accent);
+  font-weight: 700;
 }
 
-.button-primary:hover,
-.button-primary:active {
-  border-color: var(--accent-fill-hover);
-  background: var(--accent-fill-hover);
+.button-primary:hover {
+  border-color: var(--on-accent);
+  background: var(--accent);
 }
 
 .button-bad {
+  border-color: transparent;
+  background: var(--bad-soft);
   color: var(--bad);
+}
+
+.button-bad:hover {
+  border-color: var(--bad);
+  background: var(--bad-soft);
 }
 
 /* A busy button keeps keyboard focus, so it is dimmed rather than disabled. */
@@ -186,21 +251,28 @@ input {
   opacity: 0.55;
 }
 
+.button:disabled:active,
+.button[aria-disabled="true"]:active {
+  transform: none;
+}
+
 .input {
   width: 100%;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-small);
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: var(--surface);
+  transition: border-color 160ms ease;
 }
 
 .input::placeholder {
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .input:focus-visible {
-  border-color: var(--brand);
+  border-color: var(--accent-ink);
   outline-offset: 0;
 }
 
@@ -211,13 +283,14 @@ input {
 .hint,
 .status,
 .note {
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 13px;
 }
 
 .field-error {
   color: var(--bad);
   font-size: 13px;
+  font-weight: 500;
 }
 
 /* The splash */
@@ -227,63 +300,134 @@ input {
   place-items: center;
   min-height: 100vh;
   padding: 40px 16px;
-  /* The dot grid of Schema Studio's schema maps, faint enough to stay behind everything. */
-  background-image: radial-gradient(circle at center, var(--dot) 1.2px, transparent 1.6px);
-  background-position: center;
-  background-size: 24px 24px;
 }
 
 .splash-main {
   display: grid;
-  gap: 28px;
-  width: min(360px, 100%);
+  gap: 32px;
+  width: min(380px, 100%);
 }
 
+/*
+ * The mark and the name, side by side. They play a short version of the web
+ * app's logo reveal, all of it over in under a second: the two squares
+ * spring in from their corners, the place they overlap is cut out, and the
+ * name slides out from behind the mark. Then they hold while the app starts.
+ */
 .brand {
-  display: grid;
-  justify-items: center;
-  gap: 14px;
+  --gap: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap);
 }
 
+/* The Schema Studio mark: two rounded squares, one in the accent and one in ink, with their overlap cut out. */
 .brand-mark {
+  display: block;
+  flex: none;
   width: 64px;
   height: 64px;
-  border-radius: 16px;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--brand) 30%, transparent);
+  overflow: visible;
+}
+
+.brand-mark rect {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.mark-a {
+  fill: var(--accent);
+  animation: mark-a 500ms var(--ease-spring) backwards;
+}
+
+.mark-b {
+  fill: var(--ink);
+  animation: mark-b 500ms var(--ease-spring) 90ms backwards;
+}
+
+.mark-cut {
+  fill: var(--bg);
+  animation: fade-in 200ms linear 380ms backwards;
 }
 
 .brand-name {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  overflow: hidden;
+  max-width: 8em;
+  padding-block: 0.12em;
+  font: 800 40px/1.1 var(--display);
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+  animation: name-out 480ms var(--ease-out) 420ms backwards;
+}
+
+@keyframes mark-a {
+  from {
+    opacity: 0;
+    transform: translate(-90%, -90%) rotate(-45deg) scale(0.3);
+  }
+}
+
+@keyframes mark-b {
+  from {
+    opacity: 0;
+    transform: translate(90%, 90%) rotate(45deg) scale(0.3);
+  }
+}
+
+/* The name starts with no width, and the mark starts where the pair's middle is. */
+@keyframes name-out {
+  from {
+    max-width: 0;
+    margin-left: calc(-1 * var(--gap));
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 }
 
 .panel {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--r-xl);
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: var(--lift);
+  animation: rise-in 420ms var(--ease-out) 480ms backwards;
 }
 
 .steps {
   display: grid;
   gap: 2px;
-  padding: 8px;
+  padding: 10px;
 }
 
 .step {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 12px;
-  border-radius: var(--radius-small);
-  color: var(--text-2);
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  color: var(--ink-3);
+}
+
+.step[data-state="done"] {
+  color: var(--ink-2);
 }
 
 .step[data-state="current"] {
-  background: var(--brand-soft);
-  color: var(--text);
+  background: var(--accent-soft);
+  color: var(--ink);
   font-weight: 600;
 }
 
@@ -299,13 +443,13 @@ input {
   flex: none;
   width: 18px;
   height: 18px;
-  border: 2px solid var(--border-strong);
+  border: 2px solid var(--line);
   border-radius: 50%;
 }
 
 .step[data-state="current"] .step-mark {
-  border-color: color-mix(in srgb, var(--brand) 25%, transparent);
-  border-top-color: var(--brand);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
   animation: spin 0.8s linear infinite;
 }
 
@@ -358,17 +502,17 @@ input {
 
 /* A line between the steps and what went wrong, when both are on show. */
 .steps:not([hidden]) + .failure {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
 }
 
 .failure-title {
-  font-size: 15px;
-  font-weight: 600;
+  font: 700 18px/1.25 var(--display);
+  letter-spacing: -0.02em;
 }
 
 .failure-message {
-  margin-top: 4px;
-  color: var(--text-2);
+  margin-top: 6px;
+  color: var(--ink-2);
 }
 
 .actions {
@@ -387,7 +531,7 @@ input {
 .restoring {
   display: grid;
   gap: 2px;
-  padding: 8px;
+  padding: 10px;
 }
 
 .restoring-note {
@@ -405,16 +549,26 @@ input {
 .settings-main {
   overflow-y: auto;
   padding: 24px 24px 32px;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.settings-title {
+  margin-bottom: 20px;
+  font: 800 30px/1.1 var(--display);
+  letter-spacing: -0.035em;
 }
 
 .groups {
   display: grid;
-  gap: 28px;
+  gap: 32px;
 }
 
+/* minmax(0, 1fr) rather than the default column, so a long path or address wraps instead of widening the page. */
 .group {
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
 }
 
 /* A button on its own in a group keeps its own width. */
@@ -423,42 +577,44 @@ input {
 }
 
 .group-title {
-  font-size: 14px;
-  font-weight: 700;
+  font: 700 19px/1.2 var(--display);
+  letter-spacing: -0.03em;
 }
 
 .group-intro {
-  margin-bottom: 4px;
-  color: var(--text-2);
+  margin-bottom: 2px;
+  color: var(--ink-2);
   font-size: 13px;
 }
 
-/* The boxed lists of Ubuntu's own settings: rows in one rounded box, with a line between each. */
+/* Rows in one rounded card, with a line between each. */
 .list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
   background: var(--surface);
 }
 
 .row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  padding: 12px 14px;
+  padding: 14px 16px;
 }
 
 .row + .row {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
 }
 
 /* Each connection's choices share a wrapper, so the line between connections goes on the wrapper. */
 .connection-choices + .connection-choices {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
 }
 
 .row-label {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .token {
@@ -473,7 +629,7 @@ input {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 .token-actions,
@@ -488,10 +644,10 @@ input {
 
 .dot {
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: var(--border-strong);
+  background: var(--line-strong);
 }
 
 .dot-good {
@@ -506,7 +662,7 @@ input {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .group-footer-text {
@@ -515,9 +671,10 @@ input {
 }
 
 .row-choice {
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   column-gap: 12px;
+  transition: background-color 160ms ease;
 }
 
 .row-choice:hover {
@@ -526,7 +683,7 @@ input {
 
 /* A second choice that belongs to the row above it, set in as far as that row's name. */
 .row-choice-inner {
-  padding-left: 42px;
+  padding-left: 48px;
 }
 
 /* Same specificity as .row + .row and later, so it wins: a connection and its inner choice read as one. */
@@ -541,22 +698,71 @@ input {
 }
 
 .row-choice:has(input:disabled) .choice-name {
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
+/* The check boxes and the theme's round choices, drawn here so they carry the accent in both themes. */
 .row-choice input {
-  width: 16px;
-  height: 16px;
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
   margin: 0;
-  accent-color: var(--accent-fill);
+  border: 1.5px solid var(--line-strong);
+  background: var(--surface);
+  appearance: none;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.row-choice input[type="checkbox"] {
+  border-radius: 7px;
+}
+
+.row-choice input[type="radio"] {
+  border-radius: 50%;
+}
+
+.row-choice input:disabled {
+  opacity: 0.5;
+}
+
+.row-choice input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.row-choice input[type="checkbox"]:checked::after {
+  content: "";
+  width: 6px;
+  height: 11px;
+  margin-top: -2px;
+  border: solid var(--on-accent);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+.row-choice input[type="radio"]:checked {
+  border-color: var(--accent);
+}
+
+.row-choice input[type="radio"]:checked::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .choice-text {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
 }
 
 .choice-name {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .row-fact {
@@ -566,7 +772,8 @@ input {
 }
 
 .row-fact dt {
-  color: var(--text-2);
+  color: var(--ink-3);
+  font-weight: 500;
 }
 
 .fact-action {
@@ -584,11 +791,11 @@ input {
 }
 
 .banner {
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
-  border-radius: var(--radius);
+  padding: 12px 16px;
+  border-radius: var(--r-lg);
   background: var(--bad-soft);
   color: var(--bad);
+  font-weight: 500;
 }
 
 .settings-footer {
@@ -597,28 +804,29 @@ input {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 24px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
   background: var(--surface);
 }
 
 .version {
-  color: var(--text-2);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 12.5px;
 }
 
 /* The Phone section of Settings */
 
 .phone-parts {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 .subgroup-title {
-  margin: 8px 0 0;
-  color: var(--text-2);
+  margin: 10px 0 0;
+  color: var(--ink-2);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .countdown {
@@ -637,7 +845,7 @@ input {
   overflow: hidden;
   width: 183px;
   height: 183px;
-  border-radius: var(--radius-small);
+  border-radius: var(--r-md);
   background: #ffffff;
 }
 
@@ -649,21 +857,29 @@ input {
 
 .pairing-text {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 8px;
 }
 
 .pairing-typed {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
 }
 
 /* Large enough to read across a desk and type. One click selects all of it, for someone who would rather paste it. */
 .short-code {
+  justify-self: start;
+  max-width: 100%;
+  padding: 6px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
   font-family: var(--mono);
   font-size: 22px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
   user-select: all;
 }
 
@@ -687,6 +903,8 @@ input {
 .phone-actions {
   max-height: 260px;
   overflow-y: auto;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
 }
 
 .phone-action-bad {
@@ -708,19 +926,48 @@ input {
 
 .backup-parts {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 /* Each form's boxes, then what it says and its button. */
 .backup-form {
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
 }
 
-/* Without motion, the running step shows a filled dot instead of a spinning ring. */
+/*
+ * Without motion, nothing springs, slides or presses in: the mark, the name
+ * and the steps fade in together, and the running step shows a filled dot
+ * instead of a spinning ring.
+ */
 @media (prefers-reduced-motion: reduce) {
+  .mark-a,
+  .mark-b,
+  .mark-cut,
+  .brand-name,
+  .panel {
+    animation: none;
+  }
+
+  .splash-main {
+    animation: fade-in 300ms linear backwards;
+  }
+
+  .button,
+  .input,
+  .row-choice,
+  .row-choice input {
+    transition: none;
+  }
+
+  .button:active {
+    transform: none;
+  }
+
   .step[data-state="current"] .step-mark {
-    border-color: var(--brand);
+    border-color: var(--accent);
     animation: none;
   }
 
@@ -729,6 +976,6 @@ input {
     position: absolute;
     inset: 3px;
     border-radius: 50%;
-    background: var(--brand);
+    background: var(--accent);
   }
 }

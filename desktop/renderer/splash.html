@@ -2,7 +2,8 @@
 <!--
   The splash: what the main window shows while Schema Studio starts, and
   while a backup is restored. src/renderer/splash.ts fills it in, and app.css
-  gives each step its look.
+  gives each step its look and plays the short logo reveal: the mark is drawn
+  here, so that its two squares can take the theme's colours and move.
   The page is served with a strict security policy (src/main/protocol.ts),
   so it has no inline script or style.
 -->
@@ -18,7 +19,14 @@
   <body class="splash">
     <main class="splash-main">
       <header class="brand">
-        <img class="brand-mark" src="icon.svg" alt="" width="64" height="64">
+        <svg class="brand-mark" viewBox="0 0 30 30" width="64" height="64" aria-hidden="true">
+          <defs>
+            <clipPath id="mark-overlap"><rect x="2" y="2" width="18" height="18" rx="6"/></clipPath>
+          </defs>
+          <rect class="mark-a" x="2" y="2" width="18" height="18" rx="6"/>
+          <rect class="mark-b" x="10" y="10" width="18" height="18" rx="6"/>
+          <rect class="mark-cut" x="10" y="10" width="18" height="18" rx="6" clip-path="url(#mark-overlap)"/>
+        </svg>
         <h1 class="brand-name">Schema Studio</h1>
       </header>
       <div class="panel">

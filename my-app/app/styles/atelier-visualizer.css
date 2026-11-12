@@ -61,6 +61,10 @@
 .vz-page .viz-table__ico.is-fk { color: var(--accent-ink); }
 .vz-page .viz-canvas .react-flow__edge.viz-hot .react-flow__edge-path,
 .vz-page .viz-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); stroke-width: 2.25; }
+/* The foreign key name on each line: React Flow paints it on a white box,
+   which glares on the dark theme. Use the page's own colours instead. */
+.vz-page .viz-canvas .react-flow__edge-textbg { fill: var(--surface); }
+.vz-page .viz-canvas .react-flow__edge-text { fill: var(--ink-2); font-family: var(--mono); font-size: 10px; }
 
 /* ---- The things that float over the canvas ---- */
 .vz-page .viz-panel--search {

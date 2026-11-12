@@ -43,8 +43,30 @@ test("the Settings page loads the script that links the computer to a web site",
   assert.equal(pageFile(folders, "/settings-cloud.js")?.type, "text/javascript; charset=utf-8");
 });
 
+test("every font the stylesheet asks for can be served", () => {
+  const css = fs.readFileSync(path.join(folders.renderer, "app.css"), "utf8");
+  const asked = [...css.matchAll(/url\("([^"]+)"\)/g)].map((found) => found[1]);
+  assert.ok(asked.length >= 3, "app.css should load the three font families");
+  for (const name of asked) {
+    const file = pageFile(folders, `/${name}`);
+    assert.ok(file, `app.css asks for ${name}, which is not on the list`);
+    assert.equal(file.type, "font/woff2");
+    assert.ok(fs.existsSync(file.file), `${name} is on the list but ${file.file} does not exist`);
+  }
+});
+
 test("an address that is not on the list gives nothing", () => {
-  for (const name of ["/", "/settings", "/main.js", "/../package.json", "/settings.html/", "/SETTINGS.HTML"]) {
+  for (const name of [
+    "/",
+    "/settings",
+    "/main.js",
+    "/../package.json",
+    "/settings.html/",
+    "/SETTINGS.HTML",
+    "/fonts/",
+    "/fonts/OFL.txt",
+    "/fonts/../app.css",
+  ]) {
     assert.equal(pageFile(folders, name), null, name);
   }
 });

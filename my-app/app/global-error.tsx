@@ -37,20 +37,20 @@ export default function GlobalError({
             the layout that is not rendering. */}
         <style>{`
           .ge { min-height: 100vh; margin: 0; display: grid; place-items: center;
-                background: #f7f7f8; color: #18181b; padding: 24px;
+                background: #fbf5ea; color: #2a1a3e; padding: 24px;
                 font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
           .ge__box { max-width: 460px; text-align: center; }
-          .ge__title { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
-          .ge__body { font-size: 13.5px; line-height: 1.55; color: #52525b; margin: 0; }
+          .ge__title { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 8px; }
+          .ge__body { font-size: 13.5px; line-height: 1.55; color: #54456a; margin: 0; }
           .ge__ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                      font-size: 12px; display: block; margin-top: 8px; }
           .ge__btn { margin-top: 20px; font: inherit; font-size: 13px; font-weight: 500;
-                     padding: 8px 16px; border-radius: 8px; cursor: pointer;
-                     border: 1px solid #18181b; background: #18181b; color: #fff; }
+                     padding: 10px 20px; border-radius: 999px; cursor: pointer;
+                     border: 0; background: #f55a1c; color: #2a1a3e; }
           @media (prefers-color-scheme: dark) {
-            .ge { background: #0a0a0c; color: #f3f3f5; }
-            .ge__body { color: #b0b0ba; }
-            .ge__btn { border-color: #f3f3f5; background: #f3f3f5; color: #0a0a0c; }
+            .ge { background: #0c0b0a; color: #f2ede3; }
+            .ge__body { color: #c4bdb0; }
+            .ge__btn { background: #ff6a2b; color: #140d08; }
           }
         `}</style>
         <div className="ge">
@@ -58,8 +58,8 @@ export default function GlobalError({
             <h1 className="ge__title">Schema Studio could not start</h1>
             <p className="ge__body">
               The application failed before any screen could be drawn. Reloading
-              usually fixes it. If it does not, the server is the place to look
-              — no database was touched.
+              usually fixes it. If it does not, the server is the place to look.
+              No database was touched.
               {error.digest && (
                 <span className="ge__ref">Reference: {error.digest}</span>
               )}

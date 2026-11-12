@@ -1,6 +1,7 @@
 /**
- * The nine files the app:// pages are made of. Anything a page asks for
- * that is not on this list does not exist for it (src/main/protocol.ts).
+ * The files the app:// pages are made of: nine of their own, and the four
+ * font files the stylesheet asks for. Anything a page asks for that is not
+ * on this list does not exist for it (src/main/protocol.ts).
  *
  * A page loads its scripts with plain <script> tags, so a new script needs a
  * line here as well as its tag in the page. src/test/page-files.test.ts
@@ -14,7 +15,15 @@ export type PageFolders = { renderer: string; rendererScripts: string; assets: s
 const HTML = "text/html; charset=utf-8";
 const JAVASCRIPT = "text/javascript; charset=utf-8";
 
-/** The file behind an app:// address, or null for any address that is not one of the nine. */
+/** The fonts in renderer/fonts that renderer/app.css loads, by file name. */
+const FONTS: readonly string[] = [
+  "figtree-latin.woff2",
+  "bricolage-grotesque-latin.woff2",
+  "dm-mono-400-latin.woff2",
+  "dm-mono-500-latin.woff2",
+];
+
+/** The file behind an app:// address, or null for any address that is not on the list. */
 export function pageFile(folders: PageFolders, pathname: string): { file: string; type: string } | null {
   switch (pathname) {
     case "/splash.html":
@@ -35,7 +44,9 @@ export function pageFile(folders: PageFolders, pathname: string): { file: string
       return { file: path.join(folders.rendererScripts, "settings-cloud.js"), type: JAVASCRIPT };
     case "/icon.svg":
       return { file: path.join(folders.assets, "icon.svg"), type: "image/svg+xml" };
-    default:
-      return null;
+    default: {
+      const font = FONTS.find((name) => pathname === `/fonts/${name}`);
+      return font === undefined ? null : { file: path.join(folders.renderer, "fonts", font), type: "font/woff2" };
+    }
   }
 }

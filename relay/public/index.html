@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="light dark">
-    <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#fbf5ea" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0c0b0a" media="(prefers-color-scheme: dark)">
     <meta name="referrer" content="no-referrer">
     <meta name="description" content="Schema Studio on a phone or a laptop's browser: the schemas a paired computer shares, a database's live status, drift alerts and checks, deploy requests, and starting a run or cancelling a query with a passkey.">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -27,7 +27,15 @@
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
           Back
         </button>
-        <span class="brand"><img src="/icons/icon.svg" alt="" width="24" height="24">Schema Studio</span>
+        <span class="brand">
+          <svg class="mark" viewBox="0 0 30 30" width="26" height="26" aria-hidden="true">
+            <defs><clipPath id="mark-clip"><rect x="2" y="2" width="18" height="18" rx="6"/></clipPath></defs>
+            <rect class="mark-a" x="2" y="2" width="18" height="18" rx="6"/>
+            <rect class="mark-b" x="10" y="10" width="18" height="18" rx="6"/>
+            <rect class="mark-cut" x="10" y="10" width="18" height="18" rx="6" clip-path="url(#mark-clip)"/>
+          </svg>
+          Schema Studio
+        </span>
       </div>
       <div id="status" class="status" role="status" hidden></div>
     </header>

@@ -18,7 +18,7 @@ export function applyTheme(choice: ThemeChoice): void {
  * background, so opening a window never flashes white in dark mode.
  */
 export function windowBackground(): string {
-  return nativeTheme.shouldUseDarkColors ? "#0a0a0c" : "#f7f7f8";
+  return nativeTheme.shouldUseDarkColors ? "#0c0b0a" : "#fbf5ea";
 }
 
 /** Runs when light or dark changes, by choice or because Ubuntu's setting did. */

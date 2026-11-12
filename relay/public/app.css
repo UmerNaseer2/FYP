@@ -1,7 +1,9 @@
 /*
- * The phone app's look. It follows the computer app (desktop/renderer/app.css):
- * the same colors in light and dark, the same corners and the same system
- * fonts, because this page may load nothing but its own files (_headers).
+ * The phone app's look: the Atelier design the web app uses
+ * (my-app/app/globals.css). Cream and aubergine with a tangerine accent in
+ * light, a neutral near-black in dark, and the same three typefaces, kept in
+ * /fonts because this page may load nothing but its own files (_headers).
+ * The theme follows the phone's own light or dark setting.
  *
  * The same rules allow no style="..." in the page, so every screen is styled
  * here by its classes, and the app hides things with the `hidden` attribute,
@@ -12,69 +14,120 @@
   display: none !important;
 }
 
-:root {
-  color-scheme: light dark;
-  --bg: #f7f7f8;
-  --surface: #fff;
-  --surface-2: #fafafa;
-  --surface-3: #f3f3f5;
-  --border: #e7e7eb;
-  --border-strong: #d4d4d8;
-  --text: #18181b;
-  --text-2: #52525b;
-  --text-3: #8a8a93;
-  --brand: #6366f1;
-  /* The brand color as text: a shade darker than --brand, so small text on white stays easy to read. */
-  --brand-ink: #4f52e0;
-  --brand-soft: #eef0ff;
-  --accent-fill: #4f52e0;
-  --accent-fill-hover: #4346cf;
-  --on-accent: #fff;
-  --good: #16a34a;
-  --good-ink: #166534;
-  --good-soft: #e8f6ed;
-  --warn: #d97706;
-  --warn-ink: #92400e;
-  --warn-soft: #fdf3e1;
-  --bad: #dc2626;
-  --bad-ink: #b91c1c;
-  --bad-soft: #fdeded;
-  --shadow: 0 1px 2px rgb(24 24 27 / 0.05), 0 12px 32px rgb(24 24 27 / 0.06);
-  --radius: 12px;
-  --radius-small: 8px;
-  --font: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
-  --mono: ui-monospace, "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
-  --bar-height: 52px;
-  --tabs-height: 56px;
-  --rail-width: 12rem;
+/* The typefaces, latin only, under the SIL Open Font License (the *-OFL.txt files beside them). */
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("/fonts/figtree-latin.woff2") format("woff2");
 }
 
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 200 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/bricolage-grotesque-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/dm-mono-400-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "DM Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/dm-mono-500-latin.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #fbf5ea;
+  --surface: #ffffff;
+  --surface-2: #f3ebdc;
+  --surface-3: #eee5d5;
+  --border: #e6dccb;
+  --border-strong: #d3c5ad;
+  --line-strong: #94866f;
+  --text: #2a1a3e;
+  --text-2: #54456a;
+  --text-3: #625574;
+  /* The fill of the main button and of anything that marks "here". Text on it is --on-accent. */
+  --accent: #f55a1c;
+  --accent-press: #e04d12;
+  --on-accent: #2a1a3e;
+  /* The accent as text and links: dark enough to read on cream and on white. */
+  --accent-ink: #b03a08;
+  --accent-soft: #ffe8db;
+  --pill: #2a1a3e;
+  --on-pill: #fbf5ea;
+  --tint: #e4d8f7;
+  --good: #076a58;
+  --good-soft: #d9f4e8;
+  --warn: #6e4d00;
+  --warn-soft: #fdf1c4;
+  --bad: #a01d51;
+  --bad-soft: #fce0ea;
+  --wait: #5b3d8f;
+  --wait-soft: #ece4f9;
+  --code-bg: #2a1a3e;
+  --code-ink: #fbf5ea;
+  --lift: 0 2px 0 #2a1a3e14, 0 14px 30px -12px #2a1a3e33;
+  --lift-small: 0 1px 0 #2a1a3e0f, 0 0 0 1px #2a1a3e0d;
+  --radius: 16px;
+  --radius-small: 12px;
+  --radius-big: 24px;
+  --radius-pill: 999px;
+  --font: "Figtree", system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --display: "Bricolage Grotesque", var(--font);
+  --mono: "DM Mono", ui-monospace, "SFMono-Regular", "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --bar-height: 56px;
+  --tabs-height: 52px;
+  --rail-width: 13rem;
+}
+
+/* Dark is a neutral near-black: no purple and no glows, and a shadow becomes a thin line. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a0a0c;
-    --surface: #15161a;
-    --surface-2: #1b1c21;
-    --surface-3: #232428;
-    --border: #26272d;
-    --border-strong: #363740;
-    --text: #f3f3f5;
-    --text-2: #b0b0ba;
-    --text-3: #7a7a85;
-    --brand: #7c7fff;
-    --brand-ink: #a3a5ff;
-    --brand-soft: #1d1e34;
-    --accent-fill: #5558e8;
-    --accent-fill-hover: #6366f1;
-    --good: #22c55e;
-    --good-ink: #4ade80;
-    --good-soft: #10261a;
-    --warn: #f59e0b;
-    --warn-ink: #fbbf24;
-    --warn-soft: #2a2110;
-    --bad: #f87171;
-    --bad-ink: #f87171;
-    --bad-soft: #2a1618;
-    --shadow: none;
+    --bg: #0c0b0a;
+    --surface: #161513;
+    --surface-2: #1f1d1a;
+    --surface-3: #26241f;
+    --border: #2b2824;
+    --border-strong: #3d3a34;
+    --line-strong: #7d776c;
+    --text: #f2ede3;
+    --text-2: #c4bdb0;
+    --text-3: #9e978b;
+    --accent: #ff6a2b;
+    --accent-press: #ff8a57;
+    --on-accent: #140d08;
+    --accent-ink: #ff9b6b;
+    --accent-soft: #3a1d0f;
+    --pill: #f2ede3;
+    --on-pill: #141210;
+    --tint: #2a2723;
+    --good: #5fd0aa;
+    --good-soft: #10291f;
+    --warn: #e8c25a;
+    --warn-soft: #2e2508;
+    --bad: #ff7fa6;
+    --bad-soft: #3a1422;
+    --wait: #bba8e3;
+    --wait-soft: #221b31;
+    --code-bg: #070706;
+    --code-ink: #f2ede3;
+    --lift: 0 0 0 1px #2b2824;
+    --lift-small: 0 0 0 1px #2b2824;
   }
 }
 
@@ -121,7 +174,7 @@ video {
 }
 
 strong {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 button,
@@ -135,9 +188,15 @@ button {
   touch-action: manipulation;
 }
 
+/* One focus ring for everything: thick, in the accent. */
 :focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
+}
+
+::selection {
+  background: var(--tint);
+  color: var(--text);
 }
 
 /* The bar along the top: Back, the app's name, and the line that says how the link to the computer is doing. */
@@ -166,13 +225,19 @@ button {
   align-items: center;
   gap: 2px;
   min-height: 44px;
-  padding: 0 12px 0 4px;
+  padding: 0 16px 0 8px;
   border: 0;
-  border-radius: var(--radius-small);
+  border-radius: var(--radius-pill);
   background: none;
-  color: var(--brand-ink);
-  font-size: 1.0625rem;
+  color: var(--text);
+  font-size: 0.9375rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.back:active {
+  background: var(--surface-2);
 }
 
 .brand {
@@ -180,13 +245,26 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
+  font: 700 1.0625rem/1.2 var(--display);
+  letter-spacing: -0.02em;
   white-space: nowrap;
 }
 
-.brand img {
-  border-radius: 6px;
+/* The mark: two rounded squares, one in the accent and one in ink, with the place they overlap cut out. */
+.mark {
+  flex: none;
+}
+
+.mark-a {
+  fill: var(--accent);
+}
+
+.mark-b {
+  fill: var(--text);
+}
+
+.mark-cut {
+  fill: var(--bg);
 }
 
 .status {
@@ -196,6 +274,7 @@ button {
   gap: 6px 12px;
   padding: 10px max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
+  background: var(--surface-2);
   color: var(--text-2);
   font-size: 0.875rem;
 }
@@ -211,8 +290,7 @@ button {
 }
 
 .status > button {
-  min-height: 36px;
-  padding: 6px 14px;
+  background: var(--surface);
 }
 
 /* The screen */
@@ -224,12 +302,12 @@ button {
   width: 100%;
   max-width: 40rem;
   margin: 0 auto;
-  padding: 20px max(16px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  padding: 24px max(16px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 
 /* Room under the last thing on a screen for the tabs, which sit over the bottom of it. */
 body:has(> .tabs:not([hidden])) .app {
-  padding-bottom: calc(var(--tabs-height) + 32px + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--tabs-height) + 48px + env(safe-area-inset-bottom));
 }
 
 .app:focus,
@@ -238,10 +316,8 @@ body:has(> .tabs:not([hidden])) .app {
 }
 
 .title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.015em;
+  font: 800 1.875rem/1.1 var(--display);
+  letter-spacing: -0.03em;
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
@@ -249,21 +325,28 @@ body:has(> .tabs:not([hidden])) .app {
 .lead {
   color: var(--text-2);
   font-size: 1.0625rem;
+  line-height: 1.55;
   text-wrap: pretty;
 }
 
 .section {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  line-height: 1.35;
+  font: 700 1.125rem/1.3 var(--display);
+  letter-spacing: -0.02em;
   overflow-wrap: anywhere;
+}
+
+/* A name, such as a schema's, is shown as it is written, in the type for names. */
+.section.mono {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 /* A heading over a list sits closer to it than to what is above. */
 .app > .section {
+  margin-top: 8px;
   margin-bottom: -6px;
-  color: var(--text-2);
-  font-size: 0.9375rem;
 }
 
 .hint {
@@ -283,55 +366,86 @@ body:has(> .tabs:not([hidden])) .app {
   font-family: var(--mono);
   font-size: 0.92em;
   overflow-wrap: anywhere;
+  /* DM Mono stops at medium, and a browser's made-up bold of it is smudged. */
+  font-synthesis-weight: none;
 }
 
-#alerts-state {
+.mono,
+.mono strong {
+  font-weight: 400;
+}
+
+.pair-row dd .mono,
+.pair-row dd.mono,
+.script-name .mono,
+.script-name.mono,
+summary .mono:first-child {
   font-weight: 500;
 }
 
-/* Buttons */
+#alerts-state {
+  font-weight: 600;
+}
 
+/* Buttons: pills. The main one is filled with the accent, the others are quiet. */
+
+/* A button among the actions with no class of its own, such as Acknowledge, is the main one. */
 .primary,
 .secondary,
-.danger {
+.danger,
+.actions > button:not([class]) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;
-  padding: 10px 18px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-small);
+  min-height: 46px;
+  padding: 10px 22px;
+  border: 0;
+  border-radius: var(--radius-pill);
   font-size: 0.9375rem;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.2;
   text-align: center;
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    transform 0.22s var(--ease-out);
 }
 
-.primary {
-  background: var(--accent-fill);
+.primary,
+.actions > button:not([class]) {
+  background: var(--accent);
   color: var(--on-accent);
 }
 
 .secondary {
-  border-color: var(--border-strong);
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--text);
 }
 
 .danger {
-  border-color: var(--border-strong);
-  background: var(--surface);
-  color: var(--bad-ink);
+  background: var(--bad-soft);
+  color: var(--bad);
 }
 
-.primary:not(:disabled):active {
-  background: var(--accent-fill-hover);
+/* On a card or a list, which are the surface color in dark, a quiet button needs its own edge. */
+.card .secondary,
+.list .secondary {
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
+.primary:not(:disabled):active,
 .secondary:not(:disabled):active,
 .danger:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+.primary:not(:disabled):active,
+.actions > button:not([class], :disabled):active {
+  background: var(--accent-press);
+}
+
+.secondary:not(:disabled):active {
   background: var(--surface-3);
 }
 
@@ -343,7 +457,7 @@ button:disabled {
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 /* On a phone the buttons share the width, so each one is easy to reach with a thumb. */
@@ -357,11 +471,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  min-width: 0;
+  padding: 18px;
+  border-radius: 20px;
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: var(--lift);
 }
 
 /* A table that opens to show its columns. Browsers lay out <details> best as a plain block. */
@@ -378,7 +492,7 @@ details.table > summary {
   align-items: center;
   gap: 8px;
   min-height: 28px;
-  font-weight: 500;
+  font-weight: 600;
   list-style: none;
   cursor: pointer;
 }
@@ -396,7 +510,7 @@ details.table > summary::before {
   border: solid var(--text-3);
   border-width: 0 2px 2px 0;
   transform: rotate(-45deg);
-  transition: transform 0.15s ease;
+  transition: transform 0.22s var(--ease-out);
 }
 
 details.table[open] > summary::before {
@@ -414,17 +528,30 @@ details.table > summary .muted {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 20px;
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: var(--lift);
 }
 
 .list > * + * {
   border-top: 1px solid var(--border);
 }
 
+/* Cards in a list, such as a schema's tables, are its rows: the list has the corners and the lift. */
+.list > .card {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* A label on a line of its own in a card is as wide as its words. */
+.card > .tag,
+.card > .badge {
+  align-self: flex-start;
+}
+
 .card .list {
+  border-radius: var(--radius);
+  background: var(--surface-2);
   box-shadow: none;
 }
 
@@ -433,9 +560,9 @@ details.table > summary .muted {
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 56px;
+  min-height: 60px;
   margin: 0;
-  padding: 12px 16px;
+  padding: 12px 18px;
   border: 0;
   background: none;
   color: inherit;
@@ -447,8 +574,12 @@ label.row {
   cursor: pointer;
 }
 
+button.row {
+  transition: background 0.12s ease;
+}
+
 button.row:active {
-  background: var(--surface-3);
+  background: var(--surface-2);
 }
 
 /* The arrow that says a row opens another screen. */
@@ -464,7 +595,7 @@ button.row::after {
 }
 
 .row:focus-visible {
-  outline-offset: -3px;
+  outline-offset: -4px;
 }
 
 .row-main {
@@ -481,8 +612,12 @@ button.row::after {
 }
 
 .row-title {
-  font-weight: 500;
+  font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+.row-title.mono {
+  font-weight: 500;
 }
 
 input[type="checkbox"] {
@@ -490,16 +625,19 @@ input[type="checkbox"] {
   width: 22px;
   height: 22px;
   margin: 0;
-  accent-color: var(--accent-fill);
+  accent-color: var(--accent);
 }
 
 @media (hover: hover) {
   .primary:not(:disabled):hover {
-    background: var(--accent-fill-hover);
+    background: var(--accent-press);
   }
 
   .secondary:not(:disabled):hover,
-  .danger:not(:disabled):hover,
+  .back:hover {
+    background: var(--surface-3);
+  }
+
   button.row:hover {
     background: var(--surface-2);
   }
@@ -515,19 +653,24 @@ input[type="checkbox"] {
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 1px 8px;
+  padding: 2px 10px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.5;
   white-space: nowrap;
   vertical-align: 0.1em;
 }
 
 .tag {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text-2);
+}
+
+/* On the darker fill of a list inside a card, a plain tag steps up one shade. */
+.card .list .tag:not([class*="tone-"]) {
+  background: var(--surface-3);
 }
 
 .tag + .tag {
@@ -540,25 +683,25 @@ input[type="checkbox"] {
 
 /* The environments, colored as the web app colors them: an unlabeled one looks unfinished, production looks like a warning. */
 .env-unset {
-  border-color: var(--border-strong);
+  border-color: var(--line-strong);
   border-style: dashed;
-  background: var(--surface-3);
+  background: none;
   color: var(--text-2);
 }
 
 .env-dev {
-  background: var(--brand-soft);
-  color: var(--brand-ink);
+  background: var(--wait-soft);
+  color: var(--wait);
 }
 
 .env-staging {
   background: var(--warn-soft);
-  color: var(--warn-ink);
+  color: var(--warn);
 }
 
 .env-prod {
   background: var(--bad-soft);
-  color: var(--bad-ink);
+  color: var(--bad);
 }
 
 /* Messages */
@@ -568,20 +711,29 @@ input[type="checkbox"] {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-small);
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
   font-size: 0.9375rem;
+  overflow-wrap: anywhere;
 }
 
 .notice-bad {
-  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
   background: var(--bad-soft);
 }
 
+.notice-bad > p {
+  color: var(--bad);
+  font-weight: 600;
+}
+
 .notice-info {
-  border-color: color-mix(in srgb, var(--brand) 30%, transparent);
-  background: var(--brand-soft);
+  background: var(--accent-soft);
+}
+
+.notice > .secondary {
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .loading {
@@ -597,7 +749,7 @@ input[type="checkbox"] {
   width: 16px;
   height: 16px;
   border: 2px solid var(--border-strong);
-  border-top-color: var(--brand);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -614,23 +766,25 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 0.9375rem;
-  font-weight: 500;
+  color: var(--text-2);
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 input[type="text"],
 input[type="search"],
 select {
   width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-small);
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 14px;
   background: var(--surface);
   color: var(--text);
   /* 16px at least, or iOS zooms the page in when the field is touched. */
   font-size: 1rem;
   font-weight: 400;
+  transition: border-color 0.12s ease;
 }
 
 input[type="search"] {
@@ -640,21 +794,26 @@ input[type="search"] {
 
 /* Easy to check against the computer's screen. Shown in capitals, as the computer shows it, however it is typed. */
 input.code-input {
+  min-height: 56px;
+  border-color: var(--line-strong);
+  border-radius: var(--radius);
   font-family: var(--mono);
   font-size: 1.25rem;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 input::placeholder {
   color: var(--text-3);
+  opacity: 0.7;
 }
 
 input[type="text"]:focus,
 input[type="search"]:focus,
 select:focus {
-  border-color: var(--brand);
-  outline: 2px solid var(--brand);
+  border-color: var(--accent);
+  outline: 3px solid var(--accent);
   outline-offset: 0;
 }
 
@@ -673,6 +832,7 @@ select:focus {
   position: relative;
   min-height: 28px;
   padding: 2px 0 0 42px;
+  color: var(--text-2);
   counter-increment: step;
 }
 
@@ -687,9 +847,9 @@ select:focus {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--brand-soft);
-  color: var(--brand-ink);
-  font-size: 0.875rem;
+  background: var(--tint);
+  color: var(--text);
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 
@@ -701,7 +861,7 @@ select:focus {
   max-width: 26rem;
   aspect-ratio: 1 / 1;
   margin: 0 auto;
-  border-radius: var(--radius);
+  border-radius: var(--radius-big);
   background: #000;
 }
 
@@ -722,8 +882,8 @@ select:focus {
 
 dl.card {
   gap: 0;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .pair-row {
@@ -743,7 +903,7 @@ dl.card {
 
 .pair-row dd {
   margin-left: auto;
-  font-weight: 500;
+  font-weight: 600;
   text-align: right;
   overflow-wrap: anywhere;
 }
@@ -787,17 +947,17 @@ dl.card {
 /* The first label on a change says how risky it is. */
 .sev-breaking .small > .tag:first-child {
   background: var(--bad-soft);
-  color: var(--bad-ink);
+  color: var(--bad);
 }
 
 .sev-safe .small > .tag:first-child {
   background: var(--good-soft);
-  color: var(--good-ink);
+  color: var(--good);
 }
 
 .sev-info .small > .tag:first-child {
-  background: var(--brand-soft);
-  color: var(--brand-ink);
+  background: var(--wait-soft);
+  color: var(--wait);
 }
 
 /* Requests */
@@ -807,7 +967,7 @@ dl.card {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .script-name .tag + .tag {
@@ -817,9 +977,10 @@ dl.card {
 /* SQL keeps its lines as written and scrolls sideways in its own box, so the screen never does. */
 .sql {
   overflow-x: auto;
-  padding: 12px 14px;
-  border-radius: var(--radius-small);
-  background: var(--surface-3);
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--code-bg);
+  color: var(--code-ink);
   font: 0.8125rem/1.6 var(--mono);
   white-space: pre;
   tab-size: 2;
@@ -836,7 +997,8 @@ dl.card {
   display: grid;
   grid-auto-columns: 1fr;
   grid-auto-flow: column;
-  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  gap: 4px;
+  padding: 6px max(8px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
@@ -847,30 +1009,25 @@ dl.card {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  min-width: 0;
   min-height: var(--tabs-height);
   padding: 0 8px;
   border: 0;
+  border-radius: 14px;
   background: none;
-  color: var(--text-2);
+  color: var(--text-3);
   font-size: 0.9375rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .tab[aria-current="page"] {
-  color: var(--brand-ink);
-  font-weight: 600;
-}
-
-.tab[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  top: -1px;
-  right: 28%;
-  left: 28%;
-  height: 3px;
-  border-radius: 0 0 3px 3px;
-  background: var(--brand);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 700;
 }
 
 .tab:focus-visible {
@@ -883,11 +1040,9 @@ dl.card {
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: var(--accent-fill);
+  background: var(--accent);
   color: var(--on-accent);
-  font-size: 0.75rem;
-  font-weight: 700;
-  line-height: 20px;
+  font: 700 0.75rem/20px var(--font);
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -895,18 +1050,19 @@ dl.card {
 /* Where the browser can blur what scrolls under the bars, they let a little of it show through. */
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) and (background: color-mix(in srgb, red 50%, transparent)) {
   .top {
-    background: color-mix(in srgb, var(--bg) 82%, transparent);
-    -webkit-backdrop-filter: saturate(180%) blur(16px);
-    backdrop-filter: saturate(180%) blur(16px);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    -webkit-backdrop-filter: saturate(160%) blur(16px);
+    backdrop-filter: saturate(160%) blur(16px);
   }
 
   .tabs {
-    background: color-mix(in srgb, var(--surface) 86%, transparent);
-    -webkit-backdrop-filter: saturate(180%) blur(16px);
-    backdrop-filter: saturate(180%) blur(16px);
+    background: color-mix(in srgb, var(--surface) 90%, transparent);
+    -webkit-backdrop-filter: saturate(160%) blur(16px);
+    backdrop-filter: saturate(160%) blur(16px);
   }
 }
 
+/* No movement for people who ask for none. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -915,28 +1071,34 @@ dl.card {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+
+  .primary:not(:disabled):active,
+  .secondary:not(:disabled):active,
+  .danger:not(:disabled):active {
+    transform: none;
+  }
 }
 
 /* The live status screen. A tone colors a tag or a count by what it means, as the environments do. */
 .tag.tone-good {
   background: var(--good-soft);
-  color: var(--good-ink);
+  color: var(--good);
 }
 
 .tag.tone-warn {
   background: var(--warn-soft);
-  color: var(--warn-ink);
+  color: var(--warn);
 }
 
 .tag.tone-bad {
   background: var(--bad-soft);
-  color: var(--bad-ink);
+  color: var(--bad);
 }
 
 .stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .stat {
@@ -944,10 +1106,11 @@ dl.card {
   flex-direction: column-reverse;
   justify-content: flex-end;
   gap: 2px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius);
   background: var(--surface);
+  box-shadow: var(--lift-small);
 }
 
 .stat dt {
@@ -956,29 +1119,37 @@ dl.card {
 }
 
 .stat dd {
-  font-size: 1.375rem;
-  font-weight: 600;
-  line-height: 1.25;
-  font-variant-numeric: tabular-nums;
+  font: 500 1.375rem/1.25 var(--mono);
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.stat.tone-warn {
+  background: var(--warn-soft);
 }
 
 .stat.tone-warn dd {
-  color: var(--warn-ink);
+  color: var(--warn);
+}
+
+.stat.tone-bad {
+  background: var(--bad-soft);
 }
 
 .stat.tone-bad dd {
-  color: var(--bad-ink);
+  color: var(--bad);
 }
 
 .sessions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .session {
   gap: 6px;
-  padding: 12px 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
 }
 
 .session-head {
@@ -997,9 +1168,9 @@ dl.card {
 
 .session-sql summary {
   padding: 6px 0;
-  color: var(--brand-ink);
+  color: var(--accent-ink);
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -1033,7 +1204,7 @@ dl.card {
 .drift-item > .actions,
 .drift-item > .drift-confirm,
 .drift-item > .notice {
-  margin: 0 16px 12px;
+  margin: 0 18px 14px;
 }
 
 .drift-confirm > p {
@@ -1055,9 +1226,9 @@ dl.card {
 
   body:has(> .tabs:not([hidden])) .app {
     max-width: 52rem;
-    padding-right: max(24px, env(safe-area-inset-right));
+    padding-right: max(32px, env(safe-area-inset-right));
     padding-bottom: calc(40px + env(safe-area-inset-bottom));
-    padding-left: 24px;
+    padding-left: 32px;
   }
 
   body:has(> .tabs:not([hidden])) .tabs {
@@ -1067,7 +1238,7 @@ dl.card {
     grid-auto-flow: row;
     grid-auto-rows: max-content;
     gap: 4px;
-    padding: 12px 8px max(12px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    padding: 16px 10px max(16px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
     border-top: 0;
     border-right: 1px solid var(--border);
   }
@@ -1076,16 +1247,24 @@ dl.card {
     justify-content: flex-start;
     gap: 8px;
     min-height: 44px;
-    padding: 0 12px;
-    border-radius: var(--radius-small);
+    padding: 0 14px;
+    border-radius: var(--radius-pill);
   }
 
+  /* On the rail the tab you are on is a filled pill, as in the web app's side bar. */
   body:has(> .tabs:not([hidden])) .tab[aria-current="page"] {
-    background: var(--brand-soft);
+    background: var(--pill);
+    color: var(--on-pill);
   }
 
-  body:has(> .tabs:not([hidden])) .tab[aria-current="page"]::before {
-    display: none;
+  .card {
+    padding: 22px 24px;
+    border-radius: var(--radius-big);
+  }
+
+  .card.session {
+    padding: 14px 16px;
+    border-radius: var(--radius);
   }
 
   /* A phone's buttons share the width for a thumb. Across a page this wide they would only look like bars. */

@@ -2788,9 +2788,11 @@ function UriPreview({ uri }: { uri: string }) {
 
 function PreviewRow({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between">
-      <span style={{ color: "var(--text-3)" }}>{k}</span>
-      <span className="mono" style={{ color: "var(--text-2)" }}>
+    // min-w-0 and truncate keep a long host or database name inside its half
+    // of the box; the whole value is in the tooltip.
+    <div className="flex justify-between gap-3 min-w-0">
+      <span className="shrink-0" style={{ color: "var(--text-3)" }}>{k}</span>
+      <span className="mono truncate min-w-0" style={{ color: "var(--text-2)" }} title={v}>
         {v}
       </span>
     </div>

@@ -1,11 +1,11 @@
 /**
  * The app:// pages: the start screen (splash.html) and Settings
- * (settings.html), with their stylesheet, scripts and icon.
+ * (settings.html), with their stylesheet, scripts, fonts and icon.
  *
  * The app serves them itself rather than opening them as file:// pages,
  * because a file:// page can read any file the person can, and every file://
  * page counts as the same site as every other. app://schema-studio is a site
- * of its own on which only the nine files of src/core/page-files.ts exist;
+ * of its own on which only the files listed in src/core/page-files.ts exist;
  * any other address is "not found". Every answer carries a strict content
  * security policy, so the pages run only their own scripts, load only their
  * own files, and cannot send anything anywhere.
