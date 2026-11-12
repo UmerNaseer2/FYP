@@ -876,8 +876,14 @@ describe("in the shared trial organization", () => {
   });
 
   test("even an Admin is refused what the trial switches off, in the trial's words", async () => {
-    for (const key of ["connections:create", "users:update", "roles:delete", "organization:update"]) {
+    for (const key of ["connections:create", "users:update", "organization:update"]) {
       expect(await refusal(await requirePermission(key as never))).toEqual([403, { error: TRIAL_REFUSAL }]);
+    }
+  });
+
+  test("lets the Trial Admin change roles, since Reset trial puts the built-in ones back", async () => {
+    for (const key of ["roles:create", "roles:update", "roles:delete"]) {
+      expect(principalOf(await requirePermission(key as never)).permissions).toContain(key);
     }
   });
 

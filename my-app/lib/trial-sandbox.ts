@@ -6,13 +6,14 @@
 //   - the organization "trial", with the built-in roles;
 //   - the three accounts (Trial Admin, Trial Editor, Trial Viewer) and their
 //     memberships;
-//   - three saved connections, to the trial's own demo databases, when
-//     TRIAL_DATABASE_URL names them (see trialDatabases below).
+//   - one saved connection, to the trial's own demo database, when
+//     TRIAL_DATABASE_URL names one (see trialDatabase below). It holds five
+//     small schemas (lib/trial-seed.ts).
 //
 // It is built the first time somebody signs in to the trial, and then left
 // alone: nothing resets it on a timer. The Trial Admin's "Reset trial" button
 // (app/api/trial/reset/route.ts) deletes the organization, with everything in
-// it, rebuilds the demo databases, and makes it again. Its GitHub repository
+// it, rebuilds the demo schemas, and makes it again. Its GitHub repository
 // and token and its AI settings are carried over, so a token saved once stays.
 // The three accounts' profiles stay too, so every open session still works, in
 // the fresh organization.
@@ -35,7 +36,7 @@ import {
   trialEnabled,
   type TrialRole,
 } from "./trial-rules";
-import { TRIAL_STAGES, trialSeedSql, type TrialStage } from "./trial-seed";
+import { trialSeedSql } from "./trial-seed";
 
 /** Held while the trial is checked or rebuilt, so two sign-ins never build it twice. */
 const TRIAL_LOCK = 0x7472_6961; // "tria"
@@ -43,7 +44,7 @@ const TRIAL_LOCK = 0x7472_6961; // "tria"
 /**
  * A reset asked for within this long of the last one is not done again: the
  * trial is already fresh, and a button pressed over and over by many visitors
- * would keep rebuilding the demo databases under everyone.
+ * would keep rebuilding the demo schemas under everyone.
  */
 export const TRIAL_RESET_COOLDOWN_MS = 30_000;
 
@@ -54,24 +55,19 @@ export const TRIAL_RESET_COOLDOWN_MS = 30_000;
  */
 const KEPT_ON_RESET = ["organization_github", "organization_ai"] as const;
 
-/** The trial's demo databases' names, one for each stage, on the server TRIAL_DATABASE_URL names. */
-export const TRIAL_DATABASE_NAMES: Record<TrialStage, string> = {
-  prod: "trial_prod",
-  staging: "trial_staging",
-  dev: "trial_dev",
-};
-
-/** What each one is called in the trial's connection list. */
-// Every one runs for whoever's role may run migrations, the same as any new
-// connection: the role decides, not the connection.
-const TRIAL_CONNECTIONS: Record<TrialStage, { name: string; environment: string; executeRole: string }> = {
-  prod: { name: "Bookshop (production)", environment: "prod", executeRole: DEFAULT_EXECUTE_ROLE },
-  staging: { name: "Bookshop (staging)", environment: "staging", executeRole: DEFAULT_EXECUTE_ROLE },
-  dev: { name: "Bookshop (development)", environment: "dev", executeRole: DEFAULT_EXECUTE_ROLE },
-};
+/**
+ * What the trial's one connection is called, and its label. It holds every
+ * stage at once, one schema each, so it has no environment label of its own:
+ * it is a normal connection, with no production ticks and no approvals. It
+ * runs for whoever's role may run migrations, the same as any new connection.
+ */
+const TRIAL_CONNECTION = {
+  name: "University demo",
+  environment: "unset",
+  executeRole: DEFAULT_EXECUTE_ROLE,
+} as const;
 
 export type TrialDatabase = {
-  stage: TrialStage;
   host: string;
   port: number;
   database: string;
@@ -81,44 +77,47 @@ export type TrialDatabase = {
 };
 
 /**
- * The three demo databases, read from TRIAL_DATABASE_URL, or null when it is
- * not set (the trial then has no connections, and says nothing is wrong).
+ * The demo database, read from TRIAL_DATABASE_URL, or null when it is not set
+ * (the trial then has no connection, and says nothing is wrong).
  *
- * The URL names the server and a role that owns trial_prod, trial_staging and
- * trial_dev there. Whichever database the URL itself names is ignored. The
- * role must not be a superuser (rebuildTrialDatabase refuses one): every
- * reset drops everything it owns, and anyone on the internet can run SQL
- * as it, through Deploy.
+ * The URL names a role of the trial's own, which may create schemas in that
+ * database (GRANT CREATE ON DATABASE) and owns nothing else anywhere. It must
+ * not be a superuser (rebuildTrialDatabase refuses one): every reset drops
+ * every schema it owns, and anyone on the internet can run SQL as it, through
+ * Deploy.
  */
-export function trialDatabases(url = process.env.TRIAL_DATABASE_URL): TrialDatabase[] | null {
+export function trialDatabase(url = process.env.TRIAL_DATABASE_URL): TrialDatabase | null {
   if (!url) return null;
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    console.error("TRIAL_DATABASE_URL is not a URL, so the trial has no databases.");
+    console.error("TRIAL_DATABASE_URL is not a URL, so the trial has no database.");
     return null;
   }
   if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
-    console.error("TRIAL_DATABASE_URL is not a postgres:// URL, so the trial has no databases.");
+    console.error("TRIAL_DATABASE_URL is not a postgres:// URL, so the trial has no database.");
     return null;
   }
-  const sslMode = parsed.searchParams.get("sslmode") === "disable" ? "disable" : "require";
-  return TRIAL_STAGES.map((stage) => ({
-    stage,
+  const user = decodeURIComponent(parsed.username);
+  return {
     host: parsed.hostname,
     port: Number(parsed.port) || 5432,
-    database: TRIAL_DATABASE_NAMES[stage],
-    user: decodeURIComponent(parsed.username),
+    // Postgres's own default when a URL names no database: the user's name.
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, "")) || user,
+    user,
     password: decodeURIComponent(parsed.password),
-    sslMode,
-  }));
+    sslMode: parsed.searchParams.get("sslmode") === "disable" ? "disable" : "require",
+  };
 }
 
 /**
- * Put one demo database back to its starting bookshop: drop everything the
- * trial role owns there (whatever a tester deployed, schemas and all), and
- * build the stage's tables and rows again, all in one transaction.
+ * Put the demo database back as it started: drop every schema the trial role
+ * owns there (the five demo schemas, and any a tester made through Deploy),
+ * and build the five again, all in one transaction.
+ *
+ * Schemas, not DROP OWNED: that would also take back the role's right to
+ * create schemas in the database, and the next reset could not build them.
  */
 export async function rebuildTrialDatabase(db: TrialDatabase): Promise<void> {
   const client = new Client({
@@ -143,9 +142,15 @@ export async function rebuildTrialDatabase(db: TrialDatabase): Promise<void> {
       throw new Error("TRIAL_DATABASE_URL names a superuser. The trial needs a role of its own that is not one.");
     }
     await client.query("BEGIN");
-    await client.query("DROP OWNED BY CURRENT_USER CASCADE");
-    await client.query("CREATE SCHEMA IF NOT EXISTS public");
-    await client.query(trialSeedSql(db.stage));
+    const owned = await client.query<{ nspname: string }>(
+      `SELECT nspname FROM pg_namespace
+        WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+          AND nspname <> 'public'`
+    );
+    for (const { nspname } of owned.rows) {
+      await client.query(`DROP SCHEMA "${nspname.replace(/"/g, '""')}" CASCADE`);
+    }
+    await client.query(trialSeedSql());
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -214,14 +219,14 @@ export async function ensureTrialOrganization(
       rebuilt = true;
       const kept = existing ? await readKeptSettings(client, existing.id) : [];
       if (existing) await client.query(`DELETE FROM organizations WHERE id = $1`, [existing.id]);
-      await rebuildTrialDatabases();
+      await rebuildTrialDemo();
       const made = await client.query<{ id: number }>(
         `INSERT INTO organizations (slug, name) VALUES ($1, $2) RETURNING id`,
         [TRIAL_ORG_SLUG, TRIAL_ORG_NAME]
       );
       orgId = made.rows[0].id;
       await seedBuiltInRoles(client, orgId);
-      await addTrialConnections(client, orgId);
+      await addTrialConnection(client, orgId);
       await restoreKeptSettings(client, orgId, kept);
     }
 
@@ -273,52 +278,45 @@ async function restoreKeptSettings(client: MetadataClient, orgId: number, kept: 
 }
 
 /**
- * Rebuild every demo database. A database that cannot be rebuilt is logged
- * and left as it is: the trial still opens, with yesterday's data there.
+ * Rebuild the demo database. When it cannot be rebuilt, that is logged and it
+ * is left as it is: the trial still opens, with the old data there.
  */
-async function rebuildTrialDatabases(): Promise<void> {
-  const databases = trialDatabases();
-  if (!databases) return;
-  await Promise.all(
-    databases.map(async (db) => {
-      try {
-        await rebuildTrialDatabase(db);
-      } catch (error) {
-        console.error(
-          `Could not rebuild the trial's ${db.stage} database:`,
-          error instanceof Error ? error.message : "unknown error"
-        );
-      }
-    })
-  );
-}
-
-async function addTrialConnections(client: MetadataClient, orgId: number): Promise<void> {
-  const databases = trialDatabases();
-  if (!databases) return;
-  for (const db of databases) {
-    const shown = TRIAL_CONNECTIONS[db.stage];
-    await client.query(
-      `INSERT INTO connections
-         (name, host, port, database_name, type, username, password, connection_string,
-          ssl, ssl_mode, environment, execute_role, org_id, version, updated_at, updated_by)
-       VALUES ($1, $2, $3, $4, 'PostgreSQL', $5, $6, NULL, $7, $8, $9, $10, $11, 1, now(), $12)`,
-      [
-        shown.name,
-        db.host,
-        db.port,
-        db.database,
-        db.user,
-        encryptSecret(db.password) ?? "",
-        db.sslMode !== "disable",
-        db.sslMode,
-        shown.environment,
-        shown.executeRole,
-        orgId,
-        "the trial",
-      ]
+async function rebuildTrialDemo(): Promise<void> {
+  const db = trialDatabase();
+  if (!db) return;
+  try {
+    await rebuildTrialDatabase(db);
+  } catch (error) {
+    console.error(
+      "Could not rebuild the trial's demo database:",
+      error instanceof Error ? error.message : "unknown error"
     );
   }
+}
+
+async function addTrialConnection(client: MetadataClient, orgId: number): Promise<void> {
+  const db = trialDatabase();
+  if (!db) return;
+  await client.query(
+    `INSERT INTO connections
+       (name, host, port, database_name, type, username, password, connection_string,
+        ssl, ssl_mode, environment, execute_role, org_id, version, updated_at, updated_by)
+     VALUES ($1, $2, $3, $4, 'PostgreSQL', $5, $6, NULL, $7, $8, $9, $10, $11, 1, now(), $12)`,
+    [
+      TRIAL_CONNECTION.name,
+      db.host,
+      db.port,
+      db.database,
+      db.user,
+      encryptSecret(db.password) ?? "",
+      db.sslMode !== "disable",
+      db.sslMode,
+      TRIAL_CONNECTION.environment,
+      TRIAL_CONNECTION.executeRole,
+      orgId,
+      "the trial",
+    ]
+  );
 }
 
 /** The three accounts' profiles (made once, kept across resets) and their memberships. */
@@ -364,7 +362,7 @@ export async function trialSignIn(
 
 /**
  * The Trial Admin's "Reset trial" button: the trial back to how it started,
- * demo databases and all, keeping its GitHub and AI settings. Throws when it
+ * demo schemas and all, keeping its GitHub and AI settings. Throws when it
  * cannot be done.
  */
 export async function resetTrial(): Promise<void> {

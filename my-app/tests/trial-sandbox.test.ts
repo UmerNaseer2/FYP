@@ -1,5 +1,5 @@
 // The shared trial organization: its rules (lib/trial-rules.ts), its demo
-// databases' SQL (lib/trial-seed.ts), the parts of lib/trial-sandbox.ts that
+// database's SQL (lib/trial-seed.ts), the parts of lib/trial-sandbox.ts that
 // need no database, and the routes that turn trial accounts away.
 //
 // Building the organization itself needs a real database, and was checked by
@@ -45,8 +45,8 @@ import {
   trialEnabled,
   trialPermissions,
 } from "../lib/trial-rules";
-import { trialSeedSql } from "../lib/trial-seed";
-import { resetTrial, trialDatabases, trialSignIn } from "../lib/trial-sandbox";
+import { STUDENT_SCRIPTS, TRIAL_SCHEMAS, trialSeedSql } from "../lib/trial-seed";
+import { resetTrial, trialDatabase, trialSignIn } from "../lib/trial-sandbox";
 import { orgSlugProblem } from "../lib/new-organization";
 import { ALL_PERMISSIONS } from "../lib/permissions";
 import { canAnswerRequests, grantProblem } from "../lib/access-requests";
@@ -122,7 +122,15 @@ describe("the trial's rules", () => {
     expect(left).toHaveLength(ALL_PERMISSIONS.length - TRIAL_BLOCKED_PERMISSIONS.size);
   });
 
-  it("lets the Trial Admin answer requests and allow somebody for a day, though roles are locked", () => {
+  it("lets the Trial Admin change roles, but not connections, people or the organization", () => {
+    const left = trialPermissions(ALL_PERMISSIONS);
+    expect(left).toEqual(expect.arrayContaining(["roles:create", "roles:update", "roles:delete"]));
+    for (const key of ["connections:create", "users:update", "organization:update"] as const) {
+      expect(left).not.toContain(key);
+    }
+  });
+
+  it("lets the Trial Admin answer requests and allow somebody for a day", () => {
     const admin = { ...principalFor("admin"), permissions: trialPermissions(ALL_PERMISSIONS) };
     expect(canAnswerRequests(admin)).toBe(true);
     expect(grantProblem(admin, "deploy:run")).toBeNull();
@@ -177,44 +185,80 @@ describe("the Reset trial button", () => {
   });
 });
 
-describe("the demo databases", () => {
-  it("are none without TRIAL_DATABASE_URL, or with one that is not a postgres URL", () => {
+describe("the demo database", () => {
+  it("is none without TRIAL_DATABASE_URL, or with one that is not a postgres URL", () => {
     const quiet = jest.spyOn(console, "error").mockImplementation(() => {});
-    expect(trialDatabases(undefined)).toBeNull();
-    expect(trialDatabases("not a url")).toBeNull();
-    expect(trialDatabases("mysql://u:p@h/db")).toBeNull();
+    expect(trialDatabase(undefined)).toBeNull();
+    expect(trialDatabase("not a url")).toBeNull();
+    expect(trialDatabase("mysql://u:p@h/db")).toBeNull();
     quiet.mockRestore();
   });
 
-  it("are the three trial databases on the server the URL names, whatever database it names", () => {
-    const dbs = trialDatabases("postgresql://trial_sandbox:p%40ss@db.example.com/neondb?sslmode=require");
-    expect(dbs?.map((db) => db.database)).toEqual(["trial_prod", "trial_staging", "trial_dev"]);
-    expect(dbs?.[0]).toMatchObject({
+  it("is the database the URL names, on its server", () => {
+    expect(trialDatabase("postgresql://trial_sandbox:p%40ss@db.example.com/neondb?sslmode=require")).toEqual({
       host: "db.example.com",
       port: 5432,
+      database: "neondb",
       user: "trial_sandbox",
       password: "p@ss",
       sslMode: "require",
     });
-    expect(trialDatabases("postgres://u:p@127.0.0.1:55432/x?sslmode=disable")?.[2]).toMatchObject({
+    expect(trialDatabase("postgres://u:p@127.0.0.1:55432/x?sslmode=disable")).toMatchObject({
       port: 55432,
+      database: "x",
       sslMode: "disable",
     });
+    // No database in the URL: Postgres's own default, the user's name.
+    expect(trialDatabase("postgres://someone:p@h")?.database).toBe("someone");
   });
 
-  it("differ from stage to stage, so Compare has something to show", () => {
-    const prod = trialSeedSql("prod");
-    const staging = trialSeedSql("staging");
-    const dev = trialSeedSql("dev");
-    expect(prod).toContain("books_title_idx");
-    expect(staging).not.toContain("books_title_idx");
-    expect(prod).toContain("email varchar(100)");
-    expect(staging).toContain("email varchar(255)");
-    expect(staging).toContain("author varchar(100)");
-    expect(dev).toContain("CREATE TABLE public.reviews");
-    expect(dev).toContain("CREATE TYPE public.order_status");
-    expect(dev).toMatch(/\bname varchar\(100\)/);
-    expect(prod).toContain("full_name varchar(100)");
+  it("holds three student schemas and two courses schemas", () => {
+    expect(TRIAL_SCHEMAS).toEqual([
+      "students_prod",
+      "students_staging",
+      "students_dev",
+      "courses_staging",
+      "courses_dev",
+    ]);
+    const sql = trialSeedSql();
+    for (const schema of TRIAL_SCHEMAS) expect(sql).toContain(`CREATE SCHEMA ${schema};`);
+  });
+
+  it("puts staging one script ahead of prod and dev two ahead, each with its ledger", () => {
+    const sql = trialSeedSql();
+    const block = (schema: string) => {
+      const start = sql.indexOf(`CREATE SCHEMA ${schema};`);
+      const next = sql.indexOf("CREATE SCHEMA ", start + 1);
+      return sql.slice(start, next === -1 ? undefined : next);
+    };
+    const recorded = (schema: string) =>
+      STUDENT_SCRIPTS.filter((script) => block(schema).includes(`VALUES ('students', '${script.version}'`)).map(
+        (script) => script.version
+      );
+    expect(recorded("students_prod")).toEqual(["1.0.0"]);
+    expect(recorded("students_staging")).toEqual(["1.0.0", "1.1.0"]);
+    expect(recorded("students_dev")).toEqual(["1.0.0", "1.1.0", "1.2.0"]);
+    for (const schema of ["students_prod", "students_staging", "students_dev"]) {
+      expect(block(schema)).toContain("CREATE TABLE script_patch");
+    }
+    expect(block("students_prod")).not.toContain("ADD COLUMN status");
+    expect(block("students_staging")).toContain("ADD COLUMN status");
+    expect(block("students_staging")).not.toContain("CREATE TABLE grades");
+    expect(block("students_dev")).toContain("CREATE TABLE grades");
+  });
+
+  it("leaves the courses schemas with no ledger, and different from each other", () => {
+    const sql = trialSeedSql();
+    const staging = sql.slice(sql.indexOf("CREATE SCHEMA courses_staging;"), sql.indexOf("CREATE SCHEMA courses_dev;"));
+    const dev = sql.slice(sql.indexOf("CREATE SCHEMA courses_dev;"));
+    for (const schema of [staging, dev]) expect(schema).not.toContain("script_patch");
+    expect(dev).toContain("CREATE TABLE prerequisites");
+    expect(staging).not.toContain("CREATE TABLE prerequisites");
+    expect(staging).toContain("semester_offered varchar(10)");
+    expect(dev).not.toContain("semester_offered");
+    expect(dev).toContain("faculty varchar(100)");
+    expect(staging).toContain("title varchar(100)");
+    expect(dev).toContain("title varchar(150)");
   });
 });
 

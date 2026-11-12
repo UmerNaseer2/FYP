@@ -1,7 +1,7 @@
 // POST /api/trial/reset: the Trial Admin's "Reset trial" button.
 //
 // Puts the shared trial organization back to how it started: its scripts,
-// requests, history and demo databases all go, and it is built again from
+// requests, history and demo schemas all go, and it is built again from
 // nothing (lib/trial-sandbox.ts). Its GitHub repository and token and its AI
 // settings are carried over, so a token saved once stays saved.
 //

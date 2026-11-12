@@ -72,13 +72,15 @@ export function isTrialEmail(email: string | null | undefined): boolean {
 /**
  * What nobody in the trial may do, whatever their role says.
  *
- * Connections: the three demo databases are the only ones, so nobody can
- * point the app at a database of their choosing (or see one somebody else
- * typed in). People and roles: the three accounts are fixed, and an Admin
- * rearranging what a role may do would change the trial for everyone after.
- * The organization's settings and its deletion: shared by everyone, so nobody
- * gets to change them. Its GitHub repository and token are allowed, so the
- * Trial Admin can save one and try GitHub, and a reset keeps them.
+ * Connections: the demo database is the only one, so nobody can point the
+ * app at a database of their choosing (or see one somebody else typed in).
+ * People: the three accounts are fixed. The organization's settings and its
+ * deletion: shared by everyone, so nobody gets to change them.
+ *
+ * Roles are allowed, so the Trial Admin can try the Roles & permissions page:
+ * the Trial Admin can change what a role may do, and "Reset trial" puts the
+ * built-in roles back. Its GitHub repository and token are allowed too, so
+ * the Trial Admin can save one and try GitHub, and a reset keeps them.
  */
 export const TRIAL_BLOCKED_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<PermissionKey>([
   "connections:create",
@@ -87,9 +89,6 @@ export const TRIAL_BLOCKED_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<Per
   "users:create",
   "users:update",
   "users:delete",
-  "roles:create",
-  "roles:update",
-  "roles:delete",
   "organization:update",
   "organization:delete",
 ]);

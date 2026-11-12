@@ -51,7 +51,7 @@ export function TrialBar({ isAdmin }: { isAdmin: boolean }) {
         onClose={() => setAsking(false)}
         onConfirm={() => void reset()}
         title="Reset the trial?"
-        description="Every script, request, run and change in the trial goes, and the demo databases are built again from the start. The GitHub token and AI settings stay. Anyone else in the trial right now will see it start over."
+        description="Every script, request, run and role change in the trial goes, and the demo schemas are built again from the start. The GitHub token and AI settings stay. Anyone else in the trial right now will see it start over."
         confirmLabel="Reset trial"
         destructive
       />
