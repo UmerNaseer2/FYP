@@ -652,7 +652,7 @@ describe("findOpenApproval", () => {
   it("looks for exactly this run, in this organization", async () => {
     await findOpenApproval(INPUT);
     const [sql, values] = mockPoolQuery.mock.calls[0] as [string, unknown[]];
-    expect(values).toEqual([3, "public", DEPLOY_HEX, "deploy", TEST_ORG.id]);
+    expect(values).toEqual([3, "public", DEPLOY_HEX, "deploy", TEST_ORG.id, null]);
     expect(sql).toMatch(/org_id = \$5/);
     expect(sql).toMatch(/status IN \('pending', 'approved'\)/);
     expect(sql).toMatch(/expires_at/);
@@ -668,6 +668,7 @@ describe("findOpenApproval", () => {
       REVERT_HEX,
       "revert",
       TEST_ORG.id,
+      null,
     ]);
   });
 

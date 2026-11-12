@@ -1,5 +1,11 @@
 import type { ListedApproval } from "./approvals-db";
-import { hasPermission, type PermissionHolder } from "./permissions";
+import {
+  ADMIN_ROLE,
+  hasPermission,
+  isAdminOnly,
+  isPermissionKey,
+  type PermissionHolder,
+} from "./permissions";
 
 /**
  * Requests: how someone asks for something their role can't do.
@@ -46,6 +52,11 @@ export type AccessRequest = {
   decided_at: string | null;
   decision_note: string | null;
   created_at: string;
+  /**
+   * When an Admin allowed just this person, for a while: the end of that
+   * while. Until then they may do what they asked, whatever their role says.
+   */
+  granted_until: string | null;
 };
 
 /** A request as the people answering it see it: with the asker as they are now. */
@@ -67,6 +78,8 @@ export type RequestCounts = {
 export type RequestsPayload = {
   mine: AccessRequest[];
   inbox: InboxRequest[];
+  /** What people were allowed for a day and still hold. Only for those who can answer requests. */
+  lent: AccessRequest[];
   runsToApprove: ListedApproval[];
   runsToRun: ListedApproval[];
   myRuns: ListedApproval[];
@@ -77,8 +90,32 @@ export type RequestsPayload = {
 
 /**
  * Who may answer a request. Allowing one means changing a role or moving someone
- * to another, so these are the rights that can do that.
+ * to another, so these are the rights that can do that. An Admin always may:
+ * in the shared trial, where changing roles is switched off, an Admin can still
+ * answer, and allow somebody for a day (grantProblem), which needs neither.
  */
-export function canAnswerRequests(holder: PermissionHolder): boolean {
-  return hasPermission(holder, "users:update", "roles:update");
+export function canAnswerRequests(holder: PermissionHolder & { role?: string }): boolean {
+  return hasPermission(holder, "users:update", "roles:update") || holder?.role === ADMIN_ROLE;
+}
+
+/** How long "Allow just them" lasts. */
+export const GRANT_HOURS = 24;
+
+/**
+ * Why this request cannot be answered "just them, for a day", or null when it
+ * can. Only a request for one named permission, never one only an Admin may
+ * hold (those come with the Admin role and nothing else), and only by somebody
+ * who holds it themselves: nobody hands out more than they have.
+ */
+export function grantProblem(holder: PermissionHolder, permission: string | null): string | null {
+  if (permission === null || !isPermissionKey(permission)) {
+    return "This request is not for one thing the app can switch on, so it cannot be allowed for a day.";
+  }
+  if (isAdminOnly(permission)) {
+    return "Only an Admin may do that, so it cannot be lent to anyone. Make them an Admin instead.";
+  }
+  if (!hasPermission(holder, permission)) {
+    return "You cannot do that yourself, so you cannot let somebody else do it.";
+  }
+  return null;
 }

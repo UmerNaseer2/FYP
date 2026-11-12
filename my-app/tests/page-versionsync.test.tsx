@@ -21,6 +21,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
+import { OrgProvider } from "@/components/OrgProvider";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
@@ -151,9 +152,17 @@ function pick(box: string, option: string | RegExp) {
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/** Pick Staging → Live, which puts the one version Live is missing on screen. */
+/**
+ * Pick Staging → Live, which puts the one version Live is missing on screen,
+ * in an organization with the two-person rule switched on (it is off by
+ * default), since most of what is below is about production approvals.
+ */
 async function pickStagingToLive() {
-  render(<VersionSyncPage />);
+  render(
+    <OrgProvider slug="test-org" name="Test Org" twoPersonRule>
+      <VersionSyncPage />
+    </OrgProvider>
+  );
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "Source connection" })).toBeEnabled()
   );
@@ -404,28 +413,20 @@ describe("what the replay check says about deleting rows", () => {
 });
 
 describe("who may replay", () => {
-  it("shows a role without Deploy: Run the list, with nothing to press and one line on why", async () => {
+  it("lets a role without Deploy: Run ask an Admin to approve one exact replay", async () => {
     // A replay writes to the Target through the same apply route Deploy uses,
-    // so it needs the same box. Reading what the Target is missing does not,
-    // and that is most of what this screen is for: the list stays, the Run
-    // buttons go, and the reason is said once above the list rather than as a
-    // dead button on every row.
+    // so it needs the same box, or an Admin's yes for that exact replay. The
+    // list stays, the Run buttons stay (pressing one opens the check, which
+    // asks), and the note above the list says how it works once.
     setUser("viewer");
     setRoutes(baseRoutes());
 
     await pickStagingToLive();
 
-    expect(await screen.findByText("You can read this list, but not replay it")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        `Your role (Viewer) can't apply or revert migrations. Ask an admin to turn on "Apply or revert migrations" for this role.`
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Run / })).not.toBeInTheDocument();
-    // The note beside the heading does not describe buttons that are not there.
-    fireEvent.click(screen.getByRole("button", { name: "Help: Missing on the Target" }));
-    expect(screen.getByRole("note")).toHaveTextContent(/The exact scripts the Source ran/);
-    expect(screen.getByRole("note")).not.toHaveTextContent(/Run button/);
+    expect(await screen.findByText("A replay here needs an Admin's approval")).toBeInTheDocument();
+    expect(screen.getByText(/you can run it once, within 7 days/)).toBeInTheDocument();
+    expect(screen.queryByText("You can read this list, but not replay it")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Run v2\.0\.0/ })).toBeInTheDocument();
   });
 
   it("does not ask for approvals a role may not read, and keeps Replay on production shut", async () => {

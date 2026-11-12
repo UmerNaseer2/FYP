@@ -6,6 +6,7 @@
 // database is the fake client from helpers/fake-pg. Nothing here reaches a
 // real database or GitHub.
 import { NextRequest } from "next/server";
+import { askToRunRefusal } from "@/lib/connection-access";
 import { toEnvironment } from "@/lib/environments";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
@@ -294,7 +295,7 @@ describe("production approval", () => {
     );
     expect(mockClaim).toHaveBeenCalledTimes(1);
     // Only an approval given in the caller's organization can be spent.
-    expect(mockClaim.mock.calls[0][0]).toMatchObject({ orgId: TEST_ORG.id, connectionId: 7 });
+    expect(mockClaim.mock.calls[0][0]).toMatchObject({ orgId: TEST_ORG.id, connectionId: 7, requestedBy: null });
     expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
   });
 
@@ -748,13 +749,29 @@ describe("per-connection execution setting", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
-  it("refuses an admins-only connection to an editor, and names both roles", async () => {
+  it("refuses an admins-only connection to an editor until an Admin approves the run for them", async () => {
+    // An editor may not run here by themselves, but may ask an Admin for this
+    // one run. With no approval of theirs to claim, nothing runs.
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
     const res = await apply(SAFE);
     expect(res.status).toBe(403);
-    expect(String(res.body.error)).toContain("limited to admins");
-    // The caller's role by the name people read, not the key it is stored under.
-    expect(String(res.body.error)).toContain('your role is "Editor"');
+    expect(res.body.askToRun).toBe(true);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(askToRunRefusal("Sales dev", false));
+    // Only an approval this very person asked for counts, off production too.
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(mockClaim.mock.calls[0][0]).toMatchObject({ requestedBy: "a@test", action: "deploy" });
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("refuses that editor a dry run there outright, claiming nothing", async () => {
+    // A rehearsal executes the SQL too, and no approval covers one.
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    const res = await apply({ ...SAFE, dryRun: true });
+    expect(res.status).toBe(403);
+    expect(res.body.askToRun).toBe(true);
+    expect(res.body.error).toBe(askToRunRefusal("Sales dev", true));
+    expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
   });
 

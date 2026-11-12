@@ -13,9 +13,10 @@
 //
 // Anyone on the internet can be these three people, so the organization is
 // locked down: nothing in it can reach a database other than its own three
-// demo ones, change who is in it or what a role may do, take a GitHub token
-// or an AI key, or be deleted. lib/trial-sandbox.ts builds it, and puts it
-// back to how it started every night.
+// demo ones, change who is in it or what a role may do, or be deleted. Its
+// GitHub repository and token may be set, so the Trial Admin can try pushing
+// scripts. lib/trial-sandbox.ts builds it, and puts it back to how it started
+// when the Trial Admin presses "Reset trial".
 //
 // Pure: no database. auth-guard, the routes and the landing page import it.
 
@@ -75,8 +76,9 @@ export function isTrialEmail(email: string | null | undefined): boolean {
  * point the app at a database of their choosing (or see one somebody else
  * typed in). People and roles: the three accounts are fixed, and an Admin
  * rearranging what a role may do would change the trial for everyone after.
- * The organization's settings, its GitHub token and its deletion: shared by
- * everyone, so nobody gets to change them.
+ * The organization's settings and its deletion: shared by everyone, so nobody
+ * gets to change them. Its GitHub repository and token are allowed, so the
+ * Trial Admin can save one and try GitHub, and a reset keeps them.
  */
 export const TRIAL_BLOCKED_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<PermissionKey>([
   "connections:create",
@@ -90,7 +92,6 @@ export const TRIAL_BLOCKED_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<Per
   "roles:delete",
   "organization:update",
   "organization:delete",
-  "github:update",
 ]);
 
 /** A role's permissions with the trial's blocked ones taken out. */

@@ -1628,6 +1628,11 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
 .ny-hot { background:var(--pill); color:var(--on-pill); }
 .ny-hot em { background:var(--accent); color:var(--on-accent); }
 
+/* The shared trial's strip under the top bar (components/studio/TrialBar.tsx). */
+.trial-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; margin:0 16px 8px; padding:8px 12px 8px 14px; border-radius:12px; background:var(--accent-soft); color:var(--ink); font-size:13px; line-height:19px; }
+.trial-bar > span:first-child { flex:1; min-width:200px; }
+.trial-bar-error { color:var(--drift); font-weight:600; }
+
 /* ——— The account menu ——— */
 .who-wrap { position:relative; flex:none; }
 .who { height:38px; padding:0 12px 0 4px; display:inline-flex; align-items:center; gap:8px; border-radius:var(--r-pill);

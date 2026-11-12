@@ -33,6 +33,7 @@ function payload(over: Partial<RequestsPayload> = {}): RequestsPayload {
   return {
     mine: [],
     inbox: [],
+    lent: [],
     runsToApprove: [],
     runsToRun: [],
     myRuns: [],

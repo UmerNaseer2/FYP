@@ -29,6 +29,10 @@ jest.mock("../lib/push-db", () => ({
   savePushSubscription: jest.fn(),
 }));
 jest.mock("../lib/push-send", () => ({ pushPublicKey: jest.fn() }));
+jest.mock("../lib/trial-sandbox", () => ({
+  ...jest.requireActual("../lib/trial-sandbox"),
+  resetTrial: jest.fn(),
+}));
 
 import * as agentDb from "../lib/agent-db";
 import {
@@ -42,11 +46,13 @@ import {
   trialPermissions,
 } from "../lib/trial-rules";
 import { trialSeedSql } from "../lib/trial-seed";
-import { trialDatabases, trialDayStart, trialSignIn } from "../lib/trial-sandbox";
+import { resetTrial, trialDatabases, trialSignIn } from "../lib/trial-sandbox";
 import { orgSlugProblem } from "../lib/new-organization";
 import { ALL_PERMISSIONS } from "../lib/permissions";
+import { canAnswerRequests, grantProblem } from "../lib/access-requests";
 import { POST as approveLink } from "../app/api/computers/link/route";
 import { POST as savePush } from "../app/api/phone/push/route";
+import { POST as resetTrialRoute } from "../app/api/trial/reset/route";
 
 const SITE = "studio.example.test";
 const saved = { ...process.env };
@@ -116,19 +122,58 @@ describe("the trial's rules", () => {
     expect(left).toHaveLength(ALL_PERMISSIONS.length - TRIAL_BLOCKED_PERMISSIONS.size);
   });
 
+  it("lets the Trial Admin answer requests and allow somebody for a day, though roles are locked", () => {
+    const admin = { ...principalFor("admin"), permissions: trialPermissions(ALL_PERMISSIONS) };
+    expect(canAnswerRequests(admin)).toBe(true);
+    expect(grantProblem(admin, "deploy:run")).toBeNull();
+    // Nothing the trial switches off can be lent either.
+    expect(grantProblem(admin, "connections:create")).toMatch(/cannot do that yourself/);
+    const editor = principalFor("editor");
+    expect(canAnswerRequests({ ...editor, permissions: trialPermissions(editor.permissions) })).toBe(false);
+  });
+
   it("keeps the trial's address from anyone making an organization", () => {
     expect(orgSlugProblem("trial")).toMatch(/kept for the trial/);
     expect(orgSlugProblem("trial-run")).toBeNull();
   });
 });
 
-describe("the nightly reset", () => {
-  it("starts the trial day at 17:00 UTC", () => {
-    expect(trialDayStart(new Date("2026-11-12T16:59:59Z")).toISOString()).toBe("2026-11-11T17:00:00.000Z");
-    expect(trialDayStart(new Date("2026-11-12T17:00:00Z")).toISOString()).toBe("2026-11-12T17:00:00.000Z");
-    expect(trialDayStart(new Date("2026-11-13T02:00:00Z")).toISOString()).toBe("2026-11-12T17:00:00.000Z");
-    // Across a month's end.
-    expect(trialDayStart(new Date("2026-12-01T05:00:00Z")).toISOString()).toBe("2026-11-30T17:00:00.000Z");
+describe("the Reset trial button", () => {
+  beforeEach(trialOn);
+
+  it("lets the Trial Admin save a GitHub token", () => {
+    expect(TRIAL_BLOCKED_PERMISSIONS.has("github:update")).toBe(false);
+  });
+
+  it("resets the trial for the Trial Admin", async () => {
+    mockGate = inTrial("admin");
+    const response = await resetTrialRoute();
+    expect(response.status).toBe(200);
+    expect(resetTrial).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the Trial Admin's alone", async () => {
+    mockGate = inTrial("editor");
+    const response = await resetTrialRoute();
+    expect(response.status).toBe(403);
+    expect(resetTrial).not.toHaveBeenCalled();
+  });
+
+  it("never touches an organization that is not the trial", async () => {
+    mockGate = { ok: true, principal: principalFor("admin") };
+    const response = await resetTrialRoute();
+    expect(response.status).toBe(404);
+    expect(resetTrial).not.toHaveBeenCalled();
+  });
+
+  it("says so when the reset fails, and leaves out why", async () => {
+    mockGate = inTrial("admin");
+    jest.mocked(resetTrial).mockRejectedValueOnce(new Error("secret detail"));
+    const quiet = jest.spyOn(console, "error").mockImplementation(() => {});
+    const response = await resetTrialRoute();
+    quiet.mockRestore();
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain("secret detail");
   });
 });
 

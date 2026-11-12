@@ -1,7 +1,7 @@
 "use client";
 
 import "@/app/styles/atelier-deploy.css";
-import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
@@ -944,7 +944,8 @@ function rollbackLossSentence(version: string, kinds: ReadonlyArray<string>): st
   );
 }
 
-function approvalRequestedToast(bypass: boolean, mayApprove: boolean): string {
+function approvalRequestedToast(bypass: boolean, mayApprove: boolean, askToRun = false): string {
+  if (askToRun) return "Asked for approval. Once an Admin says yes, you can run it";
   if (!bypass) return "Approval requested — someone else has to clear it";
   return mayApprove
     ? "Approval requested — with the auth bypass on, you clear it yourself"
@@ -959,7 +960,7 @@ function DeployBody() {
   const { user, roleLabel, isAdmin, bypass, can, loading: sessionLoading } = useUser();
   const orgPath = useOrgHref();
   // Whether production runs here wait for a second person (the Organization tab).
-  const twoPersonRule = useOrg()?.twoPersonRule ?? true;
+  const twoPersonRule = useOrg()?.twoPersonRule ?? false;
   const mayReadApprovals = can("approvals:read");
   // Said at the top of the page, as Dashboard and Connections do, so a role
   // that may only look finds out before picking a target rather than after.
@@ -1249,7 +1250,6 @@ function DeployBody() {
   // for a second person only when the organization has approvals switched on.
   const targetEnvironment = toEnvironment(activeConn?.environment);
   const targetIsProduction = isProduction(targetEnvironment);
-  const approvalNeeded = targetIsProduction && twoPersonRule && !bypass;
 
   // The selected target's execution setting, and whether this caller clears it.
   //
@@ -1276,6 +1276,24 @@ function DeployBody() {
     targetExecuteRole === "admin"
       ? "is limited to admins"
       : `needs a role that may run deployments, and yours (${roleLabel}) may not`;
+  // Somebody who may not run here by themselves can still ask an Admin to
+  // approve one exact run (or rollback), and then run it once. Never on a
+  // read-only connection, and never as a dry run: the routes refuse both.
+  const askToRun = !sessionLoading && !mayExecuteOnTarget && !targetIsReadOnly;
+  // A real run waits for an approval when this person may only run with one,
+  // and on production when the organization has approvals switched on.
+  const approvalNeeded = askToRun || (targetIsProduction && twoPersonRule && !bypass);
+  // Which approvals this person's run may use, the same rule as the server's
+  // (WHOSE_APPROVAL in lib/approvals-db): somebody asking to run spends only
+  // their own one-off, and anybody else only ordinary approvals.
+  const viewerEmailLower = (user?.email ?? "").toLowerCase();
+  const usableApproval = useCallback(
+    (a: ApprovalRow) =>
+      askToRun
+        ? a.run_by_requester === true && a.requested_by.toLowerCase() === viewerEmailLower
+        : a.run_by_requester !== true,
+    [askToRun, viewerEmailLower]
+  );
 
   // Scope the pulled scripts to the selected connection's database. GitHub now
   // stores scripts under <database_name>/<schema>/..., so a script only belongs
@@ -1556,9 +1574,11 @@ function DeployBody() {
   const rollbackApprovals = useMemo(
     () =>
       rollbackHash
-        ? approvals.filter((a) => a.action === "revert" && a.run_fingerprint === rollbackHash)
+        ? approvals.filter(
+            (a) => a.action === "revert" && a.run_fingerprint === rollbackHash && usableApproval(a)
+          )
         : [],
-    [approvals, rollbackHash]
+    [approvals, rollbackHash, usableApproval]
   );
   const approvedRollback = rollbackApprovals.find((a) => a.status === "approved") ?? null;
   const pendingRollback = rollbackApprovals.find((a) => a.status === "pending") ?? null;
@@ -1573,7 +1593,8 @@ function DeployBody() {
     // A target this caller may not execute against refuses a rollback for the
     // same reason it refuses a deploy: a rollback executes SQL. It is if
     // anything the one to be surer about — it drops what a migration added.
-    !mayExecuteOnTarget ||
+    // Unless they may ask for one: then the approval below is what stops it.
+    (!mayExecuteOnTarget && !askToRun) ||
     rollbackBusy !== null ||
     isDeploying ||
     (targetIsProduction && !rollbackProdAck) ||
@@ -1590,13 +1611,16 @@ function DeployBody() {
     ? "Every version above needs a rollback that can run before anything runs"
     : targetIsReadOnly
       ? "This connection is marked read-only, so nothing here will run against it"
-    : !mayExecuteOnTarget
+    : !mayExecuteOnTarget && !askToRun
       ? `Rolling back on this connection ${executeBlockedWhy}`
     : isDeploying
       ? "A deploy is running on this target — wait for it to finish"
       : (targetIsProduction && !rollbackProdAck) ||
           (targetIsProduction && rollbackDataLoss.length > 0 && !rollbackDataLossAck)
         ? "Tick every box above to enable this"
+        : askToRun && !approvedRollback
+          ? "Your role may not roll back here by itself, so this waits for an Admin to approve it. " +
+            "A dry run is not open to you here"
         : approvalNeeded && !approvedRollback
           ? "Rolling back on production needs an approval. The dry run does not"
           : targetIsProduction && rollbackOthers.length > 0 && !rollbackOtherAck
@@ -1999,10 +2023,10 @@ function DeployBody() {
       runHash
         ? approvals.filter(
             // A row with no action predates rollback approvals, so it is a deploy.
-            (a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash
+            (a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash && usableApproval(a)
           )
         : [],
-    [approvals, runHash]
+    [approvals, runHash, usableApproval]
   );
   const approvedRun = runApprovals.find((a) => a.status === "approved") ?? null;
   const pendingRun = runApprovals.find((a) => a.status === "pending") ?? null;
@@ -2018,10 +2042,11 @@ function DeployBody() {
             (a) =>
               (a.action ?? "deploy") === "deploy" &&
               a.status === "approved" &&
-              a.run_fingerprint !== runHash
+              a.run_fingerprint !== runHash &&
+              usableApproval(a)
           ) ?? null
         : null,
-    [approvals, approvedRun, runHash]
+    [approvals, approvedRun, runHash, usableApproval]
   );
   // The pending version that range ends at, as the registry spells it, so
   // "Select that range" can pick it. null when it is not pending any more (it
@@ -2091,7 +2116,9 @@ function DeployBody() {
     // Dry runs included, because the route refuses those too: a rehearsal
     // really executes the script against the target and only then rolls back.
     // A button that started one here would be a promise this app cannot keep.
-    !mayExecuteOnTarget ||
+    // Somebody who may ask is let through to the approval; their dry run
+    // buttons are off on their own (see dryRunBlocked).
+    (!mayExecuteOnTarget && !askToRun) ||
     hasTxnViolation ||
     blockedByApplication.length > 0 ||
     isDeploying ||
@@ -2102,6 +2129,9 @@ function DeployBody() {
   // A real deploy on production also waits for a second person, when the
   // organization has approvals switched on. A dry run never does.
   const deployBlocked = runBlocked || (approvalNeeded && !approvedRun);
+  // A rehearsal runs the SQL too, and an approval never covers one, so
+  // somebody who may run here only with an approval may not rehearse.
+  const dryRunBlocked = runBlocked || askToRun;
   // The target pickers hold still while a rollback runs: its outcome, and the
   // ledger it reads afterwards, belong to the target it was started on.
   const targetLocked = rollbackBusy !== null;
@@ -2489,7 +2519,7 @@ function DeployBody() {
       }
       setApprovalNote("");
       // Under the auth bypass the one principal clears its own request.
-      showToast(approvalRequestedToast(bypass, mayApprove));
+      showToast(approvalRequestedToast(bypass, mayApprove, askToRun));
     } catch {
       setApprovalError("Network error requesting the approval.");
     } finally {
@@ -3096,8 +3126,8 @@ function DeployBody() {
               </p>
               <p>
                 You can still see what is pending on each target and what has run before.
-                {mayRequestApproval &&
-                  " For a production target, check the database and request approval. Once it is approved, someone who can run a deploy runs it."}
+                {" To run one anyway, pick the target and the versions, check the database, and " +
+                  "press Ask for approval. Once an Admin says yes, you can run that exact run once."}
               </p>
             </div>
           </div>
@@ -3648,6 +3678,7 @@ function DeployBody() {
                           viewerEmail={user?.email ?? ""}
                           roleLabel={roleLabel}
                           mayRequest={mayRequestApproval}
+                          askToRun={askToRun}
                           mayApprove={mayApprove}
                           bypass={bypass}
                           twoPersonRule={twoPersonRule}
@@ -3672,7 +3703,7 @@ function DeployBody() {
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"
-                          disabled={rollbackBlocked}
+                          disabled={rollbackBlocked || askToRun}
                           onClick={() => void handleRollback(true)}
                         >
                           <EyeIcon size={13} />
@@ -3931,6 +3962,12 @@ function DeployBody() {
                         {targetIsReadOnly ? (
                           <ChecklistItem ok={false}>
                             Execution · read-only — this app will not write to this database
+                          </ChecklistItem>
+                        ) : askToRun ? (
+                          <ChecklistItem ok={Boolean(approvedRun)}>
+                            {approvedRun
+                              ? "Execution · approved for you, for this one run"
+                              : `Execution · ${roleLabel} may run this only with an Admin's approval`}
                           </ChecklistItem>
                         ) : !mayExecuteOnTarget ? (
                           <ChecklistItem ok={false}>
@@ -4347,6 +4384,7 @@ function DeployBody() {
                             viewerEmail={user?.email ?? ""}
                             roleLabel={roleLabel}
                             mayRequest={mayRequestApproval}
+                          askToRun={askToRun}
                             mayApprove={mayApprove}
                             bypass={bypass}
                             twoPersonRule={twoPersonRule}
@@ -4375,7 +4413,7 @@ function DeployBody() {
                         <button
                           type="button"
                           className="btn btn-secondary"
-                          disabled={runBlocked}
+                          disabled={dryRunBlocked}
                           onClick={() => handleRun(true)}
                         >
                           <EyeIcon size={14} />
@@ -4406,7 +4444,7 @@ function DeployBody() {
                         {targetIsReadOnly
                           ? "This connection is marked read-only on Connections, so nothing " +
                             "here will run against it — not a deploy and not a dry run"
-                          : !mayExecuteOnTarget
+                          : !mayExecuteOnTarget && !askToRun
                           ? `Running migrations on this connection ${executeBlockedWhy}`
                           : blockedByApplication.length > 0
                           ? `${versionRange(
@@ -4421,6 +4459,9 @@ function DeployBody() {
                             ? "Checking the target for drift first — these unlock when the check finishes"
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
+                            : askToRun && !approvedRun
+                              ? "Your role may not run migrations here by itself, so the deploy waits " +
+                                "for an Admin to approve it. A dry run is not open to you here"
                             : approvalNeeded && !approvedRun
                               ? "Deploy on production needs an approval. A dry run does not"
                               : enumAdditions.length > 0
@@ -4745,15 +4786,16 @@ function DeployBody() {
                     <div className="dp-warn-text">
                       {/* Names no approver: under the auth bypass you clear it
                           yourself, and the Pre-flight panel says which it is. */}
-                      Deploy on production needs an approval. Go back to Pre-flight to
-                      request one.
+                      {askToRun
+                        ? "This deploy needs an Admin's approval first. Go back to Pre-flight to ask for one."
+                        : "Deploy on production needs an approval. Go back to Pre-flight to request one."}
                     </div>
                   )}
               <div className="dp-row">
               <button
                 type="button"
                 className="btn btn-secondary"
-                disabled={(runIsDryRun ? runBlocked : deployBlocked) || repeatChange !== null}
+                disabled={(runIsDryRun ? dryRunBlocked : deployBlocked) || repeatChange !== null}
                 onClick={() => handleRun(runIsDryRun)}
               >
                 {driftChecking

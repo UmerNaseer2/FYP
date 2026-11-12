@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { requirePermission } from "@/lib/auth-guard";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
 import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
@@ -288,7 +288,10 @@ type PlannedStep = { row: LedgerRow; sql: string; source: "ledger" | "registry" 
  */
 async function runRevert(request: NextRequest, attempt: AttemptContext): Promise<NextResponse> {
   // ─── 1. Only roles that may run deployments ──────────────────────────────
-  const gate = await requirePermission("deploy:run");
+  // As in the apply route: anyone who may see deployments gets this far, and
+  // the check below decides whether they may roll back by themselves or only
+  // with an approval given to them.
+  const gate = await requirePermission("deploy:read");
   if (!gate.ok) return gate.response;
   attempt.action = "revert";
   attempt.orgId = gate.principal.orgId;
@@ -358,6 +361,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   // against this particular database? A rollback is an execution like any
   // other — it is the one that drops what a migration added — so a connection
   // marked read-only refuses it for the same reason and with the same sentence.
+  //
+  // Somebody whose role may not roll back here can still do one exact
+  // rollback an Admin approved for them (step 10 claims it), but never on a
+  // read-only connection and never as a dry run.
+  let onlyWithOwnApproval = false;
   {
     const required = toExecuteRole(connRow.execute_role);
     const who = {
@@ -365,13 +373,14 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       mayDeploy: hasPermission(gate.principal, "deploy:run"),
     };
     if (!canExecute(who, required)) {
-      return fail(403, {
-        error: executeRefusal(
-          connRow.name ?? `connection ${connectionId}`,
-          gate.principal.roleLabel,
-          required
-        ),
-      });
+      const shown = connRow.name ?? `connection ${connectionId}`;
+      if (required === "none") {
+        return fail(403, { error: executeRefusal(shown, gate.principal.roleLabel, required) });
+      }
+      if (dryRun) {
+        return fail(403, { error: askToRunRefusal(shown, true, true), askToRun: true });
+      }
+      onlyWithOwnApproval = true;
     }
   }
 
@@ -719,7 +728,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     //
     // Only for a real rollback in an organization whose two-person rule is
     // on. A dry run rolls back, so it needs the production tick and no more.
-    if (needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
+    // And for anybody who may not roll back here by themselves, on any
+    // connection: only an approval given to them, for this exact rollback.
+    if (onlyWithOwnApproval || needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
       let claimed;
       try {
         claimed = await claimApproval({
@@ -734,6 +745,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             sqlContent: step.sql,
           })),
           action: "revert",
+          requestedBy: onlyWithOwnApproval ? gate.principal.email : null,
         });
       } catch (claimError) {
         console.error("Revert — could not read the approval:", claimError);
@@ -741,6 +753,13 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
           error:
             "Could not check the approval for this rollback, so nothing was run and nothing " +
             "changed. Is the app database reachable? Try again.",
+        });
+      }
+      if (!claimed && onlyWithOwnApproval) {
+        return await refuse(403, {
+          needsApproval: true,
+          askToRun: true,
+          error: askToRunRefusal(connRow.name ?? `connection ${connectionId}`, false, true),
         });
       }
       if (!claimed) {

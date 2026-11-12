@@ -16,6 +16,7 @@ import {
 } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { TEST_ORG } from "./helpers/principals";
+import { askToRunRefusal } from "@/lib/connection-access";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
@@ -342,6 +343,9 @@ describe("production", () => {
         { scriptName: "orders_fix", version: "3.0.0", sqlContent: "DROP TABLE t3;" },
         { scriptName: "orders_fix", version: "2.0.0", sqlContent: "DROP TABLE t2;" },
       ],
+      // Somebody who may roll back here spends an ordinary approval, never
+      // another person's one-off.
+      requestedBy: null,
     });
     expect(count(mockClient, "COMMIT")).toBe(1);
     expect(mockRelease).not.toHaveBeenCalled();
@@ -813,10 +817,31 @@ describe("per-connection execution setting", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
-  it("refuses an admins-only connection to an editor", async () => {
+  it("refuses an admins-only connection to an editor until an Admin approves the rollback for them", async () => {
+    // An editor may not roll back here by themselves, but may ask an Admin
+    // for this one rollback. The route reads the ledger to know which exact
+    // rollback that is, finds no approval of theirs, and changes nothing.
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
     const res = await revert({ ...BASE, versions: ["3.0.0"] });
     expect(res.status).toBe(403);
+    expect(res.body.askToRun).toBe(true);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(askToRunRefusal("Sales dev", false, true));
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(mockClaim.mock.calls[0][0]).toMatchObject({ requestedBy: "a@test", action: "revert" });
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+    expect(queriesMatching(mockClient, /\b(DROP|DELETE|INSERT|ALTER|CREATE)\b/)).toEqual([]);
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+  });
+
+  it("refuses that editor a dry run there outright, before BEGIN", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true });
+    expect(res.status).toBe(403);
+    expect(res.body.askToRun).toBe(true);
+    expect(res.body.error).toBe(askToRunRefusal("Sales dev", true, true));
+    expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
   });
 

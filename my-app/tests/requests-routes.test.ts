@@ -20,7 +20,10 @@ jest.mock("../lib/access-requests-db", () => ({
   countRequestInbox: jest.fn(),
   countRequestsAnsweredSince: jest.fn(),
   createAccessRequest: jest.fn(),
+  endGrant: jest.fn(),
   getAccessRequest: jest.fn(),
+  grantAccessRequest: jest.fn(),
+  listActiveGrants: jest.fn(),
   listOwnRequests: jest.fn(),
   listRequestInbox: jest.fn(),
   markRequestsSeen: jest.fn(),
@@ -105,6 +108,7 @@ function stored(over: Partial<AccessRequest> = {}): AccessRequest {
     decided_at: null,
     decision_note: null,
     created_at: "2026-11-01T00:00:00.000Z",
+    granted_until: null,
     ...over,
   };
 }
@@ -119,6 +123,7 @@ beforeEach(() => {
   db.countRequestsAnsweredSince.mockResolvedValue(0);
   db.listOwnRequests.mockResolvedValue([]);
   db.listRequestInbox.mockResolvedValue([]);
+  db.listActiveGrants.mockResolvedValue([]);
   db.readRequestsSeen.mockResolvedValue(null);
   runs.countOwnRunsAnsweredSince.mockResolvedValue(0);
   runs.countRunsReadyToRun.mockResolvedValue(0);
@@ -227,7 +232,9 @@ describe("GET /api/requests", () => {
     expect(body.inbox).toEqual([]);
     expect(body.runsToApprove).toEqual([]);
     expect(body.runsToRun).toEqual([]);
+    expect(body.lent).toEqual([]);
     expect(body.canAnswer).toBe(false);
+    expect(db.listActiveGrants).not.toHaveBeenCalled();
     expect(db.listRequestInbox).not.toHaveBeenCalled();
     expect(runs.listRunsToApprove).not.toHaveBeenCalled();
     expect(runs.listRunsReadyToRun).not.toHaveBeenCalled();
@@ -245,6 +252,8 @@ describe("GET /api/requests", () => {
     expect(body.inbox).toHaveLength(1);
     expect(body.runsToApprove).toHaveLength(1);
     expect(body.runsToRun).toHaveLength(2);
+    expect(body.lent).toEqual([]);
+    expect(db.listActiveGrants).toHaveBeenCalledWith(TEST_ORG.id);
     expect(db.listRequestInbox).toHaveBeenCalledWith(TEST_ORG.id, "admin@test");
     expect(runs.listRunsToApprove).toHaveBeenCalledWith(TEST_ORG.id, "admin@test");
   });
@@ -490,6 +499,102 @@ describe("PATCH /api/requests/[id]", () => {
       const response = await patch("5", ANSWER);
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: "Could not update this request." });
+    });
+  });
+
+  describe("allowing just the asker for a day", () => {
+    const GRANT = { action: "grant", note: "  For the demo.  " };
+
+    beforeEach(() => {
+      db.getAccessRequest.mockResolvedValue(stored());
+    });
+
+    it("lets an Admin allow it, under their name, and tells the asker", async () => {
+      mockGate = as("admin");
+      db.grantAccessRequest.mockResolvedValue(stored({ status: "allowed", granted_until: "2026-11-02T00:00:00.000Z" }));
+      const response = await patch("5", GRANT);
+      expect(response.status).toBe(200);
+      expect(db.grantAccessRequest).toHaveBeenCalledWith(TEST_ORG.id, 5, "admin@test", "For the demo.");
+      expect(db.answerAccessRequest).not.toHaveBeenCalled();
+      expect(pushAlerts.alertRequestAnswered).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a role that can't answer requests", async () => {
+      mockGate = as("editor");
+      expect((await patch("5", GRANT)).status).toBe(403);
+      expect(db.grantAccessRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses your own", async () => {
+      mockGate = as("admin");
+      db.getAccessRequest.mockResolvedValue(stored({ requested_by: "admin@test" }));
+      const response = await patch("5", GRANT);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "You can't answer your own request." });
+      expect(db.grantAccessRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses what only an Admin may ever do", async () => {
+      mockGate = as("admin");
+      db.getAccessRequest.mockResolvedValue(stored({ permission: "roles:update" }));
+      const response = await patch("5", GRANT);
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toMatch(/Make them an Admin instead/);
+      expect(db.grantAccessRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses a request that is not for one permission", async () => {
+      mockGate = as("admin");
+      db.getAccessRequest.mockResolvedValue(stored({ permission: null, message: "Something else" }));
+      const response = await patch("5", GRANT);
+      expect(response.status).toBe(403);
+      expect(db.grantAccessRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses to lend what the person answering cannot do themselves", async () => {
+      mockGate = holding("users:update");
+      const response = await patch("5", GRANT);
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toMatch(/cannot do that yourself/);
+      expect(db.grantAccessRequest).not.toHaveBeenCalled();
+    });
+
+    it("says so when someone else answered first", async () => {
+      mockGate = as("admin");
+      db.grantAccessRequest.mockResolvedValue(null);
+      expect((await patch("5", GRANT)).status).toBe(409);
+    });
+  });
+
+  describe("ending a day's allowance early", () => {
+    const END = { action: "end-grant" };
+
+    beforeEach(() => {
+      db.getAccessRequest.mockResolvedValue(stored({ status: "allowed", granted_until: "2026-11-02T00:00:00.000Z" }));
+    });
+
+    it("lets an Admin end it", async () => {
+      mockGate = as("admin");
+      db.endGrant.mockResolvedValue(stored({ status: "allowed" }));
+      expect((await patch("5", END)).status).toBe(200);
+      expect(db.endGrant).toHaveBeenCalledWith(TEST_ORG.id, 5);
+    });
+
+    it("refuses the person it was given to, and anyone who can't answer requests", async () => {
+      mockGate = as("viewer");
+      db.getAccessRequest.mockResolvedValue(stored({ requested_by: "viewer@test", status: "allowed" }));
+      expect((await patch("5", END)).status).toBe(403);
+      mockGate = as("editor");
+      expect((await patch("5", END)).status).toBe(403);
+      expect(db.endGrant).not.toHaveBeenCalled();
+    });
+
+    it("says so when it has already ended", async () => {
+      mockGate = as("admin");
+      db.endGrant.mockResolvedValue(null);
+      const response = await patch("5", END);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "That has already ended." });
     });
   });
 });

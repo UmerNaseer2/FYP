@@ -98,6 +98,14 @@ export type DeployApproval = {
    * be this tool inventing an answer on their behalf.
    */
   expires_at: string | null;
+  /**
+   * True when the person who asked may not run this themselves (their role
+   * cannot run migrations, or the connection is for Admins only), so the
+   * approval is a one-off permission for them and only they can spend it.
+   * False for an ordinary second-person approval, which anyone who may run
+   * the run can spend.
+   */
+  run_by_requester: boolean;
 };
 
 /**
@@ -133,9 +141,17 @@ const CONNECTION_NOT_EDITED_SINCE = `NOT EXISTS (
      AND c.org_id = deploy_approvals.org_id
      AND c.updated_at > deploy_approvals.decided_at)`;
 
+/**
+ * Which approvals a run may use, with $6 the runner's email when they may not
+ * run it themselves (else null): theirs alone, or only ordinary ones.
+ */
+const WHOSE_APPROVAL = `(CASE WHEN $6::text IS NULL THEN NOT run_by_requester
+  ELSE run_by_requester AND lower(requested_by) = lower($6::text) END)`;
+
 const COLUMNS = `id, connection_id, schema_name, script_name, target_version,
   run_fingerprint, migration_count, breaking_count, requested_by, requested_at,
-  status, decided_by, decided_at, self_approved, note, used_at, action, expires_at`;
+  status, decided_by, decided_at, self_approved, note, used_at, action, expires_at,
+  run_by_requester`;
 
 /**
  * Hash the exact SQL of a run.
@@ -234,10 +250,13 @@ export async function createApprovalRequest(input: {
   requestedBy: string;
   note: string | null;
   action: ApprovalAction;
+  /** True when the asker may not run this themselves (see DeployApproval). */
+  runByRequester?: boolean;
 }): Promise<DeployApproval | null> {
   await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts, input.action);
   const scripts = storedScripts(input.scripts);
+  const runByRequester = input.runByRequester === true;
 
   // An identical request that is still open is the same request. Returning it
   // rather than inserting a second row keeps the approver from seeing the same
@@ -247,6 +266,10 @@ export async function createApprovalRequest(input: {
       WHERE connection_id = $1 AND schema_name = $2 AND run_fingerprint = $3
         AND action = $4 AND org_id = $5
         AND status IN ('pending', 'approved')
+        -- A one-off for somebody who may not run it is theirs alone, and an
+        -- ordinary request is not one of those.
+        AND run_by_requester = $6
+        AND ($6 = false OR lower(requested_by) = lower($7))
         -- An approved row that has expired cannot be claimed, so handing it
         -- back here would show "approved" on a screen whose Deploy button then
         -- says the run needs approval. Let it fall through to a fresh request.
@@ -254,7 +277,7 @@ export async function createApprovalRequest(input: {
         AND ${UNEXPIRED}
         AND ${CONNECTION_NOT_EDITED_SINCE}
       ORDER BY id DESC LIMIT 1`,
-    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId]
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId, runByRequester, input.requestedBy]
   );
   if (open.rows.length > 0) {
     // A request made before copies were kept gets one now, so a phone can
@@ -275,8 +298,8 @@ export async function createApprovalRequest(input: {
   const created = await pool.query<DeployApproval>(
     `INSERT INTO deploy_approvals
        (org_id, connection_id, schema_name, script_name, target_version, run_fingerprint,
-        migration_count, breaking_count, requested_by, note, action, scripts)
-     SELECT c.org_id, c.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+        migration_count, breaking_count, requested_by, note, action, scripts, run_by_requester)
+     SELECT c.org_id, c.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $13
        FROM connections c
       WHERE c.id = $1 AND c.org_id = $12
      RETURNING ${COLUMNS}`,
@@ -293,6 +316,7 @@ export async function createApprovalRequest(input: {
       input.action,
       scripts,
       input.orgId,
+      runByRequester,
     ]
   );
   return created.rows[0] ?? null;
@@ -329,6 +353,14 @@ export function decisionBlockReason(
 ): string | null {
   if (approval.status !== "pending") {
     return `This request is already ${approval.status}.`;
+  }
+  // Somebody asking for a run they may not do themselves never answers it,
+  // whatever the organization's rules: that would be giving themselves the
+  // permission they asked for.
+  if (approval.run_by_requester && approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
+    return approval.action === "revert"
+      ? "You asked for this rollback, so somebody else has to approve it."
+      : "You asked for this run, so somebody else has to approve it.";
   }
   if (selfAllowed) return null;
   if (approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
@@ -465,6 +497,8 @@ export async function listRunsReadyToRun(orgId: number): Promise<ListedApproval[
     `SELECT ${LISTED_COLUMNS} FROM deploy_approvals
       WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}
         AND ${CONNECTION_NOT_EDITED_SINCE}
+        -- A one-off for one person is on their own list, not everyone's.
+        AND NOT run_by_requester
       ORDER BY id LIMIT 100`,
     [orgId]
   );
@@ -476,7 +510,8 @@ export async function countRunsReadyToRun(orgId: number): Promise<number> {
   const result = await pool.query<{ count: number }>(
     `SELECT count(*)::int AS count FROM deploy_approvals
       WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}
-        AND ${CONNECTION_NOT_EDITED_SINCE}`,
+        AND ${CONNECTION_NOT_EDITED_SINCE}
+        AND NOT run_by_requester`,
     [orgId]
   );
   return result.rows[0]?.count ?? 0;
@@ -563,6 +598,8 @@ export async function findOpenApproval(input: {
   schemaName: string;
   scripts: ApprovalScript[];
   action: ApprovalAction;
+  /** See claimApproval: set for somebody who may not run this themselves. */
+  requestedBy?: string | null;
 }): Promise<"approved" | "pending" | null> {
   await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts, input.action);
@@ -573,9 +610,10 @@ export async function findOpenApproval(input: {
         AND status IN ('pending', 'approved')
         AND ${UNEXPIRED}
         AND ${CONNECTION_NOT_EDITED_SINCE}
+        AND ${WHOSE_APPROVAL}
       ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END, id ASC
       LIMIT 1`,
-    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId],
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId, input.requestedBy ?? null],
   );
   return result.rows[0]?.status ?? null;
 }
@@ -604,6 +642,12 @@ export async function claimApproval(input: {
   schemaName: string;
   scripts: ApprovalScript[];
   action: ApprovalAction;
+  /**
+   * The email of somebody who may not run this themselves: only a one-off
+   * approval they asked for counts. Left out for somebody who may run it,
+   * who can spend only an ordinary approval, never another person's one-off.
+   */
+  requestedBy?: string | null;
 }): Promise<DeployApproval | null> {
   await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts, input.action);
@@ -617,11 +661,12 @@ export async function claimApproval(input: {
            AND status = 'approved'
            AND ${UNEXPIRED}
            AND ${CONNECTION_NOT_EDITED_SINCE}
+           AND ${WHOSE_APPROVAL}
          ORDER BY id ASC LIMIT 1
          FOR UPDATE SKIP LOCKED
       ) AND org_id = $5
       RETURNING ${COLUMNS}`,
-    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId]
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId, input.requestedBy ?? null]
   );
   return result.rows[0] ?? null;
 }

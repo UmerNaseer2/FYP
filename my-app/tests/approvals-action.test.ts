@@ -126,7 +126,9 @@ describe("queries", () => {
     expect(claimed).toBeNull();
     const { sql, values } = call(0);
     expect(sql).toContain("action = $4");
-    expect(values).toEqual([3, "sales", runFingerprint(RUN, "revert"), "revert", TEST_ORG.id]);
+    // The sixth value is whose one-off to look for: nobody's, for a runner
+    // who may run it themselves.
+    expect(values).toEqual([3, "sales", runFingerprint(RUN, "revert"), "revert", TEST_ORG.id, null]);
   });
 
   it("claimApproval only spends an approval given in the run's organization", async () => {
@@ -159,8 +161,12 @@ describe("queries", () => {
     const dedupe = call(0);
     expect(dedupe.sql).toContain("action = $4");
     expect(dedupe.values[3]).toBe("revert");
+    // An ordinary request is never matched to somebody's one-off.
+    expect(dedupe.sql).toContain("run_by_requester = $6");
+    expect(dedupe.values.slice(5)).toEqual([false, "a@test"]);
     const insert = call(1);
-    expect(insert.sql).toMatch(/note, action, scripts\)/);
+    expect(insert.sql).toMatch(/note, action, scripts, run_by_requester\)/);
+    expect(insert.values[12]).toBe(false);
     expect(insert.values[4]).toBe(runFingerprint(RUN, "revert"));
     expect(insert.values[9]).toBe("revert");
   });
@@ -223,6 +229,13 @@ describe("POST /api/deploy/approvals", () => {
     scripts: RUN.map((s) => ({ script_name: s.scriptName, version: s.version, sql_content: s.sqlContent })),
   };
 
+  // The route first looks the connection up, to see whose run this would be.
+  // Here it is one an editor may run on, so the request is an ordinary one.
+  // A test that is refused before the database never uses this answer.
+  beforeEach(() => {
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ name: "Sales dev", execute_role: "editor" }] });
+  });
+
   /** Answer the dedupe read and the INSERT, then send the request. */
   async function recorded(body: Record<string, unknown>) {
     mockPoolQuery
@@ -232,7 +245,7 @@ describe("POST /api/deploy/approvals", () => {
   }
 
   // breaking_count is the INSERT's seventh value.
-  const storedBreakingCount = () => call(1).values[6];
+  const storedBreakingCount = () => call(2).values[6];
 
   it("counts the breaking migrations from the SQL, ignoring a count the caller sends", async () => {
     const res = await recorded({
@@ -292,8 +305,8 @@ describe("POST /api/deploy/approvals", () => {
       .mockResolvedValueOnce({ rows: [{ id: 1, action: "revert" }] });
     const res = await request({ ...BODY, action: "revert" });
     expect(res.status).toBe(200);
-    expect(call(1).values[9]).toBe("revert");
-    expect(call(1).values[4]).toBe(runFingerprint(RUN, "revert"));
+    expect(call(2).values[9]).toBe("revert");
+    expect(call(2).values[4]).toBe(runFingerprint(RUN, "revert"));
   });
 
   it("treats a request with no action as a deploy", async () => {
@@ -302,7 +315,7 @@ describe("POST /api/deploy/approvals", () => {
       .mockResolvedValueOnce({ rows: [{ id: 1, action: "deploy" }] });
     const res = await request(BODY);
     expect(res.status).toBe(200);
-    expect(call(1).values[9]).toBe("deploy");
+    expect(call(2).values[9]).toBe("deploy");
   });
 
   it("refuses a rollback of more versions than the revert route accepts, before touching the database", async () => {
@@ -321,13 +334,26 @@ describe("POST /api/deploy/approvals", () => {
   });
 
   it("answers not found for a connection the caller's organization does not own", async () => {
-    // The dedupe read and the INSERT both find nothing, as they do for
-    // another organization's connection.
+    // The lookup names the caller's organization, so another organization's
+    // connection reads as missing and nothing is written.
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValue({ rows: [] });
     const res = await request(BODY);
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "Connection not found." });
-    expect(call(1).sql).toContain("INSERT INTO deploy_approvals");
-    expect(call(1).values[11]).toBe(TEST_ORG.id);
+    expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+    expect(call(0).sql).toContain("FROM connections WHERE id = $1 AND org_id = $2");
+    expect(call(0).values).toEqual([3, TEST_ORG.id]);
+  });
+
+  it("answers not found when the connection goes between the lookup and the INSERT", async () => {
+    // The dedupe read and the INSERT both find nothing, as they do for a
+    // connection deleted a moment ago.
+    const res = await request(BODY);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Connection not found." });
+    expect(call(2).sql).toContain("INSERT INTO deploy_approvals");
+    expect(call(2).values[11]).toBe(TEST_ORG.id);
   });
 
   it("says 'rollbacks' when a rollback request has nothing in it", async () => {

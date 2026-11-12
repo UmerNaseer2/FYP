@@ -55,6 +55,12 @@ export type ApprovalRow = {
    * decided before approvals expired at all — those stay good.
    */
   expires_at?: string | null;
+  /**
+   * True when the person who asked may not run this by themselves, so the
+   * approval is a one-off that only they can spend. Optional: older routes
+   * did not send it, and every older row was an ordinary approval.
+   */
+  run_by_requester?: boolean;
 };
 
 /**
@@ -107,9 +113,10 @@ export function ApprovalPanel({
   viewerEmail,
   roleLabel,
   mayRequest,
+  askToRun = false,
   mayApprove,
   bypass,
-  twoPersonRule = true,
+  twoPersonRule = false,
   note,
   onNoteChange,
   onRequest,
@@ -150,13 +157,20 @@ export function ApprovalPanel({
   roleLabel: string;
   /** The role may ask for an approval ("Approvals: Create"). */
   mayRequest: boolean;
+  /**
+   * The viewer may not run this by themselves (their role, or the
+   * connection's "who may run"), so the approval is them asking an Admin for
+   * this one run. They may always ask, whatever "Approvals: Create" says, and
+   * never answer their own request.
+   */
+  askToRun?: boolean;
   /** The role may clear one ("Approvals: Approve"). Admins always may. */
   mayApprove: boolean;
   bypass: boolean;
   /**
    * The organization's two-person rule (the Organization tab). While it is off,
    * people may clear their own requests and the row records a self-approval.
-   * On unless said otherwise, the way every new organization starts.
+   * Off unless said otherwise, the way every new organization starts.
    */
   twoPersonRule?: boolean;
   note: string;
@@ -254,7 +268,7 @@ export function ApprovalPanel({
   // button is not offered in the first place, not to enforce anything.
   // The two-person rule only matters outside the bypass, which has its own
   // wording below.
-  const ruleOff = !bypass && !twoPersonRule;
+  const ruleOff = !bypass && !twoPersonRule && !askToRun;
   const mine = pending !== null && pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
   const selfDecision = mine && !bypass && !ruleOff;
 
@@ -266,12 +280,16 @@ export function ApprovalPanel({
   //
   // Not while View as has them looking at the app as a role that may not
   // approve: then clearing it means switching back, and the lines below say so.
-  const soleApprover = bypass && mayApprove;
+  const soleApprover = bypass && mayApprove && !askToRun;
   const bypassSelf = mine && soleApprover;
   // With the rule off there may well be a second person, but there needn't be,
   // so the requester who may approve is offered the button too.
   const ruleOffSelf = mine && ruleOff && mayApprove;
-  const pendingWhy = bypassSelf
+  const what = action === "revert" ? "rollback" : "run";
+  const pendingWhy = askToRun
+    ? ` Your role may not do this ${what} by itself, so an Admin has to approve it. ` +
+      `Once they do, you can run it once, within 7 days.`
+    : bypassSelf
     ? action === "revert"
       ? " With the auth bypass on there is only one principal, so you clear these " +
         "rollbacks yourself, and the row records it as a self-approval."
@@ -329,7 +347,13 @@ export function ApprovalPanel({
               contradict the line below that says so. Then nobody else needs
               to be waited for either, so the waiting and needed states do not
               name one. */}
-          {approved
+          {askToRun
+            ? approved
+              ? "Approved for you, once"
+              : pending
+                ? "Waiting for an Admin"
+                : "Needs an Admin's approval"
+            : approved
             ? approved.self_approved
               ? bypass
                 ? "Self-approved under the auth bypass"
@@ -385,7 +409,11 @@ export function ApprovalPanel({
             {pendingWhy}
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
-          {!mayApprove ? (
+          {askToRun && mine ? (
+            <p className="appr__meta">
+              Admins see it on their Requests page, and you see their answer here.
+            </p>
+          ) : !mayApprove ? (
             // Someone who has just asked needs no telling that they can't answer
             // themselves, only where the people who can will see it.
             mine && !bypass ? (
@@ -446,7 +474,12 @@ export function ApprovalPanel({
       ) : (
         <>
           <p className="appr__body">
-            {ruleOff && mayApprove
+            {askToRun
+              ? `Your role (${roleLabel}) may not ${
+                  action === "revert" ? "roll back" : "run migrations"
+                } on this connection by itself. Ask an Admin to approve this exact ${what}. ` +
+                `Once they do, you can run it once, within 7 days. If the SQL changes, it needs approving again.`
+              : ruleOff && mayApprove
               ? `This target is labelled production, so the ${
                   action === "revert" ? "rollback" : "run"
                 } needs an approval. The two-person rule is off in this organization, so you can request it and then clear it yourself.`
@@ -479,7 +512,7 @@ export function ApprovalPanel({
               </>
             ) : null}
           </p>
-          {mayRequest ? (
+          {mayRequest || askToRun ? (
             <>
               <input
                 className="input mt-2"
@@ -497,7 +530,13 @@ export function ApprovalPanel({
                   onClick={onRequest}
                 >
                   <UsersIcon size={13} />
-                  {latest ? "Request approval again" : "Request approval"}
+                  {askToRun
+                    ? latest
+                      ? "Ask for approval again"
+                      : "Ask for approval"
+                    : latest
+                      ? "Request approval again"
+                      : "Request approval"}
                 </button>
               </div>
             </>

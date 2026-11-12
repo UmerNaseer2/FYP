@@ -106,7 +106,17 @@ export class Organization extends Model<
   declare slug: string;
   /** What the screens show: "Acme Labs". */
   declare name: string;
-  /** Whether a production deploy needs a second person to approve it. */
+  /**
+   * Whether a production deploy needs a second person to approve it. Off
+   * unless an Admin switches it on: by default whoever's role allows an
+   * action just does it.
+   */
+  declare require_approvals: CreationOptional<boolean>;
+  /**
+   * The old switch, on by default. No longer read: require_approvals took its
+   * place, so every organization started with approvals off. Kept so an older
+   * build pointed at the same database still finds it.
+   */
   declare two_person_rule: CreationOptional<boolean>;
   /** The desktop app's own organization, kept on that one computer. */
   declare personal: CreationOptional<boolean>;
@@ -130,6 +140,7 @@ Organization.init(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     slug: { type: DataTypes.TEXT, allowNull: false, unique: true },
     name: { type: DataTypes.TEXT, allowNull: false },
+    require_approvals: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     two_person_rule: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     personal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     is_default: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
@@ -511,6 +522,12 @@ export class AccessRequest extends Model<
   declare decided_at: Date | null;
   declare decision_note: string | null;
   declare created_at: CreationOptional<Date>;
+  /**
+   * Set when the answer was "just this person, for a while": until then they
+   * hold the permission they asked for on top of their role (lib/auth-guard.ts
+   * reads it on every request). Null for every other answer.
+   */
+  declare granted_until: CreationOptional<Date | null>;
 }
 
 AccessRequest.init(
@@ -526,6 +543,7 @@ AccessRequest.init(
     decided_at: { type: DataTypes.DATE, allowNull: true },
     decision_note: { type: DataTypes.TEXT, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    granted_until: { type: DataTypes.DATE, allowNull: true },
   },
   {
     sequelize,
@@ -1934,6 +1952,8 @@ export class DeployApproval extends Model<
    * big to keep, and on a row asked for before the copy was kept.
    */
   declare scripts: CreationOptional<unknown | null>;
+  /** True for a one-off asked for by somebody who may not run it themselves; only they can spend it. */
+  declare run_by_requester: CreationOptional<boolean>;
 }
 
 DeployApproval.init(
@@ -1982,6 +2002,10 @@ DeployApproval.init(
     // deploy_attempts.scripts, read and written whole. Nullable because a run
     // too big to keep has no copy, and the phone then says so.
     scripts: { type: DataTypes.JSONB, allowNull: true },
+    // Set when the person asking may not run the run themselves (their role,
+    // or the connection's "who may run"). Such an approval is a one-off for
+    // them, and lib/approvals-db lets nobody else spend it.
+    run_by_requester: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   },
   {
     sequelize,

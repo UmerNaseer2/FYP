@@ -63,7 +63,9 @@ export function ownRunStory(run: ListedApproval): { label: string; tone: PillTon
       return {
         label: "Waiting",
         tone: "pending",
-        story: "Waiting for a second person. It is on the Requests page of anyone who can approve it.",
+        story: run.run_by_requester
+          ? "Waiting for an Admin. It is on the Requests page of anyone who can approve it."
+          : "Waiting for a second person. It is on the Requests page of anyone who can approve it.",
       };
     case "rejected":
       return { label: "Rejected", tone: "break", story: `Rejected by ${by}.` };
@@ -80,7 +82,9 @@ export function ownRunStory(run: ListedApproval): { label: string; tone: PillTon
       return {
         label: "Approved",
         tone: "sync",
-        story: `Approved by ${by}. Ready to run until ${formatWhen(run.expires_at)}, by anyone who may run a deploy.`,
+        story: run.run_by_requester
+          ? `Approved by ${by}. You can run it once, until ${formatWhen(run.expires_at)}. Open it on Deploy (or Version Sync) and press Run.`
+          : `Approved by ${by}. Ready to run until ${formatWhen(run.expires_at)}, by anyone who may run a deploy.`,
       };
   }
 }

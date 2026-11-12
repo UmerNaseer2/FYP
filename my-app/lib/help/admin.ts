@@ -55,7 +55,7 @@ export const adminHelp: HelpTopic = {
     {
       term: "Two-person rule",
       meaning:
-        "While it is on, a production deploy or rollback waits for someone other than the person who asked.",
+        "Off unless an admin switches it on. While it is on, a production deploy or rollback waits for someone other than the person who asked.",
     },
     {
       term: "Access token",
@@ -155,7 +155,7 @@ export const adminHelp: HelpTopic = {
       title: "Organization tab",
       body: [
         "Name: the address stays the same when the name changes, so saved links keep working.",
-        "Two-person rule: while it is on, real runs on production need a second person's approval. Switching it off drops approvals entirely.",
+        "Two-person rule: off to start with, so anyone whose role allows a run just does it. While it is on, real runs on production need a second person's approval.",
         "Delete this organization: type its name to confirm. It can't be undone. People's accounts stay, and so do scripts already in GitHub.",
       ],
     },

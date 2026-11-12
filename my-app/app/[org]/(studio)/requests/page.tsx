@@ -13,6 +13,7 @@ import { PillTabs, type PillTab } from "@/components/studio/PillTabs";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import {
+  GRANT_HOURS,
   REQUEST_TEXT_MAX,
   REQUESTS_CHANGED_EVENT,
   type AccessRequest,
@@ -45,9 +46,11 @@ import {
  * Requests: ask for something your role can't do, see what is waiting on you,
  * and read the answers. See lib/access-requests.ts for how it fits together.
  *
- * Answering "allow" calls the same Roles and Users routes the Admin page uses,
- * and only then records the answer, so their guards and audit trail still apply
- * and a refusal from them leaves the request waiting.
+ * Answering "allow for everyone in the role" calls the same Roles and Users
+ * routes the Admin page uses, and only then records the answer, so their guards
+ * and audit trail still apply and a refusal from them leaves the request
+ * waiting. "Allow just them for a day" is one call to the request route, which
+ * makes the change itself (lib/access-requests.ts, grantProblem).
  *
  * The page has three tabs. "Needs you" holds what is waiting on the reader,
  * "You asked" holds what they asked for that is still open, and "Done" holds
@@ -305,6 +308,10 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
   const mayWiden =
     key !== null && stillHere && request.member_role !== ADMIN_ROLE && can("roles:update");
   const mayMove = key !== null && stillHere && can("users:update");
+  // The server checks this again (grantProblem): only what the reader holds
+  // themselves, and never what only an Admin may do.
+  const mayLend =
+    key !== null && stillHere && request.member_role !== ADMIN_ROLE && !isAdminOnly(key) && can(key);
 
   /** Records the answer. `changed` says a role was changed first, which a failure here does not undo. */
   async function answer(value: RequestAnswer, changed = false) {
@@ -424,6 +431,22 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
       await answer(moving?.includes ? "allowed" : "done", true);
     });
 
+  /** Allows just this person, for GRANT_HOURS, without touching any role. */
+  const lend = () =>
+    working(async () => {
+      const response = await apiFetch(`/api/requests/${request.id}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ action: "grant", note }),
+      });
+      if (!response.ok) {
+        setError(await errorFrom(response, "Could not allow it."));
+        if (response.status === 409) onChanged();
+        return;
+      }
+      onChanged();
+    });
+
   const roleLabel = request.member_role_label ?? request.member_role;
 
   return (
@@ -459,8 +482,13 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
       />
 
       <div className="rq-act">
+        {mayLend && (
+          <Button variant="primary" disabled={busy} onClick={() => void lend()}>
+            {`Allow just ${who} for ${GRANT_HOURS} hours`}
+          </Button>
+        )}
         {mayWiden && (
-          <Button variant="primary" disabled={busy} onClick={() => void startWidening()}>
+          <Button variant={mayLend ? "secondary" : "primary"} disabled={busy} onClick={() => void startWidening()}>
             {`Allow for everyone who is ${roleLabel}`}
           </Button>
         )}
@@ -549,7 +577,11 @@ function RunRow({ run, kind }: { run: ListedApproval; kind: "approve" | "run" })
         </span>
         <div>
           <h2>{runTitle(run)}</h2>
-          <Meta>{`Asked for by ${run.requested_by}, ${formatWhen(run.requested_at)}.`}</Meta>
+          <Meta>
+            {run.run_by_requester
+              ? `${run.requested_by} asks to run this themselves, ${formatWhen(run.requested_at)}. Their role may not do it without your approval.`
+              : `Asked for by ${run.requested_by}, ${formatWhen(run.requested_at)}.`}
+          </Meta>
         </div>
         {kind === "approve" ? (
           <Pill tone="pending">Needs approval</Pill>
@@ -690,6 +722,63 @@ function OwnRunCard({ run, since }: { run: ListedApproval; since: string | null 
   );
 }
 
+/** Somebody allowed one thing for a day, with a way to end it early. */
+function LentRow({ request, onChanged }: { request: AccessRequest; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const who = request.requested_by_name || request.requested_by;
+  const asked = describeAsked(request.permission);
+
+  async function end() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch(`/api/requests/${request.id}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ action: "end-grant" }),
+      });
+      if (!response.ok) {
+        setError(await errorFrom(response, "Could not end it."));
+        if (response.status === 409) onChanged();
+        return;
+      }
+      onChanged();
+    } catch {
+      setError("Could not reach the server. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rq-row">
+      <ToneIcon tone="sync" />
+      <div>
+        <b>{`${who}: ${asked.title}`}</b>
+        <Meta>
+          {`Allowed by ${request.decided_by ?? "an Admin"} until ${formatWhen(request.granted_until)}. Their role is unchanged.`}
+        </Meta>
+        {error && <ErrorNote>{error}</ErrorNote>}
+      </div>
+      <div className="rq-rt">
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void end()}>
+          End now
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** What a day's grant says to the person who has it. */
+function grantLine(request: AccessRequest): string {
+  if (!request.granted_until) return "Reload the page you need it on, and you can use it.";
+  const until = formatWhen(request.granted_until);
+  return new Date(request.granted_until).getTime() > Date.now()
+    ? `Just for you, until ${until}. Reload the page you need it on, and you can use it.`
+    : `That was for a day, and it ended ${until}. Ask again if you still need it.`;
+}
+
 /** A request of yours that has its answer, as one row of the Done list. */
 function DoneRequestRow({ request, since }: { request: AccessRequest; since: string | null }) {
   const asked = describeAsked(request.permission);
@@ -700,7 +789,7 @@ function DoneRequestRow({ request, since }: { request: AccessRequest; since: str
       <div>
         <b>{asked.title}</b>
         {request.message && <p className="rq-said">{request.message}</p>}
-        {request.status === "allowed" && <p>Reload the page you need it on, and you can use it.</p>}
+        {request.status === "allowed" && <p>{grantLine(request)}</p>}
         {request.decision_note && <p>{`Their note: ${request.decision_note}`}</p>}
         <Meta>
           {`Asked ${formatWhen(request.created_at)}.`}
@@ -790,6 +879,7 @@ function RequestsBody() {
   }, [load]);
 
   const inbox = data?.inbox ?? [];
+  const lent = data?.lent ?? [];
   const toApprove = data?.runsToApprove ?? [];
   const toRun = data?.runsToRun ?? [];
   const mine = data?.mine ?? [];
@@ -887,6 +977,14 @@ function RequestsBody() {
                 {toRun.map((run) => (
                   <RunRow key={run.id} run={run} kind="run" />
                 ))}
+                {lent.length > 0 && (
+                  <Card className="rq-list">
+                    <h2 className="rq-list-title">{`Allowed for ${GRANT_HOURS} hours`}</h2>
+                    {lent.map((request) => (
+                      <LentRow key={request.id} request={request} onChanged={changed} />
+                    ))}
+                  </Card>
+                )}
               </section>
             )}
 

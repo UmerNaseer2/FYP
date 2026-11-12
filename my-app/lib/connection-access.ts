@@ -142,6 +142,26 @@ export function executeRoleBadge(required: ExecuteRole): string | null {
  * connection, or somebody has to change the setting on the right one. Neither
  * is discoverable from "403".
  */
+/**
+ * Why somebody who may not run migrations here, but may ask, was turned away:
+ * a dry run they may not do at all, or a real run nobody has approved yet.
+ * Only for a connection that is not read-only, which nobody can ask about.
+ */
+export function askToRunRefusal(connectionName: string, dryRun: boolean, rollback = false): string {
+  const what = rollback ? "roll back" : "run migrations";
+  if (dryRun) {
+    return (
+      `Your role may not ${what} on "${connectionName}", so it cannot rehearse one there either. ` +
+      `Ask for approval of the real ${rollback ? "rollback" : "run"} instead.`
+    );
+  }
+  return (
+    `Your role may not ${what} on "${connectionName}" by itself, and nobody has approved this exact ` +
+    `${rollback ? "rollback" : "run"} for you yet, so nothing ran. Ask for approval, and press it ` +
+    `again once an Admin says yes.`
+  );
+}
+
 export function executeRefusal(
   connectionName: string,
   roleLabel: string,

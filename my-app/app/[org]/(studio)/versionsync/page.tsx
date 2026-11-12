@@ -25,6 +25,7 @@ import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { refusalMessage } from "@/lib/permissions";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import {
   cutForwardOnly,
   diffLedgers,
@@ -81,6 +82,8 @@ type Connection = {
   database_name: string;
   /** dev / staging / prod, or "unset" when nobody has labelled it. */
   environment: Environment;
+  /** Who may run migrations on it (lib/connection-access). */
+  execute_role?: string | null;
 };
 type Phase = "idle" | "loading" | "error" | "ready";
 
@@ -338,10 +341,9 @@ export default function VersionSyncPage() {
   const target = useLedgerSource();
 
   // A replay writes to the Target through the same route Deploy uses, so it
-  // needs the same box: "Deploy: Run". Without it the list is still worth
-  // reading, but there is nothing to press.
-  const { roleLabel, can } = useUser();
-  const mayRun = can("deploy:run");
+  // follows the same rules: "Deploy: Run" and the connection's "who may run".
+  // Somebody without them can still ask an Admin to approve one exact replay.
+  const { roleLabel, isAdmin, can, loading: sessionLoading } = useUser();
 
   useEffect(() => {
     let active = true;
@@ -384,8 +386,19 @@ export default function VersionSyncPage() {
   const sourceEnvironment = sideEnvironment(source, connections);
   const targetEnvironment = sideEnvironment(target, connections);
   const targetIsProduction = isProduction(targetEnvironment);
-  const targetDatabase =
-    connections.find((c) => String(c.id) === target.connectionId)?.database_name ?? "";
+  const targetConnection = connections.find((c) => String(c.id) === target.connectionId) ?? null;
+  const targetDatabase = targetConnection?.database_name ?? "";
+  // Who may replay onto the Target. A role that may not run here by itself
+  // gets the Run buttons too, and the check then asks an Admin to approve that
+  // exact replay (askToRun). Only a read-only connection has nothing to press.
+  const targetExecuteRole = toExecuteRole(targetConnection?.execute_role);
+  const mayRunHere = canExecute({ isAdmin, mayDeploy: can("deploy:run") }, targetExecuteRole);
+  const askToRun = !sessionLoading && !mayRunHere && targetExecuteRole !== "none";
+  const mayRun = mayRunHere || askToRun;
+  const runRefusal =
+    targetExecuteRole === "none" && targetConnection
+      ? executeRefusal(targetConnection.name, roleLabel, targetExecuteRole)
+      : refusalMessage(roleLabel, "deploy:run");
 
   // More than one script group? Then a version is named with its group.
   const multiFamily = useMemo(
@@ -653,7 +666,8 @@ export default function VersionSyncPage() {
                     },
                     targetIsProduction,
                     mayRun,
-                    runRefusal: refusalMessage(roleLabel, "deploy:run"),
+                    askToRun,
+                    runRefusal,
                   }}
                 />
               </>
@@ -676,6 +690,7 @@ export default function VersionSyncPage() {
         sourceSchema={source.schema}
         pageEnvironment={targetEnvironment}
         diverged={diff?.diverged.length ?? 0}
+        askToRun={askToRun}
       />
     </div>
   );
@@ -745,8 +760,10 @@ type ApplyCtl = {
   onReread: () => void;
   /** Draw Run all red when the Target is live, same as Deploy does. */
   targetIsProduction: boolean;
-  /** The role may replay ("Deploy: Run"). Without it no row has a Run button. */
+  /** The role may replay, by itself or with an approval. Without it no row has a Run button. */
   mayRun: boolean;
+  /** The role may replay only once an Admin approves that exact replay. */
+  askToRun: boolean;
   /** Why not, in the words the apply route would refuse with. */
   runRefusal: string;
 };
@@ -959,6 +976,19 @@ function Result({
                 </button>
               )}
               {/* Said once, here, rather than as a dead button on every row. */}
+              {apply.askToRun && reachable > 0 && (
+                <div className="role-note">
+                  <InfoIcon size={15} className="ico" />
+                  <div>
+                    <div className="title">A replay here needs an Admin&apos;s approval</div>
+                    <div className="body">
+                      Your role may not run migrations on the Target by itself.
+                      Press Run, and the check asks an Admin to approve that exact replay. Once they do,
+                      you can run it once, within 7 days.
+                    </div>
+                  </div>
+                </div>
+              )}
               {!apply.mayRun && reachable > 0 && (
                 <div className="role-note">
                   <InfoIcon size={15} className="ico" />
@@ -1151,6 +1181,8 @@ type ReplayDialogProps = {
   pageEnvironment: Environment;
   /** How many versions only the Target has. */
   diverged: number;
+  /** The viewer may not run here by themselves, only with an Admin's approval of this exact replay. */
+  askToRun: boolean;
 };
 
 /** The approvals read for one target, and the `connectionId schema` they cover. */
@@ -1186,11 +1218,12 @@ function ReplayBody({
   sourceSchema,
   pageEnvironment,
   diverged,
+  askToRun,
 }: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
   const { user, roleLabel, bypass, can } = useUser();
   const orgPath = useOrgHref();
   // Whether production runs here wait for a second person (the Organization tab).
-  const twoPersonRule = useOrg()?.twoPersonRule ?? true;
+  const twoPersonRule = useOrg()?.twoPersonRule ?? false;
   // Each of these is a box an admin ticks for a role on the Admin screen.
   // Without "Approvals: Read" the list is not even asked for: the route would
   // refuse, and the panel says why instead of reporting a 403.
@@ -1252,7 +1285,8 @@ function ReplayBody({
   // The connection's label, the only one. A real replay on production waits for
   // a second person only when the organization has approvals switched on.
   const production = isProduction(pageEnvironment);
-  const approvalNeeded = production && twoPersonRule && !bypass;
+  // Somebody who may not run here by themselves always needs one, on any label.
+  const approvalNeeded = askToRun || (production && twoPersonRule && !bypass);
   const drift = record.state === "ready" && (record.drift === "drifted" || record.drift === "unreachable");
 
   // ── What the run risks (the same reading the route makes) ─────────────────
@@ -1429,7 +1463,16 @@ function ReplayBody({
   const runApprovals =
     runHash === null
       ? []
-      : approvals.filter((a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash);
+      : approvals.filter(
+          (a) =>
+            (a.action ?? "deploy") === "deploy" &&
+            a.run_fingerprint === runHash &&
+            // Only the approvals the route would let this viewer spend: their
+            // own one-off when they may not run here, else only ordinary ones.
+            (askToRun
+              ? a.run_by_requester === true && a.requested_by.toLowerCase() === (user?.email ?? "").toLowerCase()
+              : a.run_by_requester !== true)
+        );
   const approved = runApprovals.find((a) => a.status === "approved") ?? null;
   const pending = runApprovals.find((a) => a.status === "pending") ?? null;
   const latest = runApprovals[0] ?? null;
@@ -1473,7 +1516,9 @@ function ReplayBody({
       // View as has them looking at the app as a role that may not approve:
       // then clearing it means switching back to Admin first.
       setApprovalNotice(
-        !bypass
+        askToRun
+          ? "Asked for approval. Once an Admin says yes, you can run it."
+          : !bypass
           ? "Approval requested — someone else has to clear it."
           : mayApprove
             ? "Approval requested — with the auth bypass on, you clear it yourself below."
@@ -1552,7 +1597,9 @@ function ReplayBody({
   // A dry run never waits for an approval.
   const runBlocked = !ready || unticked || dryRunning || approvalBusy;
   const awaitingApproval = approvalNeeded && approved === null;
-  const dryRunBlocked = runBlocked;
+  // A dry run executes the SQL too, so it is not open to somebody who may run
+  // here only with an approval.
+  const dryRunBlocked = runBlocked || askToRun;
   const replayBlocked = runBlocked || awaitingApproval;
   const replayLabel = `Replay ${countOf(count, "version")}${production ? " on production" : ""}`;
   const hint =
@@ -1562,9 +1609,13 @@ function ReplayBody({
         ? "Both buttons stay off until the Target's tracking record can be read."
         : unticked
           ? "Tick every box above to turn on Dry run and Replay."
-          : awaitingApproval
-            ? "Replay needs the approval above. A dry run does not."
-            : "";
+          : askToRun
+            ? awaitingApproval
+              ? "Replay needs an Admin's approval first. A dry run is not open to you here."
+              : "A dry run is not open to you here. The approved replay is."
+            : awaitingApproval
+              ? "Replay needs the approval above. A dry run does not."
+              : "";
 
   const louderSentence =
     louderCount === 0
@@ -1814,6 +1865,7 @@ function ReplayBody({
               mayApprove={mayApprove}
               bypass={bypass}
               twoPersonRule={twoPersonRule}
+              askToRun={askToRun}
               note={approvalNote}
               onNoteChange={setApprovalNote}
               onRequest={() => void requestApproval()}

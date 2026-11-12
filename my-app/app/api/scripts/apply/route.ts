@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
 import { approvalsOn, claimApproval, releaseApproval } from "@/lib/approvals-db";
 import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
@@ -522,7 +522,10 @@ function answerBeforeRun(body: Record<string, unknown>, init: { status: number }
  * would be empty in exactly the cases the audit trail exists for.
  */
 async function runApply(request: NextRequest, attempt: AttemptContext) {
-  const gate = await requirePermission("deploy:run");
+  // Anyone who may see deployments gets this far. Whether they may run THIS
+  // run is step 4a: with "Deploy: Run" (and the connection's "who may run")
+  // they may, and without it only a run an Admin approved for them.
+  const gate = await requirePermission("deploy:read");
   if (!gate.ok) return gate.response;
   attempt.actor = actorFor(gate.principal);
   // The caller's organization. Everything this route reads or writes in the
@@ -832,6 +835,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // not the run was confirmed — including a dry run. A rehearsal really
   // executes the script and only then rolls back, so exempting it would make
   // the quiet way to write to a read-only database the one nobody checks.
+  //
+  // Somebody whose role may not run here can still run one exact run an Admin
+  // approved for them (step 4c claims it). Never on a read-only connection,
+  // and never as a dry run: a rehearsal executes the SQL too.
+  let onlyWithOwnApproval = false;
   {
     const required = toExecuteRole(connRow.execute_role);
     const who = {
@@ -839,10 +847,19 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       mayDeploy: hasPermission(gate.principal, "deploy:run"),
     };
     if (!canExecute(who, required)) {
-      return answerBeforeRun(
-        { error: executeRefusal(connRow.name, gate.principal.roleLabel, required) },
-        { status: 403 }
-      );
+      if (required === "none") {
+        return answerBeforeRun(
+          { error: executeRefusal(connRow.name, gate.principal.roleLabel, required) },
+          { status: 403 }
+        );
+      }
+      if (dryRun) {
+        return answerBeforeRun(
+          { error: askToRunRefusal(connRow.name, true), askToRun: true },
+          { status: 403 }
+        );
+      }
+      onlyWithOwnApproval = true;
     }
   }
 
@@ -1017,8 +1034,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   //
   // Only for a real run in an organization whose two-person rule is on. A dry
   // run rolls back, so it needs the production tick but no approval.
+  //
+  // And for anybody at all who may not run here by themselves (step 4a), on
+  // any connection: only an approval given to them, for this exact run.
   let claimedApprovalId: number | null = null;
-  if (needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
+  if (onlyWithOwnApproval || needsApproval(targetEnvironment, approvalsRequired, dryRun)) {
     try {
       const claimed = await claimApproval({
         // Only an approval given in the caller's organization. The connection
@@ -1035,7 +1055,19 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         // Only a deploy approval can clear a deploy. A rollback approval for
         // the same scripts has action 'revert' and a different fingerprint.
         action: "deploy",
+        requestedBy: onlyWithOwnApproval ? gate.principal.email : null,
       });
+      if (!claimed && onlyWithOwnApproval) {
+        return answerBeforeRun(
+          {
+            error: askToRunRefusal(connRow.name, false),
+            environment: targetEnvironment,
+            needsApproval: true,
+            askToRun: true,
+          },
+          { status: 403 }
+        );
+      }
       if (!claimed) {
         // Approvals are on here (needsApproval), so it is always someone else.
         const approver = " from someone other than you";

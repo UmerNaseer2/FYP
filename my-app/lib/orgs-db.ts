@@ -53,9 +53,8 @@ export type Organization = {
   isDefault: boolean;
   /**
    * Whether a production deploy or rollback needs a second person to approve
-   * it. On by default. An Admin can switch it off for an organization of one
-   * (the Organization tab), and then whoever asked may clear their own
-   * request, which the approval row records as a self-approval.
+   * it (the require_approvals column). Off by default: whoever's role allows a
+   * run just does it. An Admin can switch it on (the Organization tab).
    */
   twoPersonRule: boolean;
 };
@@ -94,7 +93,7 @@ export type Member = Membership & {
 export async function findDefaultOrganization(): Promise<Organization | null> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule" FROM organizations WHERE is_default`
+    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule" FROM organizations WHERE is_default`
   );
   return rows[0] ?? null;
 }
@@ -112,7 +111,7 @@ export async function findOrganization(slug: string): Promise<Organization | nul
   if (!SLUG.test(slug)) return null;
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule" FROM organizations WHERE slug = $1`,
+    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule" FROM organizations WHERE slug = $1`,
     [slug]
   );
   return rows[0] ?? null;
@@ -130,7 +129,7 @@ type MemberRow = {
 };
 
 /** The columns every membership lookup reads, joined the same way. */
-const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, o.two_person_rule, m.role,
+const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, o.require_approvals AS two_person_rule, m.role,
             p.email, p.name AS person_name
        FROM profiles p
        JOIN memberships m ON m.profile_id = p.id
@@ -269,7 +268,7 @@ export async function rememberLastOrganization(profileId: number, orgId: number)
 export async function listOrganizations(): Promise<Organization[]> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"
+    `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"
        FROM organizations
       ORDER BY lower(name), id`
   );
@@ -357,7 +356,7 @@ async function createIn(
   const inserted = await client.query<Organization>(
     `INSERT INTO organizations (slug, name) VALUES ($1, $2)
      ON CONFLICT (slug) DO NOTHING
-     RETURNING id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"`,
+     RETURNING id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"`,
     [slug, name]
   );
   const created = inserted.rows[0];
@@ -424,7 +423,7 @@ export async function updateOrganization(
     // Locked, so two Admins saving at once are lined up and each log line
     // says what the name or the rule really was before that save.
     const found = await client.query<Organization>(
-      `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"
+      `SELECT id, slug, name, is_default AS "isDefault", require_approvals AS "twoPersonRule"
          FROM organizations WHERE id = $1 FOR NO KEY UPDATE`,
       [orgId]
     );
@@ -439,7 +438,7 @@ export async function updateOrganization(
       twoPersonRule: changes.twoPersonRule ?? before.twoPersonRule,
     };
     await client.query(
-      `UPDATE organizations SET name = $2, two_person_rule = $3 WHERE id = $1`,
+      `UPDATE organizations SET name = $2, require_approvals = $3 WHERE id = $1`,
       [orgId, after.name, after.twoPersonRule]
     );
     await logRoleChanges(client, orgId, [

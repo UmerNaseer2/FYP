@@ -4,6 +4,7 @@ import { OrgProvider } from "@/components/OrgProvider";
 import { resolveOrganization } from "@/lib/auth-guard";
 import { isOrgSlug } from "@/lib/org-slug";
 import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
+import { isTrialOrg } from "@/lib/trial-rules";
 
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
 function onDesktop(): boolean {
@@ -72,6 +73,7 @@ export default async function OrganizationLayout({
           slug={principal.orgSlug}
           name={principal.orgName}
           twoPersonRule={principal.orgTwoPersonRule}
+          trial={isTrialOrg(principal.orgSlug)}
         >
           {children}
         </OrgProvider>

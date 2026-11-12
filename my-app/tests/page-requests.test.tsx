@@ -38,6 +38,7 @@ function payload(over: Partial<RequestsPayload> = {}): RequestsPayload {
   return {
     mine: [],
     inbox: [],
+    lent: [],
     runsToApprove: [],
     runsToRun: [],
     myRuns: [],
@@ -60,6 +61,7 @@ function ownRequest(over: Partial<RequestsPayload["mine"][number]> = {}): Reques
     decided_at: null,
     decision_note: null,
     created_at: LONG_AGO,
+    granted_until: null,
     ...over,
   };
 }
@@ -344,6 +346,14 @@ describe("reading your own requests", () => {
     expect(screen.getByText(/Yours until Friday\./)).toBeInTheDocument();
     expect(screen.getByText(/Answered by alice@example\.com/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+  });
+
+  it("says a day's allowance is just for them, and when it ended", async () => {
+    await draw(payload({ mine: [ownRequest({ status: "allowed", decided_at: LATER, granted_until: FUTURE })] }));
+    expect(await screen.findByText(/Just for you, until/)).toBeInTheDocument();
+    cleanup();
+    await draw(payload({ mine: [ownRequest({ status: "allowed", decided_at: LATER, granted_until: LATER })] }));
+    expect(await screen.findByText(/That was for a day, and it ended/)).toBeInTheDocument();
   });
 
   it("marks answers given since the last look as new, and only those", async () => {
@@ -686,6 +696,48 @@ describe("answering", () => {
     await draw(payload({ canAnswer: true, inbox: [inboxRequest()] }));
     expect(await screen.findByRole("button", { name: "Allow for everyone who is Viewer" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Give Carol Reader another role" })).toBeInTheDocument();
+  });
+
+  it("allows just the asker for a day, with the note, and changes no role", async () => {
+    await draw(payload({ canAnswer: true, inbox: [inboxRequest()] }));
+    fireEvent.change(await screen.findByPlaceholderText("A note to Carol Reader (optional)"), {
+      target: { value: "For the demo." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Allow just Carol Reader for 24 hours" }));
+    await waitFor(() => expect(callsTo(/\/api\/requests\/5$/, "PATCH")).toHaveLength(1));
+    expect(saved(/\/api\/requests\/5$/, "PATCH")).toEqual({ action: "grant", note: "For the demo." });
+    expect(callsTo(/\/api\/admin\/roles$/, "PUT")).toHaveLength(0);
+  });
+
+  it("offers a day only for one permission the person answering holds, never an Admin's alone", async () => {
+    // Something else names no permission.
+    await draw(payload({ canAnswer: true, inbox: [inboxRequest({ permission: null, message: "A new schema" })] }));
+    await screen.findByRole("button", { name: "Decline" });
+    expect(screen.queryByRole("button", { name: /for 24 hours/ })).toBeNull();
+    cleanup();
+
+    // Roles & permissions can only ever be an Admin's.
+    await draw(payload({ canAnswer: true, inbox: [inboxRequest({ permission: "roles:update" })] }));
+    await screen.findByRole("button", { name: "Decline" });
+    expect(screen.queryByRole("button", { name: /for 24 hours/ })).toBeNull();
+    cleanup();
+
+    // Somebody who may change users but not deploy cannot lend deploying.
+    setCustomRole("people", "People", ["users:update"]);
+    await draw(payload({ canAnswer: true, inbox: [inboxRequest()] }));
+    await screen.findByRole("button", { name: "Decline" });
+    expect(screen.queryByRole("button", { name: /for 24 hours/ })).toBeNull();
+  });
+
+  it("lists who holds something for a day, and ends it on request", async () => {
+    const lent = { ...ownRequest({ id: 7, status: "allowed", decided_by: "alice@example.com", granted_until: FUTURE }), requested_by_name: "Carol Reader" };
+    await draw(payload({ canAnswer: true, lent: [lent] }));
+    expect(await screen.findByRole("heading", { name: "Allowed for 24 hours" })).toBeInTheDocument();
+    expect(screen.getByText(`Carol Reader: ${permissionLabel("deploy:run")}`)).toBeInTheDocument();
+    expect(screen.getByText(/Allowed by alice@example\.com until .*Their role is unchanged\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "End now" }));
+    await waitFor(() => expect(callsTo(/\/api\/requests\/7$/, "PATCH")).toHaveLength(1));
+    expect(saved(/\/api\/requests\/7$/, "PATCH")).toEqual({ action: "end-grant" });
   });
 });
 

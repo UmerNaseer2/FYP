@@ -88,6 +88,8 @@
 
 /* ---------- the Done list ---------- */
 .rq-list { padding: 4px 0; min-width: 0; }
+.rq-list-title { margin: 0; padding: 12px 20px 2px; font-size: 13px; font-weight: 600; color: var(--ink-3); }
+.rq-section + .rq-list, .rq-card + .rq-list { margin-top: 12px; }
 .rq-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 12px; padding: 14px 20px; align-items: start; }
 .rq-row + .rq-row { border-top: 1px solid var(--line); }
 .rq-ico {

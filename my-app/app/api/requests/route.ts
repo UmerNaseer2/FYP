@@ -12,6 +12,7 @@ import {
   countRequestInbox,
   countRequestsAnsweredSince,
   createAccessRequest,
+  listActiveGrants,
   listOwnRequests,
   listRequestInbox,
   readRequestsSeen,
@@ -68,9 +69,10 @@ export async function GET(request: NextRequest) {
     }
 
     const canAnswer = canAnswerRequests(principal);
-    const [mine, inbox, runsToApprove, runsToRun, myRuns] = await Promise.all([
+    const [mine, inbox, lent, runsToApprove, runsToRun, myRuns] = await Promise.all([
       listOwnRequests(orgId, email),
       canAnswer ? listRequestInbox(orgId, email) : [],
+      canAnswer ? listActiveGrants(orgId) : [],
       hasPermission(principal, "approvals:approve")
         ? listRunsToApprove(orgId, ownRunsLeftOut(principal))
         : [],
@@ -80,6 +82,7 @@ export async function GET(request: NextRequest) {
     const payload: RequestsPayload = {
       mine,
       inbox,
+      lent,
       runsToApprove,
       runsToRun,
       myRuns,

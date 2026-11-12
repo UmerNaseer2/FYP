@@ -6,7 +6,7 @@ export const requestsHelp: HelpTopic = {
   blurb: "Ask for what your role can't do, and answer what is waiting on you.",
   purpose:
     "Requests is where you ask for something your role can't do yet, and where the people who can answer see what is waiting. " +
-    "Production runs that need an approval, or are ready to run, show here too. " +
+    "Runs that need an approval, or are ready to run, show here too. " +
     "The app does not send email, so a number beside Requests in the sidebar is how people find out.",
   steps: [
     "Under What do you need?, choose the thing your role can't do yet, or Something else.",
@@ -14,8 +14,9 @@ export const requestsHelp: HelpTopic = {
     "Click Send request. It goes to the people here who can change roles or users.",
     "Find it under You asked while it waits. Withdraw takes it back. Once it is answered it moves to Done.",
     "Once it is allowed, reload the page you need it on, and you can use it.",
-    "If you answer requests, look under Needs you. Allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.",
-    "For a production run, follow Review it on Deploy to approve it, or Open it on Deploy to run one of yours that was approved.",
+    "If you answer requests, look under Needs you. Allow just the asker for 24 hours, allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.",
+    "What you allowed for 24 hours is listed under Allowed for 24 hours until it ends. End now stops it early.",
+    "For a run, follow Review it on Deploy to approve it, or Open it on Deploy to run one of yours that was approved.",
     "Away from a computer? Use Phone app at the top of this page. The phone app can alert you when something here needs you.",
   ],
   terms: [
@@ -40,6 +41,11 @@ export const requestsHelp: HelpTopic = {
         "A request that names no line from the Roles & permissions tab. You say what you need in your own words, and it can only be marked as done or declined.",
     },
     {
+      term: "Allow just them for 24 hours",
+      meaning:
+        "Lets only the asker use that one line, for the next 24 hours. Their role does not change, and it ends by itself. You can only lend a line you have yourself, and never an Admin-only one.",
+    },
+    {
       term: "Allow for everyone",
       meaning:
         "Turns the line on for everyone who has the asker's role. The app says how many people that reaches before it changes anything.",
@@ -57,12 +63,12 @@ export const requestsHelp: HelpTopic = {
     {
       term: "Needs approval",
       meaning:
-        "A production run someone asked for that is waiting for a second person to approve it on Deploy.",
+        "A run someone asked for that is waiting for an approval on Deploy: a production run while the two-person rule is on, or a run the asker's role may not do by itself.",
     },
     {
       term: "Ready to run",
       meaning:
-        "A production run of yours that has been approved, and can be run on Deploy until the approval runs out.",
+        "A run of yours that has been approved, and can be run on Deploy until the approval runs out.",
     },
   ],
   problems: [
@@ -75,6 +81,10 @@ export const requestsHelp: HelpTopic = {
       problem: "Nobody has answered my request.",
       fix:
         "The app sends no email. The people who answer see a number beside Requests in the sidebar, so tell them yourself if it is urgent.",
+    },
+    {
+      problem: "I was allowed something for a day, and now it is gone.",
+      fix: "A 24 hour allowance ends by itself. Ask again, or ask for the line to be added to your role for good.",
     },
     {
       problem: "My request was allowed, but the button is still switched off.",

@@ -97,9 +97,11 @@ jest.mock("../lib/roles-db", () => ({
 }));
 
 const mockLoadSiteRole = jest.fn();
+/** The metadata database: here only the day-long grants (lib/access-requests-db activeGrants) read it. */
+const mockQuery = jest.fn();
 jest.mock("../lib/version-db", () => ({
   __esModule: true,
-  default: { query: async () => ({ rows: [] }) },
+  default: { query: (...args: unknown[]) => mockQuery(...args) },
   syncMetadataTables: async () => undefined,
 }));
 jest.mock("../lib/site-role", () => ({
@@ -156,6 +158,8 @@ beforeEach(() => {
   mockGetRoleAccess.mockReset();
   mockLoadSiteRole.mockReset();
   mockLoadSiteRole.mockResolvedValue(null);
+  mockQuery.mockReset();
+  mockQuery.mockResolvedValue({ rows: [] });
 });
 
 afterEach(() => {
@@ -827,6 +831,33 @@ describe("requireSignedIn, the gate that asks only who someone is", () => {
   });
 });
 
+describe("a day's allowance from the Requests page", () => {
+  test("adds what an Admin allowed the person, on top of their role, and asks only about them", async () => {
+    signedInAs(VIEWER);
+    mockQuery.mockResolvedValue({ rows: [{ permission: "deploy:run" }] });
+    const principal = principalOf(await requirePermission("deploy:run"));
+    expect(principal.permissions).toContain("deploy:run");
+    expect(principal.permissions).toEqual(expect.arrayContaining(VIEWER.permissions));
+    expect(principal.role).toBe("viewer");
+    const grantQuery = mockQuery.mock.calls.find(([sql]) => String(sql).includes("granted_until"));
+    expect(grantQuery?.[1]).toEqual([TEST_ORG.id, "ed@example.com"]);
+  });
+
+  test("never adds what only an Admin may do, or a key the app does not know", async () => {
+    signedInAs(VIEWER);
+    mockQuery.mockResolvedValue({ rows: [{ permission: "roles:update" }, { permission: "made:up" }] });
+    const principal = principalOf(await requireMember());
+    expect(principal.permissions).not.toContain("roles:update");
+    expect(principal.permissions).not.toContain("made:up");
+    expect([...principal.permissions].sort()).toEqual([...VIEWER.permissions].sort());
+  });
+
+  test("without one, the role is all there is", async () => {
+    signedInAs(VIEWER);
+    expect(await refusal(await requirePermission("deploy:run"))).toEqual([403, expect.anything()]);
+  });
+});
+
 describe("in the shared trial organization", () => {
   const ADMIN = { role: "admin", roleLabel: "Admin", permissions: [...(presetFor("admin") ?? [])] };
   const TRIAL = process.env.TRIAL_SANDBOX;
@@ -845,7 +876,7 @@ describe("in the shared trial organization", () => {
   });
 
   test("even an Admin is refused what the trial switches off, in the trial's words", async () => {
-    for (const key of ["connections:create", "users:update", "roles:delete", "organization:update", "github:update"]) {
+    for (const key of ["connections:create", "users:update", "roles:delete", "organization:update"]) {
       expect(await refusal(await requirePermission(key as never))).toEqual([403, { error: TRIAL_REFUSAL }]);
     }
   });
@@ -855,6 +886,19 @@ describe("in the shared trial organization", () => {
     expect(principal.permissions).not.toContain("connections:create");
     expect(principal.permissions).not.toContain("organization:delete");
     expect(principal.permissions).toContain("approvals:create");
+  });
+
+  test("lets the Trial Admin save a GitHub token, so the trial can push scripts", async () => {
+    expect(principalOf(await requirePermission("github:update")).permissions).toContain("github:update");
+  });
+
+  test("a day's allowance never gets round what the trial switches off", async () => {
+    mockFindMembership.mockResolvedValue({ ...membership("viewer"), slug: "trial", name: "Schema Studio Trial" });
+    mockGetRoleAccess.mockResolvedValue(VIEWER);
+    mockQuery.mockResolvedValue({ rows: [{ permission: "connections:create" }, { permission: "deploy:run" }] });
+    const principal = principalOf(await requirePermission("deploy:run"));
+    expect(principal.permissions).toContain("deploy:run");
+    expect(principal.permissions).not.toContain("connections:create");
   });
 
   test("an organization called trial is an ordinary one on a server without the trial", async () => {

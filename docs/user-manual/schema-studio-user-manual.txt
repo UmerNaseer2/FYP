@@ -756,10 +756,9 @@ and Verify.
      one for breaking migrations, one for statements that delete rows, and
      one when the drift check did not pass.
   8. Click the "Dry run" button to rehearse: the scripts run against the
-     target and are then rolled back, so nothing is written. On a
-     production target a dry run needs the approval as well, and the same
-     approval then covers the real deploy. A dry run stops any statement
-     that takes longer than five minutes.
+     target and are then rolled back, so nothing is written. A dry run
+     never needs an approval. It stops any statement that takes longer
+     than five minutes.
   9. Click the "Deploy" button to run for real. Both buttons name the range of
      versions, and Deploy adds "to production" on a production target. After
      a clean rehearsal the Run step offers "Deploy for real".
@@ -777,8 +776,8 @@ On Pre-flight, "Plan a rollback" opens the rollback plan for the script
 group. Choose the version to roll back to. The page shows the order the
 steps run in and the rollback SQL of each one. "Dry run the rollback" rehearses
 it without changing anything, and the roll back button next to it does it for
-real. A rollback needs the same permission, and on production the same
-approval, as a deploy, and so does its dry run (see WHO MAY APPLY below).
+real. A rollback needs the same permission, and the same approval when one
+is needed, as a deploy (see WHO MAY APPLY below).
 
 Below that, "Rollback history" and "Deploy history (all attempts)" list what
 was run on this schema for the group.
@@ -811,25 +810,24 @@ deployments, admins only, or nobody (see "Who may run migrations here" under
 Connections). When either one stops you, Deploy says which, next to the buttons
 it switches off.
 
-A Target labelled production needs one more thing: an approval for that exact
-run, from a second person. Asking for one needs "Request a production approval"
-(out of the box, Editor and Admin), and giving one needs "Approve production
-runs" (out of the box, Admin only, but an admin can give it to another role).
-Nobody can approve their own request. An approval covers one run of the SQL it
-was given, for up to 7 days: change the SQL, or wait longer, and it needs
-approving again.
+Out of the box that is all: if your role allows a run, you just do it,
+production included, and an Admin can always run. A Target labelled
+production only asks you to tick its risks first.
 
-A dry run on production needs the approval too. A rehearsal still runs the
-script on the production database: it holds locks while it runs, and
-sequence numbers it uses are not given back when it is rolled back. A dry
-run does not use the approval up, so one approval covers the rehearsal and
-the real run after it.
+If your role may not run on the Target (or the connection is for admins
+only), Deploy and Version Sync offer "Ask for approval" instead. An Admin
+approves that exact run, and then you can run it once, within 7 days. Only
+you can use that approval, a dry run is not offered without it, and a
+read-only connection is never opened this way.
 
-Two exceptions let you approve your own request, and the approval is then
-recorded as a self-approval:
-  • While sign-in is switched off for testing there is only one person.
-  • An admin has switched the organization's two-person rule off on the
-    Organization tab (section 11). You still need "Approve production runs".
+An admin can switch on the organization's two-person rule (Organization tab,
+section 11). While it is on, a real run on a production Target needs an
+approval for that exact run, from a second person. Asking for one needs
+"Request a production approval" (out of the box, Editor and Admin), and giving
+one needs "Approve production runs" (out of the box, Admin only, but an admin
+can give it to another role). Nobody can approve their own request. An
+approval covers one run of the SQL it was given, for up to 7 days: change the
+SQL, or wait longer, and it needs approving again. A dry run never needs one.
 
 BEST PRACTICES
 --------------
@@ -1123,11 +1121,11 @@ THE ORGANIZATION TAB
 Only the Admin role sees this tab. It has three parts:
   • Name: rename the organization. Its address (the part after the site name)
     stays the same, so saved links keep working.
-  • Two-person rule: on for every new organization. While it is on, a
+  • Two-person rule: off for every new organization, so whoever's role allows
+    a production deploy or rollback just does it. While it is on, a
     production deploy or rollback waits for someone other than the person who
-    asked. Switching it off asks you to confirm first; people can then approve
-    their own requests, and each one is recorded as a self-approval. Both
-    switches are listed under Recent changes.
+    asked. Switching it off asks you to confirm first. Both switches are
+    listed under Recent changes.
   • Delete this organization: type its name to confirm. It deletes the
     organization's connections, scripts, approvals, invitations and change
     log, and takes everyone out of it. Their accounts stay, and so do scripts
@@ -1227,11 +1225,13 @@ Asking (every role except Admin, which already has everything):
      one. "Withdraw" takes it back.
 
 Answering: people who may change what a role can do, or change someone's
-role, see "Waiting for you". For each request they can allow the thing for
-everyone in the asker's role, give the asker another role, mark it as done,
-or decline.
+role, see "Waiting for you". For each request they can allow just the asker
+for 24 hours (their role stays the same, and it ends by itself), allow the
+thing for everyone in the asker's role, give the asker another role, mark it
+as done, or decline. What was allowed for a day is listed under "Allowed for
+24 hours", where "End now" stops it early.
 
-Production runs show here too. A run that needs your approval reads "Needs
+Runs that need an approval show here too. A run that needs your approval reads "Needs
 approval" with a link "Review it on Deploy". A run of yours that has been
 approved reads "Ready to run" with a link "Open it on Deploy".
 

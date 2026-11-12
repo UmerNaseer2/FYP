@@ -36,7 +36,6 @@ const BEFORE: Record<string, OldRole> = {
   "POST /api/connections/test": "editor",
   "POST /api/connections/test-saved": "editor",
   "GET /api/deploy/approvals": "viewer",
-  "POST /api/deploy/approvals": "editor",
   "POST /api/deploy/approvals/[id]": "admin",
   "GET /api/github/family": "viewer",
   "GET /api/github/pull": "viewer",
@@ -62,10 +61,8 @@ const BEFORE: Record<string, OldRole> = {
   "GET /api/performance/thresholds": "viewer",
   "PUT /api/performance/thresholds": "editor",
   "GET /api/schema/snapshot": "viewer",
-  "POST /api/scripts/apply": "editor",
   "GET /api/scripts/attempts": "viewer",
   "POST /api/scripts/preflight": "viewer",
-  "POST /api/scripts/revert": "editor",
   "GET /api/scripts/schemas": "viewer",
   "GET /api/versionsync/ledger": "viewer",
 };
@@ -133,6 +130,15 @@ const ADDED: Record<string, Gate> = {
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
   "PUT /api/admin/ai/key": { kind: "permission", keys: ["organization:update"] },
   "DELETE /api/admin/ai/key": { kind: "permission", keys: ["organization:update"] },
+  // Deploying, rolling back and asking for approval: open to anyone who may
+  // see deployments. Who may run by themselves, and who only with an Admin's
+  // yes for that exact run, is decided inside, from "Deploy: Run" and the
+  // connection's "who may run" (tests/run-approval.test.ts).
+  "POST /api/deploy/approvals": { kind: "permission", keys: ["deploy:read"] },
+  "POST /api/scripts/apply": { kind: "permission", keys: ["deploy:read"] },
+  "POST /api/scripts/revert": { kind: "permission", keys: ["deploy:read"] },
+  // The Trial Admin's "Reset trial" button; the role and the trial are checked inside.
+  "POST /api/trial/reset": { kind: "permission", keys: ["organization:read"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

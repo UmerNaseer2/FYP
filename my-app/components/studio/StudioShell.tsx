@@ -10,7 +10,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
 import { BellIcon, ClockIcon, MoonIcon, PhoneIcon, SunIcon } from "@/components/ui/icons";
-import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
+import { ADMIN_ROLE, DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { HelpButton, HelpProvider, useHelp } from "@/components/help/HelpPanel";
 import { StudioTopbar } from "./StudioTopbar";
@@ -21,6 +21,7 @@ import { AccountMenu } from "./AccountMenu";
 import { CommandBar } from "./CommandBar";
 import { useAiFeature } from "./AiPanel";
 import LogoIntro from "./LogoIntro";
+import { TrialBar } from "./TrialBar";
 import { NAV_ITEMS, activeScreen, type NavItem } from "./nav";
 
 // What the rail offers while it cannot ask what the role may do: what a new
@@ -61,7 +62,8 @@ export function StudioShell({ children, user }: StudioShellProps) {
     useUser();
   const { theme, toggleTheme } = useTheme();
   const orgPath = useOrgHref();
-  const orgName = useOrg()?.name ?? null;
+  const org = useOrg();
+  const orgName = org?.name ?? null;
   const [collapsed, setCollapsed] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const waitingRequests = useRequestCounts(
@@ -287,6 +289,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
           onOpenCommand={() => setCommandOpen(true)}
           action={topActions}
         />
+        {org?.trial && <TrialBar isAdmin={roleKnown && role === ADMIN_ROLE} />}
         {/* tabIndex -1: the skip link can put focus here, Tab never stops on it. */}
         <main
           id="main-content"

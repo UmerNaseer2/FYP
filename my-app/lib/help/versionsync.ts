@@ -16,7 +16,7 @@ export const versionsyncHelp: HelpTopic = {
     "Press a Run button. It replays from the top of the list down to its own row, because a later version may depend on an earlier one. Run all replays the whole list.",
     "Check the Replay dialog. Nothing has run yet. It shows what runs, in order, and, on a production Target, a tick box for each risk you must read first.",
     "Press Dry run to rehearse. The scripts run and are then rolled back, so nothing is written.",
-    "Press Replay to do it for real. On a production Target this also needs an approval when your organization has the two-person rule on.",
+    "Press Replay to do it for real. On a production Target this also needs an approval when your organization has the two-person rule on. If your role may not run migrations on the Target, ask an Admin to approve that exact replay, and then you can run it once.",
   ],
   terms: [
     {

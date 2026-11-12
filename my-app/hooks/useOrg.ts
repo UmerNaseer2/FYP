@@ -6,7 +6,13 @@ import { orgHref } from "@/lib/org-slug";
  * whether a production run needs a second person to approve it
  * (Organization.twoPersonRule in lib/orgs-db.ts).
  */
-export type Org = { slug: string; name: string; twoPersonRule: boolean };
+export type Org = {
+  slug: string;
+  name: string;
+  twoPersonRule: boolean;
+  /** True in the shared trial organization (lib/trial-rules.ts isTrialOrg). */
+  trial?: boolean;
+};
 
 /**
  * The organization the page is open in, from app/[org]/layout.tsx through

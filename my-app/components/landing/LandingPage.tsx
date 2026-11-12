@@ -201,8 +201,8 @@ export function LandingPage({
               {trialAction && (
                 <form action={trialAction} method="post" className="lp-trial lp-in" style={delay(740)}>
                   <p className="lp-trial__lead">
-                    Or try it first, no account needed. Everyone shares one trial organization, and it
-                    starts fresh every night.
+                    Or try it first, no account needed. Everyone shares one trial organization, and its
+                    Admin can reset it to a fresh start.
                   </p>
                   <div className="lp-trial__row">
                     {TRIAL_ROLES.map((role) => (

@@ -724,3 +724,40 @@ describe("the number beside Requests", () => {
     expect(asked).toEqual([]);
   });
 });
+
+describe("the shared trial's strip", () => {
+  function renderTrial(trial: boolean) {
+    resetUserCache();
+    if (mockSession) seedUserAccess(me.status, me.body);
+    return render(
+      <OrgProvider slug="trial" name="Schema Studio Trial" trial={trial}>
+        <StudioShell>{PAGE}</StudioShell>
+      </OrgProvider>
+    );
+  }
+
+  test("tells everyone in the trial that it is shared", () => {
+    signInAs("viewer");
+    renderTrial(true);
+    expect(screen.getByText(/Everyone trying Schema Studio sees the same organization/)).toBeInTheDocument();
+  });
+
+  test("is not there in any other organization", () => {
+    renderTrial(false);
+    expect(screen.queryByText(/Shared trial/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset trial" })).not.toBeInTheDocument();
+  });
+
+  test("offers Reset trial to the Trial Admin", () => {
+    signInAs("admin");
+    renderTrial(true);
+    expect(screen.getByRole("button", { name: "Reset trial" })).toBeInTheDocument();
+  });
+
+  test("and to nobody else", () => {
+    signInAs("editor");
+    renderTrial(true);
+    expect(screen.getByText(/Shared trial/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset trial" })).not.toBeInTheDocument();
+  });
+});

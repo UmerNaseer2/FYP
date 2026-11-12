@@ -583,6 +583,12 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(`ALTER TABLE agent_links ADD COLUMN IF NOT EXISTS caller_hash TEXT`);
   // On a linked desktop, the website role that caps what its person may do there (lib/site-role.ts).
   await metadataPool.query(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS site_role JSONB`);
+  // Whether production runs wait for a second person. A new column, off, in
+  // place of the old two_person_rule (on by default), so every organization
+  // starts with approvals off and an Admin switches them on if they want them.
+  await metadataPool.query(
+    `ALTER TABLE organizations ADD COLUMN IF NOT EXISTS require_approvals BOOLEAN NOT NULL DEFAULT false`
+  );
 
   // `environment` is the typed dev / staging / prod label. It is deliberately
   // NOT guessed from the row's name: the whole point is that the label is data
@@ -723,6 +729,18 @@ async function backfillOlderTables(): Promise<void> {
   // phone says so instead of showing an empty run.
   await metadataPool.query(
     `ALTER TABLE deploy_approvals ADD COLUMN IF NOT EXISTS scripts JSONB`
+  );
+
+  // A one-off approval for somebody who may not run the run themselves (see
+  // the DeployApproval model). Every older row was an ordinary one.
+  await metadataPool.query(
+    `ALTER TABLE deploy_approvals
+       ADD COLUMN IF NOT EXISTS run_by_requester BOOLEAN NOT NULL DEFAULT false`
+  );
+
+  // A request answered "just this person, for a day" (the AccessRequest model).
+  await metadataPool.query(
+    `ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS granted_until TIMESTAMPTZ`
   );
 
   // The organization each person last opened (see the Profile model). Empty

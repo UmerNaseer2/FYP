@@ -3,13 +3,14 @@ import type {
   InboxRequest,
   RequestAnswer,
 } from "./access-requests";
-import { WAITING_REQUESTS_MAX } from "./access-requests";
+import { GRANT_HOURS, WAITING_REQUESTS_MAX } from "./access-requests";
+import { isAdminOnly, isPermissionKey, type PermissionKey } from "./permissions";
 import pool, { syncMetadataTables } from "./version-db";
 
 /** The queries behind lib/access-requests.ts. Every one names the organization. */
 
 const COLUMNS = `id, requested_by, requested_by_name, permission, message, status,
-  decided_by, decided_at, decision_note, created_at`;
+  decided_by, decided_at, decision_note, created_at, granted_until`;
 
 export type NewRequest = {
   orgId: number;
@@ -80,7 +81,7 @@ export async function listRequestInbox(orgId: number, readerEmail: string): Prom
   await syncMetadataTables();
   const result = await pool.query<InboxRequest>(
     `SELECT a.id, a.requested_by, a.requested_by_name, a.permission, a.message, a.status,
-            a.decided_by, a.decided_at, a.decision_note, a.created_at,
+            a.decided_by, a.decided_at, a.decision_note, a.created_at, a.granted_until,
             m.profile_id AS member_id, m.role AS member_role, r.label AS member_role_label
        FROM access_requests a
        LEFT JOIN profiles p ON lower(p.email) = lower(a.requested_by)
@@ -132,6 +133,69 @@ export async function answerAccessRequest(
     [id, orgId, answer, decidedBy, note]
   );
   return result.rows[0] ?? null;
+}
+
+/**
+ * Answers a waiting request "allowed, for just this person, for GRANT_HOURS".
+ * Null when it was answered meanwhile.
+ */
+export async function grantAccessRequest(
+  orgId: number,
+  id: number,
+  decidedBy: string,
+  note: string | null
+): Promise<AccessRequest | null> {
+  await syncMetadataTables();
+  const result = await pool.query<AccessRequest>(
+    `UPDATE access_requests
+        SET status = 'allowed', decided_by = $3, decided_at = now(), decision_note = $4,
+            granted_until = now() + make_interval(hours => $5)
+      WHERE id = $1 AND org_id = $2 AND status = 'pending' AND permission IS NOT NULL
+      RETURNING ${COLUMNS}`,
+    [id, orgId, decidedBy, note, GRANT_HOURS]
+  );
+  return result.rows[0] ?? null;
+}
+
+/** Everyone's day grants that have not ended yet, soonest to end first. */
+export async function listActiveGrants(orgId: number): Promise<AccessRequest[]> {
+  await syncMetadataTables();
+  const result = await pool.query<AccessRequest>(
+    `SELECT ${COLUMNS} FROM access_requests
+      WHERE org_id = $1 AND status = 'allowed' AND granted_until > now()
+      ORDER BY granted_until LIMIT 100`,
+    [orgId]
+  );
+  return result.rows;
+}
+
+/** Ends a day's grant early. Null when it had already ended. */
+export async function endGrant(orgId: number, id: number): Promise<AccessRequest | null> {
+  await syncMetadataTables();
+  const result = await pool.query<AccessRequest>(
+    `UPDATE access_requests SET granted_until = now()
+      WHERE id = $1 AND org_id = $2 AND status = 'allowed' AND granted_until > now()
+      RETURNING ${COLUMNS}`,
+    [id, orgId]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * What this person was allowed for a day and still holds, on top of their
+ * role. Never a permission only an Admin may hold, whatever the table says.
+ */
+export async function activeGrants(orgId: number, email: string): Promise<PermissionKey[]> {
+  await syncMetadataTables();
+  const result = await pool.query<{ permission: string }>(
+    `SELECT DISTINCT permission FROM access_requests
+      WHERE org_id = $1 AND lower(requested_by) = lower($2)
+        AND status = 'allowed' AND granted_until > now() AND permission IS NOT NULL`,
+    [orgId, email]
+  );
+  return (result.rows ?? [])
+    .map((row) => row.permission)
+    .filter((key): key is PermissionKey => isPermissionKey(key) && !isAdminOnly(key));
 }
 
 /** Takes back a person's own request, if it is still waiting. */

@@ -22,6 +22,7 @@ import {
   type Organization,
 } from "./orgs-db";
 import { getRoleAccess } from "./roles-db";
+import { activeGrants } from "./access-requests-db";
 import { applySiteRole, loadSiteRole } from "./site-role";
 import { sessionProfileId } from "./session-profile";
 
@@ -309,18 +310,26 @@ async function signedInPrincipal(slug: string | null): Promise<Resolution> {
       );
       return { kind: "unavailable" };
     }
-    return { kind: "ok", principal: memberPrincipal(profileId, membership, access) };
+    const grants = await activeGrants(membership.orgId, membership.email);
+    return { kind: "ok", principal: memberPrincipal(profileId, membership, access, grants) };
   } catch (error) {
     console.error("Could not read the caller's membership:", error);
     return { kind: "unavailable" };
   }
 }
 
+/**
+ * `grants` are what an Admin allowed this person for a day (lib/access-requests.ts),
+ * added to what their role may do.
+ */
 function memberPrincipal(
   profileId: number,
   membership: Member,
-  access: NonNullable<Awaited<ReturnType<typeof getRoleAccess>>>
+  access: NonNullable<Awaited<ReturnType<typeof getRoleAccess>>>,
+  grants: readonly PermissionKey[] = []
 ): Principal {
+  const permissions =
+    grants.length === 0 ? access.permissions : [...new Set([...access.permissions, ...grants])];
   return {
     profileId,
     email: membership.email,
@@ -328,7 +337,7 @@ function memberPrincipal(
     role: access.role,
     roleLabel: access.roleLabel,
     // The shared trial switches some things off for every role in it (lib/trial-rules.ts).
-    permissions: isTrialOrg(membership.slug) ? trialPermissions(access.permissions) : access.permissions,
+    permissions: isTrialOrg(membership.slug) ? trialPermissions(permissions) : permissions,
     bypass: false,
     viewingAs: null,
     orgId: membership.orgId,
@@ -352,7 +361,8 @@ export async function agentPrincipal(agent: { orgId: number; profileId: number }
   if (!membership) return null;
   const access = await getRoleAccess(membership.orgId, membership.role);
   if (!access) return null;
-  return memberPrincipal(agent.profileId, membership, access);
+  const grants = await activeGrants(membership.orgId, membership.email);
+  return memberPrincipal(agent.profileId, membership, access, grants);
 }
 
 /**

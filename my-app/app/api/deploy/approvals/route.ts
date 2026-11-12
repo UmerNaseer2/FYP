@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { afterResponse, alertRunWaiting } from "@/lib/push-alerts";
 import { requirePermission } from "@/lib/auth-guard";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
   createApprovalRequest,
   isApprovalAction,
@@ -93,10 +96,14 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Asking for an approval is its own permission (Approvals: Create). Out of
-  // the box the roles that may deploy hold it, since they are the ones who
-  // need a second person before a production run.
-  const gate = await requirePermission("approvals:create");
+  // Two kinds of asking, both open to anyone who may see deployments:
+  //  - somebody who may not run this here by themselves (their role cannot
+  //    run migrations, or the connection is for Admins only) asks an Admin
+  //    for this one run, which only they can then spend;
+  //  - somebody who may run it asks for the second person the organization's
+  //    approvals rule wants, which takes "Approvals: Create".
+  // Which one is decided below, once the connection is known.
+  const gate = await requirePermission("deploy:read");
   if (!gate.ok) return gate.response;
 
   let body: {
@@ -182,6 +189,41 @@ export async function POST(request: NextRequest) {
     riskScripts.push({ ...parsed, changeType: sent.change_type });
   }
 
+  // Whose run this is to be. A read-only connection runs nothing for anybody,
+  // so nobody can ask to run on it.
+  let runByRequester: boolean;
+  try {
+    await syncMetadataTables();
+    const found = await pool.query<{ name: string | null; execute_role: string | null }>(
+      `SELECT name, execute_role FROM connections WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
+    );
+    const conn = found.rows[0];
+    if (!conn) return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    const required = toExecuteRole(conn.execute_role);
+    const shown = conn.name ?? `connection ${connectionId}`;
+    if (required === "none") {
+      return NextResponse.json(
+        { error: executeRefusal(shown, gate.principal.roleLabel, required) },
+        { status: 403 }
+      );
+    }
+    const mayRunHere = canExecute(
+      { isAdmin: gate.principal.role === ADMIN_ROLE, mayDeploy: hasPermission(gate.principal, "deploy:run") },
+      required
+    );
+    if (mayRunHere && !hasPermission(gate.principal, "approvals:create")) {
+      return NextResponse.json(
+        { error: 'Your role may not ask for approvals ("Approvals: Create"). Ask an Admin for it.' },
+        { status: 403 }
+      );
+    }
+    runByRequester = !mayRunHere;
+  } catch (error) {
+    console.error("Approvals — connection lookup failed:", error);
+    return NextResponse.json({ error: "Could not record the approval request." }, { status: 500 });
+  }
+
   const note = (body.note ?? "").trim().slice(0, 500) || null;
   // Worked out from the SQL; a breakingCount in the body is ignored. For a
   // rollback the risk the approver weighs is lost rows, which deploying again
@@ -201,6 +243,7 @@ export async function POST(request: NextRequest) {
       requestedBy: gate.principal.email,
       note,
       action,
+      runByRequester,
     });
     if (!approval) {
       // Another organization's connection reads as missing, the same answer a

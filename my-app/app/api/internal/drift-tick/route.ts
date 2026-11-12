@@ -1,7 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import { disabledReason, runSchedulerTick } from "@/lib/drift-scheduler";
-import { trialEnabled } from "@/lib/trial-rules";
 
 /**
  * The scheduled call that wakes the drift checker where no timer can.
@@ -41,9 +40,6 @@ export async function GET(request: Request) {
   if (!sameSecret(request.headers.get("authorization") ?? "", `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Not allowed." }, { status: 401 });
   }
-  // The shared trial starts clean every night, signed in to or not (lib/trial-sandbox.ts).
-  // Loaded only when on, since lib/trial-sandbox.ts opens the database as it loads.
-  if (trialEnabled()) after(async () => (await import("@/lib/trial-sandbox")).resetTrialIfDue());
   if (disabledReason()) return NextResponse.json({ accepted: false });
   after(() => runSchedulerTick());
   return NextResponse.json({ accepted: true }, { status: 202 });

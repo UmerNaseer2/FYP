@@ -81,6 +81,9 @@ const BASE: PanelProps = {
   onNoteChange: () => {},
   onRequest: () => {},
   onDecide: () => {},
+  // The rule is off by default since an organization switches it on; most of
+  // this file is about the panel with the rule on.
+  twoPersonRule: true,
 };
 
 function row(over: Partial<ApprovalRow> = {}): ApprovalRow {
@@ -675,5 +678,34 @@ describe("the hash the panel matches an approval by", () => {
     await expect(sha256Hex("abc")).resolves.toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
+  });
+});
+
+describe("somebody whose role may not run this by itself", () => {
+  const ASKER = { askToRun: true, mayRequest: false, mayApprove: false, roleLabel: "Editor" } as const;
+
+  it("offers to ask an Admin for this exact run", () => {
+    const panel = show(ASKER);
+    expect(panel).toHaveTextContent("Needs an Admin's approval");
+    expect(panel).toHaveTextContent("Your role (Editor) may not run migrations on this connection by itself.");
+    expect(panel).toHaveTextContent("you can run it once, within 7 days");
+    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeEnabled();
+  });
+
+  it("says rollback when it is a rollback", () => {
+    const panel = show({ ...ASKER, action: "revert" });
+    expect(panel).toHaveTextContent("may not roll back on this connection by itself");
+  });
+
+  it("waits for an Admin once asked, with no button to answer it themselves", () => {
+    const panel = show({ ...ASKER, pending: row({ requested_by: "me@example.com" }) });
+    expect(panel).toHaveTextContent("Waiting for an Admin");
+    expect(panel).toHaveTextContent("Admins see it on their Requests page");
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
+  });
+
+  it("says the approval is theirs, once", () => {
+    const panel = show({ ...ASKER, approved: row({ status: "approved", decided_by: "boss@example.com" }) });
+    expect(panel).toHaveTextContent("Approved for you, once");
   });
 });

@@ -19,10 +19,10 @@ import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
  * Renaming keeps the address. Links people saved still work, and the address
  * is shown so nobody expects it to follow the name.
  *
- * The two-person rule is on for every new organization. While it is on, a
- * real production run waits for someone other than the person who asked for it.
- * Switching it off drops approvals altogether, which is the one change here
- * that lowers a safeguard, so it asks first. Both directions go in the change
+ * The two-person rule is off for every new organization: whoever's role allows
+ * a production run just does it. While it is on, a real production run waits
+ * for someone other than the person who asked for it. Switching it off again
+ * drops approvals altogether, which lowers a safeguard, so it asks first. Both directions go in the change
  * log on the Roles & permissions tab.
  *
  * After a save the page is refreshed from the server, so the rest of the

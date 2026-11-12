@@ -241,17 +241,24 @@ function lastApply(): Record<string, unknown> {
   return JSON.parse(call.body) as Record<string, unknown>;
 }
 
+/** The page in an organization that has the two-person rule switched on (it is off by default). */
+function renderWithRule() {
+  return render(
+    <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name} twoPersonRule>
+      <DeployPage />
+    </OrgProvider>
+  );
+}
+
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
 
 describe("who is allowed to run anything here", () => {
-  it("refuses a connection limited to admins, and names the viewer's role", async () => {
-    // A 403 from the apply route says "forbidden" about a request the reader
-    // already believed was fine. The button greys itself out for the stated
-    // reason instead, and the reason has to name both halves (the connection's
-    // setting and the viewer's role), because either one can be what changes.
-    // An editor may run deployments elsewhere, so "Deploy: Run" is not what is
-    // missing here, and the sentence must not send them to ask for it.
+  it("lets an editor ask for approval on a connection limited to admins", async () => {
+    // An editor may run deployments elsewhere, but not on a connection kept for
+    // admins. They are not refused outright: they can ask an Admin to approve
+    // this exact run, and then run it once. Until then nothing runs, and a
+    // rehearsal is not open to them either (it executes the SQL too).
     setUser("editor");
     setRoutes(baseRoutes());
     render(<DeployPage />);
@@ -259,21 +266,21 @@ describe("who is allowed to run anything here", () => {
 
     expect(await deployButton()).toBeDisabled();
     expect(await dryRunButton()).toBeDisabled();
-    expect(
-      screen.getByText("Running migrations on this connection is limited to admins")
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Needs an Admin's approval")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask for approval" })).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Running migrations against "Admins only" is limited to admins, and your role is ' +
-          '"Editor". Ask an admin to run it, or to lower the requirement on this connection.'
+        "Your role may not run migrations here by itself, so the deploy waits for an Admin to " +
+          "approve it. A dry run is not open to you here"
       )
     ).toBeInTheDocument();
     expect(screen.queryByText(/may run deployments/)).not.toBeInTheDocument();
   });
 
-  it("refuses a role without Deploy: Run on any connection, and names the box", async () => {
+  it("lets a role without Deploy: Run ask for approval of one exact run", async () => {
     // A viewer may read everything on this page (Deploy: Read), which is why
-    // the page opens at all; only running needs the second box.
+    // the page opens at all. Running needs the second box, or an Admin's yes
+    // for this exact run.
     setUser("viewer");
     setRoutes(baseRoutes());
     render(<DeployPage />);
@@ -281,18 +288,9 @@ describe("who is allowed to run anything here", () => {
 
     expect(await deployButton()).toBeDisabled();
     expect(await dryRunButton()).toBeDisabled();
-    expect(
-      screen.getByText(
-        "Running migrations on this connection needs a role that may run deployments, " +
-          "and yours (Viewer) may not"
-      )
-    ).toBeInTheDocument();
-    // The top of the page says it once and offers the way to ask, so the line under
-    // the connection is kept for what is about that connection alone.
-    // (The AI review panel has its own "Ask for it" link, for AI assistance.)
-    const asks = screen.getAllByRole("link", { name: "Ask for it" }).map((link) => link.getAttribute("href"));
-    expect(asks).toContain("/test-org/requests?ask=deploy%3Arun");
-    expect(screen.queryByText(/Running migrations against "Dev box"/)).toBeNull();
+    expect(await screen.findByText("Needs an Admin's approval")).toBeInTheDocument();
+    expect(screen.getByText(/Execution · Viewer may run this only with an Admin's approval/)).toBeInTheDocument();
+    expect(screen.queryByText(/Running migrations on this connection needs a role/)).toBeNull();
   });
 
   it("lets a role that may deploy but not read approvals run nothing on production", async () => {
@@ -303,7 +301,7 @@ describe("who is allowed to run anything here", () => {
     // cleared. (The server checks again on the press either way.)
     setCustomRole("deployer", "Deployer", ["deploy:read", "deploy:run"]);
     setRoutes(baseRoutes());
-    render(<DeployPage />);
+    renderWithRule();
     await selectBothVersions(/Prod box/);
 
     expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
@@ -445,7 +443,7 @@ describe("the boxes in front of a run", () => {
     // A rehearsal runs the SQL on production, so the tick covers it; it never
     // commits, so it needs no approval.
     setRoutes(baseRoutes());
-    render(<DeployPage />);
+    renderWithRule();
     await selectBothVersions(/Prod box/);
 
     expect(await dryRunButton()).toBeDisabled();
@@ -543,7 +541,7 @@ describe("the two-person rule", () => {
       { match: "/api/deploy/approvals", body: { approvals: [approval()] } },
       ...baseRoutes(),
     ]);
-    render(<DeployPage />);
+    renderWithRule();
     await selectBothVersions(/Prod box/);
 
     const panel = (await screen.findByText("Needs a second person")).closest(".appr") as HTMLElement;
@@ -592,7 +590,7 @@ describe("the two-person rule", () => {
       },
       ...baseRoutes(),
     ]);
-    render(<DeployPage />);
+    renderWithRule();
     await selectBothVersions(/Prod box/);
 
     expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
@@ -730,7 +728,7 @@ describe("the number beside Requests on the rail", () => {
       },
       ...baseRoutes(),
     ]);
-    render(<DeployPage />);
+    renderWithRule();
     await selectBothVersions(/Prod box/);
     const approve = await screen.findByRole("button", { name: "Approve this run" });
     expect(heard).not.toHaveBeenCalled();
