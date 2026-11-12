@@ -24,7 +24,7 @@ import {
 // Re-exported so server code can take the listing and its reading from one place.
 export { familyVersions };
 
-const GITHUB_API = "https://api.github.com";
+export const GITHUB_API = "https://api.github.com";
 
 // A GitHub call that hangs would leave the screen waiting forever with Push
 // disabled; after this long it counts as "could not reach GitHub" instead.
@@ -137,7 +137,7 @@ export function contentsPathUrl(config: GitHubConfig, path: string): string {
 export async function githubFetch(
   config: GitHubConfig,
   url: string,
-  request: { method?: "GET" | "PUT" | "DELETE"; body?: unknown } = {},
+  request: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {},
 ): Promise<Response | null> {
   const method = request.method ?? "GET";
   const withBody = request.body !== undefined;

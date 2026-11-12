@@ -52,6 +52,7 @@
 //       github_down | github_error | github_unreachable | outcome_unknown
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
+import { createRepository } from "@/lib/github-check";
 import { githubConfigFor } from "@/lib/github-config";
 import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/change-note";
 import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
@@ -598,7 +599,15 @@ export async function POST(req: NextRequest) {
   // 4. What the family folder already holds: one listing (it stops at 1000
   //    entries, far more than one family has). When it can't be read, stop:
   //    see "fails closed" at the top.
-  const listing = await listFamilyFiles(config, input.root, input.database, input.schema, input.scriptName);
+  let listing = await listFamilyFiles(config, input.root, input.database, input.schema, input.scriptName);
+  if (!listing.ok && listing.status === 404) {
+    // The repository itself is missing (a folder that is missing lists as
+    // empty). Make it with the same token, then list again: it is empty, but
+    // listing it is what proves the token can now see it.
+    const made = await createRepository(config);
+    if (!made.ok) return fail(502, "repo_not_found", made.error);
+    listing = await listFamilyFiles(config, input.root, input.database, input.schema, input.scriptName);
+  }
   if (!listing.ok) return listingFailed(listing, input);
 
   return input.mode === "attach"

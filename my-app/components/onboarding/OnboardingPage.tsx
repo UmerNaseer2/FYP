@@ -480,8 +480,10 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
                     aria-describedby={tokenProblem ? "org-token-help org-token-problem" : "org-token-help"}
                   />
                   <p id="org-token-help" className="help">
-                    A fine-grained token with Contents set to Read and write on that repository. It is stored
-                    encrypted and is never shown again.
+                    A fine-grained token with Contents set to Read and write on that repository. If the
+                    repository does not exist yet, the app makes it, private, when the token also has
+                    Administration set to Read and write on all repositories. It is stored encrypted and is
+                    never shown again.
                   </p>
                   {tokenProblem && (
                     <p id="org-token-problem" className="field-problem">

@@ -1152,7 +1152,8 @@ To connect a repository, or change it:
      is stored encrypted and never shown again. To keep the saved one, leave
      this blank.
   3. Press "Save". The app checks the repository and the token with GitHub
-     before it saves them.
+     before it saves them. If the repository does not exist yet, the app
+     makes it with the same token, as a private repository, and says so.
 "Remove" takes the settings away, after you confirm. The scripts already in
 the repository stay there. Saving and removing are both listed under Recent
 changes.
@@ -1165,6 +1166,11 @@ Making an access token, on GitHub:
   3. Under Permissions, set Contents to Read and write. The app needs nothing
      else.
   4. Generate the token, copy it, and paste it here.
+If the repository does not exist yet, a token can't be given that one
+repository, so in step 2 choose All repositories instead, and in step 3 also
+set Administration to Read and write, so the app may make it. For a
+repository under a GitHub organization, pick that organization as the
+Resource owner.
 A token stops working on the date picked when it was made: make a new one
 then and paste it here. If the repository belongs to a GitHub organization,
 that organization may have to approve the token first.

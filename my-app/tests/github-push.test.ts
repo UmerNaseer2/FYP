@@ -286,6 +286,37 @@ describe("POST /api/github/push, a new version", () => {
   });
 });
 
+describe("POST /api/github/push, into a repository that does not exist yet", () => {
+  it("makes the repository with the same token, then saves the version into it", async () => {
+    let repoMade = false;
+    answers[`GET ${FOLDER}`] = () => json(404, { message: "Not Found" });
+    answers[`GET ${REPO}`] = () =>
+      repoMade ? json(200, { full_name: "acme/registry" }) : json(404, { message: "Not Found" });
+    answers["GET https://api.github.com/user"] = () => json(200, { login: "acme" });
+    answers["POST https://api.github.com/user/repos"] = () => {
+      repoMade = true;
+      return json(201, { full_name: "acme/registry" });
+    };
+    answers[`PUT ${fileUrl("v1.2.0.sql")}`] = saved("v1.2.0.sql");
+    answers[`PUT ${fileUrl("v1.2.0.down.sql")}`] = saved("v1.2.0.down.sql");
+
+    const { status, body } = await push({ ...BASE, down_sql: DOWN });
+    expect(status).toBe(200);
+    expect(body.rollback_saved).toBe(true);
+    const made = calls.find((call) => call.method === "POST");
+    expect(made?.body).toEqual({
+      name: "registry",
+      private: true,
+      auto_init: true,
+      description: "Schema Studio script registry",
+    });
+    expect(writes().filter((call) => call.method === "PUT").map((call) => call.url)).toEqual([
+      fileUrl("v1.2.0.sql"),
+      fileUrl("v1.2.0.down.sql"),
+    ]);
+  });
+});
+
 describe.each([
   ["present", true],
   ["absent", false],
@@ -294,11 +325,13 @@ describe.each([
     trapRollbackFile("1.2.0", rollbackPresent);
     answers[`GET ${FOLDER}`] = () => json(404, { message: "Not Found" });
     answers[`GET ${REPO}`] = () => json(404, { message: "Not Found" });
+    answers["GET https://api.github.com/user"] = () => json(200, { login: "someone-else" });
+    answers["POST https://api.github.com/orgs/acme/repos"] = () => json(403, { message: "Forbidden" });
     const { status, body } = await push({ ...BASE, down_sql: DOWN });
     expect(status).toBe(502);
     expect(body.code).toBe("repo_not_found");
-    expect(body.error).toContain('Could not check which versions of "orders_fix"');
-    expect(writes()).toEqual([]);
+    expect(body.error).toContain("this token is not allowed to make one");
+    expect(writes().filter((call) => call.method === "PUT")).toEqual([]);
   });
 
   it("refuses a version that is already saved with its rollback", async () => {

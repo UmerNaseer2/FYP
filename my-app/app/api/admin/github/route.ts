@@ -122,7 +122,12 @@ export async function PUT(request: NextRequest) {
         // The saved token went between the read above and the save.
         return NextResponse.json({ error: NEED_TOKEN, field: "token" }, { status: 400 });
       case "ok":
-        return NextResponse.json({ saved: true, changed: saved.changed, repository: repositoryLabel(repository) });
+        return NextResponse.json({
+          saved: true,
+          changed: saved.changed || check.created,
+          created: check.created,
+          repository: repositoryLabel(repository),
+        });
     }
   } catch (error) {
     console.error("Failed to save the GitHub settings:", error);

@@ -120,12 +120,14 @@ export function GitHubTab({ active }: { active: boolean }) {
         else setActionError({ what: "save", message: reason });
         return;
       }
-      const saved = body as { changed?: unknown; repository?: unknown };
+      const saved = body as { changed?: unknown; created?: unknown; repository?: unknown };
       const label = typeof saved.repository === "string" ? saved.repository : repository.trim();
       setNotice(
-        saved.changed === false
-          ? `Nothing changed. GitHub still accepts the saved token for ${label}.`
-          : `Saved. GitHub accepted the token for ${label}.`
+        saved.created === true
+          ? `Saved. ${label} did not exist, so the app made it on GitHub as a private repository.`
+          : saved.changed === false
+            ? `Nothing changed. GitHub still accepts the saved token for ${label}.`
+            : `Saved. GitHub accepted the token for ${label}.`
       );
       setToken("");
       setLoads((n) => n + 1);
@@ -276,7 +278,8 @@ export function GitHubTab({ active }: { active: boolean }) {
                 <div className="flex items-center mb-1">
                   <Label htmlFor={repositoryId}>Repository</Label>
                   <HelpHint label="Repository">
-                    Type it as owner/name, or paste its address from GitHub.
+                    Type it as owner/name, or paste its address from GitHub. If it does not exist yet, the app
+                    makes it as a private repository with the token below.
                   </HelpHint>
                 </div>
                 <Input
@@ -305,7 +308,8 @@ export function GitHubTab({ active }: { active: boolean }) {
                   <Label htmlFor={tokenId}>Access token</Label>
                   <HelpHint label="Access token">
                     A GitHub fine-grained token that may read and write this repository (Contents: Read and
-                    write). It is stored encrypted and never shown again. Help has the steps for making one.
+                    write). For the app to make a missing repository, the token also needs Administration: Read and
+                    write on all repositories. It is stored encrypted and never shown again. Help has the steps.
                   </HelpHint>
                 </div>
                 <Input

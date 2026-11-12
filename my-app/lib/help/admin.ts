@@ -164,7 +164,7 @@ export const adminHelp: HelpTopic = {
       body: [
         "Repository: type it as owner/name, or paste its address from GitHub.",
         "Access token: it is stored encrypted and never shown again, here or anywhere else. Leave the box blank to keep the saved one.",
-        "Save checks the repository and the token with GitHub first. Remove takes the settings away, and scripts already in the repository stay there.",
+        "Save checks the repository and the token with GitHub first. If the repository does not exist yet, the app makes it with the same token, as a private repository with a README. Remove takes the settings away, and scripts already in the repository stay there.",
       ],
     },
     {
@@ -174,6 +174,7 @@ export const adminHelp: HelpTopic = {
         "2. Under Repository access, choose Only select repositories, and pick the repository.",
         "3. Under Permissions, set Contents to Read and write. The app needs nothing else.",
         "4. Generate the token, copy it, and paste it on the GitHub tab.",
+        "If the repository does not exist yet and you want the app to make it: in step 2 choose All repositories instead, and in step 3 also set Administration to Read and write. A repository can't be picked in step 2 before it exists. For a repository under an organization, choose that organization as the token's Resource owner.",
         "A token stops working on the date you pick when you make it. When it does, make a new one and paste it in.",
       ],
     },

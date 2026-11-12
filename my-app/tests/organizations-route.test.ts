@@ -91,7 +91,7 @@ beforeEach(() => {
   mockGateCalls = 0;
   mockKeySource = "app-key";
   mockCheck.mockReset();
-  mockCheck.mockResolvedValue({ ok: true });
+  mockCheck.mockResolvedValue({ ok: true, created: false });
   delete process.env.SCHEMA_STUDIO_DESKTOP;
   for (const fake of Object.values(mockOrgsDb)) fake.mockReset();
 });
@@ -205,7 +205,7 @@ describe("POST", () => {
     mockOrgsDb.createOrganization.mockResolvedValue({ kind: "ok", organization: ACME });
     expect(await answer(await POST(post({ name: "Acme", slug: "acme" })))).toEqual([
       201,
-      { organization: { slug: "acme", name: "Acme" } },
+      { organization: { slug: "acme", name: "Acme" }, repositoryCreated: false },
     ]);
     expect(mockOrgsDb.createOrganization.mock.calls).toEqual([[ED, { slug: "acme", name: "Acme" }]]);
   });
@@ -320,9 +320,18 @@ describe("POST with a GitHub repository and token", () => {
     const response = await POST(
       post({ ...ACME_GITHUB, repository: " https://github.com/acme/schema-scripts.git ", token: ` ${TOKEN}\n` })
     );
-    expect(await answer(response)).toEqual([201, { organization: { slug: "acme", name: "Acme" } }]);
+    expect(await answer(response)).toEqual([201, { organization: { slug: "acme", name: "Acme" }, repositoryCreated: false }]);
     expect(mockCheck.mock.calls).toEqual([[SETTINGS]]);
     expect(mockOrgsDb.createOrganization.mock.calls).toEqual([[ED, { slug: "acme", name: "Acme" }, SETTINGS]]);
+  });
+
+  test("says when the app made the repository on GitHub", async () => {
+    mockCheck.mockResolvedValue({ ok: true, created: true });
+    mockOrgsDb.createOrganization.mockResolvedValue({ kind: "ok", organization: ACME });
+    expect(await answer(await POST(post(ACME_GITHUB)))).toEqual([
+      201,
+      { organization: { slug: "acme", name: "Acme" }, repositoryCreated: true },
+    ]);
   });
 
   test.each([
@@ -332,7 +341,7 @@ describe("POST with a GitHub repository and token", () => {
     mockOrgsDb.createOrganization.mockResolvedValue({ kind: "ok", organization: ACME });
     expect(await answer(await POST(post({ name: "Acme", slug: "acme", ...github })))).toEqual([
       201,
-      { organization: { slug: "acme", name: "Acme" } },
+      { organization: { slug: "acme", name: "Acme" }, repositoryCreated: false },
     ]);
     expect(mockOrgsDb.createOrganization.mock.calls).toEqual([[ED, { slug: "acme", name: "Acme" }]]);
     expect(mockCheck).not.toHaveBeenCalled();

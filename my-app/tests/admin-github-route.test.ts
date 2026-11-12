@@ -72,8 +72,12 @@ const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]
 
 /** What GitHub answers the repository check with, or "unreachable" for no answer at all. */
 let github: number | "unreachable" = 200;
+/** The account the token belongs to, as GitHub's /user names it. */
+let tokenLogin = "someone-else";
+/** What GitHub answers a request to make the repository with. 422: the name is taken. */
+let createAnswer = 422;
 /** Every request sent to GitHub: where to, and with which token. */
-let calls: Array<{ url: string; authorization: string | undefined }> = [];
+let calls: Array<{ url: string; authorization: string | undefined; method?: string; body?: unknown }> = [];
 const realFetch = global.fetch;
 
 beforeEach(() => {
@@ -87,11 +91,26 @@ beforeEach(() => {
   process.env.GITHUB_PAT = SERVER.token;
 
   github = 200;
+  tokenLogin = "someone-else";
+  createAnswer = 422;
   calls = [];
   global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    calls.push({ url: String(input), authorization: headers.Authorization });
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    if (method === "GET" && !url.endsWith("/user")) {
+      calls.push({ url, authorization: headers.Authorization });
+    } else {
+      calls.push({
+        url,
+        authorization: headers.Authorization,
+        method,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      });
+    }
     if (github === "unreachable") throw new TypeError("fetch failed");
+    if (url.endsWith("/user")) return new Response(JSON.stringify({ login: tokenLogin }), { status: 200 });
+    if (method === "POST") return new Response("{}", { status: createAnswer });
     return new Response("{}", { status: github });
   }) as typeof fetch;
 });
@@ -222,7 +241,7 @@ describe("PUT", () => {
     mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: true });
     const sent = put(JSON.stringify({ repository: " https://github.com/acme/registry.git ", token: `  ${NEW_TOKEN}\n` }));
 
-    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, repository: "acme/registry" }]);
+    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, created: false, repository: "acme/registry" }]);
     expect(mockAskedFor).toEqual([["github:update"]]);
     expect(calls).toEqual([{ url: CHECKED, authorization: `Bearer ${NEW_TOKEN}` }]);
     expect(mockStore.saveOrgGitHub.mock.calls).toEqual([
@@ -240,11 +259,58 @@ describe("PUT", () => {
     mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: true });
 
     const sent = put(JSON.stringify({ repository: "acme/other", ...extra }));
-    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, repository: "acme/other" }]);
+    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, created: false, repository: "acme/other" }]);
     expect(calls).toEqual([{ url: "https://api.github.com/repos/acme/other", authorization: `Bearer ${ORG_TOKEN}` }]);
     expect(mockStore.saveOrgGitHub.mock.calls).toEqual([
       [TEST_ORG.id, { owner: "acme", repo: "other", token: null }, ACTOR],
     ]);
+  });
+
+  describe("a repository that does not exist yet", () => {
+    beforeEach(() => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      github = 404;
+      mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: false });
+    });
+
+    test.each([
+      ["an organization", "someone-else", "https://api.github.com/orgs/acme/repos"],
+      ["the token's own account", "Acme", "https://api.github.com/user/repos"],
+    ])("is made under %s with the same token, private, then saved", async (_, login, address) => {
+      tokenLogin = login;
+      createAnswer = 201;
+      const sent = put(JSON.stringify({ repository: "acme/registry", token: NEW_TOKEN }));
+      expect(await answer(await PUT(sent))).toEqual([
+        200,
+        { saved: true, changed: true, created: true, repository: "acme/registry" },
+      ]);
+      expect(calls).toEqual([
+        { url: CHECKED, authorization: `Bearer ${NEW_TOKEN}` },
+        { url: "https://api.github.com/user", authorization: `Bearer ${NEW_TOKEN}`, method: "GET", body: undefined },
+        {
+          url: address,
+          authorization: `Bearer ${NEW_TOKEN}`,
+          method: "POST",
+          body: { name: "registry", private: true, auto_init: true, description: "Schema Studio script registry" },
+        },
+      ]);
+      expect(mockStore.saveOrgGitHub).toHaveBeenCalled();
+    });
+
+    test.each<[string, string, number, "repository" | "token" | null, RegExp]>([
+      ["a token not allowed to make repositories", "acme", 403, "token", /not allowed to make one.*Administration/],
+      ["an owner that is no organization the token reaches", "someone-else", 404, "repository", /not this token's own account/],
+      ["a name that is taken by a repository the token can't see", "someone-else", 422, "repository", /can't open/],
+      ["an error on GitHub's side", "someone-else", 500, null, /\(500\)/],
+    ])("saves nothing after %s", async (_, login, made, field, message) => {
+      tokenLogin = login;
+      createAnswer = made;
+      const [got, body] = await answer(await PUT(put(JSON.stringify({ repository: "acme/registry", token: NEW_TOKEN }))));
+      expect(got).toBe(field === null ? 502 : 400);
+      expect(body).toEqual({ error: expect.stringMatching(message), field });
+      expect((body as { error: string }).error).toContain("Nothing was saved.");
+      expect(mockStore.saveOrgGitHub).not.toHaveBeenCalled();
+    });
   });
 
   test("says when nothing changed", async () => {
@@ -252,7 +318,7 @@ describe("PUT", () => {
     mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: false });
     expect(await answer(await PUT(put(JSON.stringify({ repository: "acme/registry" }))))).toEqual([
       200,
-      { saved: true, changed: false, repository: "acme/registry" },
+      { saved: true, changed: false, created: false, repository: "acme/registry" },
     ]);
   });
 

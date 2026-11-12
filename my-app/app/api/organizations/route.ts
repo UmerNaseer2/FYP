@@ -119,6 +119,7 @@ export async function POST(request: NextRequest) {
   if (github.kind === "problem") {
     return NextResponse.json({ error: github.message, field: github.field }, { status: 400 });
   }
+  let repositoryCreated = false;
   if (github.kind === "ok") {
     if (encryptionKeySource() === "none") {
       return NextResponse.json({ error: NO_KEY, field: "token" }, { status: 503 });
@@ -127,6 +128,7 @@ export async function POST(request: NextRequest) {
     if (!check.ok) {
       return NextResponse.json({ error: check.error, field: check.field }, { status: check.status });
     }
+    repositoryCreated = check.created;
   }
 
   try {
@@ -150,7 +152,7 @@ export async function POST(request: NextRequest) {
     }
     const { organization } = created;
     return NextResponse.json(
-      { organization: { slug: organization.slug, name: organization.name } },
+      { organization: { slug: organization.slug, name: organization.name }, repositoryCreated },
       { status: 201 }
     );
   } catch (error) {
