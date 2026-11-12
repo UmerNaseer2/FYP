@@ -1653,7 +1653,7 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
-        twoPersonRule: true,
+        twoPersonRule: false,
         role,
       };
     }
@@ -1878,7 +1878,7 @@ describeWithDatabase("org-migration", () => {
         slug: "elsewhere",
         name: "Elsewhere",
         isDefault: false,
-        twoPersonRule: true,
+        twoPersonRule: false,
         role: "viewer",
       };
 
@@ -1918,7 +1918,7 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
-        twoPersonRule: true,
+        twoPersonRule: false,
       });
       expect(await app.orgs.findOrganization("elsewhere")).toMatchObject({
         slug: "elsewhere",
@@ -2124,7 +2124,7 @@ describeWithDatabase("org-migration", () => {
           slug: "elsewhere",
           name: "Elsewhere",
           isDefault: false,
-          twoPersonRule: true,
+          twoPersonRule: false,
           role: "viewer",
         },
       ]);
@@ -2394,8 +2394,8 @@ describeWithDatabase("org-migration", () => {
           slug: "acme-data",
           name: "Acme Data",
           isDefault: false,
-          // On by default: a new organization asks for a second person before production.
-          twoPersonRule: true,
+          // Off by default: whoever's role allows a run just runs it.
+          twoPersonRule: false,
         },
       });
       acmeId = created.kind === "ok" ? created.organization.id : 0;
@@ -2527,19 +2527,19 @@ describeWithDatabase("org-migration", () => {
     test("renames it and switches its rule, keeps the address, and logs only what changed", async () => {
       const id = await made("change-me", "Before");
 
-      const both = await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: false }, "ed@example.invalid");
+      const both = await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: true }, "ed@example.invalid");
       expect(both).toEqual({
         kind: "ok",
-        organization: expect.objectContaining({ id, slug: "change-me", name: "After", twoPersonRule: false }),
+        organization: expect.objectContaining({ id, slug: "change-me", name: "After", twoPersonRule: true }),
       });
       // The same values again change nothing, so they log nothing.
-      await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: false }, "ed@example.invalid");
-      await app.orgs.updateOrganization(id, { twoPersonRule: true }, "ed@example.invalid");
+      await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: true }, "ed@example.invalid");
+      await app.orgs.updateOrganization(id, { twoPersonRule: false }, "ed@example.invalid");
 
       expect(await logOf(id)).toEqual([
         { role: ADMIN_ROLE, kind: "rename-organization", subject: "After", detail: "Before", actor: "ed@example.invalid" },
-        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "off", actor: "ed@example.invalid" },
         { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "on", actor: "ed@example.invalid" },
+        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "off", actor: "ed@example.invalid" },
       ]);
       expect((await app.orgs.findOrganization("change-me"))?.name).toBe("After");
     }, SLOW);
