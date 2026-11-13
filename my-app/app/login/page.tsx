@@ -13,7 +13,7 @@ import {
 import { APP_VERSION } from "@/lib/app-version";
 import { safeCallbackUrl, wantsAccountPicker } from "@/lib/callback-url";
 import { resetIntro } from "@/lib/intro";
-import { SunIcon, MoonIcon, LockIcon, AlertCircleIcon } from "@/components/ui/icons";
+import { SunIcon, MoonIcon, LockIcon, AlertCircleIcon, ChevronLeftIcon } from "@/components/ui/icons";
 import { BrandMark } from "@/components/ui/BrandMark";
 import "../styles/atelier-signin.css";
 
@@ -305,6 +305,14 @@ export default function LoginPage() {
 
         {/* ——— right: the sign-in card ——— */}
         <main className="si-main">
+          {/* Back to the front page. The desktop app has none ("/" forwards it
+              to the studio), so only a browser gets the link. */}
+          {!desktop && (
+            <Link className="btn btn-ghost btn-sm si-back" href="/">
+              <ChevronLeftIcon size={14} />
+              <span>Back</span>
+            </Link>
+          )}
           <div className="si-top">
             <button
               type="button"

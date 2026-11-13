@@ -166,6 +166,14 @@ describe("signing in", () => {
     // alone now: in the browser nobody joins anything just by signing in.
     expect(screen.queryByText(/New people start as Viewers/)).not.toBeInTheDocument();
   });
+
+  it("has a Back link to the front page", async () => {
+    setRoutes(CONFIGURED);
+    render(<LoginPage />);
+    await screen.findByRole("button", { name: "Continue with Microsoft" });
+
+    expect(screen.getByRole("link", { name: "Back" })).toHaveAttribute("href", "/");
+  });
 });
 
 describe("where signing in carries on to", () => {
@@ -336,6 +344,14 @@ describe("inside the desktop app", () => {
     expect(
       screen.getByText("Opens your web browser for your organization's Microsoft sign-in.")
     ).toBeInTheDocument();
+  });
+
+  it("has no Back link, since the app has no front page", async () => {
+    setRoutes(DESKTOP);
+    render(<LoginPage />);
+    await screen.findByRole("button", { name: "Continue with Microsoft" });
+
+    expect(screen.queryByRole("link", { name: "Back" })).not.toBeInTheDocument();
   });
 
   it("waits for the browser, then hands Microsoft's token to the server", async () => {
