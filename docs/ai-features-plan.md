@@ -149,7 +149,7 @@ Also in step 0:
 
 - **Where:** a new route `app/api/compare/summary/route.ts` (needs `compare:read` and `ai:read`). The panel sits next to `<CriticalChanges>` in `app/[org]/(studio)/compare/page.tsx`, above `DiffReport`. The drift page uses the same report components, so the panel can show there too for free.
 - **Input:** the flattened diff the export already builds (`buildDiffDocument` in `lib/compare-export.ts`: one row per change with its breaking, safe or info grade), the counts from `lib/compare-summary.ts`, what depends on each changed object (from `lib/ai/dependents.ts`), and a context slice. The route recomputes the diff on the server rather than trusting what the browser sends.
-- **Output:** a headline; a ranked list of what breaks, each item citing the change rows it comes from; "what depends on it"; a suggested order to apply the changes.
+- **Output:** a one sentence headline and short plain lines of what is added, dropped and changed, each citing the change rows it covers. The app files each line by those rows, marks breaking ones, and adds a line for anything the AI left out. (Until 2026-11-12 it also listed risks and a suggested order to apply the changes; the user asked for just the summary.)
 - **Checks:** every cited change and object exists in the diff, grades match the engine, the order only names real changes. Items that fail are dropped; too many failures and the call is retried once.
 - **Cache:** by the comparison's fingerprint, so reopening a report costs nothing.
 

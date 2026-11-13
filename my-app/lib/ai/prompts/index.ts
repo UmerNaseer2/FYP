@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 
 export const PROMPT_VERSIONS = {
-  "compare-summary": 3,
+  "compare-summary": 4,
   "migration-review": 2,
   "drift-explain": 2,
   "drift-oneliner": 2,

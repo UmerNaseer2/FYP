@@ -62,43 +62,46 @@ export function RiskRow({ item, cited }: { item: SummaryItem; cited: Record<stri
   );
 }
 
+const SECTIONS = [
+  { key: "added", label: "Added", empty: "Nothing new." },
+  { key: "dropped", label: "Dropped", empty: "Nothing removed." },
+  { key: "changed", label: "Changed", empty: "Nothing altered." },
+] as const;
+
 function SummaryView({ answer, cited }: { answer: CompareSummaryAnswer; cited: Record<string, CitedChange> }) {
   return (
-    <div className="space-y-4 text-[13.5px]">
+    <div className="space-y-3 text-[13.5px]">
       <p style={{ color: "var(--text-1)" }}>{withNames(answer.headline)}</p>
-
-      <div>
-        <h4 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
-          What can hurt
-        </h4>
-        {answer.risks.length === 0 ? (
-          <p className="mt-1" style={{ color: "var(--text-2)" }}>
-            Nothing here can lose data or break what uses the target.
-          </p>
-        ) : (
-          <ol className="mt-2 space-y-3">
-            {answer.risks.map((risk, i) => (
-              <RiskRow key={i} item={risk} cited={cited} />
-            ))}
-          </ol>
-        )}
-      </div>
-
-      {answer.order.length > 0 && (
-        <div>
-          <h4 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
-            A safe order
-          </h4>
-          <ol className="mt-2 space-y-2 list-decimal pl-5">
-            {answer.order.map((step, i) => (
-              <li key={i}>
-                <span>{withNames(step.step)}</span>
-                <ChangeRefs ids={step.changes} cited={cited} />
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
+      {SECTIONS.map(({ key, label, empty }) => {
+        const lines = answer[key];
+        if (lines.length === 0 && key !== "dropped") return null;
+        return (
+          <div key={key}>
+            <h4 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
+              {label}
+            </h4>
+            {lines.length === 0 ? (
+              <p className="mt-1" style={{ color: "var(--text-2)" }}>
+                {empty}
+              </p>
+            ) : (
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {lines.map((line, i) => (
+                  <li key={i} title={line.changes.map((id) => cited[id]?.label ?? id).join("\n")}>
+                    {withNames(line.text)}
+                    {line.breaking && (
+                      <>
+                        {" "}
+                        <Pill tone="break">Breaking</Pill>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -112,7 +115,7 @@ export function CompareSummaryPanel({ query, target, resetKey }: { query: string
     <AiPanel
       feature="compare-summary"
       title="Change summary"
-      blurb="A short read of this comparison: what the migration does, what can hurt and in what order to apply it. Only the schema structure is sent to the AI, never your data."
+      blurb="A short read of this comparison: what gets added, dropped and changed. Only the schema structure is sent to the AI, never your data."
       askLabel="Summarize with AI"
       resetKey={resetKey}
       isAnswer={isCompareSummaryAnswer}

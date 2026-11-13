@@ -16,13 +16,22 @@ export type SummaryItem = {
   affects: string[];
 };
 
+/** One short line of the summary, such as "New column `books.isbn`". */
+export type SummaryLine = {
+  text: string;
+  /** The change ids it covers, such as "C3". */
+  changes: string[];
+  /** Set by the app from the engine's grade, never by the model. */
+  breaking?: boolean;
+};
+
 export type CompareSummaryAnswer = {
   /** One sentence: what this migration does to the target. */
   headline: string;
-  /** What can hurt, most serious first. */
-  risks: SummaryItem[];
-  /** A suggested order to apply the changes in. Every step names real changes. */
-  order: { step: string; changes: string[] }[];
+  /** What the migration adds, drops and changes. The app files each line by the changes it cites. */
+  added: SummaryLine[];
+  dropped: SummaryLine[];
+  changed: SummaryLine[];
 };
 
 /** What a cited change id stands for, sent beside the answer. */
@@ -45,17 +54,18 @@ export function isSummaryItem(value: unknown): value is SummaryItem {
   );
 }
 
+function isSummaryLine(value: unknown): value is SummaryLine {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.text === "string" && isStringArray(v.changes);
+}
+
 export function isCompareSummaryAnswer(value: unknown): value is CompareSummaryAnswer {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
     typeof v.headline === "string" &&
-    Array.isArray(v.risks) &&
-    v.risks.every(isSummaryItem) &&
-    Array.isArray(v.order) &&
-    v.order.every(
-      (step) => typeof step === "object" && step !== null && typeof step.step === "string" && isStringArray(step.changes)
-    )
+    [v.added, v.dropped, v.changed].every((list) => Array.isArray(list) && list.every(isSummaryLine))
   );
 }
 

@@ -10,6 +10,7 @@ jest.mock("../lib/version-db", () => ({
 
 import { z } from "zod";
 import type { AiConfig } from "@/lib/ai/config";
+import { PROMPT_VERSIONS } from "@/lib/ai/prompts";
 import { MockProvider } from "@/lib/ai/mock";
 import { AiError } from "@/lib/ai/provider";
 import {
@@ -189,7 +190,7 @@ describe("runAiTask: asking the model", () => {
         actor: "ada@example.com",
         feature: "compare-summary",
         provider: "Google Gemini",
-        promptVersion: 3,
+        promptVersion: PROMPT_VERSIONS["compare-summary"],
         model: "smart-model",
         outputTokens: 10,
         estimated: true,

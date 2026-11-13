@@ -636,18 +636,17 @@ async function runSummary(c) {
 function gradeSummary(c, a, cited = 0) {
   const text = [
     a.headline,
-    ...a.risks.map((r) => `${r.title} ${r.why} ${r.affects.join(" ")}`),
-    ...a.order.map((o) => o.step),
+    // The app's own "Also: ..." lines use the engine's labels, so they are left out.
+    ...[...a.added, ...a.dropped, ...a.changed].filter((l) => !l.text.startsWith("Also: ")).map((l) => l.text),
   ].join("\n");
   const g = grade(text, c.require, c.forbid);
-  const notes = [`${a.risks.length} risks, ${a.order.length} steps, ${cited} changes cited`];
+  const notes = [`${a.added.length} added, ${a.dropped.length} dropped, ${a.changed.length} changed, ${cited} changes cited`];
   let ok = g.missing.length === 0 && g.forbidden.length === 0;
-  // The app refuses any summary without a breaking risk when a change is
-  // breaking, so this only guards against that check being lost. It says
-  // nothing about the AI's reading.
-  if (c.expectBreaking && !a.risks.some((r) => r.level === "breaking")) {
+  // The app marks a line breaking from the engine's grade, so this only
+  // guards against that check being lost. It says nothing about the AI's reading.
+  if (c.expectBreaking && ![...a.added, ...a.dropped, ...a.changed].some((l) => l.breaking)) {
     ok = false;
-    notes.push("no breaking risk");
+    notes.push("no breaking line");
   }
   if (g.missing.length) notes.push(`missing ${g.missing.join(", ")}`);
   if (g.forbidden.length) notes.push(`said ${g.forbidden.join(", ")}`);

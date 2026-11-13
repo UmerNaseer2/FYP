@@ -23,7 +23,7 @@ import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";
 import { runAiTask, type AiDeps } from "@/lib/ai/run";
 import { AI_OFF } from "@/lib/ai/settings";
-import type { ConstraintSnapshot, ForeignKeySnapshot, ViewSnapshot } from "@/lib/postgres";
+import type { ConstraintSnapshot, ForeignKeySnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 
 function pk(name: string): ConstraintSnapshot {
@@ -118,11 +118,18 @@ describe("the prompt", () => {
     expect(t.inputTokens).toBeGreaterThan(0);
   });
 
-  test("says who uses what changes, and shows the new tables", () => {
+  test("shows the new tables", () => {
     const prompt = task().spec.prompt;
-    expect(prompt).toMatch(/order_items/);
     expect(prompt).toContain("NEW TABLES FROM THE SOURCE");
     expect(prompt).toContain("TABLE reviews");
+    expect(prompt).not.toContain("WHAT USES");
+  });
+
+  test("asks for added, dropped and changed, and no order to apply them in", () => {
+    const system = task().spec.system;
+    expect(system).toMatch(/added/);
+    expect(system).toMatch(/dropped/);
+    expect(system).not.toMatch(/order to apply|safe order/i);
   });
 
   test("carries the data loss switch", () => {
@@ -158,36 +165,6 @@ describe("the prompt after the review fixes", () => {
     );
     expect(built.spec.prompt).not.toContain("more safe or info changes");
   });
-
-  // U44: a renamed table's rows are filed under its source name, so its users
-  // in the target were never looked up.
-  test("names the users of a table that was renamed", () => {
-    const columns = () => [id(), column("name", { typeDisplay: "text" }), column("email", { typeDisplay: "text" })];
-    const activeCustomers: ViewSnapshot = {
-      name: "active_customers",
-      materialized: false,
-      definition: "SELECT id, name FROM custmers",
-      normalizedDefinition: "select id, name from custmers",
-      columns: ["id", "name"],
-      dependsOn: ["custmers"],
-    };
-    const renamedTarget = schema(
-      [table("custmers", [...columns(), column("phone", { typeDisplay: "text" })], { primaryKey: pk("custmers_pkey") })],
-      { views: [activeCustomers] }
-    );
-    const renamedSource = schema(
-      [table("customers", columns(), { primaryKey: pk("custmers_pkey") })],
-      { views: [{ ...activeCustomers, definition: "SELECT id, name FROM customers", dependsOn: ["customers"] }] }
-    );
-    const report = compareSchemas(renamedSource, renamedTarget);
-    // The engine pairs the two tables on its own, as a rename.
-    expect(report.matchedTables.map((m) => [m.left.name, m.right.name])).toContainEqual(["customers", "custmers"]);
-
-    const built = buildCompareSummaryTask(report, { allowDataLoss: false });
-    if (!built) throw new Error("expected changes");
-    expect(built.spec.prompt).toMatch(/^custmers: view active_customers/m);
-    expect(built.spec.prompt).not.toContain("No changed table or view in the target has known users.");
-  });
 });
 
 describe("unknownTickedNames", () => {
@@ -204,114 +181,176 @@ describe("unknownTickedNames", () => {
 });
 
 describe("checkCompareSummary", () => {
-  function answer(t: CompareSummaryTask, over: Partial<CompareSummaryAnswer> = {}): CompareSummaryAnswer {
+  /** A good answer: every change of the bookshop covered once, in its list. */
+  function answer(t: CompareSummaryTask): CompareSummaryAnswer {
+    const ids = [...t.facts.rows.keys()];
+    const others = ids.filter((id) => id !== priceDropped(t) && id !== isbnAdded(t));
+    const added = others.filter((id) => t.facts.rows.get(id)!.change === "added");
+    const rest = others.filter((id) => !added.includes(id));
     return {
       headline: "Drops `books.price` and adds `books.isbn` and `reviews`.",
-      risks: [
-        {
-          title: "Dropping `books.price` loses every price",
-          changes: [priceDropped(t)],
-          level: "breaking",
-          why: "The column and its values are deleted.",
-          affects: ["order_items"],
-        },
+      added: [
+        { text: "Column `books.isbn`", changes: [isbnAdded(t)] },
+        ...(added.length > 0 ? [{ text: "New table `reviews`", changes: added }] : []),
       ],
-      order: [{ step: "Add `books.isbn` first, then drop `books.price` after a backup.", changes: [isbnAdded(t), priceDropped(t)] }],
-      ...over,
+      dropped: [{ text: "Column `books.price` goes, with its values", changes: [priceDropped(t)] }],
+      changed: rest.length > 0 ? [{ text: "Other bits", changes: rest }] : [],
     };
   }
 
-  test("a good answer passes untouched", () => {
+  test("a good answer passes, with the breaking line marked by the app", () => {
     const t = task();
     const result = checkCompareSummary(answer(t), t.facts);
     expect(result.problems).toEqual([]);
-    expect(result.value).toEqual(answer(t));
-    expect(result.report).toEqual({ droppedItems: 0, droppedNames: 0, levelFixed: 0 });
+    expect(result.report).toEqual({ droppedItems: 0, moved: 0, leftOut: 0 });
+    expect(result.value.dropped).toEqual([
+      { text: "Column `books.price` goes, with its values", changes: [priceDropped(t)], breaking: true },
+    ]);
+    expect(result.value.added[0].breaking).toBeUndefined();
   });
 
-  test("the level is always the engine's", () => {
+  test("the app files each line by the changes it cites, not where the model put it", () => {
     const t = task();
-    const soft = answer(t);
-    soft.risks[0].level = "info";
-    const result = checkCompareSummary(soft, t.facts);
-    expect(result.value.risks[0].level).toBe("breaking");
-    expect(result.report.levelFixed).toBe(1);
-    expect(result.problems).toEqual([]);
-
-    const loud = answer(t, {
-      risks: [{ title: "New column", changes: [isbnAdded(t)], level: "breaking", why: "Nothing breaks.", affects: [] }],
-    });
-    const checked = checkCompareSummary(loud, t.facts);
-    // The app adds the breaking change this answer left out as an item of its
-    // own, so the model's item is found by its title.
-    const newColumn = checked.value.risks.find((risk) => risk.title === "New column");
-    expect(newColumn?.level).toBeDefined();
-    expect(newColumn?.level).not.toBe("breaking");
+    const wrong = answer(t);
+    wrong.added.push(wrong.dropped.pop()!);
+    const result = checkCompareSummary(wrong, t.facts);
+    expect(result.value.dropped.map((line) => line.changes)).toEqual([[priceDropped(t)]]);
+    expect(result.value.added.some((line) => line.changes.includes(priceDropped(t)))).toBe(false);
+    expect(result.report.moved).toBe(1);
   });
 
-  test("ids are read loosely, but an id that is not listed drops its item", () => {
+  test("ids are read loosely, but an id that is not listed drops its line", () => {
     const t = task();
-    const result = checkCompareSummary(
-      answer(t, {
-        risks: [
-          { ...answer(t).risks[0], changes: [` ${priceDropped(t).toLowerCase()} `, priceDropped(t)] },
-          { title: "Something else", changes: ["C999"], level: "breaking", why: "Made up.", affects: [] },
-        ],
-      }),
-      t.facts
-    );
-    expect(result.value.risks).toHaveLength(1);
-    expect(result.value.risks[0].changes).toEqual([priceDropped(t)]);
+    const loose = answer(t);
+    loose.dropped = [
+      { text: "Price goes", changes: [` ${priceDropped(t).toLowerCase()} `, priceDropped(t)] },
+      { text: "Something else", changes: ["C999"] },
+    ];
+    const result = checkCompareSummary(loose, t.facts);
+    expect(result.value.dropped).toHaveLength(1);
+    expect(result.value.dropped[0].changes).toEqual([priceDropped(t)]);
     expect(result.report.droppedItems).toBe(1);
   });
 
-  test("an item naming a table neither schema has is dropped; a made-up user is struck out", () => {
+  test("a line naming a table neither schema has is dropped", () => {
     const t = task();
-    const result = checkCompareSummary(
-      answer(t, {
-        risks: [
-          { ...answer(t).risks[0], affects: ["order_items", "invoices", " order_items "] },
-          { title: "Breaks `invoices`", changes: [isbnAdded(t)], level: "safe", why: "It does not.", affects: [] },
-        ],
-      }),
-      t.facts
-    );
-    expect(result.value.risks).toHaveLength(1);
-    expect(result.value.risks[0].affects).toEqual(["order_items"]);
-    expect(result.report).toMatchObject({ droppedItems: 1, droppedNames: 1 });
+    const made = answer(t);
+    made.added.push({ text: "New table `invoices`", changes: [isbnAdded(t)] });
+    const result = checkCompareSummary(made, t.facts);
+    expect(result.value.added.some((line) => line.text.includes("invoices"))).toBe(false);
+    expect(result.report.droppedItems).toBe(1);
   });
 
   test("leaving out every breaking change sends the answer back", () => {
     const t = task();
-    const result = checkCompareSummary(answer(t, { risks: [] }), t.facts);
+    const result = checkCompareSummary({ ...answer(t), dropped: [] }, t.facts);
     expect(result.problems).toHaveLength(1);
     expect(result.problems[0]).toContain(priceDropped(t));
   });
 
   test("a made-up name in the headline sends the answer back", () => {
     const t = task();
-    const result = checkCompareSummary(answer(t, { headline: "Rewrites `invoices`." }), t.facts);
+    const result = checkCompareSummary({ ...answer(t), headline: "Rewrites `invoices`." }, t.facts);
     expect(result.problems[0]).toMatch(/headline.*invoices/);
   });
 
-  test("mostly made-up items send the answer back", () => {
+  test("mostly made-up lines send the answer back", () => {
     const t = task();
     const result = checkCompareSummary(
-      answer(t, {
-        risks: [answer(t).risks[0], { title: "x", changes: ["C900"], level: "safe", why: "x", affects: [] }],
-        order: [{ step: "x", changes: ["C901"] }],
-      }),
+      {
+        headline: "x",
+        added: [{ text: "x", changes: ["C900"] }],
+        dropped: [{ text: "Price goes", changes: [priceDropped(t)] }],
+        changed: [{ text: "x", changes: ["C901"] }],
+      },
       t.facts
     );
-    expect(result.problems.some((p) => p.includes("Too many items"))).toBe(true);
+    expect(result.problems.some((p) => p.includes("Too many lines"))).toBe(true);
   });
 
   test("citedChanges says what each id stands for", () => {
     const t = task();
-    const cited = citedChanges(answer(t), t.facts);
+    const cited = citedChanges(checkCompareSummary(answer(t), t.facts).value, t.facts);
     expect(cited[priceDropped(t)]).toEqual({ label: "Column books.price dropped", severity: "breaking" });
     expect(cited[isbnAdded(t)].label).toBe("Column books.isbn added");
-    expect(Object.keys(cited).sort()).toEqual([isbnAdded(t), priceDropped(t)].sort());
+    expect(Object.keys(cited).sort()).toEqual([...t.facts.rows.keys()].sort());
+  });
+});
+
+describe("changes the answer leaves out", () => {
+  // The shop: the migration drops legacy_notes, changes the type of
+  // orders.status and narrows products.name.
+  const shopTarget = schema([
+    table("legacy_notes", [id(), column("note", { typeDisplay: "text" })], { primaryKey: pk("legacy_notes_pkey") }),
+    table("orders", [id(), column("status", { typeDisplay: "text" })], { primaryKey: pk("orders_pkey") }),
+    table("products", [id(), column("name", { typeDisplay: "character varying(80)" })], { primaryKey: pk("products_pkey") }),
+  ]);
+  const shopSource = schema([
+    table("orders", [id(), column("status", { typeDisplay: "integer" })], { primaryKey: pk("orders_pkey") }),
+    table("products", [id(), column("name", { typeDisplay: "character varying(20)" })], { primaryKey: pk("products_pkey") }),
+  ]);
+
+  function shopTask(): CompareSummaryTask {
+    const built = buildCompareSummaryTask(compareSchemas(shopSource, shopTarget), { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    return built;
+  }
+  const notesDropped = (t: CompareSummaryTask) => idOf(t, (label) => /Table legacy_notes dropped/.test(label));
+  const statusChanged = (t: CompareSummaryTask) => idOf(t, (label) => /orders\.status changed/.test(label));
+
+  /** A fake model answer that covers only the dropped table. */
+  function notesOnly(t: CompareSummaryTask): CompareSummaryAnswer {
+    return {
+      headline: "Drops `legacy_notes`.",
+      added: [],
+      dropped: [{ text: "Table `legacy_notes`, with its rows", changes: [notesDropped(t)] }],
+      changed: [],
+    };
+  }
+
+  test("are added by the app as one short line in their list", () => {
+    const t = shopTask();
+    const result = checkCompareSummary(notesOnly(t), t.facts);
+    expect(result.problems).toEqual([]);
+    const also = result.value.changed[result.value.changed.length - 1];
+    expect(also.text).toMatch(/^Also: /);
+    expect(also.text).toContain("`orders.status`");
+    expect(also.changes).toContain(statusChanged(t));
+    expect(also.breaking).toBe(true);
+    // Every change is now cited once, and the screen can label each.
+    const cited = [...result.value.added, ...result.value.dropped, ...result.value.changed].flatMap((l) => l.changes);
+    expect([...cited].sort()).toEqual([...t.facts.rows.keys()].sort());
+    // The answer still fits the shape a saved answer is read back with.
+    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
+  });
+
+  test("a full answer gets nothing added", () => {
+    const t = shopTask();
+    const all = notesOnly(t);
+    const rest = [...t.facts.rows.entries()].filter(([id]) => id !== notesDropped(t));
+    all.changed = [{ text: "Column types change", changes: rest.map(([id]) => id) }];
+    // Some of the rest may be drops (the table's own index, say).
+    const result = checkCompareSummary(all, t.facts);
+    expect(result.report.leftOut).toBe(0);
+    expect(result.value.changed.every((line) => !line.text.startsWith("Also"))).toBe(true);
+  });
+
+  test("many left out: the first 8 are named and the rest counted", () => {
+    const extra = Array.from({ length: 30 }, (_, i) =>
+      table(`old_${String(i).padStart(2, "0")}`, [id()], { primaryKey: pk(`old_${i}_pkey`) })
+    );
+    const built = buildCompareSummaryTask(compareSchemas(schema([]), schema(extra)), { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    const first = built.facts.breakingIds[0];
+    const result = checkCompareSummary(
+      { headline: "Drops old tables.", added: [], dropped: [{ text: "One old table goes", changes: [first] }], changed: [] },
+      built.facts
+    );
+    const also = result.value.dropped[1];
+    const leftOut = built.facts.rows.size - 1;
+    expect(also.changes).toHaveLength(leftOut);
+    expect(also.text).toContain(`and ${leftOut - 8} more`);
+    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
   });
 });
 
@@ -343,13 +382,14 @@ describe("through runAiTask", () => {
     };
   }
 
-  test("an answer that skips the breaking change is asked again, and the second one is graded by the engine", async () => {
+  test("an answer that skips the breaking change is asked again, and the second is filed by the engine", async () => {
     const t = task();
-    const first = { headline: "Adds `books.isbn`.", risks: [], order: [{ step: "Add it.", changes: [isbnAdded(t)] }] };
+    const first = { headline: "Adds `books.isbn`.", added: [{ text: "Column `books.isbn`", changes: [isbnAdded(t)] }], dropped: [], changed: [] };
     const second = {
       headline: "Drops `books.price`.",
-      risks: [{ title: "Price goes", changes: [priceDropped(t)], level: "safe", why: "Values are lost.", affects: [] }],
-      order: [{ step: "Back up, then drop.", changes: [priceDropped(t)] }],
+      added: [{ text: "Price goes", changes: [priceDropped(t)] }],
+      dropped: [],
+      changed: [],
     };
     const provider = new MockProvider([first, second]);
     const result = await runAiTask({ orgId: 1, email: "ada@example.com" }, t.spec, deps(provider));
@@ -357,162 +397,7 @@ describe("through runAiTask", () => {
     if (result.kind !== "ok") return;
     expect(provider.requests).toHaveLength(2);
     expect(JSON.stringify(provider.requests[1])).toContain(priceDropped(t));
-    expect(result.value.risks[0].level).toBe("breaking");
+    expect(result.value.dropped[0]).toMatchObject({ changes: [priceDropped(t)], breaking: true });
     expect(provider.requests[0].model).toBe("fast-model");
-  });
-});
-
-describe("after the 2026-11-10 review", () => {
-  // The shop of the review: the migration drops legacy_notes, changes the type
-  // of orders.status and widens products.name. Nothing uses legacy_notes;
-  // order_lines points at orders.
-  const shopTarget = schema([
-    table("legacy_notes", [id(), column("note", { typeDisplay: "text" })], { primaryKey: pk("legacy_notes_pkey") }),
-    table("orders", [id(), column("status", { typeDisplay: "text" })], { primaryKey: pk("orders_pkey") }),
-    table("products", [id(), column("name", { typeDisplay: "character varying(80)" })], { primaryKey: pk("products_pkey") }),
-    table("order_lines", [id(), column("order_id")], {
-      primaryKey: pk("order_lines_pkey"),
-      foreignKeys: [fk("order_lines_order_id_fkey", "order_id", "orders")],
-    }),
-  ]);
-  const shopSource = schema([
-    table("orders", [id(), column("status", { typeDisplay: "integer" })], { primaryKey: pk("orders_pkey") }),
-    table("products", [id(), column("name", { typeDisplay: "character varying(20)" })], { primaryKey: pk("products_pkey") }),
-    table("order_lines", [id(), column("order_id")], {
-      primaryKey: pk("order_lines_pkey"),
-      foreignKeys: [fk("order_lines_order_id_fkey", "order_id", "orders")],
-    }),
-  ]);
-
-  function shopTask(): CompareSummaryTask {
-    const built = buildCompareSummaryTask(compareSchemas(shopSource, shopTarget), { allowDataLoss: false });
-    if (!built) throw new Error("expected changes");
-    return built;
-  }
-  const notesDropped = (t: CompareSummaryTask) => idOf(t, (label) => /Table legacy_notes dropped/.test(label));
-  const statusChanged = (t: CompareSummaryTask) => idOf(t, (label) => /orders\.status changed/.test(label));
-
-  /** A fake model answer that covers only the dropped table. */
-  function notesOnly(t: CompareSummaryTask, affects: string[]): CompareSummaryAnswer {
-    return {
-      headline: "Drops `legacy_notes`.",
-      risks: [
-        { title: "Dropping `legacy_notes`", changes: [notesDropped(t)], level: "breaking", why: "Its rows are lost.", affects },
-      ],
-      order: [{ step: "Back up, then drop `legacy_notes`.", changes: [notesDropped(t)] }],
-    };
-  }
-
-  // T9-01: "Used by: orders" was shown under legacy_notes because orders is a
-  // real table, although nothing in the target uses legacy_notes.
-  test("a user that exists but does not use the cited change is struck out", () => {
-    const t = shopTask();
-    const result = checkCompareSummary(notesOnly(t, ["orders", "order_lines"]), t.facts);
-    expect(result.value.risks[0].affects).toEqual([]);
-    expect(result.report.droppedNames).toBe(2);
-  });
-
-  test("a real user of the cited change stays, however the model spells it", () => {
-    const t = shopTask();
-    const result = checkCompareSummary(
-      {
-        headline: "Changes `orders.status`.",
-        risks: [
-          {
-            title: "`orders.status` changes type",
-            changes: [statusChanged(t)],
-            level: "breaking",
-            why: "Values may not fit.",
-            affects: ["Order_Lines", "public.order_lines", "products", "legacy_notes"],
-          },
-        ],
-        order: [],
-      },
-      t.facts
-    );
-    expect(result.value.risks[0].affects).toEqual(["Order_Lines", "public.order_lines"]);
-    expect(result.report.droppedNames).toBe(2);
-  });
-
-  // T9-02: one breaking change covered was enough, so the other breaking
-  // changes went missing with nothing on screen to say so.
-  test("breaking changes the answer leaves out are added by the app", () => {
-    const t = shopTask();
-    expect(t.facts.breakingIds.length).toBeGreaterThanOrEqual(3);
-    const result = checkCompareSummary(notesOnly(t, []), t.facts);
-    expect(result.problems).toEqual([]);
-    const leftOut = t.facts.breakingIds.filter((id) => id !== notesDropped(t));
-    const added = result.value.risks[result.value.risks.length - 1];
-    expect(added.level).toBe("breaking");
-    expect(added.title).toMatch(/did not cover/);
-    expect(added.changes).toEqual(leftOut);
-    expect(added.changes).toContain(statusChanged(t));
-    // Every breaking change is now cited once, and the screen can label each.
-    const cited = result.value.risks.flatMap((risk) => risk.changes);
-    expect([...cited].sort()).toEqual([...t.facts.breakingIds].sort());
-    expect(Object.keys(citedChanges(result.value, t.facts))).toEqual(expect.arrayContaining(leftOut));
-    // The answer still fits the shape a saved answer is read back with.
-    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
-  });
-
-  test("an answer that covers every breaking change gets nothing added", () => {
-    const t = shopTask();
-    const all = notesOnly(t, []);
-    all.risks[0].changes = [...t.facts.breakingIds];
-    const result = checkCompareSummary(all, t.facts);
-    expect(result.value.risks).toHaveLength(1);
-  });
-
-  test("more left-out breaking changes than one item holds: the first 20, and a count of the rest", () => {
-    const extra = Array.from({ length: 30 }, (_, i) =>
-      table(`old_${String(i).padStart(2, "0")}`, [id()], { primaryKey: pk(`old_${i}_pkey`) })
-    );
-    const built = buildCompareSummaryTask(compareSchemas(schema([]), schema(extra)), { allowDataLoss: false });
-    if (!built) throw new Error("expected changes");
-    const first = built.facts.breakingIds[0];
-    const result = checkCompareSummary(
-      {
-        headline: "Drops old tables.",
-        risks: [{ title: "One old table goes", changes: [first], level: "breaking", why: "Rows are lost.", affects: [] }],
-        order: [],
-      },
-      built.facts
-    );
-    const added = result.value.risks[1];
-    expect(added.changes).toHaveLength(20);
-    expect(added.why).toContain("9 more");
-    expect(compareSummarySchema.safeParse(result.value).success).toBe(true);
-  });
-
-  test("through runAiTask: the fake model's invented user and missing changes never reach the screen", async () => {
-    const t = shopTask();
-    const provider = new MockProvider([notesOnly(t, ["orders"])]);
-    const result = await runAiTask({ orgId: 1, email: "ada@example.com" }, t.spec, {
-      config: {
-        provider: "openai-compatible",
-        baseUrl: "https://example.test/v1/",
-        apiKey: "test-key",
-        models: { fast: "fast-model", smart: "smart-model" },
-        reasoningEffort: "low",
-        timeoutMs: 90_000,
-        dailyLimit: 300,
-        perMinuteLimit: 10,
-      },
-      provider,
-      readSettings: async () => ({ ...AI_OFF, enabled: true, features: { ...AI_OFF.features } }),
-      store: {
-        recordAiCall: async () => 1,
-        callsToday: async () => 0,
-        callsLastMinute: async () => 0,
-        readSavedAnswer: (async () => null) as AiDeps["store"]["readSavedAnswer"],
-        saveAnswer: async () => undefined,
-      },
-      now: () => 0,
-    });
-    expect(result.kind).toBe("ok");
-    if (result.kind !== "ok") return;
-    expect(provider.requests).toHaveLength(1);
-    expect(result.value.risks[0].affects).toEqual([]);
-    expect(result.value.risks.flatMap((risk) => risk.changes)).toEqual(expect.arrayContaining(t.facts.breakingIds));
   });
 });

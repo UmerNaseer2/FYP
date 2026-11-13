@@ -401,7 +401,12 @@ describe("the bench grades drift and change summaries on the AI's own words", ()
 
   test("a change summary needs the words itself", () => {
     const c = benchCase("summary-02-prod-to-dev");
-    const vague = { headline: "One change", risks: [{ level: "breaking", title: "Risky", why: "It is.", affects: [] }], order: [] };
+    const vague = {
+      headline: "One change",
+      added: [],
+      dropped: [{ text: "Also: table `reviews`.", changes: ["C1"], breaking: true }],
+      changed: [],
+    };
     expect(bench.gradeSummary(c, vague, 1).ok).toBe(false);
     const clear = { ...vague, headline: "The reviews table is dropped" };
     expect(bench.gradeSummary(c, clear, 1).ok).toBe(true);
