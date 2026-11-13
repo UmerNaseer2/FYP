@@ -1,7 +1,7 @@
 "use client";
 
 import "@/app/styles/atelier-history.css";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { downloadText } from "@/components/studio/ExportBar";
@@ -58,6 +58,9 @@ export default function HistoryPage() {
 
   const [filters, setFilters] = useState<ActivityFilters>(NO_FILTERS);
   const [pickedId, setPickedId] = useState<number | null>(null);
+  // The row whose card is open under it. Only narrow screens show that card
+  // (atelier-history.css); wide ones keep the card beside the list instead.
+  const [openId, setOpenId] = useState<number | null>(null);
 
   useEffect(() => {
     if (sessionLoading || !allowed) return;
@@ -93,6 +96,13 @@ export default function HistoryPage() {
     setError(null);
     setEvents(null);
     setAttempt((n) => n + 1);
+  }
+
+  // A tap picks the row. Tapping the open row again closes its card on a
+  // narrow screen; on a wide one the card beside the list simply stays.
+  function pick(id: number) {
+    setPickedId(id);
+    setOpenId((current) => (current === id ? null : id));
   }
 
   function changeFilters(change: Partial<ActivityFilters>) {
@@ -135,6 +145,12 @@ export default function HistoryPage() {
   );
 
   const cannotRead = refused || (!sessionLoading && !allowed);
+
+  // The picked check's card. It is drawn beside the list, and again under the
+  // open row for narrow screens; CSS shows only one of the two.
+  const detail = picked ? (
+    <Detail key={picked.id} event={picked} href={orgPath(driftHref(picked))} />
+  ) : null;
 
   return (
     <div className="hi-page">
@@ -258,7 +274,9 @@ export default function HistoryPage() {
                   events={visible}
                   now={now}
                   pickedId={picked?.id ?? null}
-                  onPick={setPickedId}
+                  openId={openId}
+                  detail={detail}
+                  onPick={pick}
                 />
               )}
               {all.length >= ACTIVITY_LIMIT && (
@@ -277,7 +295,7 @@ export default function HistoryPage() {
               )}
             </div>
 
-            {picked && <Detail key={picked.id} event={picked} href={orgPath(driftHref(picked))} />}
+            {detail}
           </div>
         </>
       )}
@@ -491,11 +509,15 @@ function Feed({
   events,
   now,
   pickedId,
+  openId,
+  detail,
   onPick,
 }: {
   events: DriftEventFeedItem[];
   now: number | null;
   pickedId: number | null;
+  openId: number | null;
+  detail: ReactNode;
   onPick: (id: number) => void;
 }) {
   // The events arrive newest first, so each day's checks sit together.
@@ -541,6 +563,9 @@ function Feed({
                   </span>
                   <Pill tone={statusTone(event.status)}>{statusLabel(event.status)}</Pill>
                 </button>
+                {event.id === openId && event.id === pickedId && (
+                  <div className="hi-inline">{detail}</div>
+                )}
               </li>
             ))}
           </ul>

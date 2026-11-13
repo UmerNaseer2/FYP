@@ -2,7 +2,9 @@
    another page. Colours come only from the tokens in app/globals.css, so the
    light and dark themes both work without extra rules. */
 
-.hi-page { display: block; }
+/* The page's frame, the same as the Drift page: centred, never wider than
+   1280px, and with room at the sides so nothing touches the screen edge. */
+.hi-page { max-width: 1280px; margin: 0 auto; padding: 32px 32px 64px; }
 
 /* ----- the two buttons in the page header ----- */
 .hi-acts { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -94,14 +96,15 @@ button.hi-day:hover { background: var(--surface-2); }
 .hi-dh small { font: 500 12.5px/18px var(--sans); color: var(--ink-3); letter-spacing: 0; }
 .hi-list { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
 .hi-row {
-  display: grid; grid-template-columns: 46px 34px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
+  /* 68px holds a time like "04:45 PM" on one line. */
+  display: grid; grid-template-columns: 68px 34px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
   width: 100%; min-height: 44px; text-align: left; padding: 12px 14px; border-radius: 18px; cursor: pointer;
   background: var(--surface); color: var(--ink); box-shadow: var(--lift, none); border: 1.5px solid transparent;
   transition: transform var(--dur-2) var(--ease-out), border-color var(--dur-2);
 }
 .hi-row:hover { transform: translateX(3px); }
 .hi-row[aria-current="true"] { border-color: var(--ink); }
-.hi-row time { font: 500 12.5px/18px var(--mono); color: var(--ink-3); }
+.hi-row time { font: 500 12.5px/18px var(--mono); color: var(--ink-3); white-space: nowrap; }
 .hi-ic {
   width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
   background: var(--surface-2); color: var(--ink); flex: none;
@@ -151,14 +154,26 @@ button.hi-day:hover { background: var(--surface-2); }
 /* The heading that only paper sees. */
 .hi-print-head { display: none; }
 
+/* The copy of the card that opens under a tapped row. Hidden while the card
+   has its own column beside the list. */
+.hi-inline { display: none; }
+
+/* One column. The card beside the list would land under every row, so it is
+   hidden and the copy under the tapped row shows instead. */
 @media (max-width: 1120px) {
   .hi-grid { grid-template-columns: minmax(0, 1fr); }
-  .hi-det { position: static; }
+  .hi-grid > .hi-det { display: none; }
+  .hi-inline { display: block; margin-top: 6px; }
+  .hi-inline .hi-det { position: static; }
 }
 
 /* Phones. Thirty days cannot each be 44px wide in 375px, so the strip scrolls
    sideways inside its own card and the page itself never does. */
 @media (max-width: 700px) {
+  .hi-page { padding: 20px 16px 48px; }
+  /* The header's button row takes the whole width and may shrink to it;
+     sized by its text it ran 34px past a 320px screen. */
+  .hi-page .page-head__actions { flex: 1 1 100%; min-width: 0; }
   .hi-acts { width: 100%; }
   .hi-btn { flex: 1 1 0; padding: 0 12px; }
   .hi-rib { padding: 16px 14px 12px; }
@@ -201,5 +216,5 @@ button.hi-day:hover { background: var(--surface-2); }
   .hi-row time, .hi-tx small, .hi-dh small { color: #333; }
   .hi-tx-main, .hi-tx small { white-space: normal; }
   .hi-ic { display: none; }
-  .hi-row { grid-template-columns: 46px minmax(0, 1fr) auto; }
+  .hi-row { grid-template-columns: 68px minmax(0, 1fr) auto; }
 }

@@ -215,12 +215,31 @@ describe("the list", () => {
     fireEvent.click(row);
 
     expect(row).toHaveAttribute("aria-current", "true");
+    // The card is drawn twice: beside the list, and under the pressed row for
+    // narrow screens. CSS shows one of them; jsdom has no CSS, so both are here.
+    const cards = screen.getAllByRole("complementary", { name: "Check detail" });
+    expect(cards).toHaveLength(2);
+    for (const detail of cards) {
+      expect(within(detail).getByText("The database did not answer.")).toBeInTheDocument();
+      expect(within(detail).getByRole("link", { name: "Open in Drift" })).toHaveAttribute(
+        "href",
+        "/test-org/drift?tab=detail&schema=8"
+      );
+    }
+  });
+
+  test("pressing the open row again closes the card under it", async () => {
+    await renderWith(sampleEvents());
+
+    const row = screen.getByRole("button", { name: /billing could not be reached/ });
+    fireEvent.click(row);
+    expect(screen.getAllByRole("complementary", { name: "Check detail" })).toHaveLength(2);
+
+    fireEvent.click(row);
+    // Only the card beside the list is left, still on the same check.
     const detail = screen.getByRole("complementary", { name: "Check detail" });
     expect(within(detail).getByText("The database did not answer.")).toBeInTheDocument();
-    expect(within(detail).getByRole("link", { name: "Open in Drift" })).toHaveAttribute(
-      "href",
-      "/test-org/drift?tab=detail&schema=8"
-    );
+    expect(row).toHaveAttribute("aria-current", "true");
   });
 });
 
