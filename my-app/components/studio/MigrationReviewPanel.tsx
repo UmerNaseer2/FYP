@@ -24,15 +24,15 @@ export type ReviewRunScript = { scriptName: string; version: string; sqlContent:
 
 function StatementRefs({ ids, statements }: { ids: string[]; statements: Record<string, ReviewedStatement> }) {
   return (
-    <ul className="mt-1.5 flex flex-wrap gap-1.5 text-[12px]" style={{ color: "var(--text-2)" }}>
+    <ul className="mt-1.5 flex min-w-0 flex-wrap gap-1.5 text-[12px]" style={{ color: "var(--text-2)" }}>
       {ids.map((id) => {
         const s = statements[id];
         return (
-          <li key={id} className="pill pill-outline" title={s ? `${s.preview}${s.flags.length ? `\n\nThe app's checks: ${s.flags.join("; ")}` : ""}` : id}>
-            <span className="mono" style={{ color: "var(--text-3)" }}>
+          <li key={id} className="pill pill-outline min-w-0 max-w-full overflow-hidden" title={s ? `${s.preview}${s.flags.length ? `\n\nThe app's checks: ${s.flags.join("; ")}` : ""}` : id}>
+            <span className="mono flex-none" style={{ color: "var(--text-3)" }}>
               {id}
             </span>
-            {s && <span className="ml-1">{s.label}</span>}
+            {s && <span className="ml-1 min-w-0 truncate">{s.label}</span>}
           </li>
         );
       })}
@@ -48,7 +48,7 @@ function ReviewView({
   statements: Record<string, ReviewedStatement>;
 }) {
   return (
-    <div className="space-y-4 text-[13.5px]">
+    <div className="min-w-0 space-y-4 text-[13.5px]">
       <p style={{ color: "var(--text-1)" }}>{withNames(answer.verdict)}</p>
 
       <div>
@@ -62,7 +62,7 @@ function ReviewView({
         ) : (
           <ol className="mt-2 space-y-3">
             {answer.findings.map((finding, i) => (
-              <li key={i}>
+              <li key={i} className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Pill tone={SEVERITY_TONE[finding.severity]}>{SEVERITY_LABEL[finding.severity]}</Pill>
                   <span className="font-medium">{withNames(finding.title)}</span>
@@ -84,12 +84,12 @@ function ReviewView({
                   {withNames(finding.why)}
                 </p>
                 {finding.saferWay && (
-                  <div className="mt-1.5">
-                    <span className="text-[12px] font-semibold" style={{ color: "var(--text-3)" }}>
-                      Safer way:{" "}
+                  <p className="mt-1" style={{ color: "var(--text-2)" }}>
+                    <span className="font-semibold" style={{ color: "var(--text-1)" }}>
+                      Instead:{" "}
                     </span>
-                    <span style={{ color: "var(--text-2)" }}>{withNames(finding.saferWay)}</span>
-                  </div>
+                    {withNames(finding.saferWay)}
+                  </p>
                 )}
                 <StatementRefs ids={finding.statements} statements={statements} />
               </li>
@@ -97,10 +97,6 @@ function ReviewView({
           </ol>
         )}
       </div>
-      <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
-        A finding is never graded below what the app&apos;s own checks say about its statements. The review does not
-        change or approve the run.
-      </p>
     </div>
   );
 }

@@ -98,13 +98,13 @@ export const migrationReviewSchema = z.object({
 export const MIGRATION_REVIEW_SYSTEM = [
   "You review a database migration for the person about to apply it to the target database, before it runs.",
   "Answer in JSON with two parts:",
-  "- verdict: one or two sentences, at most 50 words, on whether this run is safe to apply as it stands, and what to do first when it is not.",
-  `- findings: the problems, most serious first, at most ${MAX_FINDINGS}. Put related statements in one finding. Each finding cites the ids of its statements (S1, S2 ...) and has: severity; title, at most 12 words; why, one or two sentences on what goes wrong on this target, using the table sizes and the WHAT USES list; saferWay, how to get the same result with less risk in one or two sentences, with SQL when it helps, or an empty string when there is nothing better; objects, the tables, columns, views or other objects it is about.`,
+  "- verdict: one short sentence, at most 20 words: is this run safe to apply as it stands, and if not, the one thing to do first.",
+  `- findings: the problems, most serious first, at most ${MAX_FINDINGS}. Put related statements in one finding. Each finding cites the ids of its statements (S1, S2 ...) and has: severity; title, at most 6 words; why, one short sentence of at most 20 words on what goes wrong on this target, using the table sizes and the WHAT USES list; saferWay, one short sentence of at most 15 words on what to do instead, or an empty string when there is nothing better; objects, the tables, columns, views or other objects it is about.`,
   "Severity is high when the run can lose data, fail part way, or hold a lock long enough to stop the application; medium when it can fail on rows already in the table or break something that uses the target; low for anything else worth knowing. Each statement shows the app's own reading in brackets. Never set a severity below the reading of the statements you cite: the app raises it if you do.",
   "Look for: lost data (dropped tables or columns, TRUNCATE, DELETE or UPDATE with no WHERE); statements that fail on existing rows (NOT NULL with no default, a UNIQUE, CHECK or FOREIGN KEY the rows may break, a type change that cannot cast); long locks on big tables (a type change or volatile default that rewrites the table, an index built without CONCURRENTLY, a constraint checked in one go where NOT VALID then VALIDATE CONSTRAINT holds a lighter lock); objects the WHAT USES list shows will break.",
   "Every value written in the SQL (a string, a password, a host, and a number in a statement that reads or writes rows) is shown as ?. The app takes the real value out before it sends the statement, so never treat a ? as the value itself or as a problem.",
   "The whole run is one transaction. Anything that cannot run inside a transaction, such as CREATE INDEX CONCURRENTLY, fails the run if it is in a script, so when you suggest it, say it has to be run by hand outside the app.",
-  "When nothing is wrong, findings is an empty list and the verdict says the run looks safe.",
+  "Be brief and plain: no filler, no repeating the title in why, no repeating why in saferWay. When nothing is wrong, findings is an empty list and the verdict says the run looks safe.",
   "Cite only ids from the STATEMENTS list, and only in the statements field: the screen shows them beside each finding, so never write an id in verdict, title, why or saferWay. Put every table, column, view or other object name you write in backticks. In saferWay, SQL may go in backticks too; nowhere else does anything but names.",
 ].join("\n");
 
@@ -619,9 +619,9 @@ export function checkMigrationReview(answer: ModelReview, facts: MigrationReview
 
 /** The verdict when the app's own checks find worse than the model did. */
 const APP_VERDICT_HIGH =
-  "The app's own checks flag statements that can lose data, break what uses the target or stop the run, and the AI review missed them or rated them lower. Read the high findings before you deploy.";
+  "The app's own checks flag statements that can lose data or stop the run, and the AI missed or rated them lower.";
 const APP_VERDICT_MEDIUM =
-  "The app's own checks flag statements that can fail on existing rows, change every row or break what uses the target, and the AI review missed them or rated them lower. Read the medium findings before you deploy.";
+  "The app's own checks flag statements that can fail on existing rows, and the AI missed or rated them lower.";
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -651,7 +651,7 @@ export function withAppFindings(review: ModelReview, facts: MigrationReviewFacts
     statements: g.ids,
     severity: g.floor,
     title: capitalise(g.flags.filter((f) => f !== "replaced by the next statement")[0] ?? "Flagged by the app"),
-    why: `The app's own checks flag ${g.ids.length === 1 ? "this statement" : "these statements"}: ${g.flags.join("; ")}. The AI review did not cover ${g.ids.length === 1 ? "it" : "them"}, so read ${g.ids.length === 1 ? "it" : "them"} before you deploy.`,
+    why: `Flagged by the app's checks (${g.flags.join("; ")}); the AI did not cover ${g.ids.length === 1 ? "it" : "them"}.`,
     saferWay: "",
     objects: [...g.touched],
     fromApp: true,

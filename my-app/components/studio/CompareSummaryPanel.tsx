@@ -19,13 +19,13 @@ export const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking",
 
 export function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string, CitedChange> }) {
   return (
-    <ul className="mt-1.5 flex flex-wrap gap-1.5 text-[12px]" style={{ color: "var(--text-2)" }}>
+    <ul className="mt-1.5 flex min-w-0 flex-wrap gap-1.5 text-[12px]" style={{ color: "var(--text-2)" }}>
       {ids.map((id) => (
-        <li key={id} className="pill pill-outline" title={cited[id]?.label ?? id}>
-          <span className="mono" style={{ color: "var(--text-3)" }}>
+        <li key={id} className="pill pill-outline min-w-0 max-w-full overflow-hidden" title={cited[id]?.label ?? id}>
+          <span className="mono flex-none" style={{ color: "var(--text-3)" }}>
             {id}
           </span>
-          {cited[id] && <span className="ml-1">{cited[id].label}</span>}
+          {cited[id] && <span className="ml-1 min-w-0 truncate">{cited[id].label}</span>}
         </li>
       ))}
     </ul>

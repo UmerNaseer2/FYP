@@ -7,7 +7,7 @@
 
 export const PROMPT_VERSIONS = {
   "compare-summary": 4,
-  "migration-review": 2,
+  "migration-review": 3,
   "drift-explain": 2,
   "drift-oneliner": 2,
   "sql-generate": 3,
