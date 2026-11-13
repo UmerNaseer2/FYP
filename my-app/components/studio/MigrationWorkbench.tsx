@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { deployLinkQuery } from "@/lib/deploy-link";
 import { useEffect, useId, useState } from "react";
 import {
   ClipboardIcon,
@@ -182,28 +183,6 @@ type PushState =
   // one. suggested: the number the server's message names, to spot when
   // GitHub moved on again before the re-read came back.
   | { kind: "err"; message: string; offerNext: boolean; suggested: string | null };
-
-/**
- * The query string that opens the Deploy page on what was just pushed, so the
- * person does not have to pick the connection, schema and script group again.
- * The Deploy page reads these four names from the address. Without a saved
- * connection there is nothing to pick for them, so the link stays plain.
- */
-function deployLinkQuery(
-  connectionId: number | null,
-  schema: string,
-  scriptName: string,
-  version: string
-): string {
-  if (connectionId === null) return "";
-  const params = new URLSearchParams({
-    connection: String(connectionId),
-    schema,
-    script: scriptName,
-    version,
-  });
-  return `?${params.toString()}`;
-}
 
 /** The last push that saved a version, as it was sent. */
 type PushedVersion = {
@@ -1231,9 +1210,11 @@ export function MigrationWorkbench({
                       </div>
                       {push.rollbackLine && <div className="mt-1">{push.rollbackLine}</div>}
                       {/* Pushing puts the version in the registry. It does not
-                          run it against anything — see the note at the top of
-                          this file — and a green tick right after a comparison
-                          reads as "done" unless the page says otherwise.
+                          run it against anything (see the note at the top of
+                          this file), and a green tick right after a comparison
+                          reads as "done" unless the page says otherwise. The
+                          button opens Deploy with this connection, schema,
+                          script group and version already picked.
 
                           Not offered when the rollback failed: the amber box
                           means the version went out without one, and the offer
@@ -1241,14 +1222,11 @@ export function MigrationWorkbench({
                           from the Deploy page; it is just not what to suggest
                           while something better is one button away. */}
                       {!push.rollbackFailed && (
-                        <div className="mt-1">
-                          <Link
-                            href={orgPath(`/deploy${push.deployQuery}`)}
-                            style={{ color: "var(--brand)", textDecoration: "underline" }}
-                          >
-                            Nothing has run yet — deploy it
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Link href={orgPath(`/deploy${push.deployQuery}`)} className="btn btn-primary btn-sm">
+                            Take me to deployment
                           </Link>
-                          {" "}on the Deploy page.
+                          <span>Nothing has run yet.</span>
                         </div>
                       )}
                     </div>

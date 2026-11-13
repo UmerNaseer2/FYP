@@ -858,9 +858,9 @@ describe("what the push sends", () => {
     await versionReady();
     fireEvent.click(pushButton());
 
-    // The link carries the target, the script and the version just pushed, so
+    // The button carries the target, the script and the version just pushed, so
     // the Deploy page opens on them and nobody has to pick all three again.
-    const done = await screen.findByText("Nothing has run yet — deploy it");
+    const done = await screen.findByRole("link", { name: "Take me to deployment" });
     expect(done).toHaveAttribute(
       "href",
       "/test-org/deploy?connection=7&schema=public&script=add_due_date&version=1.1.0"
@@ -1041,7 +1041,7 @@ describe("pushing the same migration again", () => {
     fireEvent.click(pushButton());
 
     await screen.findByText("GitHub refused the rollback file.");
-    expect(screen.queryByText("Nothing has run yet — deploy it")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Take me to deployment" })).not.toBeInTheDocument();
   });
 });
 

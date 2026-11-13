@@ -71,6 +71,8 @@
 .se-result > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .se-result b { font-weight: 700; }
 .se-result a { color: var(--ink-2); text-decoration: underline; }
+.se-result a.btn { color: var(--on-accent); text-decoration: none; }
+.se-deploy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 .se-result--ok { background: var(--add-soft); } .se-result--ok b, .se-result--ok > svg { color: var(--add); }
 .se-result--partial { background: var(--change-soft); } .se-result--partial > svg { color: var(--change); }
 .se-result--err { background: var(--remove-soft); animation: shake 320ms; } .se-result--err b, .se-result--err > svg { color: var(--remove); }

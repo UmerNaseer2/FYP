@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { deployLinkQuery } from "@/lib/deploy-link";
 import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
@@ -474,6 +475,12 @@ export default function ScriptEditorPage() {
   const appliedKey = familyKey && connectionId ? JSON.stringify([connectionId, schema, scriptName]) : "";
   // A picked level belongs to one target and family.
   const choiceKey = JSON.stringify([connectionId, schema, scriptName]);
+  // Opens Deploy on the version just saved, with this connection, schema and
+  // script group picked, while the picks above still match that save.
+  const savedDeployQuery =
+    saveResult && saveResult.kind !== "err" && saveResult.key === familyKey && connectionId
+      ? deployLinkQuery(Number(connectionId), schema, scriptName, saveResult.version)
+      : "";
   const readsWanted = familyKey !== "" && !githubUnconfigured;
 
   // (a) The versions already in GitHub. Debounced so typing a family name
@@ -1746,9 +1753,12 @@ export default function ScriptEditorPage() {
                             without its rollback, and the box directly below offers
                             to attach one, which is the better next step. */}
                         {saveResult.kind === "ok" && (
-                          <Link href={orgPath("/deploy")}>
-                            Nothing has run yet — deploy it on the Deploy page →
-                          </Link>
+                          <span className="se-deploy">
+                            <Link href={orgPath(`/deploy${savedDeployQuery}`)} className="btn btn-primary btn-sm">
+                              Take me to deployment
+                            </Link>
+                            Nothing has run yet.
+                          </span>
                         )}
                       </div>
                     </div>

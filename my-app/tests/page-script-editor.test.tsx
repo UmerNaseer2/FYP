@@ -583,9 +583,9 @@ describe("after a save", () => {
     });
     // A green "Saved" reads as "applied" unless something says otherwise, and
     // the page that applies it was only reachable through the sidebar.
-    expect(
-      screen.getByRole("link", { name: /Nothing has run yet — deploy it on the Deploy page/ })
-    ).toHaveAttribute("href", "/test-org/deploy");
+    expect(screen.getByRole("link", { name: "Take me to deployment" }).getAttribute("href")).toMatch(
+      /^\/test-org\/deploy\?connection=\d+&schema=[^&]+&script=[^&]+&version=/
+    );
   });
 
   it("says a version saved without its rollback cannot be undone", async () => {
