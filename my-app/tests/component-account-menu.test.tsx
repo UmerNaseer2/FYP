@@ -19,6 +19,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { AccountMenu } from "@/components/studio/AccountMenu";
 import { BUILT_IN_ROLE_INFO } from "@/lib/permissions";
 import { REPLAY_INTRO_EVENT } from "@/lib/intro";
+import { START_TOUR_EVENT, writeTourMemory } from "@/lib/tour";
+import { OrgContext } from "@/hooks/useOrg";
 
 const ADA = { name: "Ada Lovelace", email: "ada@example.com", initials: "AD" };
 
@@ -82,7 +84,7 @@ describe("opening and closing", () => {
     renderMenu();
     fireEvent.keyDown(trigger(), { key: "ArrowDown" });
     expect(menu()).toBeInTheDocument();
-    expect(item("Replay intro")).toHaveFocus();
+    expect(item("Take the tour")).toHaveFocus();
   });
 
   test("a second click shuts it", () => {
@@ -131,6 +133,8 @@ describe("moving through it with the keyboard", () => {
 
   test("Down and Up move one item, and wrap at the ends", () => {
     const m = openWithRequests();
+    fireEvent.keyDown(m, { key: "ArrowDown" });
+    expect(item("Take the tour")).toHaveFocus();
     fireEvent.keyDown(m, { key: "ArrowDown" });
     expect(item("Replay intro")).toHaveFocus();
     fireEvent.keyDown(m, { key: "ArrowDown" });
@@ -219,6 +223,7 @@ describe("the items", () => {
       "Your requests",
       "Your activity",
       "Phone and desktop",
+      "Take the tour",
       "Replay intro",
       "Sign out",
     ]);
@@ -237,6 +242,35 @@ describe("the items", () => {
     renderMenu();
     fireEvent.click(trigger());
     expect(screen.queryByRole("menuitem", { name: "Your requests" })).toBeNull();
+  });
+
+  test('"Take the tour" asks the tour to start and shuts the menu', () => {
+    const heard = jest.fn();
+    window.addEventListener(START_TOUR_EVENT, heard);
+    try {
+      renderMenu();
+      fireEvent.click(trigger());
+      fireEvent.click(item("Take the tour"));
+      expect(heard).toHaveBeenCalledTimes(1);
+      expect(menu()).toBeNull();
+    } finally {
+      window.removeEventListener(START_TOUR_EVENT, heard);
+    }
+  });
+
+  test('says "Resume the tour" when it was closed part way, in this organization and role', () => {
+    writeTourMemory("acme", "admin", { done: false, resume: 3 });
+    try {
+      render(
+        <OrgContext.Provider value={{ slug: "acme", name: "Acme" }}>
+          <AccountMenu user={ADA} role="admin" roleLabel="Admin" onSignOut={onSignOut} />
+        </OrgContext.Provider>
+      );
+      fireEvent.click(trigger());
+      expect(item("Resume the tour")).toBeInTheDocument();
+    } finally {
+      window.localStorage.clear();
+    }
   });
 
   test('"Replay intro" asks the intro to play again', () => {

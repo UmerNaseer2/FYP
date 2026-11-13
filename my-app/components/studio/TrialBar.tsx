@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { apiFetch } from "@/lib/api-fetch";
+import { startTour } from "@/lib/tour";
 
 /**
  * The strip across the top of every page in the shared trial organization.
@@ -10,6 +11,7 @@ import { apiFetch } from "@/lib/api-fetch";
  * button (POST /api/trial/reset), which puts the organization and its demo
  * databases back to how they started, keeping its GitHub and AI settings.
  * Nothing resets the trial on a timer, so this is the only way back.
+ * "Take the tour" starts the app tour (lib/tour.ts) for anyone in the trial.
  */
 export function TrialBar({ isAdmin }: { isAdmin: boolean }) {
   const [asking, setAsking] = useState(false);
@@ -41,6 +43,9 @@ export function TrialBar({ isAdmin }: { isAdmin: boolean }) {
         see too.
       </span>
       {error && <span className="trial-bar-error">{error}</span>}
+      <Button variant="ghost" size="sm" onClick={startTour}>
+        Take the tour
+      </Button>
       {isAdmin && (
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => setAsking(true)}>
           {busy ? "Resetting..." : "Reset trial"}

@@ -326,6 +326,17 @@ export function GaugeIcon(props: IconProps) {
   );
 }
 
+/** The app tour: a path that winds from a start to an end. */
+export function RouteIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="5" r="2" />
+      <path d="M8 19h8a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h8" />
+    </Svg>
+  );
+}
+
 /** Run this — used on the button that sends a query off to be explained. */
 export function PlayIcon(props: IconProps) {
   return (

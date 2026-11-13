@@ -264,7 +264,8 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
       // there without needing to trust anything in the answer. The button
       // stays busy until the studio replaces this page.
       setSubmitting("opening");
-      router.push(`/${trimmedSlug}/studio`);
+      // ?tour=new: the studio offers the app tour (lib/tour.ts).
+      router.push(`/${trimmedSlug}/studio?tour=new`);
       return;
     }
     setSubmitting(null);

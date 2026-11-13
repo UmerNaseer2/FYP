@@ -1799,3 +1799,85 @@ html[data-intro="landing"] #main-content { animation:bt-rise 640ms var(--ease-ou
   /* The safety net above needs its 4s delay to still work. */
   html[data-intro="pending"] .studio { animation:intro-safety 0s linear 4s forwards !important; }
 }
+
+/* ---------------------------------------------------------------- app tour
+   components/studio/AppTour.tsx. The welcome and last cards (.tr-hi), and
+   while touring a dimmed page with a lit hole (.tr-hole) and a card beside
+   it (.tr-card). On a phone the card is a sheet along the bottom. */
+.tour { position: fixed; inset: 0; z-index: 150; }
+.tr-hole { position: fixed; left: 50%; top: 50%; width: 0; height: 0; border-radius: 20px; box-shadow: 0 0 0 200vmax rgba(10, 8, 6, .64); pointer-events: none;
+  transition: left .44s var(--ease-in-out), top .44s var(--ease-in-out), width .44s var(--ease-in-out), height .44s var(--ease-in-out); }
+.tr-hole::after { content: ""; position: absolute; inset: -3px; border-radius: 23px; border: 2px solid var(--accent); animation: tr-ring 1.8s var(--ease-out) infinite; }
+@keyframes tr-ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 14px transparent; } }
+.tr-card { position: fixed; left: 24px; top: 24px; width: 360px; max-width: calc(100vw - 24px); padding-bottom: 14px; border-radius: var(--r-xl); background: var(--surface); color: var(--ink); box-shadow: var(--lift), 0 0 0 1px var(--line); outline: 0;
+  transition: left .44s var(--ease-in-out), top .44s var(--ease-in-out); animation: pop var(--dur-4) var(--ease-spring); }
+.tr-prog { display: flex; gap: 4px; padding: 16px 20px 0; }
+.tr-prog i { flex: 1; height: 4px; border-radius: 2px; background: var(--line-strong); transition: background .3s, flex-grow .3s var(--ease-out); }
+.tr-prog i.d { background: var(--ink); }
+.tr-prog i.on { background: var(--accent); flex-grow: 2.4; }
+.tr-in { padding: 16px 20px 0; }
+.tr-in.in { animation: tr-in .36s var(--ease-out); }
+@keyframes tr-in { from { opacity: 0; transform: translateY(6px); } }
+.tr-k { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 13px; color: var(--ink-2); }
+.tr-k > i { width: 32px; height: 32px; border-radius: 11px; background: var(--accent-soft); color: var(--accent-ink); display: grid; place-items: center; }
+.tr-k em { margin-left: auto; font: 500 12px/1 var(--mono); font-style: normal; color: var(--ink-3); }
+.tr-card h2 { font: 800 23px/27px var(--display); letter-spacing: -.03em; margin: 14px 0 6px; }
+.tr-card p { margin: 0; font-size: 14.5px; line-height: 22px; color: var(--ink-2); }
+.tr-f { display: flex; align-items: center; gap: 8px; padding: 16px 20px 0; }
+.tr-skip { min-height: 44px; padding: 0 6px; margin: 0 auto 0 -6px; background: none; border: 0; cursor: pointer; font: inherit; font-weight: 600; font-size: 13.5px; color: var(--ink-3); text-decoration: underline; text-underline-offset: 3px; border-radius: 8px; }
+.tr-skip:hover { color: var(--ink); }
+.tr-f .btn { min-height: 44px; }
+.tr-f .btn-primary { padding: 0 20px; font-size: 15px; }
+.tr-card .tr-keys { padding: 8px 20px 0; font-size: 12px; line-height: 18px; color: var(--ink-3); }
+.tr-keys kbd { font: 600 11px/1 var(--mono); padding: 2px 5px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--line-strong); }
+@media (hover: none), (max-width: 640px) { .tr-card .tr-keys { display: none; } }
+@media (max-width: 640px) {
+  .tr-card { left: 12px !important; right: 12px; top: auto !important; bottom: 12px; width: auto; max-width: none; }
+  .tr-card h2 { font-size: 21px; line-height: 25px; margin-top: 12px; }
+  .tr-hole { border-radius: 16px; }
+  .tr-hole::after { border-radius: 19px; }
+  /* Room under a short page while the sheet is up, so the part the card is
+     about can scroll up above the sheet instead of hiding behind it. */
+  :root:has(.tr-hole) #main-content::after { content: ""; display: block; height: 70vh; }
+}
+
+.tr-hi { position: fixed; inset: 0; z-index: 151; display: grid; place-items: center; padding: 16px; overflow-y: auto; background: rgba(10, 8, 6, .6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: fade var(--dur-2); }
+.tr-hi-c { width: min(480px, 100%); padding: 24px; border-radius: var(--r-xl); background: var(--surface); color: var(--ink); box-shadow: var(--lift); outline: 0; animation: pop var(--dur-4) var(--ease-spring); }
+.tr-path { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 20px; padding: 20px 8px 16px; border-radius: var(--r-lg); background: var(--surface-2); }
+.tr-path li { position: relative; display: grid; justify-items: center; gap: 8px; font-weight: 700; font-size: 12.5px; color: var(--ink-3); animation: tr-word .3s var(--ease-out) forwards; animation-delay: calc(var(--d) * 1ms + 350ms); }
+.tr-path li + li::before { content: ""; position: absolute; top: 21px; right: calc(50% + 22px); width: calc(100% - 44px); height: 2px; border-radius: 1px; background: var(--accent); transform: scaleX(0); transform-origin: left; animation: tr-line .28s var(--ease-out) forwards; animation-delay: calc(var(--d) * 1ms + 120ms); }
+.tr-path i { position: relative; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--ink-3); box-shadow: inset 0 0 0 1.5px var(--line-strong); animation: tr-lit .34s var(--ease-spring) forwards; animation-delay: calc(var(--d) * 1ms + 350ms); }
+@keyframes tr-lit { 50% { transform: scale(1.14); } to { background: var(--accent); color: var(--on-accent); box-shadow: none; } }
+@keyframes tr-line { to { transform: scaleX(1); } }
+@keyframes tr-word { to { color: var(--ink); } }
+.tr-eye { display: inline-flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 11px; border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; font-size: 12.5px; }
+.tr-hi-c h2 { font: 800 30px/33px var(--display); letter-spacing: -.035em; margin: 12px 0 8px; }
+.tr-hi-c p { margin: 0; font-size: 15px; line-height: 23px; color: var(--ink-2); }
+.tr-hi-c p b { color: var(--ink); }
+.tr-hi-r { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+.tr-hi-r .btn-primary { flex: 1 1 200px; }
+.tr-hi-r .btn-ghost { min-height: 48px; padding: 0 20px; font-size: 14.5px; }
+.tr-hi-c .tr-fine { margin-top: 14px; font-size: 13px; line-height: 19px; color: var(--ink-3); }
+.tr-ok { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); animation: pop var(--dur-4) var(--ease-spring) .1s backwards; }
+.tr-pick { display: grid; gap: 8px; margin-top: 18px; }
+.tr-pick button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; min-height: 62px; padding: 10px 16px; border: 0; border-radius: var(--r-lg); background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; box-shadow: inset 0 0 0 1.5px var(--line-strong); transition: background var(--dur-2), transform var(--dur-2), box-shadow var(--dur-2); }
+.tr-pick button:hover { background: var(--surface-2); transform: translateY(-1px); }
+.tr-pick button:active { transform: scale(.99); }
+.tr-pick button:first-child { box-shadow: inset 0 0 0 2px var(--accent); }
+.tr-pick b { font: 700 15.5px/20px var(--display); letter-spacing: -.01em; }
+.tr-pick small { grid-column: 1; font-size: 13px; line-height: 18px; color: var(--ink-3); }
+.tr-pick span { grid-row: 1 / span 2; grid-column: 2; font-size: 18px; color: var(--ink-3); }
+@media (max-width: 480px) {
+  .tr-hi-c { padding: 20px 18px; }
+  .tr-hi-c h2 { font-size: 26px; line-height: 29px; }
+  .tr-path { padding: 16px 2px 12px; }
+  .tr-path li { font-size: 11.5px; }
+  .tr-path i { width: 38px; height: 38px; }
+  .tr-path li + li::before { top: 18px; right: calc(50% + 19px); width: calc(100% - 38px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-hole, .tr-card { transition: none; }
+  .tr-hole::after, .tr-card, .tr-in.in, .tr-hi, .tr-hi-c, .tr-ok { animation: none; }
+  .tr-path li, .tr-path i, .tr-path li + li::before { animation-duration: .01s; animation-delay: 0s; }
+}
+@media print { .tour, .tr-hi { display: none !important; } }

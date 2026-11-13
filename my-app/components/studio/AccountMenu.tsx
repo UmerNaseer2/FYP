@@ -2,14 +2,17 @@
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronDownIcon, ClockIcon, InboxIcon, PhoneIcon, PlayIcon, SignOutIcon } from "@/components/ui/icons";
+import { ChevronDownIcon, ClockIcon, InboxIcon, PhoneIcon, PlayIcon, RouteIcon, SignOutIcon } from "@/components/ui/icons";
 import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
 import { replayIntro } from "@/lib/intro";
+import { readTourMemory, startTour } from "@/lib/tour";
+import { useOrg } from "@/hooks/useOrg";
 import type { StudioUser } from "./StudioSidebar";
 
 // The round button at the right end of the top bar: who is signed in, with
 // what role, and a small menu: "Your requests", "Your activity" (the History
-// page), "Phone and desktop" (the Devices page), "Replay intro" and
+// page), "Phone and desktop" (the Devices page), "Take the tour" (or
+// "Resume the tour" after it was closed part way), "Replay intro" and
 // "Sign out". The three links show only when the shell gives their address.
 //
 // Keyboard: Enter, Space or Down Arrow opens it and puts you on the first
@@ -62,6 +65,10 @@ export function AccountMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
   const roleName = role ? roleLabel || role : undefined;
+  const org = useOrg();
+  // Read only while the menu is open, so the page drawn on the server (menu
+  // closed) and in the browser always agree.
+  const resumeTour = open && org !== null && role !== undefined && readTourMemory(org.slug, role).resume !== null;
 
   const items = () =>
     Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
@@ -170,6 +177,18 @@ export function AccountMenu({
             <PhoneIcon size={15} />
           </Link>
         )}
+        <button
+          type="button"
+          role="menuitem"
+          tabIndex={-1}
+          onClick={() => {
+            setOpen(false);
+            startTour();
+          }}
+        >
+          <span>{resumeTour ? "Resume the tour" : "Take the tour"}</span>
+          <RouteIcon size={15} />
+        </button>
         <button
           type="button"
           role="menuitem"

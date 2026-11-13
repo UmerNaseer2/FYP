@@ -48,5 +48,6 @@ export async function POST(request: NextRequest) {
     console.error("Could not start the trial:", error instanceof Error ? error.message : "unknown error");
     return goTo(request, "/login?error=TrialUnavailable");
   }
-  return goTo(request, "/studio");
+  // ?tour=trial: AppTour offers the tour once the studio opens (lib/tour.ts).
+  return goTo(request, "/studio?tour=trial");
 }

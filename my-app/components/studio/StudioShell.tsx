@@ -21,6 +21,7 @@ import { AccountMenu } from "./AccountMenu";
 import { CommandBar } from "./CommandBar";
 import { useAiFeature } from "./AiPanel";
 import LogoIntro from "./LogoIntro";
+import { AppTour } from "./AppTour";
 import { TrialBar } from "./TrialBar";
 import { NAV_ITEMS, activeScreen, type NavItem } from "./nav";
 
@@ -141,6 +142,13 @@ export function StudioShell({ children, user }: StudioShellProps) {
 
   // Whether the account menu may name the role. See AccountMenu below.
   const roleKnown = authUser !== null && !loading && !accessError && !notMember;
+
+  // The rail's pages without the organization ("/compare"), so the tour only
+  // walks into pages this person's role can open.
+  const tourPages = useMemo(
+    () => NAV_ITEMS.map((item) => item.href).filter((href) => navItems.some((item) => item.href === orgPath(href))),
+    [navItems, orgPath],
+  );
 
   const active = activeScreen(pathname);
 
@@ -327,6 +335,14 @@ export function StudioShell({ children, user }: StudioShellProps) {
       />
     )}
     <LogoIntro />
+    <AppTour
+      pages={tourPages}
+      roleKnown={roleKnown}
+      role={role}
+      roleLabel={roleLabel}
+      can={can}
+      isAdmin={roleKnown && role === ADMIN_ROLE}
+    />
     </HelpProvider>
   );
 }

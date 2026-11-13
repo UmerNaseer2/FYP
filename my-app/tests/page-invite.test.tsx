@@ -265,7 +265,7 @@ describe("joining", () => {
     draw(BY_EMAIL);
 
     fireEvent.click(joinButton());
-    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio"]));
+    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio?tour=member"]));
     expect(fetchCalls).toEqual([{ url: ACCEPT, method: "POST", body: JSON.stringify({ token: TOKEN }) }]);
     // Busy until the studio replaces this page, so it cannot be pressed again.
     expect(joinButton()).toHaveTextContent("Opening…");
@@ -289,7 +289,7 @@ describe("joining", () => {
     expect(fetchCalls).toHaveLength(1);
 
     release();
-    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio"]));
+    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio?tour=member"]));
     expect(fetchCalls).toHaveLength(1);
   });
 
@@ -381,7 +381,7 @@ describe("joining", () => {
     expect(joinButton()).toHaveTextContent("Joining…");
 
     release();
-    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio"]));
+    await waitFor(() => expect(routerCalls.push).toEqual(["/acme/studio?tour=member"]));
     expect(fetchCalls).toHaveLength(2);
   });
 });

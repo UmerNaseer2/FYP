@@ -10,12 +10,14 @@ import {
   HelpIcon,
   MoonIcon,
   PlayIcon,
+  RouteIcon,
   SearchIcon,
   SignOutIcon,
   SparkIcon,
   SunIcon,
 } from "@/components/ui/icons";
 import { replayIntro } from "@/lib/intro";
+import { startTour } from "@/lib/tour";
 import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
 import type { NavItem } from "./nav";
 
@@ -210,6 +212,15 @@ function CommandPanel({
         run: onHelp,
       });
     }
+    list.push({
+      id: "act:tour",
+      group: "Actions",
+      label: "Take the tour",
+      hint: "A short walk through the main pages",
+      words: "tour guide walkthrough start welcome",
+      icon: <RouteIcon size={16} />,
+      run: startTour,
+    });
     list.push({
       id: "act:intro",
       group: "Actions",

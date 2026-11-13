@@ -353,7 +353,7 @@ function HistoryUnreadable() {
 function NothingTracked() {
   const orgPath = useOrgHref();
   return (
-    <Card className="dr-empty">
+    <Card className="dr-empty dr-untracked">
       <EmptyState
         icon={<DashboardIcon size={22} />}
         title="Nothing tracked yet"

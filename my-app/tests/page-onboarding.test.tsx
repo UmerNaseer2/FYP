@@ -313,7 +313,7 @@ describe("creating an organization", () => {
     await act(async () => release());
     expect(await screen.findByText("Opening…")).toBeInTheDocument();
     expect(createButton()).toBeDisabled();
-    expect(routerCalls.push).toEqual(["/acme-ops/studio"]);
+    expect(routerCalls.push).toEqual(["/acme-ops/studio?tour=new"]);
   });
 
   test("a taken address is said under the address, which gets the cursor, until it is changed", async () => {
@@ -377,7 +377,7 @@ describe("creating an organization", () => {
     fireEvent.click(createButton());
     expect(screen.queryByRole("alert")).toBeNull();
     await screen.findByText("Opening…");
-    expect(routerCalls.push).toEqual(["/acme/studio"]);
+    expect(routerCalls.push).toEqual(["/acme/studio?tour=new"]);
     expect(posted()).toHaveLength(2);
   });
 
@@ -456,7 +456,7 @@ describe("connecting GitHub while creating", () => {
     expect(posted()).toEqual([
       { name: "Acme", slug: "acme", repository: "acme/schema-scripts", token: TOKEN },
     ]);
-    expect(routerCalls.push).toEqual(["/acme/studio"]);
+    expect(routerCalls.push).toEqual(["/acme/studio?tour=new"]);
   });
 
   test("keeps the GitHub boxes read-only, and the toggle shut, while the request is out", async () => {

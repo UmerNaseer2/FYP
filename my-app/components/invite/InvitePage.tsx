@@ -237,7 +237,8 @@ function JoinCard({
       const joined = (body as { organization?: unknown } | null)?.organization;
       if (isOrgSummary(joined)) {
         setStage("opening");
-        router.push(orgHref(joined.slug, "/studio"));
+        // ?tour=member: the studio offers the app tour (lib/tour.ts).
+        router.push(orgHref(joined.slug, "/studio?tour=member"));
         return;
       }
       setStage(null);

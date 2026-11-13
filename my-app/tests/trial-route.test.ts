@@ -38,7 +38,7 @@ function landsOn(response: Response): string {
 
 describe("POST /api/trial", () => {
   it("signs the visitor in as the account they picked and opens the studio", async () => {
-    expect(landsOn(await POST(press("editor")))).toBe("/studio");
+    expect(landsOn(await POST(press("editor")))).toBe("/studio?tour=trial");
     expect(mockSignIn).toHaveBeenCalledWith("trial", { role: "editor", redirect: false });
   });
 
