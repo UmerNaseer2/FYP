@@ -248,7 +248,10 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
   useEffect(() => {
     if (phase !== "touring") return;
     const expected = stop.page ? orgPath(stop.page) : null;
-    let shown: Element | null = null;
+    // Where the page was last scrolled to for this stop. The page is scrolled
+    // again only when that spot moves (the page loaded more, or the card
+    // changed size), never while it is already on its way there.
+    let aimed: number | null = null;
     function tick() {
       const hole = holeRef.current;
       const card = cardRef.current;
@@ -259,11 +262,15 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
       const found = findTarget(stop);
       // An empty page shows its first-run card, and the words change to match.
       setShowsEmpty(Boolean(stop.empty && found?.element.matches(stop.empty.target)));
-      if (found && found.element !== shown) {
-        shown = found.element;
-        bringIntoView(found.element);
+      const room = roomFor(card, found?.element ?? null);
+      if (found) {
+        const spot = scrollSpot(found.element, room);
+        if (spot !== null && (aimed === null || Math.abs(spot - aimed) > 8)) {
+          aimed = spot;
+          scrollPage(spot);
+        }
       }
-      place(hole, card, found ? measure(stop, found.element) : null);
+      place(hole, card, found ? measure(stop, found.element) : null, room);
     }
     tick();
     const timer = window.setInterval(tick, 240);
@@ -483,11 +490,49 @@ function measure(stop: TourStop, first: Element): Box {
   };
 }
 
-function bringIntoView(element: Element) {
+/** The page's scrolling area (everything under the top bars). */
+function pageScroller(): HTMLElement | null {
+  return document.getElementById("main-content");
+}
+
+function isPhone(): boolean {
+  return window.innerWidth <= 640;
+}
+
+/** The band of screen the light may use, top to bottom. */
+type Room = { top: number; bottom: number };
+
+/**
+ * Where the light may go: below the bars at the top when the part is in the
+ * page (so the bars are never lit), and on a phone above the sheet.
+ */
+function roomFor(card: HTMLElement, element: Element | null): Room {
+  const scroller = pageScroller();
+  const inPage = scroller !== null && element !== null && scroller.contains(element);
+  const top = inPage ? scroller.getBoundingClientRect().top + 6 : 6;
+  // offsetTop, not getBoundingClientRect: the card's pop-in animation scales it.
+  const bottom = isPhone() ? card.offsetTop - 12 : window.innerHeight - 6;
+  return { top, bottom };
+}
+
+/**
+ * The scroll position that shows the part in the room: in the middle when it
+ * fits, else with its top at the top. Null when the part is not in the page
+ * (the top bar), which never scrolls.
+ */
+function scrollSpot(element: Element, room: Room): number | null {
+  const scroller = pageScroller();
+  if (!scroller || !scroller.contains(element)) return null;
+  const rect = element.getBoundingClientRect();
+  const space = room.bottom - room.top - 16;
+  const want = rect.height <= space ? room.top + 8 + (space - rect.height) / 2 : room.top + 8;
+  const most = scroller.scrollHeight - scroller.clientHeight;
+  return Math.round(clamp(scroller.scrollTop + rect.top - want, 0, Math.max(0, most)));
+}
+
+function scrollPage(spot: number) {
   const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  const tall = element.getBoundingClientRect().height > window.innerHeight * 0.6;
-  const phone = window.innerWidth <= 640;
-  element.scrollIntoView({ block: tall || phone ? "start" : "center", behavior: still ? "auto" : "smooth" });
+  pageScroller()?.scrollTo({ top: spot, behavior: still ? "auto" : "smooth" });
 }
 
 function clamp(value: number, low: number, high: number): number {
@@ -501,12 +546,13 @@ function px(value: number): string {
 /**
  * Moves the light (the hole) over the box and the card beside it: to the
  * right if there is room, else the left, else below, else above. On a phone
- * the card is a sheet along the bottom (globals.css), so the light stops above it.
+ * the card is a sheet along the bottom (globals.css). The light stays in the
+ * room, so it never lights the bars at the top or slips under the sheet.
  */
-function place(hole: HTMLElement, card: HTMLElement, box: Box | null) {
+function place(hole: HTMLElement, card: HTMLElement, box: Box | null, room: Room) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const phone = vw <= 640;
+  const phone = isPhone();
   const cw = card.offsetWidth;
   const ch = card.offsetHeight;
   const gap = 16;
@@ -522,14 +568,14 @@ function place(hole: HTMLElement, card: HTMLElement, box: Box | null) {
   }
 
   let left = Math.max(6, box.l - 8);
-  let top = Math.max(6, box.t - 8);
+  let top = Math.max(room.top, box.t - 8);
   const right = Math.min(vw - 6, box.r + 8);
-  let bottom = Math.min(vh - 6, box.b + 8);
+  let bottom = Math.min(room.bottom, box.b + 8);
   let x = 12;
   let y = 12;
 
   if (phone) {
-    bottom = Math.min(bottom, vh - ch - 12 - gap);
+    // The card is the sheet; CSS places it.
   } else if (right + gap + cw <= vw - 12) {
     x = right + gap;
     y = clamp(top, 12, vh - ch - 12);
@@ -545,7 +591,12 @@ function place(hole: HTMLElement, card: HTMLElement, box: Box | null) {
     }
     x = clamp(left, 12, vw - cw - 12);
   }
-  if (bottom < top + 40) top = Math.max(6, bottom - 40);
+  // Out of the room for a moment (the page is still scrolling to it): a thin
+  // light at the room's edge it will come in from, rather than none.
+  if (bottom < top + 40) {
+    if (box.t - 8 < room.top) bottom = top + 40;
+    else top = Math.max(6, bottom - 40);
+  }
   left = Math.min(left, right);
 
   hole.style.left = px(left);
