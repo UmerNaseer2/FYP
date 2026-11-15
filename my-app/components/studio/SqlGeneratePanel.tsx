@@ -91,7 +91,7 @@ function GeneratedView({
   }
   return (
     <div className="space-y-4 text-[13.5px]">
-      <p style={{ color: "var(--text-1)" }}>{withNames(answer.summary)}</p>
+      <p style={{ color: "var(--text)" }}>{withNames(answer.summary)}</p>
       {checks && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
@@ -167,7 +167,7 @@ export function SqlGeneratePanel({
       <AiPanel
         feature="sql-generate"
         title="Write it with AI"
-        blurb="Say what the script should do, in plain words. The AI writes it and a rollback for this schema; the app checks the names and risks and, on a Dev or Staging target you may deploy to, tries both inside a transaction it rolls back. Your words and the schema structure are sent to the AI, never your rows."
+        blurb="Say what the script should do, in plain words. The AI writes it and a rollback for this schema. The app checks the names and risks and, when your role may run scripts on this database, tries both inside a transaction it rolls back. Your words and the schema structure are sent to the AI, never your rows."
         askLabel="Write the script"
         resetKey={`${connectionId}/${schemaName}`}
         askDisabled={words.length === 0 || words.length > MAX_REQUEST_CHARS}

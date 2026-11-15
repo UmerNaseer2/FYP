@@ -22,7 +22,8 @@
 /* ── Page layout: the editor on the left, the cards about it on the right ── */
 .se-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "place" "main" "rest"; align-items: start; }
 .se-place { grid-area: place; }
-.se-main { grid-area: main; display: grid; gap: 16px; min-width: 0; }
+/* One column that may shrink below its content, so a long line of SQL in a card cannot widen the page. */
+.se-main { grid-area: main; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
 .se-rest { grid-area: rest; display: grid; gap: 16px; min-width: 0; }
 @media (min-width: 1021px) {
   .se-page { padding: 24px; }

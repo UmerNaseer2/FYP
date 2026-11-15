@@ -38,10 +38,10 @@ export function RiskRow({ item, cited }: { item: SummaryItem; cited: Record<stri
   const tone = LEVEL_TONE[item.level] ?? "neutral";
   const label = LEVEL_LABEL[item.level] ?? item.level;
   return (
-    <li>
+    <li className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">
         <Pill tone={tone}>{label}</Pill>
-        <span className="font-medium">{withNames(item.title)}</span>
+        <span className="min-w-0 font-medium">{withNames(item.title)}</span>
       </div>
       <p className="mt-1" style={{ color: "var(--text-2)" }}>
         {withNames(item.why)}
@@ -71,7 +71,7 @@ const SECTIONS = [
 function SummaryView({ answer, cited }: { answer: CompareSummaryAnswer; cited: Record<string, CitedChange> }) {
   return (
     <div className="space-y-3 text-[13.5px]">
-      <p style={{ color: "var(--text-1)" }}>{withNames(answer.headline)}</p>
+      <p style={{ color: "var(--text)" }}>{withNames(answer.headline)}</p>
       {SECTIONS.map(({ key, label, empty }) => {
         const lines = answer[key];
         if (lines.length === 0 && key !== "dropped") return null;

@@ -61,9 +61,9 @@ function ScriptChoice({
 }) {
   const text = SCRIPT_TEXT[kind];
   return (
-    <div className="rounded-md p-3" style={{ border: "1px solid var(--border)" }}>
+    <div className="min-w-0 rounded-md p-3" style={{ border: "1px solid var(--border)" }}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           <div className="font-medium">{text.title}</div>
           <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
             {scriptFacts(script)}
@@ -88,7 +88,7 @@ function ScriptChoice({
         <summary className="cursor-pointer text-[12px]" style={{ color: "var(--text-3)" }}>
           Show the SQL
         </summary>
-        <pre className="mono mt-1.5 max-h-72 overflow-auto rounded p-2 text-[11.5px] whitespace-pre-wrap" style={{ background: "var(--surface-2)" }}>
+        <pre className="mono mt-1.5 overflow-auto rounded p-2 text-[11.5px] whitespace-pre-wrap" style={{ background: "var(--surface-2)" }}>
           {script.sql}
         </pre>
       </details>
@@ -115,7 +115,7 @@ function ExplainView({
 }) {
   return (
     <div className="space-y-4 text-[13.5px]">
-      <p style={{ color: "var(--text-1)" }}>{withNames(answer.headline)}</p>
+      <p style={{ color: "var(--text)" }}>{withNames(answer.headline)}</p>
 
       <div>
         <h4 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
@@ -170,13 +170,13 @@ function ExplainView({
           Two ways out
         </h4>
         <p className="mt-1" style={{ color: "var(--text-2)" }}>
-          <span className="font-medium" style={{ color: "var(--text-1)" }}>
+          <span className="font-medium" style={{ color: "var(--text)" }}>
             The AI suggests: {CHOICE_LABEL[answer.recommendation.choice] ?? answer.recommendation.choice}.
           </span>{" "}
           {withNames(answer.recommendation.why)}
         </p>
         {scripts && (
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
             <ScriptChoice kind="revert" script={scripts.revert} canSave={canSave} onOpen={onOpen} />
             <ScriptChoice kind="adopt" script={scripts.adopt} canSave={canSave} onOpen={onOpen} />
           </div>

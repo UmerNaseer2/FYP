@@ -484,7 +484,7 @@ body {
 .help-hint__note { position:fixed; z-index:80; padding:12px 14px; border-radius:var(--r-lg); background:var(--surface);
                    border:1px solid var(--border); box-shadow:var(--shadow-lg); color:var(--text-2);
                    font:400 13px/1.5 var(--sans); letter-spacing:normal;
-                   text-transform:none; text-align:left; white-space:normal; cursor:auto;
+                   text-transform:none; text-align:left; white-space:normal; overflow-wrap:anywhere; cursor:auto;
                    animation:pop var(--dur-2) var(--ease-out); }
 .help-hint__note b { color:var(--text); font-weight:700; }
 
@@ -994,6 +994,22 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .role-note .ico { color:var(--text-3); flex:none; margin-top:1px; }
 .role-note .title { color:var(--text); font-weight:600; font-size:12.5px; }
 .role-note .body { color:var(--text-2); line-height:1.5; }
+.role-note > div { min-width:0; }
+
+/* AI answers stay inside their box, however long they are. A table name, a
+   line of SQL or a server error can be one very long word, so text inside an
+   AI card or the schema chat may break anywhere, and SQL wraps and scrolls
+   inside a box of capped height. Pills there may wrap too. */
+.ai-panel, .ai-chat { min-width:0; overflow-wrap:anywhere; }
+.ai-panel pre, .ai-chat pre { max-width:100%; max-height:min(24rem,60vh); overflow:auto;
+                              white-space:pre-wrap; overflow-wrap:anywhere; }
+.ai-panel .pill, .ai-chat .pill { white-space:normal; max-width:100%; }
+/* The Admin AI tab. Its use table keeps whole words (a table sized by its
+   content would split the headings mid-word) and scrolls sideways instead. */
+.ai-admin { min-width:0; overflow-wrap:anywhere; }
+.ai-admin .ad-use { overflow-wrap:break-word; }
+/* On phones that table turns into cards (.responsive-table), where breaking anywhere is safe again. */
+@media (max-width: 640px) { .ai-admin .ad-use { overflow-wrap:anywhere; } }
 
 /* Risk warning: the block in front of SQL that runs on a live database.
    Louder than .warn-inline on purpose, so it is read before the button. */
@@ -1740,6 +1756,15 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
   .tb { padding:0; width:44px; }
   .ny em { position:absolute; top:-4px; right:-4px; min-width:18px; padding:1px 5px; font-size:11px; }
   .ny { position:relative; }
+}
+/* The narrowest phones. With AI on, the bar holds seven round buttons, which
+   need 377px at full size. Below 400px each one shrinks a little (never under
+   34px) and the gaps close up, so the bar never runs off the screen. */
+@media (max-width: 400px) {
+  .top { --tb:clamp(34px, calc((100vw - 48px) / 7), 44px); padding:8px 8px 6px; gap:4px; }
+  .top-actions { gap:4px; }
+  .top .tb, .top .ck-b, .top .who { width:var(--tb); min-width:var(--tb); height:var(--tb); flex:0 0 var(--tb); }
+  .top .who .av { width:calc(var(--tb) - 8px); height:calc(var(--tb) - 8px); }
 }
 
 /* ——— The logo reveal (components/studio/LogoIntro, lib/intro.ts) ——— */

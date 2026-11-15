@@ -326,7 +326,7 @@ export function SchemaChatButton() {
         width={540}
         footer={
           <form
-            className="w-full space-y-2"
+            className="w-full min-w-0 space-y-2"
             onSubmit={(e) => {
               e.preventDefault();
               void send();
@@ -338,7 +338,7 @@ export function SchemaChatButton() {
             <textarea
               id="schema-chat-question"
               className="input"
-              style={{ minHeight: 64, resize: "vertical" }}
+              style={{ minHeight: 64, maxHeight: "40vh", resize: "vertical" }}
               maxLength={MAX_QUESTION_CHARS}
               placeholder="Which tables have a customer_id column, and are they indexed?"
               value={draft}
@@ -350,7 +350,7 @@ export function SchemaChatButton() {
                 }
               }}
             />
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
                 Enter sends, Shift+Enter starts a new line.
               </span>
@@ -373,7 +373,7 @@ export function SchemaChatButton() {
           </form>
         }
       >
-        <div aria-live="polite" className="space-y-4">
+        <div aria-live="polite" className="ai-chat space-y-4">
           {entries.length === 0 && (
             <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
               Ask about the schemas you can see. Their structure is sent to the AI, never your rows.{" "}

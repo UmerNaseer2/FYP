@@ -49,7 +49,7 @@ function ReviewView({
 }) {
   return (
     <div className="min-w-0 space-y-4 text-[13.5px]">
-      <p style={{ color: "var(--text-1)" }}>{withNames(answer.verdict)}</p>
+      <p style={{ color: "var(--text)" }}>{withNames(answer.verdict)}</p>
 
       <div>
         <h4 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-3)" }}>
@@ -65,7 +65,7 @@ function ReviewView({
               <li key={i} className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Pill tone={SEVERITY_TONE[finding.severity]}>{SEVERITY_LABEL[finding.severity]}</Pill>
-                  <span className="font-medium">{withNames(finding.title)}</span>
+                  <span className="min-w-0 font-medium">{withNames(finding.title)}</span>
                   {finding.fromApp && (
                     <span className="pill pill-outline text-[11.5px]" title="The app wrote this finding: its own checks flagged these statements and the AI's answer left them out.">
                       From the app&apos;s checks
@@ -85,7 +85,7 @@ function ReviewView({
                 </p>
                 {finding.saferWay && (
                   <p className="mt-1" style={{ color: "var(--text-2)" }}>
-                    <span className="font-semibold" style={{ color: "var(--text-1)" }}>
+                    <span className="font-semibold" style={{ color: "var(--text)" }}>
                       Instead:{" "}
                     </span>
                     {withNames(finding.saferWay)}

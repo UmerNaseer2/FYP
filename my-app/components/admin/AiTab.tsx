@@ -90,7 +90,7 @@ export function AiTab({ active }: { active: boolean }) {
 
   if (loadError && !view) {
     return (
-      <div className="ad-note" role="alert">
+      <div className="ad-note ai-admin" role="alert">
         <AlertCircleIcon size={15} className="ico" />
         <div>
           <div className="title">{"Couldn't load the AI settings"}</div>
@@ -113,7 +113,7 @@ export function AiTab({ active }: { active: boolean }) {
   const locked = !view.canUpdate || saving;
 
   return (
-    <div className="space-y-6">
+    <div className="ai-admin space-y-6">
       {actionError && (
         <div className="ad-note" role="alert">
           <AlertCircleIcon size={15} className="ico" />
@@ -157,7 +157,7 @@ export function AiTab({ active }: { active: boolean }) {
               else void save({ enabled: false });
             }}
           />
-          <span>
+          <span className="min-w-0">
             <span className="font-medium">Let people in this organization use AI assistance</span>
             <span className="block mt-0.5" style={{ color: "var(--text-2)" }}>
               {view.enabled

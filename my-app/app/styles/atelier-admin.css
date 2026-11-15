@@ -28,6 +28,7 @@
 .ad-page .ad-note .ico { color: var(--text-3); flex: none; margin-top: 2px; }
 .ad-page .ad-note .title { color: var(--text); font-weight: 600; }
 .ad-page .ad-note .body { color: var(--text-2); }
+.ad-page .ad-note > div { min-width: 0; }
 .ad-page .ad-note--warn { background: var(--drift-soft); }
 .ad-page .ad-note--warn .ico,
 .ad-page .ad-note--warn .title { color: var(--drift); }

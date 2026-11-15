@@ -140,7 +140,7 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
 
       {view.canUpdate && (
         <form className="mt-4" onSubmit={submit} noValidate>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <Label htmlFor={serviceId} className="mb-1 block">
                 Service

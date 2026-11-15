@@ -147,11 +147,6 @@ export function useAiFeature(feature: AiFeature): boolean | null {
 
 /* -------------------------------------------------------------- the panel */
 
-/**
- * Calls the screen's route. Pass `signal` to the fetch, so a question nobody
- * waits for any more is stopped. Send `refresh` in the body: it is true for
- * "Ask again", which wants a new answer, not the saved one.
- */
 /** Sends a Helpful? answer for one AI call. A lost one is not worth an error on screen. */
 export async function rateAiAnswer(callId: number, rating: 1 | -1): Promise<void> {
   try {
@@ -180,6 +175,11 @@ export function RateButtons({ rated, onRate }: { rated: 1 | -1 | null; onRate: (
   );
 }
 
+/**
+ * Calls the screen's route. Pass `signal` to the fetch, so a question nobody
+ * waits for any more is stopped. Send `refresh` in the body: it is true for
+ * "Ask again", which wants a new answer, not the saved one.
+ */
 export type AiAsk = (signal: AbortSignal, refresh: boolean) => Promise<Response>;
 
 type State<T> =
@@ -356,8 +356,8 @@ export function AiPanel<T>({
             className="mt-4 pt-3 flex flex-wrap items-center justify-between gap-2 text-[12px]"
             style={{ borderTop: "1px solid var(--border)", color: "var(--text-3)" }}
           >
-            <span className="flex items-center gap-1.5">
-              <CheckIcon size={13} />
+            <span className="flex min-w-0 items-start gap-1.5">
+              <CheckIcon size={13} className="mt-0.5 flex-none" />
               {answerFooter(state.meta)}
             </span>
             {state.meta.callId !== null && <RateButtons rated={rated} onRate={(rating) => void rate(rating)} />}
