@@ -26,6 +26,26 @@ import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcom
 import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
 import { readApplications } from "@/lib/application-read";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
+import { isTrialOrg } from "@/lib/trial-rules";
+import { trialSqlProblem, trialSqlRefusal } from "@/lib/trial-sql-guard";
+import { randomUUID } from "node:crypto";
+import { isRunId } from "@/lib/run-id";
+import {
+  beginCommit,
+  BUSY_CHECK_FAILED_MESSAGE,
+  countOtherRuns,
+  DUPLICATE_RUN_MESSAGE,
+  keepFirstClientError,
+  prepareRunTransaction,
+  registerRun,
+  runLimits,
+  runStopMessage,
+  throwIfStopped,
+  TRIAL_BUSY_MESSAGE,
+  TRIAL_MAX_CONCURRENT_RUNS,
+  unregisterRun,
+  type RunEntry,
+} from "@/lib/run-limits";
 import {
   checkForwardOnly,
   readScriptLevel,
@@ -115,15 +135,6 @@ const LOCK_TIMEOUT_MS = 15_000;
 
 /** PostgreSQL's SQLSTATE for "gave up waiting for a lock" (lock_not_available). */
 const LOCK_NOT_AVAILABLE = "55P03";
-
-/**
- * The longest one statement of a DRY RUN may take. A real run has no such
- * limit (see the note where lock_timeout is set), but a rehearsal is thrown
- * away anyway, so stopping it is harmless and keeps a slow one from holding
- * its locks on the target for hours. Five minutes is a judgement call.
- */
-const DRY_RUN_STATEMENT_TIMEOUT_MS = 5 * 60_000;
-const QUERY_CANCELED = "57014";
 
 /**
  * PostgreSQL's SQLSTATE for "this statement cannot run inside a transaction
@@ -557,6 +568,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
      * real apply does outside the transaction.
      */
     dryRun?: boolean;
+    /** Names this run for the Stop button: see lib/run-limits.ts. */
+    runId?: unknown;
   };
 
   try {
@@ -613,6 +626,16 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       { status: 400 }
     );
   }
+
+  // runId names this run for the Stop button (POST /api/scripts/cancel). The
+  // Deploy page sends one; a caller that does not gets one made here.
+  if (body.runId !== undefined && !isRunId(body.runId)) {
+    return answerBeforeRun(
+      { error: "runId must be a UUID, as the Deploy page sends. Nothing was run." },
+      { status: 400 }
+    );
+  }
+  const runId = isRunId(body.runId) ? body.runId.toLowerCase() : randomUUID();
 
   const rawScripts: ScriptInput[] = Array.isArray(body.scripts)
     ? body.scripts
@@ -684,6 +707,32 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         },
         { status: 400 }
       );
+    }
+
+    // ─── 3b. In the trial, nothing that reaches every other visitor ────────
+    // Every trial visitor runs as one shared database user, so a script that
+    // changes that user or its session settings breaks the trial for everyone
+    // (lib/trial-sql-guard.ts). The rollback is read too: the revert route
+    // runs it as the same user.
+    if (isTrialOrg(gate.principal.orgSlug)) {
+      const name = raw.script_name.trim();
+      const problem = trialSqlProblem(raw.sql_content);
+      if (problem) {
+        return answerBeforeRun(
+          { code: "trial_refused", error: trialSqlRefusal(`The script "${name}"${at}`, problem) },
+          { status: 400 }
+        );
+      }
+      const rollbackProblem = raw.down_sql ? trialSqlProblem(raw.down_sql) : null;
+      if (rollbackProblem) {
+        return answerBeforeRun(
+          {
+            code: "trial_refused",
+            error: trialSqlRefusal(`The rollback of "${name}"${at}`, rollbackProblem),
+          },
+          { status: 400 }
+        );
+      }
     }
 
     const scriptName = raw.script_name.trim();
@@ -968,6 +1017,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     );
   }
 
+  // Errors the connection reports on its own, such as the database ending the
+  // session between two queries. Without a listener one would crash the whole
+  // server. The first is kept, and the run reports it (lib/run-limits.ts).
+  const clientError = keepFirstClientError(client);
+
   // Derive the quoted schema identifier once — used in every query below.
   const quotedSchema = quoteIdent(schemaName);
 
@@ -1131,8 +1185,53 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // Filled one statement at a time, so it is right even when a later addition
   // fails and step 7 throws.
   const hoistedEnumAdditions: string[] = [];
+  // The time limits this run goes by, and its entry in the list of runs the
+  // Stop button can reach (lib/run-limits.ts). Null until registered.
+  const trial = isTrialOrg(gate.principal.orgSlug);
+  const limits = runLimits({ trial, dryRun });
+  let run: RunEntry | null = null;
 
   try {
+    // ─── 6c. Note the run, so Stop and its time limit can reach it ──────────
+    //
+    // The trial's demo database is shared by every visitor, so it takes only
+    // a few runs at once: counted here in this server, then on the database
+    // itself, which also sees the runs going on other instances of the app.
+    const entry = registerRun(
+      {
+        runId,
+        orgId,
+        connectionId,
+        actor: actorFor(gate.principal),
+        kind: "deploy",
+        trial,
+        pool: targetPool,
+      },
+      limits
+    );
+    if (entry === "duplicate") {
+      return answerBeforeRun({ code: "duplicate_run", error: DUPLICATE_RUN_MESSAGE }, { status: 409 });
+    }
+    if (entry === "busy") {
+      return answerBeforeRun({ code: "trial_busy", error: TRIAL_BUSY_MESSAGE }, { status: 429 });
+    }
+    run = entry;
+    if (trial) {
+      let others: number;
+      try {
+        others = await countOtherRuns(client);
+      } catch (error) {
+        console.error(
+          "Apply: could not count the trial's runs:",
+          error instanceof Error ? error.message : String(error)
+        );
+        return answerBeforeRun({ error: BUSY_CHECK_FAILED_MESSAGE }, { status: 503 });
+      }
+      if (others >= TRIAL_MAX_CONCURRENT_RUNS) {
+        return answerBeforeRun({ code: "trial_busy", error: TRIAL_BUSY_MESSAGE }, { status: 429 });
+      }
+    }
+
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
     //
     // Both of these run OUTSIDE the run's transaction, which is exactly why a
@@ -1175,6 +1274,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // blocks other writers for longer than it used to.
     await client.query("BEGIN");
     transactionStarted = true;
+    // Name the session after the run and give it its idle limit, so Stop and
+    // the run's time limit can find it; a Stop pressed before this point ends
+    // the run here.
+    entry.pid = await prepareRunTransaction(client, runId, limits);
+    throwIfStopped(entry);
 
     // Fail fast instead of queueing behind someone else's lock.
     //
@@ -1187,11 +1291,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // ROLLBACK and an error the deploy screen can show, and the operator
     // retries when the table is quiet.
     //
-    // statement_timeout is deliberately NOT set alongside it for a real run: a
-    // migration that rewrites a large table legitimately takes minutes, and
-    // cancelling it half way is the thing this transaction exists to prevent.
-    // A dry run is different. It is rolled back whatever happens, so it gets a
-    // limit and cannot sit on the target's locks for as long as it likes.
+    // statement_timeout goes alongside it, generous on purpose: a migration
+    // that rewrites a large table legitimately takes minutes, so a real run
+    // allows each statement half an hour (lib/run-limits.ts). The limit is
+    // there only so that a statement that never ends, such as
+    // pg_sleep(100000) or a runaway query, cannot hold the connection for
+    // good. A dry run is rolled back whatever happens, so it gets a shorter
+    // limit, and the trial, whose demo database every visitor shares,
+    // shorter still.
     //
     // SET LOCAL, so the pooled connection goes back to the pool unchanged.
     //
@@ -1213,10 +1320,10 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     const runSettings: RunSettings = {
       searchPath: await runSearchPath(client, schemaName),
       lockTimeoutMs: LOCK_TIMEOUT_MS,
-      statementTimeoutMs: dryRun ? DRY_RUN_STATEMENT_TIMEOUT_MS : null,
+      statementTimeoutMs: limits.statementMs,
     };
 
-    // Put the settings in place (lock_timeout, the dry run's statement_timeout,
+    // Put the settings in place (lock_timeout, statement_timeout,
     // search_path, and reading strings the way lib/sql-guard did when it
     // checked the scripts), then note which transaction this is. Each script
     // is checked against that id after it runs: see lib/script-transaction.
@@ -1302,6 +1409,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       // versions hash to different keys, so they never block each other. The lock
       // is released automatically when the transaction ends.
       failedJob = job;
+      // A Stop that landed between two scripts ends the run before the next.
+      throwIfStopped(entry);
 
       // Every script starts from the same settings. The script before this one
       // may have run a plain SET search_path (a pg_dump header does), SET
@@ -1422,6 +1531,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     }
 
     failedJob = null;
+    // The database may have ended the session between two queries (it then
+    // says so on the connection, not in a query's answer), and Stop may have
+    // landed after the last statement. Either way the run goes no further.
+    if (clientError()) throw clientError();
+    throwIfStopped(entry);
 
     // ─── 8b. A dry run throws the work away instead of committing it ────────
     //
@@ -1462,13 +1576,18 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       });
     }
 
-    // Commit — only reaches here if every migration in the run succeeded
+    // Commit: only reached if every migration in the run succeeded.
+    // From this point Stop answers "too late": a COMMIT is never cancelled.
+    beginCommit(entry);
     commitAttempted = true;
     await client.query("COMMIT");
     transactionStarted = false;
     // The approval has now been spent on a run that really happened, so the
     // finally block must leave it marked used.
     runCommitted = true;
+    // The run no longer holds a transaction, so it stops counting towards the
+    // trial's limit and a late Stop hears that it has finished.
+    unregisterRun(entry);
 
     // Release the target-pool connection BEFORE the lineage advance below: that
     // step re-introspects the target (drawing its own connection), so holding this
@@ -1765,27 +1884,26 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       );
     }
 
-    // A dry run that hit its own time limit is not a broken script either.
-    // (A real run sets no statement_timeout, so this only fires on a dry run.)
-    if (
-      dryRun &&
-      pgCode === QUERY_CANCELED &&
-      /statement timeout/i.test(error instanceof Error ? error.message : "")
-    ) {
-      const slow = failedJob
-        ? `Version ${failedJob.version} of "${failedJob.scriptName}"`
-        : "This run";
+    // A run that hit one of its time limits, was stopped with the Stop
+    // button, or had its session ended by the database is not a broken
+    // script either, and "canceling statement due to user request" does not
+    // say which of those happened. See lib/run-limits.ts.
+    const stopped = runStopMessage([error, clientError()], run, {
+      kind: "deploy",
+      dryRun,
+      trial,
+      limits,
+      subject: failedJob ? `Version ${failedJob.version} of "${failedJob.scriptName}"` : null,
+    });
+    if (stopped) {
       return NextResponse.json(
         {
           success: false,
           dryRun,
+          code: "run_stopped",
           schema: schemaName,
-          results: rolledBackOutcomes(queue, failedJob, "Stopped at the dry run time limit."),
-          error:
-            `${slow} had a statement that ran longer than ` +
-            `${DRY_RUN_STATEMENT_TIMEOUT_MS / 60_000} minutes, so the dry run was stopped ` +
-            `and rolled back. This limit is for dry runs only, a real deploy has none. ` +
-            `The script may still be fine, it is just slow on this much data.`,
+          results: rolledBackOutcomes(queue, failedJob, "Stopped before it finished."),
+          error: withEnumValuesThatStay(stopped, hoistedEnumAdditions),
         },
         { status: 503 }
       );
@@ -1857,6 +1975,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     );
 
   } finally {
+    // The run is over whichever way it ended: Stop and its timer let go of it.
+    if (run) unregisterRun(run);
     // Always release — whether we succeeded, failed, or hit the 409 branch —
     // unless the success path already released it before the lineage advance.
     // Without this the pool eventually runs out of connections and hangs.

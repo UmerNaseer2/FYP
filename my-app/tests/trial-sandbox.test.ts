@@ -3,7 +3,8 @@
 // need no database, and the routes that turn trial accounts away.
 //
 // Building the organization itself needs a real database, and was checked by
-// hand on a throwaway cluster.
+// hand on a throwaway cluster. The demo database's rebuild, and what a failed
+// one leaves behind, are in tests/trial-rebuild.test.ts.
 
 import { NextRequest } from "next/server";
 import type { Gate } from "@/lib/auth-guard";
@@ -46,7 +47,7 @@ import {
   trialPermissions,
 } from "../lib/trial-rules";
 import { STUDENT_SCRIPTS, TRIAL_SCHEMAS, trialSeedSql } from "../lib/trial-seed";
-import { resetTrial, trialDatabase, trialSignIn } from "../lib/trial-sandbox";
+import { TrialRebuildError, resetTrial, trialDatabase, trialSignIn } from "../lib/trial-sandbox";
 import { orgSlugProblem } from "../lib/new-organization";
 import { ALL_PERMISSIONS } from "../lib/permissions";
 import { canAnswerRequests, grantProblem } from "../lib/access-requests";
@@ -182,6 +183,20 @@ describe("the Reset trial button", () => {
     quiet.mockRestore();
     expect(response.status).toBe(500);
     expect(JSON.stringify(await response.json())).not.toContain("secret detail");
+  });
+
+  it("says why when the demo database could not be rebuilt, in the Trial Admin's words only", async () => {
+    mockGate = inTrial("admin");
+    const message =
+      "The trial's demo database could not be reached, so the trial was left as it was. Try again in a moment.";
+    jest.mocked(resetTrial).mockRejectedValueOnce(new TrialRebuildError(message, new Error("secret detail")));
+    const quiet = jest.spyOn(console, "error").mockImplementation(() => {});
+    const response = await resetTrialRoute();
+    quiet.mockRestore();
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({ code: "trial_rebuild_failed", error: message });
+    expect(JSON.stringify(body)).not.toContain("secret detail");
   });
 });
 

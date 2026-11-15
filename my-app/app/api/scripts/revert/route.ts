@@ -27,6 +27,26 @@ import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import type { ChangeLevel } from "@/lib/change-level";
+import { isTrialOrg } from "@/lib/trial-rules";
+import { trialSqlProblem, trialSqlRefusal } from "@/lib/trial-sql-guard";
+import { randomUUID } from "node:crypto";
+import { isRunId } from "@/lib/run-id";
+import {
+  beginCommit,
+  BUSY_CHECK_FAILED_MESSAGE,
+  countOtherRuns,
+  DUPLICATE_RUN_MESSAGE,
+  keepFirstClientError,
+  prepareRunTransaction,
+  registerRun,
+  runLimits,
+  runStopMessage,
+  throwIfStopped,
+  TRIAL_BUSY_MESSAGE,
+  TRIAL_MAX_CONCURRENT_RUNS,
+  unregisterRun,
+  type RunEntry,
+} from "@/lib/run-limits";
 
 // ---------------------------------------------------------------------------
 // POST /api/scripts/revert — undo one or more applied versions of ONE script
@@ -114,6 +134,8 @@ type RevertBody = {
   registryRollbacks?: unknown;
   /** Run everything, then ROLLBACK: reports what would happen and changes nothing. */
   dryRun?: unknown;
+  /** Names this run for the Stop button: see lib/run-limits.ts. */
+  runId?: unknown;
 };
 
 type RevertRequest = {
@@ -124,6 +146,8 @@ type RevertRequest = {
   versions: string[];
   registry: { version: string; downSql: string }[];
   dryRun: boolean;
+  /** The id Stop knows this run by, sent by the page or made here. */
+  runId: string;
 };
 
 /**
@@ -228,6 +252,12 @@ function parseRequest(body: RevertBody): RevertRequest | string {
     return "dryRun must be true or false. Nothing was run.";
   }
 
+  // runId names this run for the Stop button (POST /api/scripts/cancel). The
+  // Deploy page sends one; a caller that does not gets one made here.
+  if (body.runId !== undefined && !isRunId(body.runId)) {
+    return "runId must be a UUID, as the Deploy page sends. Nothing was run.";
+  }
+
   return {
     connectionId,
     schemaName,
@@ -235,6 +265,7 @@ function parseRequest(body: RevertBody): RevertRequest | string {
     versions,
     registry,
     dryRun: body.dryRun === true,
+    runId: isRunId(body.runId) ? body.runId.toLowerCase() : randomUUID(),
   };
 }
 
@@ -271,6 +302,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   attempt.action = "revert";
   attempt.orgId = gate.principal.orgId;
   attempt.actor = actorFor(gate.principal);
+  // In the trial every rollback is read before it runs (step 8), as every
+  // script is in the apply route: all visitors share one database user.
+  const trialOrg = isTrialOrg(gate.principal.orgSlug);
 
   // ─── 2. Parse and validate the body ──────────────────────────────────────
   let body: RevertBody;
@@ -283,7 +317,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   const parsed = parseRequest(body);
   if (typeof parsed === "string") return fail(400, { error: parsed });
 
-  const { connectionId, schemaName, scriptName: name, versions, dryRun } = parsed;
+  const { connectionId, schemaName, scriptName: name, versions, dryRun, runId } = parsed;
+  // The time limits this run goes by: see lib/run-limits.ts.
+  const limits = runLimits({ trial: trialOrg, dryRun });
   attempt.connectionId = connectionId;
   attempt.schemaName = schemaName;
   attempt.dryRun = dryRun;
@@ -380,9 +416,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     return failBeforeRun(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
   }
 
+  // The pool is kept by name: Stop borrows a second connection from it.
+  const targetPool = getPoolForConfig(targetConfig);
   let connected: PoolClient;
   try {
-    connected = await getPoolForConfig(targetConfig).connect();
+    connected = await targetPool.connect();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — could not connect to target DB:", message);
@@ -395,6 +433,10 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     });
   }
   const client = connected;
+  // Errors the connection reports on its own, such as the database ending the
+  // session between two queries. Without a listener one would crash the whole
+  // server. The first is kept, and the run reports it (lib/run-limits.ts).
+  const clientError = keepFirstClientError(client);
 
   // PostgreSQL reports cascaded drops ("drop cascades to view x") and skipped
   // IF EXISTS drops as NOTICEs, which are exactly what an operator wants to see
@@ -424,6 +466,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   // approval goes back — see the finally block.
   let runCommitted = false;
   let commitOutcomeUnknown = false;
+  // This run's entry in the list of runs the Stop button and the time limit
+  // can reach (lib/run-limits.ts). Null until registered.
+  let run: RunEntry | null = null;
 
   // Refuse from inside the transaction: undo it (nothing ran yet), then answer.
   const refuse = async (status: number, payload: Record<string, unknown> & { error: string }) => {
@@ -433,6 +478,46 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   };
 
   try {
+    // ─── 4c. Note the run, so Stop and its time limit can reach it ─────────
+    //
+    // The trial's demo database is shared by every visitor, so it takes only
+    // a few runs at once: counted here in this server, then on the database
+    // itself, which also sees the runs going on other instances of the app.
+    const entry = registerRun(
+      {
+        runId,
+        orgId: gate.principal.orgId,
+        connectionId,
+        actor: actorFor(gate.principal),
+        kind: "rollback",
+        trial: trialOrg,
+        pool: targetPool,
+      },
+      limits
+    );
+    if (entry === "duplicate") {
+      return failBeforeRun(409, { code: "duplicate_run", error: DUPLICATE_RUN_MESSAGE });
+    }
+    if (entry === "busy") {
+      return failBeforeRun(429, { code: "trial_busy", error: TRIAL_BUSY_MESSAGE });
+    }
+    run = entry;
+    if (trialOrg) {
+      let others: number;
+      try {
+        others = await countOtherRuns(client);
+      } catch (error) {
+        console.error(
+          "Revert: could not count the trial's runs:",
+          error instanceof Error ? error.message : String(error)
+        );
+        return failBeforeRun(503, { error: BUSY_CHECK_FAILED_MESSAGE });
+      }
+      if (others >= TRIAL_MAX_CONCURRENT_RUNS) {
+        return failBeforeRun(429, { code: "trial_busy", error: TRIAL_BUSY_MESSAGE });
+      }
+    }
+
     // ─── 5. The schema has to exist ────────────────────────────────────────
     // Checked before BEGIN so the "no ledger" message below is only ever about
     // a real schema that has no ledger, never about a typo.
@@ -449,6 +534,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     // ─── 6. Transaction, lock timeout, locks, search_path ──────────────────
     await client.query("BEGIN");
     transactionStarted = true;
+    // Name the session after the run and give it its idle limit, so Stop and
+    // the run's time limit can find it; a Stop pressed before this point ends
+    // the run here.
+    entry.pid = await prepareRunTransaction(client, runId, limits);
+    throwIfStopped(entry);
 
     // Bounded waits: without this a rollback queues forever behind any open
     // transaction on the tables it touches. It also bounds the advisory-lock
@@ -473,8 +563,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     const runSettings: RunSettings = {
       searchPath: await runSearchPath(client, schemaName),
       lockTimeoutMs: LOCK_TIMEOUT_MS,
-      // Like a real deploy, no time limit on a statement.
-      statementTimeoutMs: null,
+      // Generous, as for a deploy: there only so that a statement that never
+      // ends cannot hold the connection for good. See lib/run-limits.ts.
+      statementTimeoutMs: limits.statementMs,
     };
 
     // Put the settings in place (search_path, and reading strings the way
@@ -590,6 +681,16 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             `registry, add one in the Script Editor (Add a missing rollback), then reload ` +
             `Deploy. If it was replayed here by Version Sync without one, undo it by hand or ` +
             `fix it forward with a new version.`,
+        });
+      }
+      // Whichever copy runs, the stored one or the registry's, in the trial it
+      // runs as the one database user every visitor shares (lib/trial-sql-guard.ts).
+      const trialProblem = trialOrg ? trialSqlProblem(resolved.sql) : null;
+      if (trialProblem) {
+        return await refuse(400, {
+          code: "trial_refused",
+          version: row.version,
+          error: trialSqlRefusal(`The rollback for ${vLabel(row.version)}`, trialProblem),
         });
       }
       plan.push({ row, sql: resolved.sql, source: resolved.source });
@@ -739,6 +840,8 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     // history can tell that they came off together.
     for (const step of plan) {
       runningVersion = step.row.version;
+      // A Stop that landed between two versions ends the run before the next.
+      throwIfStopped(entry);
       // Every down script starts from the same settings. The one before it may
       // have run a plain SET search_path, SET lock_timeout or SET ROLE, which
       // inside a transaction replaces the SET LOCAL for everything after it.
@@ -797,6 +900,12 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             .join("; ")}${notices.length > 10 ? `; and ${notices.length - 10} more` : ""}.`
         : "";
 
+    // The database may have ended the session between two queries (it then
+    // says so on the connection, not in a query's answer), and Stop may have
+    // landed after the last statement. Either way the run goes no further.
+    if (clientError()) throw clientError();
+    throwIfStopped(entry);
+
     // ─── 12. Dry run: undo everything and report ───────────────────────────
     if (dryRun) {
       await client.query("ROLLBACK");
@@ -828,6 +937,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     // back itself — definitely, and it said why. Telling that reader to go and
     // check the Deploy screen for themselves hides an error that already names
     // the problem. See lib/commit-outcome.
+    //
+    // From this point Stop answers "too late": a COMMIT is never cancelled.
+    beginCommit(entry);
     try {
       await client.query("COMMIT");
     } catch (commitError) {
@@ -861,6 +973,9 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     }
     transactionStarted = false;
     runCommitted = true;
+    // The run no longer holds a transaction, so it stops counting towards the
+    // trial's limit and a late Stop hears that it has finished.
+    unregisterRun(entry);
 
     // ─── 14. Release the client, then advance lineage ──────────────────────
     // Released BEFORE the lineage advance, which re-introspects the target on
@@ -955,6 +1070,18 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       });
     }
 
+    // A run that hit one of its time limits, was stopped with the Stop
+    // button, or had its session ended by the database is not a broken
+    // rollback either. See lib/run-limits.ts.
+    const stopped = runStopMessage([error, clientError()], run, {
+      kind: "rollback",
+      dryRun,
+      trial: trialOrg,
+      limits,
+      subject: runningVersion ? `The rollback of ${vLabel(runningVersion)} of "${name}"` : null,
+    });
+    if (stopped) return fail(503, { code: "run_stopped", error: stopped });
+
     // A lock timeout is not a broken rollback, and "canceling statement due to
     // lock timeout" does not tell the operator that trying again is the fix.
     if (pgCode === LOCK_NOT_AVAILABLE) {
@@ -988,6 +1115,8 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
         `changed - every version in this rollback is still applied. PostgreSQL said: ${message}`,
     });
   } finally {
+    // The run is over whichever way it ended: Stop and its timer let go of it.
+    if (run) unregisterRun(run);
     // An approval spent on a run that did not commit goes back to "approved",
     // so the operator can fix the problem and press Roll back again without
     // asking a second time. Best-effort.

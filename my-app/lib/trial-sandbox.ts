@@ -17,6 +17,12 @@
 // and token and its AI settings are carried over, so a token saved once stays.
 // The three accounts' profiles stay too, so every open session still works, in
 // the fresh organization.
+//
+// Every rebuild of the demo database also clears whatever a visitor's script
+// managed to save on the trial's database user, such as a setting that makes
+// every connection read only (rebuildTrialDatabase). When the demo database
+// cannot be rebuilt, nothing changes: the organization is left as it was, and
+// the reset throws a TrialRebuildError that says why, which the button shows.
 
 import { Client } from "pg";
 import pool, { syncMetadataTables } from "./version-db";
@@ -25,6 +31,7 @@ import type { MetadataClient } from "./db/sequelize";
 import { buildPgConfig } from "./connection-config";
 import { encryptSecret } from "./secret-store";
 import { DEFAULT_EXECUTE_ROLE } from "./connection-access";
+import { quoteIdent } from "./perf-sql";
 import {
   TRIAL_EMAIL_DOMAIN,
   TRIAL_ORG_NAME,
@@ -80,9 +87,10 @@ export type TrialDatabase = {
  *
  * The URL names a role of the trial's own, which may create schemas in that
  * database (GRANT CREATE ON DATABASE) and owns nothing else anywhere. It must
- * not be a superuser (rebuildTrialDatabase refuses one): every reset drops
- * every schema it owns, and anyone on the internet can run SQL as it, through
- * Deploy.
+ * not be a superuser, nor able to create roles (rebuildTrialDatabase refuses
+ * both): every reset drops every schema it owns, and anyone on the internet can
+ * run SQL as it, through Deploy. It must be reached directly, not through a
+ * connection pooler, which would not pass on the settings a rebuild starts with.
  */
 export function trialDatabase(url = process.env.TRIAL_DATABASE_URL): TrialDatabase | null {
   if (!url) return null;
@@ -110,52 +118,297 @@ export function trialDatabase(url = process.env.TRIAL_DATABASE_URL): TrialDataba
 }
 
 /**
- * Put the demo database back as it started: drop every schema the trial role
- * owns there (the five demo schemas, and any a tester made through Deploy),
- * and build the five again, all in one transaction.
- *
- * Schemas, not DROP OWNED: that would also take back the role's right to
- * create schemas in the database, and the next reset could not build them.
+ * Why the demo database could not be rebuilt, in words the Trial Admin can
+ * read (trialRebuildMessage), for the reset button to show. `underlying` is
+ * what actually went wrong, for the server's log only: it can name the
+ * database's host or user.
  */
-export async function rebuildTrialDatabase(db: TrialDatabase): Promise<void> {
-  const client = new Client({
-    ...buildPgConfig({
-      host: db.host,
-      port: db.port,
-      database: db.database,
-      user: db.user,
-      password: db.password,
-      sslMode: db.sslMode,
-    }),
-    // Shorter than a sign-in is willing to wait.
-    connectionTimeoutMillis: 8_000,
-    statement_timeout: 20_000,
-  });
-  await client.connect();
+export class TrialRebuildError extends Error {
+  readonly underlying: unknown;
+
+  constructor(message: string, underlying?: unknown) {
+    super(message);
+    this.name = "TrialRebuildError";
+    this.underlying = underlying;
+    // Keeps instanceof working however the class is compiled.
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/** Ways a connection fails before it opens, or is cut while in use. */
+const UNREACHABLE_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "57P01", // the server is shutting down
+  "57P02", // the server crashed
+  "57P03", // the server is starting up, as a sleeping Neon database does
+]);
+
+const UNREACHABLE_MESSAGE =
+  "The trial's demo database could not be reached, so the trial was left as it was. Try again in a moment.";
+
+const BUSY_MESSAGE =
+  "The trial's demo database is busy, as a run is still using its tables, so the trial was left as it was. " +
+  "Try again once the run has ended.";
+
+/** What each PostgreSQL error code means for a rebuild. */
+const MESSAGE_FOR_CODE = new Map<string, string>([
+  [
+    "28P01",
+    "The trial's demo database refused the saved password, so the trial was left as it was. Whoever runs " +
+      "this server needs to set the trial user's password back to the one in TRIAL_DATABASE_URL.",
+  ],
+  ["28000", "The trial's demo database would not let the trial's user sign in, so the trial was left as it was."],
+  ["3D000", "The trial's demo database does not exist, so the trial was left as it was."],
+  [
+    "57014",
+    "Rebuilding the trial's demo database took too long and was stopped, so the trial was left as it was. " +
+      "Try again in a moment.",
+  ],
+  ["55P03", BUSY_MESSAGE],
+  ["40P01", BUSY_MESSAGE],
+  ["25006", "The trial's demo database is read only just now, so the trial was left as it was."],
+  [
+    "42501",
+    "The trial's database user is missing a permission it needs, such as the right to create schemas, " +
+      "so the trial was left as it was.",
+  ],
+  [
+    "53300",
+    "The trial's demo database has no free connections just now, so the trial was left as it was. " +
+      "Try again in a moment.",
+  ],
+]);
+
+const POOLER_MESSAGE =
+  "TRIAL_DATABASE_URL points at a connection pooler, which a reset cannot use, so the trial was left as it " +
+  "was. It needs to point at the database itself.";
+
+const PLAIN_USER_MESSAGE =
+  "TRIAL_DATABASE_URL names a superuser, or a user that may create roles, so the trial was left as it was. " +
+  "The trial needs a plain user of its own.";
+
+const OTHER_MESSAGE =
+  "The trial's demo database could not be rebuilt, so the trial was left as it was. The server's log says why.";
+
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" ? code : "";
+}
+
+/**
+ * What to tell the Trial Admin when the demo database could not be rebuilt:
+ * what went wrong, and that the trial was left as it was. Never the error's
+ * own words, which can name the database's host or user.
+ */
+export function trialRebuildMessage(error: unknown): string {
+  if (error instanceof TrialRebuildError) return error.message;
+  const code = errorCode(error);
+  const text = error instanceof Error ? error.message : "";
+  // pg's own words for a connection that timed out or was cut, which carry no code.
+  if (UNREACHABLE_CODES.has(code) || /timeout expired|Connection terminated/i.test(text)) {
+    return UNREACHABLE_MESSAGE;
+  }
+  // PgBouncer's answer to the settings a rebuild starts with.
+  if (/unsupported startup parameter/i.test(text)) return POOLER_MESSAGE;
+  return MESSAGE_FOR_CODE.get(code) ?? OTHER_MESSAGE;
+}
+
+type SessionSetting = { name: string; value: string; optional?: true };
+
+/**
+ * The settings every rebuild connection starts with. They are sent in the
+ * startup packet's `options`, as `-c name=value`, because some hosts (Neon's
+ * among them) drop pg's own statement_timeout and lock_timeout on the way,
+ * and `options` arrives. A setting sent this way outranks one saved on the
+ * user, so nothing a visitor saved there (ALTER ROLE ... SET) can make the
+ * rebuild read only, load a library that is not there, find another schema's
+ * functions first, or wait forever.
+ *
+ * The `optional` ones are newer than some servers (idle_session_timeout came
+ * in PostgreSQL 14, transaction_timeout in 17) and are left out when a server
+ * does not know them. Nobody can have saved one of those there either: the
+ * server checks the name. session_preload_libraries is not here, since only a
+ * superuser may set it, so only a superuser could have saved it.
+ *
+ * The values hold no spaces, which `options` would split on.
+ */
+const REBUILD_SESSION: readonly SessionSetting[] = [
+  { name: "default_transaction_read_only", value: "off" },
+  { name: "local_preload_libraries", value: "" },
+  { name: "search_path", value: "pg_catalog" },
+  { name: "default_tablespace", value: "" },
+  { name: "standard_conforming_strings", value: "on" },
+  { name: "client_encoding", value: "UTF8" },
+  { name: "exit_on_error", value: "off" },
+  { name: "statement_timeout", value: "20000" },
+  // Under statement_timeout, so a run holding a table is reported as busy.
+  { name: "lock_timeout", value: "15000" },
+  { name: "idle_in_transaction_session_timeout", value: "60000" },
+  { name: "idle_session_timeout", value: "0", optional: true },
+  { name: "transaction_timeout", value: "0", optional: true },
+  { name: "default_table_access_method", value: "heap", optional: true },
+];
+
+/**
+ * The trial user's own saved settings, which every rebuild puts back after
+ * clearing everything else saved on it. A connection the app opens as the
+ * trial user starts with these unless it sets its own, as a run does.
+ */
+export const TRIAL_ROLE_DEFAULTS: readonly { name: string; value: string }[] = [
+  { name: "statement_timeout", value: "20s" },
+  { name: "idle_in_transaction_session_timeout", value: "60s" },
+];
+
+/** The setting a server refused a connection over, when that is why it refused. */
+function unknownSetting(error: unknown): string | null {
+  if (errorCode(error) !== "42704" || !(error instanceof Error)) return null;
+  return /unrecognized configuration parameter "([^"]+)"/.exec(error.message)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * The settings one rebuild's connections start with: REBUILD_SESSION, less any
+ * optional one the server turned out not to know, so the rebuild's second
+ * connection does not ask again.
+ */
+type RebuildSession = { settings: readonly SessionSetting[] };
+
+/**
+ * A connection to the demo database that starts with the session's settings.
+ * A server that does not know an optional one refuses the connection, naming
+ * it, and is asked again without it.
+ */
+async function connectForRebuild(db: TrialDatabase, session: RebuildSession): Promise<Client> {
+  for (;;) {
+    const client = new Client({
+      ...buildPgConfig({
+        host: db.host,
+        port: db.port,
+        database: db.database,
+        user: db.user,
+        password: db.password,
+        sslMode: db.sslMode,
+      }),
+      // Shorter than a sign-in is willing to wait.
+      connectionTimeoutMillis: 8_000,
+      options: session.settings.map(({ name, value }) => `-c ${name}=${value}`).join(" "),
+    });
+    try {
+      await client.connect();
+      return client;
+    } catch (error) {
+      // pg closes a connection that failed to open by itself.
+      const unknown = unknownSetting(error);
+      const left = session.settings.filter((setting) => !(setting.optional && setting.name === unknown));
+      if (left.length === session.settings.length) throw error;
+      session.settings = left;
+    }
+  }
+}
+
+/**
+ * Run `work` on a fresh rebuild connection, after SET ROLE NONE (a saved
+ * `role` setting would start it as somebody else). Rolls back what `work`
+ * left open when it throws, and closes the connection either way.
+ */
+async function onFreshConnection(
+  db: TrialDatabase,
+  session: RebuildSession,
+  work: (client: Client) => Promise<void>
+): Promise<void> {
+  const client = await connectForRebuild(db, session);
   try {
-    const role = await client.query<{ rolsuper: boolean }>(
-      `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`
-    );
-    if (role.rows[0]?.rolsuper !== false) {
-      throw new Error("TRIAL_DATABASE_URL names a superuser. The trial needs a role of its own that is not one.");
-    }
-    await client.query("BEGIN");
-    const owned = await client.query<{ nspname: string }>(
-      `SELECT nspname FROM pg_namespace
-        WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
-          AND nspname <> 'public'`
-    );
-    for (const { nspname } of owned.rows) {
-      await client.query(`DROP SCHEMA "${nspname.replace(/"/g, '""')}" CASCADE`);
-    }
-    await client.query(trialSeedSql());
-    await client.query("COMMIT");
+    await client.query("SET ROLE NONE");
+    await work(client);
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
   } finally {
     await client.end().catch(() => {});
   }
+}
+
+/** The trial user's oid, for the catalog queries below. */
+const TRIAL_USER_OID = "(SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = session_user)";
+
+/**
+ * Put the demo database back as it started, in two steps, each on a
+ * connection of its own:
+ *
+ *   1. The trial user's saved settings. Every one is cleared (ALTER ROLE ...
+ *      RESET ALL, for every database too), and TRIAL_ROLE_DEFAULTS are saved
+ *      again. A setting a script saved there (ALTER ROLE CURRENT_USER SET
+ *      default_transaction_read_only = on, say) reaches every later
+ *      connection, the reset's own included. lib/trial-sql-guard.ts refuses
+ *      such scripts; this puts the user right even if one got through.
+ *   2. The schemas. Every schema the trial user owns there is dropped (the
+ *      five demo ones, and any a tester made through Deploy), with its large
+ *      objects and publications, and the five are built again, all in one
+ *      transaction. On a new connection, so it starts with the settings step 1
+ *      saved, not the ones it cleared.
+ *
+ * Schemas, not DROP OWNED: that would also take back the user's right to
+ * create schemas in the database, and the next reset could not build them.
+ *
+ * Refuses, with a TrialRebuildError, a user that is a superuser or may create
+ * roles: anyone on the internet runs SQL as this user. Anything else that goes
+ * wrong is thrown as it is (rebuildTrialDemo puts it into words).
+ */
+export async function rebuildTrialDatabase(db: TrialDatabase): Promise<void> {
+  const session: RebuildSession = { settings: REBUILD_SESSION };
+
+  await onFreshConnection(db, session, async (client) => {
+    const role = await client.query<{ rolsuper: boolean; rolcreaterole: boolean }>(
+      `SELECT r.rolsuper, r.rolcreaterole FROM pg_catalog.pg_roles r WHERE r.rolname = session_user`
+    );
+    const found = role.rows[0];
+    if (!found || found.rolsuper || found.rolcreaterole) throw new TrialRebuildError(PLAIN_USER_MESSAGE);
+
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE");
+    await client.query("ALTER ROLE SESSION_USER RESET ALL");
+    const perDatabase = await client.query<{ datname: string }>(
+      `SELECT d.datname
+         FROM pg_catalog.pg_db_role_setting s
+         JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
+        WHERE s.setrole = ${TRIAL_USER_OID}`
+    );
+    for (const { datname } of perDatabase.rows) {
+      await client.query(`ALTER ROLE SESSION_USER IN DATABASE ${quoteIdent(datname)} RESET ALL`);
+    }
+    for (const { name, value } of TRIAL_ROLE_DEFAULTS) {
+      await client.query(`ALTER ROLE SESSION_USER SET ${name} = '${value}'`);
+    }
+    await client.query("COMMIT");
+  });
+
+  await onFreshConnection(db, session, async (client) => {
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE");
+    const schemas = await client.query<{ nspname: string }>(
+      `SELECT n.nspname FROM pg_catalog.pg_namespace n
+        WHERE n.nspowner = ${TRIAL_USER_OID} AND n.nspname <> 'public'`
+    );
+    if (schemas.rows.length > 0) {
+      // One statement, so a run holding a table is waited for once, not once a schema.
+      await client.query(`DROP SCHEMA ${schemas.rows.map((row) => quoteIdent(row.nspname)).join(", ")} CASCADE`);
+    }
+    await client.query(
+      `SELECT pg_catalog.lo_unlink(m.oid) FROM pg_catalog.pg_largeobject_metadata m
+        WHERE m.lomowner = ${TRIAL_USER_OID}`
+    );
+    const publications = await client.query<{ pubname: string }>(
+      `SELECT p.pubname FROM pg_catalog.pg_publication p WHERE p.pubowner = ${TRIAL_USER_OID}`
+    );
+    if (publications.rows.length > 0) {
+      await client.query(`DROP PUBLICATION ${publications.rows.map((row) => quoteIdent(row.pubname)).join(", ")}`);
+    }
+    await client.query(trialSeedSql());
+    await client.query("COMMIT");
+  });
 }
 
 /** One of the three trial accounts, as a sign-in hands it to NextAuth. */
@@ -174,9 +427,11 @@ export type TrialOrganization = {
  * it again from nothing, carrying its GitHub and AI settings over
  * (KEPT_ON_RESET), unless it was made within TRIAL_RESET_COOLDOWN_MS.
  *
- * Throws when the database cannot be read, and when an organization called
- * "trial" has somebody in it who is not one of the three trial accounts:
- * that organization is somebody's real one, and a reset would delete it.
+ * Throws when the database cannot be read; when the demo database cannot be
+ * rebuilt (a TrialRebuildError), the first time as on a reset; and when an
+ * organization called "trial" has somebody in it who is not one of the three
+ * trial accounts: that organization is somebody's real one, and a reset would
+ * delete it. Whatever it throws, it changes nothing in the app's database.
  */
 export async function ensureTrialOrganization(
   { reset = false, now = new Date() }: { reset?: boolean; now?: Date } = {}
@@ -276,8 +531,10 @@ async function restoreKeptSettings(client: MetadataClient, orgId: number, kept: 
 }
 
 /**
- * Rebuild the demo database. When it cannot be rebuilt, that is logged and it
- * is left as it is: the trial still opens, with the old data there.
+ * Rebuild the demo database, or throw a TrialRebuildError that says why in
+ * words the Trial Admin can read. The caller's transaction then rolls back, so
+ * the organization stays as it was. What actually went wrong is logged here,
+ * since the message leaves it out.
  */
 async function rebuildTrialDemo(): Promise<void> {
   const db = trialDatabase();
@@ -285,10 +542,13 @@ async function rebuildTrialDemo(): Promise<void> {
   try {
     await rebuildTrialDatabase(db);
   } catch (error) {
+    const code = errorCode(error);
     console.error(
       "Could not rebuild the trial's demo database:",
-      error instanceof Error ? error.message : "unknown error"
+      error instanceof Error ? error.message : "unknown error",
+      code ? `(${code})` : ""
     );
+    throw error instanceof TrialRebuildError ? error : new TrialRebuildError(trialRebuildMessage(error), error);
   }
 }
 
@@ -360,7 +620,9 @@ export async function trialSignIn(
 /**
  * The Trial Admin's "Reset trial" button: the trial back to how it started,
  * demo schemas and all, keeping its GitHub and AI settings. Throws when it
- * cannot be done.
+ * cannot be done, leaving the trial as it was: a TrialRebuildError, whose
+ * message is meant for the Trial Admin, when the demo database could not be
+ * rebuilt.
  */
 export async function resetTrial(): Promise<void> {
   if (!trialEnabled()) throw new Error("The trial is switched off on this server.");

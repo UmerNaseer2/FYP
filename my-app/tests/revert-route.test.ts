@@ -817,8 +817,11 @@ describe("the settings each down script runs under", () => {
         "SET LOCAL check_function_bodies = off",
       ])
     );
-    // A rollback has no time limit on a statement, like a real deploy.
-    expect(texts.filter((text) => /statement_timeout/.test(text))).toEqual([]);
+    // A rollback gets the same generous limit on a statement as a real deploy
+    // (lib/run-limits.ts), sent again before every script.
+    const limits = texts.filter((text) => /statement_timeout/.test(text));
+    expect(limits.length).toBeGreaterThan(0);
+    expect(new Set(limits)).toEqual(new Set(["SET LOCAL statement_timeout = 1800000"]));
   });
 
   it("adds a schema that holds only extensions after the target schema", async () => {
@@ -930,5 +933,57 @@ describe("the audit trail", () => {
     expect(res.body.nothingRan).toBe(true);
     expect(recorded()[2].nothingRan).toBe(true);
     expect(mockClient.queries).toEqual([]);
+  });
+});
+
+describe("a rollback that is stopped", () => {
+  it("names the limit when a statement in a down script runs past it", async () => {
+    mockClient = createFakeClient(
+      ledger({
+        first: [
+          {
+            match: /DROP TABLE t3;/,
+            error: { code: "57014", message: "canceling statement due to statement timeout" },
+          },
+        ],
+      })
+    );
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("run_stopped");
+    expect(res.body.error).toBe(
+      'The rollback of v3.0.0 of "orders_fix" had a statement that ran longer than 30 minutes, the most ' +
+        "one statement may take in a rollback, so the rollback was stopped. Nothing was changed, and " +
+        "every version in this rollback is still applied."
+    );
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+    expect(mockClient.releasedWith).toBe(true);
+  });
+
+  it("names the idle limit when the database ends the session between two statements", async () => {
+    // pg reports two errors on the connection, the database's 25P03 and then
+    // "Connection terminated unexpectedly" (checked on PostgreSQL 18). Keeping
+    // the last of them lost the reason.
+    mockClient = createFakeClient(
+      ledger({
+        first: [
+          {
+            match: /DROP TABLE t3;/,
+            endsSession: { code: "25P03", message: "terminating connection due to idle-in-transaction timeout" },
+          },
+        ],
+      })
+    );
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("run_stopped");
+    expect(res.body.error).toBe(
+      "This rollback sat inside its transaction without sending anything for longer than 5 minutes, so " +
+        "the database ended its session. Nothing was changed, and every version in this rollback is " +
+        "still applied."
+    );
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(mockClient.releasedWith).toBe(true);
   });
 });

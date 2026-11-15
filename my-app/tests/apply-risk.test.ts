@@ -235,19 +235,66 @@ describe("a run by somebody whose role may run here", () => {
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockRelease).not.toHaveBeenCalled();
-    // Only a dry run gets a time limit. See the next test for the real run.
-    // The line is sent again before every script (lib/run-settings), so it is
-    // there more than once, always with the same limit.
+    // A dry run gets a shorter limit than a real run (lib/run-limits.ts). See
+    // the next test for the real run. The line is sent again before every
+    // script (lib/run-settings), so it is there more than once, always with
+    // the same limit.
     const limits = queriesMatching(mockClient, /statement_timeout/).map((query) => query.text);
     expect(limits.length).toBeGreaterThan(0);
     expect(new Set(limits)).toEqual(new Set(["SET LOCAL statement_timeout = 300000"]));
   });
 
-  it("sets no time limit on a real run", async () => {
+  it("gives a real run a generous time limit on each statement", async () => {
     const real = await apply(SAFE);
     expect(real.status).toBe(200);
-    expect(queriesMatching(mockClient, /statement_timeout/)).toEqual([]);
+    const limits = queriesMatching(mockClient, /statement_timeout/).map((query) => query.text);
+    expect(limits.length).toBeGreaterThan(0);
+    expect(new Set(limits)).toEqual(new Set(["SET LOCAL statement_timeout = 1800000"]));
     expect(mockRelease).not.toHaveBeenCalled();
+  });
+
+  it("names the limit when a statement runs past it", async () => {
+    mockClient = createFakeClient(
+      target([
+        {
+          match: /CREATE TABLE orders/,
+          error: { code: "57014", message: "canceling statement due to statement timeout" },
+        },
+      ])
+    );
+    const res = await apply(SAFE);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("run_stopped");
+    expect(res.body.error).toBe(
+      'Version 1.0.0 of "orders_fix" had a statement that ran longer than 30 minutes, the most one ' +
+        "statement may take in a deploy, so the deploy was stopped. Nothing was applied."
+    );
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+    expect(mockClient.releasedWith).toBe(true);
+  });
+
+  it("names the idle limit when the database ends the run's session between two statements", async () => {
+    // pg reports two errors on the connection, the database's 25P03 and then
+    // "Connection terminated unexpectedly" (checked on PostgreSQL 18). Keeping
+    // the last of them lost the reason, and the run looked like a broken script.
+    mockClient = createFakeClient(
+      target([
+        {
+          match: /CREATE TABLE orders/,
+          endsSession: { code: "25P03", message: "terminating connection due to idle-in-transaction timeout" },
+        },
+      ])
+    );
+    const res = await apply(SAFE);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("run_stopped");
+    expect(res.body.error).toBe(
+      "This deploy sat inside its transaction without sending anything for longer than 5 minutes, so " +
+        "the database ended its session. Nothing was applied."
+    );
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(mockClient.releasedWith).toBe(true);
   });
 });
 

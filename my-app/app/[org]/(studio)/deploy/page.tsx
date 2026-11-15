@@ -94,6 +94,7 @@ import { PageHeader } from "@/components/studio/PageHeader";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { shortUtcDate } from "@/lib/format-date";
 import { apiFetch } from "@/lib/api-fetch";
+import { newRunId } from "@/lib/run-id";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 
 // ---------------------------------------------------------------------------
@@ -319,6 +320,11 @@ type ApplyResponse = {
    * went unreachable partway through a deploy.
    */
   registry?: unknown;
+  /**
+   * "run_stopped" when the run was ended partway: by Stop, or by one of its
+   * time limits (lib/run-limits.ts). It rolled back like any failed run.
+   */
+  code?: string;
 };
 
 // The change_type this page sends with a migration, to the apply route and to
@@ -1062,6 +1068,13 @@ function DeployBody() {
   // buttons disable through state, but two quick presses can both run before
   // React re-renders; a ref is read and set at once.
   const writeInFlight = useRef(false);
+  // The deploy or rollback going now, so Stop can name it to the server. The
+  // page makes the run's id itself and sends it with the run, so Stop works
+  // while the run's own request is still waiting for its answer. null when
+  // nothing is running.
+  const activeRunRef = useRef<{ runId: string; connectionId: number } | null>(null);
+  // True from a Stop press until the run ends, so the button says so.
+  const [stopBusy, setStopBusy] = useState(false);
   // Why the last request failed, in the revert route's own words, and the
   // plan it was about. `sticky` keeps the message on screen when the ledger
   // is read again because of it and the plan changes: after an outcome
@@ -2261,6 +2274,44 @@ function DeployBody() {
     }
   }
 
+  // ── Stop ─────────────────────────────────────────────────────────────────
+  // Ask the server to stop the deploy or rollback that is running. The run
+  // rolls back, so nothing it did is kept, and its own answer then says it
+  // was stopped. Once the run is saving its changes it is too late, and the
+  // server says so.
+  async function stopActiveRun() {
+    const run = activeRunRef.current;
+    if (!run || stopBusy) return;
+    setStopBusy(true);
+    // The run may end while this request is out; then its own answer has
+    // already said how it went, and the button has gone.
+    const stillThisRun = () => activeRunRef.current?.runId === run.runId;
+    try {
+      const res = await apiFetch("/api/scripts/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(run),
+      });
+      let data: { status?: string; error?: string } | null = null;
+      try {
+        data = JSON.parse(await res.text()) as { status?: string; error?: string };
+      } catch {
+        data = null;
+      }
+      if (res.ok && data?.status === "stopping") {
+        if (stillThisRun()) showToast("Stopping the run…");
+        return;
+      }
+      if (!stillThisRun()) return;
+      setStopBusy(false);
+      showToast(data?.error ?? `Could not stop the run (HTTP ${res.status}).`, "bad");
+    } catch {
+      if (!stillThisRun()) return;
+      setStopBusy(false);
+      showToast("Could not reach the server to stop the run.", "bad");
+    }
+  }
+
   // ── Roll back to ─────────────────────────────────────────────────────────
   // Run, or rehearse, the rollback on screen. The server reads the ledger
   // again inside its own transaction and picks each rollback with the same
@@ -2293,6 +2344,10 @@ function DeployBody() {
     const fail = (message: string, sticky = false) =>
       setRollbackError({ key, message, sticky });
 
+    // The run's id, made here so Stop can name the run before it answers.
+    const runId = newRunId();
+    activeRunRef.current = { runId, connectionId: Number(connectionId) };
+    setStopBusy(false);
     setRollbackBusy(dryRun ? "dry" : "real");
     setRollbackError(null);
     setRollbackDone(null);
@@ -2313,6 +2368,7 @@ function DeployBody() {
               : []
           ),
           dryRun,
+          runId,
         }),
       });
       // Read as text first: an error page from a proxy is not JSON, and
@@ -2359,7 +2415,11 @@ function DeployBody() {
         const refusal = data.error;
         // The route's sentence says what happened and what to do next.
         fail(refusal, data.outcomeUnknown === true || staleLedger);
-        if (data.outcomeUnknown) {
+        if (data.code === "run_stopped") {
+          // Stopped by Stop or by a time limit: it rolled back, so the
+          // ledger this page read still holds.
+          showToast(dryRun ? "Dry run stopped, nothing changed" : "Rollback stopped, nothing changed", "bad");
+        } else if (data.outcomeUnknown) {
           showToast("Rollback outcome unknown. Check the ledger", "bad");
           await refreshAfterRollback();
         } else if (data.needsApproval) {
@@ -2412,6 +2472,8 @@ function DeployBody() {
         );
       }
     } finally {
+      activeRunRef.current = null;
+      setStopBusy(false);
       setRollbackBusy(null);
     }
   }
@@ -2722,9 +2784,10 @@ function DeployBody() {
   // ── The deploy run ───────────────────────────────────────────────────────
   // One call to /api/scripts/apply carrying the whole batch. The server runs
   // every migration inside ONE transaction, so the run is all-or-nothing: there
-  // is no state where some of these are applied and the rest are not, and there
-  // is nothing to "stop" partway, by the time a failure is visible here, the
-  // database has already put itself back.
+  // is no state where some of these are applied and the rest are not. By the
+  // time a failure is visible here, the database has already put itself back.
+  // Stop (stopActiveRun) ends a run partway in the same way: the transaction
+  // rolls back, so a stopped run applied nothing.
   //
   // `dryRun` rehearses instead: the SQL really executes against the target and
   // the transaction ends in ROLLBACK. Later scripts see the earlier ones' work,
@@ -2770,6 +2833,10 @@ function DeployBody() {
       Object.fromEntries(batch.map((s) => [scriptKey(s), { status: "running" } as RunCell]))
     );
     setRunComplete(false);
+    // The run's id, made here so Stop can name the run before it answers.
+    const runId = newRunId();
+    activeRunRef.current = { runId, connectionId: Number(connectionId) };
+    setStopBusy(false);
     setIsDeploying(true);
     setStage(2);
 
@@ -2785,6 +2852,9 @@ function DeployBody() {
     // so the rows, the toast, the header and the recovery bar tell one story.
     // Stays null on a success.
     let failureKind: ApplyFailure | null = null;
+    // Whether the server says the run was stopped partway (Stop, or a time
+    // limit). It rolled back like any failure; only the toast says "stopped".
+    let stopped = false;
 
     try {
       const res = await apiFetch("/api/scripts/apply", {
@@ -2794,6 +2864,7 @@ function DeployBody() {
           connectionId: Number(connectionId),
           schemaName: schema || "public",
           dryRun,
+          runId,
           scripts: batch.map((script) => ({
             script_name: script.script_name,
             sql_content: script.sql_content,
@@ -2850,6 +2921,7 @@ function DeployBody() {
         // whose SQL did run); not started on a 5xx marked nothingRan; rolled
         // back otherwise.
         failureKind = readApplyFailure(res.status, data);
+        stopped = data?.code === "run_stopped";
       }
     } catch {
       // A genuine transport failure: the request may or may not have reached the
@@ -2904,6 +2976,8 @@ function DeployBody() {
       timerRef.current = null;
     }
     setElapsedMs(performance.now() - runStartRef.current);
+    activeRunRef.current = null;
+    setStopBusy(false);
     setIsDeploying(false);
     setRunComplete(true);
 
@@ -2922,17 +2996,21 @@ function DeployBody() {
       showToast(
         outcomeUnknown
           ? "Deploy outcome not known. Check the target before retrying"
-          : failureKind === "refused"
+          : stopped
             ? dryRun
-              ? "Dry run refused, nothing was run"
-              : "Deploy refused, nothing was applied"
-            : failureKind === "not-started"
+              ? "Dry run stopped, nothing was written"
+              : "Deploy stopped, nothing was applied"
+            : failureKind === "refused"
               ? dryRun
-                ? "Dry run did not start, nothing was run"
-                : "Deploy did not start, nothing was applied"
-              : dryRun
-                ? "Dry run failed, nothing was written"
-                : "Deploy failed, nothing was applied",
+                ? "Dry run refused, nothing was run"
+                : "Deploy refused, nothing was applied"
+              : failureKind === "not-started"
+                ? dryRun
+                  ? "Dry run did not start, nothing was run"
+                  : "Deploy did not start, nothing was applied"
+                : dryRun
+                  ? "Dry run failed, nothing was written"
+                  : "Deploy failed, nothing was applied",
         "bad"
       );
     } else if (dryRun) {
@@ -3734,6 +3812,19 @@ function DeployBody() {
                               ? `Roll back to ${vLabel(rollbackTarget)}`
                               : "Roll back every version"}
                         </button>
+                        {/* Stop rolls the rollback back on the server, so
+                            every version in it stays applied. */}
+                        {rollbackBusy !== null && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={stopBusy}
+                            onClick={() => void stopActiveRun()}
+                          >
+                            <XIcon size={13} />
+                            {stopBusy ? "Stopping…" : "Stop"}
+                          </button>
+                        )}
                       </div>
                       <div className="text-[11px]" style={{ color: "var(--ink-3)" }}>
                         {rollbackHint}
@@ -4500,6 +4591,18 @@ function DeployBody() {
                   </span>
                 )}
                 <span className="dp-elapsed">elapsed {fmtSecs(elapsedMs)}</span>
+                {/* Stop rolls the run back on the server, as a failure would. */}
+                {isDeploying && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={stopBusy}
+                    onClick={() => void stopActiveRun()}
+                  >
+                    <XIcon size={13} />
+                    {stopBusy ? "Stopping…" : "Stop"}
+                  </button>
+                )}
               </div>
             </div>
             {/* The app is not told about each statement as it runs, so while a

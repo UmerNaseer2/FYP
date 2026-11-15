@@ -31,6 +31,16 @@ export type FakeStep = {
   error?: { code?: string; message: string; constraint?: string; table?: string };
   /** Emit this NOTICE before answering, the way RAISE NOTICE arrives. */
   notice?: string;
+  /**
+   * The database ends the session just before this query arrives (its idle
+   * limit, an administrator), and pg reports it the way it does for real
+   * (checked on PostgreSQL 18): the connection's "error" listeners hear the
+   * database's reason first, with this code, and then pg's own "Connection
+   * terminated unexpectedly". This query and every later one fail with pg's
+   * "not queryable" error, which has no code, and none of them is recorded,
+   * as none reached the database.
+   */
+  endsSession?: { code: string; message: string };
 };
 
 export type RecordedQuery = {
@@ -41,6 +51,11 @@ export type RecordedQuery = {
 };
 
 type NoticeListener = (notice: { message: string }) => void;
+/** What pg hands an "error" listener: an Error, with a SQLSTATE code when the database sent it. */
+type ErrorListener = (error: Error & { code?: string }) => void;
+
+/** What pg answers a query sent on a connection that has already failed. */
+const NOT_QUERYABLE = "Client has encountered a connection error and is not queryable";
 
 export type FakeResult = { rows: Record<string, unknown>[]; rowCount: number };
 
@@ -56,8 +71,8 @@ export type QueryArg =
 
 export type FakeClient = {
   query: (arg: QueryArg, values?: unknown[]) => Promise<FakeResult>;
-  on: (event: string, listener: NoticeListener) => FakeClient;
-  off: (event: string, listener: NoticeListener) => FakeClient;
+  on: (event: string, listener: NoticeListener | ErrorListener) => FakeClient;
+  off: (event: string, listener: NoticeListener | ErrorListener) => FakeClient;
   listenerCount: (event: string) => number;
   release: (destroy?: boolean | Error) => void;
   /** Every query the route sent, in order. */
@@ -76,6 +91,9 @@ export type FakeClient = {
 
 export function createFakeClient(steps: FakeStep[]): FakeClient {
   const listeners = new Set<NoticeListener>();
+  const errorListeners = new Set<ErrorListener>();
+  // Set once a step has ended the session (endsSession).
+  let sessionEnded = false;
 
   const client: FakeClient = {
     queries: [],
@@ -90,11 +108,25 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
       const text = typeof arg === "string" ? arg : arg.text;
       const boundValues = typeof arg === "string" ? values : arg.values ?? values;
       const queryMode = typeof arg === "string" ? undefined : arg.queryMode;
-      client.queries.push({ text, values: boundValues, queryMode });
+      if (sessionEnded) throw new Error(NOT_QUERYABLE);
       const step = steps.find(
         (candidate) =>
           candidate.match.test(text) && (!candidate.when || candidate.when(boundValues ?? []))
       );
+      if (step?.endsSession) {
+        sessionEnded = true;
+        // A real pg client with no "error" listener throws this out of the
+        // socket's event handler, which takes the whole server down.
+        if (errorListeners.size === 0) {
+          throw new Error("fake-pg: the session ended and nothing was listening for the connection's errors");
+        }
+        const reason = Object.assign(new Error(step.endsSession.message), { code: step.endsSession.code });
+        for (const listener of [...errorListeners]) listener(reason);
+        const closed = new Error("Connection terminated unexpectedly");
+        for (const listener of [...errorListeners]) listener(closed);
+        throw new Error(NOT_QUERYABLE);
+      }
+      client.queries.push({ text, values: boundValues, queryMode });
       if (!step) return { rows: [], rowCount: 0 };
 
       if (step.notice) {
@@ -115,13 +147,15 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
       return { rows, rowCount: step.rowCount ?? rows.length };
     },
 
-    on(event: string, listener: NoticeListener): FakeClient {
-      if (event === "notice") listeners.add(listener);
+    on(event: string, listener: NoticeListener | ErrorListener): FakeClient {
+      if (event === "notice") listeners.add(listener as NoticeListener);
+      if (event === "error") errorListeners.add(listener as ErrorListener);
       return client;
     },
 
-    off(event: string, listener: NoticeListener): FakeClient {
-      if (event === "notice") listeners.delete(listener);
+    off(event: string, listener: NoticeListener | ErrorListener): FakeClient {
+      if (event === "notice") listeners.delete(listener as NoticeListener);
+      if (event === "error") errorListeners.delete(listener as ErrorListener);
       return client;
     },
 

@@ -19,8 +19,8 @@ export type RunSettings = {
   searchPath: string;
   /** How long a statement waits for a lock before giving up. */
   lockTimeoutMs: number;
-  /** The longest one statement may take, or null for no limit (a real run). */
-  statementTimeoutMs: number | null;
+  /** The longest one statement may take: see lib/run-limits.ts. */
+  statementTimeoutMs: number;
 };
 
 // Safely quote a PostgreSQL identifier (the same rule the routes use).
@@ -36,9 +36,7 @@ export async function applyRunSettings(client: PoolClient, settings: RunSettings
   // A script's own SET ROLE would otherwise carry into the next script.
   await client.query("RESET ROLE");
   await client.query(`SET LOCAL lock_timeout = ${settings.lockTimeoutMs}`);
-  if (settings.statementTimeoutMs !== null) {
-    await client.query(`SET LOCAL statement_timeout = ${settings.statementTimeoutMs}`);
-  }
+  await client.query(`SET LOCAL statement_timeout = ${settings.statementTimeoutMs}`);
   await client.query(`SET LOCAL search_path TO ${settings.searchPath}`);
   // What pg_dump does before it restores anything. With the check on,
   // CREATE FUNCTION reads the body straight away, so a function written

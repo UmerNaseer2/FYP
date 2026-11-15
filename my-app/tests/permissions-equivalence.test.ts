@@ -137,6 +137,9 @@ const ADDED: Record<string, Gate> = {
   "POST /api/deploy/approvals": { kind: "permission", keys: ["deploy:read"] },
   "POST /api/scripts/apply": { kind: "permission", keys: ["deploy:read"] },
   "POST /api/scripts/revert": { kind: "permission", keys: ["deploy:read"] },
+  // The Stop button for a run that is going. Who may stop which run is
+  // decided inside (tests/scripts-cancel-route.test.ts).
+  "POST /api/scripts/cancel": { kind: "permission", keys: ["deploy:read"] },
   // The Trial Admin's "Reset trial" button; the role and the trial are checked inside.
   "POST /api/trial/reset": { kind: "permission", keys: ["organization:read"] },
 };

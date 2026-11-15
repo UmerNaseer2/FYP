@@ -694,6 +694,103 @@ describe("the run itself", () => {
     expect(screen.queryByText(/applied · committed with the run/)).not.toBeInTheDocument();
     expect(screen.getByText("Deploy failed, nothing was applied")).toBeInTheDocument();
   });
+
+  it("stops the run that is going by its own id, and says nothing was applied", async () => {
+    // The page makes the run's id and sends it with the run, so Stop can
+    // name this run, and no other, while the run is still going.
+    const stoppedMessage = "This deploy was stopped, as asked. Nothing was applied.";
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        status: 503,
+        body: {
+          success: false,
+          dryRun: false,
+          code: "run_stopped",
+          error: stoppedMessage,
+          results: [
+            {
+              script_name: "invoices",
+              version: "1.0.1",
+              status: "failed",
+              error: "Stopped before it finished.",
+            },
+          ],
+        },
+      },
+      { match: "/api/scripts/cancel", method: "POST", body: { status: "stopping" } },
+      ...baseRoutes(),
+    ]);
+    const release = holdNext("/api/scripts/apply", "POST");
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    fireEvent.click(deploy);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }, { timeout: 3000 }));
+    expect(await screen.findByRole("button", { name: "Stopping…" })).toBeDisabled();
+    await screen.findByText("Stopping the run…");
+
+    const { runId } = lastApply();
+    expect(runId).toEqual(expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/));
+    const stops = fetchCalls.filter((call) => call.url.includes("/api/scripts/cancel"));
+    expect(stops).toHaveLength(1);
+    expect(stops[0].method).toBe("POST");
+    expect(JSON.parse(stops[0].body ?? "null")).toEqual({ runId, connectionId: 1 });
+
+    // The run's own answer then says how it ended, and the button goes.
+    release();
+    await screen.findByText(stoppedMessage, undefined, { timeout: 3000 });
+    await screen.findByText("Deploy stopped, nothing was applied");
+    expect(screen.queryByRole("button", { name: /^Stop/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/applied · committed with the run/)).not.toBeInTheDocument();
+    await flushAsync();
+  });
+
+  it("says why when it is too late to stop, and lets the run finish", async () => {
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: {
+          success: true,
+          results: [
+            { script_name: "invoices", version: "1.0.1", status: "applied", statements: 1 },
+            { script_name: "invoices", version: "1.0.2", status: "applied", statements: 1 },
+          ],
+        },
+      },
+      {
+        match: "/api/scripts/cancel",
+        method: "POST",
+        status: 409,
+        body: {
+          ok: false,
+          code: "too_late",
+          error: "Too late to stop: the run is already saving its changes.",
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    const release = holdNext("/api/scripts/apply", "POST");
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    fireEvent.click(deploy);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }, { timeout: 3000 }));
+    await screen.findByText("Too late to stop: the run is already saving its changes.");
+    // The run is still going, so Stop is there to press again.
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeEnabled();
+
+    release();
+    await screen.findByText("Deploy complete · up to v1.0.2", undefined, { timeout: 3000 });
+    expect(screen.queryByRole("button", { name: /^Stop/ })).not.toBeInTheDocument();
+    await flushAsync();
+  });
 });
 
 describe("the number beside Requests on the rail", () => {
