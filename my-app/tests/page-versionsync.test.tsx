@@ -144,26 +144,36 @@ const DECIDE: FetchRoute = {
   body: { approval: { id: 7, status: "rejected" } },
 };
 
-/** Pick one of the four dropdowns by its label. */
-function pick(box: string, option: string | RegExp) {
-  fireEvent.click(screen.getByRole("combobox", { name: box }));
-  fireEvent.click(screen.getByRole("option", { name: option }));
+/**
+ * Choose a connection and then a schema in one of the two pickers.
+ *
+ * An empty picker is one button, "Choose a connection and schema". Once it
+ * holds a connection it has a Change button named after its side.
+ */
+async function pick(side: "source" | "target", connection: RegExp, schema: string) {
+  const change = screen.queryByRole("button", { name: `Change ${side} connection and schema` });
+  const empty = screen.queryAllByRole("button", { name: "Choose a connection and schema" });
+  // Source comes first on the page, so an empty Target is the last empty one.
+  fireEvent.click(change ?? (side === "source" ? empty[0] : empty[empty.length - 1]));
+
+  const panel = screen.getByRole("dialog");
+  const connections = within(panel).getByRole("group", { name: "Connections" });
+  fireEvent.click(within(connections).getByRole("button", { name: connection }));
+  // The schemas are read from the connection, so the row arrives a moment later.
+  const row = await waitFor(() =>
+    within(within(panel).getByRole("group", { name: "Schemas" })).getByRole("button", { name: schema })
+  );
+  // Choosing a schema shuts the panel.
+  fireEvent.click(row);
 }
 
 /** Pick Staging, then Live, which puts the one version Live is missing on screen. */
 async function pickStagingToLive() {
   render(<VersionSyncPage />);
-  await waitFor(() =>
-    expect(screen.getByRole("combobox", { name: "Source connection" })).toBeEnabled()
-  );
+  await screen.findAllByRole("button", { name: "Choose a connection and schema" });
 
-  pick("Source connection", /Staging/);
-  await waitFor(() => expect(screen.getByRole("combobox", { name: "Source schema" })).toBeEnabled());
-  pick("Source schema", "public");
-
-  pick("Target connection", /Live/);
-  await waitFor(() => expect(screen.getByRole("combobox", { name: "Target schema" })).toBeEnabled());
-  pick("Target schema", "public");
+  await pick("source", /Staging/, "public");
+  await pick("target", /Live/, "public");
 }
 
 /** Pick Staging → Live, then open the replay check for the one missing version. */

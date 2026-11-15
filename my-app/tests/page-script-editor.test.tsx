@@ -207,8 +207,13 @@ describe("when the editor cannot do its job", () => {
     ]);
     render(<ScriptEditorPage />);
 
-    expect(await screen.findByText(/Saving also needs the GitHub registry/)).toHaveTextContent(
-      /an admin adds it on the Admin screen, under GitHub\.$/
+    expect(
+      await screen.findByText(/GitHub is not set up for this organization yet\./)
+    ).toBeInTheDocument();
+    // The test user is an Admin, so the way to fix it is one press away.
+    expect(screen.getByRole("link", { name: "Set up GitHub" })).toHaveAttribute(
+      "href",
+      "/test-org/admin?tab=github"
     );
     expect(screen.getByText("Add a connection first")).toBeInTheDocument();
   });
@@ -230,7 +235,13 @@ describe("when the editor cannot do its job", () => {
     await pickTarget("add_invoices");
     writeSql("SQL", ADDS_A_COLUMN);
 
-    expect(await screen.findByText(/on the Admin screen, under GitHub/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/GitHub is not set up for this organization yet\./)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Set up GitHub" })).toHaveAttribute(
+      "href",
+      "/test-org/admin?tab=github"
+    );
     expect(
       screen.getByText(/The next version can't be worked out until the GitHub registry is configured/)
     ).toBeInTheDocument();
@@ -239,6 +250,40 @@ describe("when the editor cannot do its job", () => {
     expect(
       screen.getByText("The GitHub registry is not configured, so nothing can be saved.")
     ).toBeInTheDocument();
+  });
+
+  it("tells an Editor to ask an Admin, and a Viewer that there is nothing to ask for", async () => {
+    const routes = () => [
+      {
+        match: "/api/github/pull",
+        status: 500,
+        body: { error: "GitHub is not configured.", code: "github_unconfigured" },
+      },
+      ...baseRoutes(),
+    ];
+    setUser("editor");
+    setRoutes(routes());
+    const first = render(<ScriptEditorPage />);
+    await pickTarget("add_invoices");
+    expect(
+      await screen.findByText(/Deploys need GitHub, which an Admin sets up\./)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Ask an Admin" })).toHaveAttribute(
+      "href",
+      "/test-org/requests"
+    );
+    expect(screen.queryByRole("link", { name: "Set up GitHub" })).not.toBeInTheDocument();
+    first.unmount();
+
+    setUser("viewer");
+    setRoutes(routes());
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices");
+    expect(
+      await screen.findByText(/Saving a script needs GitHub, which an Admin sets up\./)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Ask an Admin" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Set up GitHub" })).not.toBeInTheDocument();
   });
 
   it("inside the desktop app, sends the person to Settings instead of naming server keys", async () => {
@@ -260,7 +305,7 @@ describe("when the editor cannot do its job", () => {
       writeSql("SQL", ADDS_A_COLUMN);
 
       expect(await screen.findByText(/The GitHub registry is not set up yet/)).toBeInTheDocument();
-      expect(screen.queryByText(/on the Admin screen, under GitHub/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Set up GitHub" })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
       expect(bridge.openSettings).toHaveBeenCalledTimes(1);
     } finally {

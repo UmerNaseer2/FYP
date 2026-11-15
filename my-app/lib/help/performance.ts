@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Performance. Shown in the Help panel; the blurb is the page header's one line. */
@@ -9,8 +10,8 @@ export const performanceHelp: HelpTopic = {
     "What is this schema likely to be slow at? Why is this one query slow? What has this schema been doing over time? " +
     "It has six tabs, and they all work on the connection and schema you pick at the top.",
   steps: [
-    "Pick a connection and a schema at the top. The choice stays when you move between tabs.",
-    "Open Suggestions to see what the schema is likely to be slow at. Each finding says what to do about it.",
+    { text: "Pick a connection and a schema at the top. The choice stays when you move between tabs.", target: anchor("performance-target") },
+    { text: "Open Suggestions to see what the schema is likely to be slow at. Each finding says what to do about it.", target: anchor("performance-tabs") },
     "Tick the fixes you want under the list, then copy them, download them as a .sql file, or save them as a migration.",
     "Open Analyse a query, paste one query that reads data, and press Analyse to see the server's plan and a score out of 100.",
     "Tick Run it and measure only when you want real times. The query then really runs on that server.",

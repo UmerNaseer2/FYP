@@ -5,19 +5,20 @@ import {
   CompareIcon,
   DeployIcon,
   DriftIcon,
+  InfoIcon,
   LockIcon,
   MonitorIcon,
   SchemaMapIcon,
   UsersIcon,
 } from "@/components/ui/icons";
 import { BrandMark } from "@/components/ui/BrandMark";
+import { StatusChip } from "@/components/ui/StatusChip";
 import { LandingThemeToggle } from "./LandingThemeToggle";
 import { LandingReveal, SectionButton } from "./LandingMotion";
-import { TRIAL_PEOPLE, TRIAL_ROLES } from "@/lib/trial-rules";
 import "@/app/styles/atelier-landing.css";
 
 /**
- * The public front page at "/": what Schema Studio is, what it does, and two
+ * The public front page at "/": what Schema Studio is, what it does, and the
  * ways in.
  *
  * A Server Component with no state of its own. app/page.tsx decides where the
@@ -30,6 +31,11 @@ import "@/app/styles/atelier-landing.css";
  * Exactly two links on purpose, "Create account" and "Log in". The name in
  * the header is not a link: on the front page it would only lead back here,
  * and the header's section buttons only scroll.
+ *
+ * On a server that offers the shared trial, "Try it now" sits first in the
+ * same row and is the one orange button. It is a form button, not a link: it
+ * posts to app/api/trial/route.ts, which signs the visitor in as the Trial
+ * Admin. The line under the row offers the Editor and Viewer accounts too.
  *
  * The Atelier design. Styles are app/styles/atelier-landing.css (every class
  * starts with lp-).
@@ -63,8 +69,8 @@ const FEATURES: Feature[] = [
     icon: <CompareIcon size={18} />,
     title: "Compare your databases",
     body:
-      "Line up dev, staging and prod side by side: tables, columns, indexes, constraints, views " +
-      "and more. Get the SQL that brings one in line with another.",
+      "Line up two schemas side by side: tables, columns, indexes, constraints, views " +
+      "and more. Get the SQL that brings one in line with the other.",
   },
   {
     icon: <DriftIcon size={18} />,
@@ -103,38 +109,24 @@ const FEATURES: Feature[] = [
 ];
 
 /**
- * The hero's example: one schema in three databases. Made up, and the card
- * says so. The status words and pill colors are the dashboard's own, and the
- * versions are spelled the way Deploy prints them.
+ * The steps under "How it works", in the order the app's own menu and tour
+ * use. Each says only what FEATURES says.
  */
-const EXAMPLE_DATABASES = [
-  { name: "Dev", version: "v2.4.0", tone: "pill-sync", status: "In sync" },
-  { name: "Staging", version: "v2.4.0", tone: "pill-drift", status: "Drifted" },
-  { name: "Prod", version: "v2.3.0", tone: "pill-pending", status: "Outdated" },
-];
-
-/** The three steps under "How it works". Each says only what FEATURES says. */
 const STEPS = [
-  {
-    title: "Compare",
-    body: "Pick two databases. Every table, column, index and constraint that differs is listed side by side.",
-  },
-  {
-    title: "Script",
-    body: "Get the SQL that brings one in line with the other, and check it for risks before anything runs.",
-  },
+  { title: "Connect", body: "Add a database connection." },
+  { title: "Compare", body: "See every difference between two schemas, side by side." },
+  { title: "Script", body: "Turn the differences into a migration script, checked for risks." },
   {
     title: "Ship",
-    body:
-      "Rehearse it with a dry run, then deploy. Your role decides whether you may run it, " +
-      "and you can roll back to an earlier version.",
+    body: "Rehearse with a dry run, then deploy. A run your role does not allow waits for an Admin.",
   },
+  { title: "Watch", body: "Get told when someone changes a schema outside a deploy." },
 ];
 
 /** How wide each feature card is on the six-column grid, in FEATURES order. */
 const FEATURE_SPANS = ["s4 dark", "s2", "s2", "s4", "s3", "s3"];
 
-const TITLE = "Keep dev, staging and prod from drifting apart.";
+const TITLE = "Catch the schema changes nobody shipped.";
 
 /** A delay in milliseconds for the CSS entrance animations (--d). */
 function delay(ms: number): CSSProperties {
@@ -180,88 +172,91 @@ export function LandingPage({
                   </Fragment>
                 ))}
               </h1>
-              <p className="lp-sub lp-in" style={delay(560)}>
-                Schema Studio compares your database schemas, tells you when one changes behind
-                your back, and deploys the fix. Roles decide who may run it, and anyone else asks
-                an Admin to approve that exact run.
+              <p className="lp-sub lp-in" style={delay(460)}>
+                Schema Studio compares your schemas, writes the script that brings them in line,
+                and watches for changes made outside a deploy.
               </p>
-              <div className="lp-cta lp-in" style={delay(640)}>
-                <Link href={createAccountHref} className="btn btn-primary btn-lg">
+              <div className="lp-cta lp-in" style={delay(540)}>
+                {trialAction && (
+                  <form action={trialAction} method="post" className="lp-try">
+                    <button
+                      type="submit"
+                      name="role"
+                      value="admin"
+                      className="btn btn-primary btn-lg lp-try__btn"
+                      aria-label="Try it now, no account needed"
+                    >
+                      <span>Try it now</span>
+                      <small>No account needed</small>
+                    </button>
+                  </form>
+                )}
+                {/* With the trial on offer it is the one orange button, and
+                    these two step back. */}
+                <Link
+                  href={createAccountHref}
+                  className={trialAction ? "btn btn-secondary btn-lg" : "btn btn-primary btn-lg"}
+                >
                   Create account
                 </Link>
-                <Link href={logInHref} className="btn btn-secondary btn-lg">
+                <Link href={logInHref} className={trialAction ? "lp-login" : "btn btn-secondary btn-lg"}>
                   Log in
                 </Link>
               </div>
-              <p className="lp-fine lp-in" style={delay(700)}>
+              {trialAction && (
+                <>
+                  <p className="lp-note lp-in" style={delay(600)}>
+                    <InfoIcon size={16} />
+                    <span>
+                      Try it now opens a shared trial with example data. Everyone in it sees the
+                      same organization.
+                    </span>
+                  </p>
+                  <form action={trialAction} method="post" className="lp-roles lp-in" style={delay(640)}>
+                    You start as its Admin. Or look around as{" "}
+                    <button type="submit" name="role" value="editor" aria-label="Try as an Editor">
+                      an Editor
+                    </button>{" "}
+                    or{" "}
+                    <button type="submit" name="role" value="viewer" aria-label="Try as a Viewer">
+                      a Viewer
+                    </button>
+                    .
+                  </form>
+                </>
+              )}
+              <p className="lp-fine lp-in" style={delay(680)}>
                 {demo
                   ? "This is a demo server with sign-in switched off, so both buttons open the studio."
                   : "New here? Your account is created the first time you sign in."}
               </p>
-              {trialAction && (
-                <form action={trialAction} method="post" className="lp-trial lp-in" style={delay(740)}>
-                  <p className="lp-trial__lead">
-                    Or try it first, no account needed. Everyone shares one trial organization, and its
-                    Admin can reset it to a fresh start.
-                  </p>
-                  <div className="lp-trial__row">
-                    {TRIAL_ROLES.map((role) => (
-                      <button key={role} type="submit" name="role" value={role} className="btn btn-secondary">
-                        Try as {TRIAL_PEOPLE[role].name.replace("Trial ", "")}
-                      </button>
-                    ))}
-                  </div>
-                </form>
-              )}
             </div>
 
-            <figure className="card lp-stage" aria-label="Example: one schema in three databases">
+            {/* One kind of change and the approval rule, and nothing else. */}
+            <figure className="card lp-stage" aria-label="Example: a schema that has drifted">
               <div className="lp-dh">
-                <b>finance</b>
                 <span className="pill pill-neutral">Example</span>
+                <b className="mono">finance</b>
+                <StatusChip status="drifted" />
               </div>
-              <ul className="lp-envs">
-                {EXAMPLE_DATABASES.map((db, index) => (
-                  <li key={db.name} style={delay(420 + index * 90)}>
-                    <b>{db.name}</b>
-                    <code>{db.version}</code>
-                    <span className={`pill ${db.tone}`}>
-                      <span className="dot" />
-                      {db.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <ul className="lp-df">
-                <li style={delay(720)}>
-                  <i className="g chg" aria-hidden="true">~</i>
-                  <div>
-                    <b>invoices.amount numeric(10,2) → numeric(12,2)</b>
-                    <span>Staging, changed by hand</span>
-                  </div>
-                </li>
-                <li style={delay(800)}>
-                  <i className="g add" aria-hidden="true">+</i>
-                  <div>
-                    <b>invoice_lines.id uuid PRIMARY KEY</b>
-                    <span>Prod, waiting to deploy</span>
-                  </div>
-                </li>
-              </ul>
+              <div className="lp-change">
+                <i className="g chg" aria-hidden="true">~</i>
+                <div>
+                  <b>invoices.amount numeric(10,2) → numeric(12,2)</b>
+                  <span>Changed by hand, outside a deploy</span>
+                </div>
+              </div>
               <figcaption className="lp-cap">
-                <span className="lp-lock">
-                  <LockIcon size={14} />
-                  A run your role does not allow waits for an Admin.
-                </span>
-                <span className="pill pill-pending">1 approval needed</span>
+                <LockIcon size={16} />
+                <span>A run your role does not allow waits for an Admin.</span>
               </figcaption>
             </figure>
           </section>
 
           <section className="lp-sec lp-rv" id="lp-how" tabIndex={-1} aria-labelledby="landing-how">
             <small id="landing-how">How it works</small>
-            <h2>Three steps, and none of them is a surprise.</h2>
-            <ol className="lp-3">
+            <h2>Five steps, and none of them is a surprise.</h2>
+            <ol className="lp-steps">
               {STEPS.map((step, index) => (
                 <li key={step.title} className="card">
                   <i className="n" aria-hidden="true">{index + 1}</i>

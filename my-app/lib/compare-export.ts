@@ -264,7 +264,7 @@ export function buildDiffDocument(
       severity: "breaking",
       detail: `dropped with ${table.columns.length} column${
         table.columns.length === 1 ? "" : "s"
-      } — CASCADE also removes anything depending on it`,
+      }, and CASCADE also removes anything depending on it`,
       manual: false,
     });
   }
@@ -307,7 +307,7 @@ export function buildDiffDocument(
         object: column.name,
         change: "dropped",
         severity: droppedColumnSeverity(),
-        detail: `${describeColumn(column)} — removes the column and its data`,
+        detail: `${describeColumn(column)}, removes the column and its data`,
         manual: false,
       });
     }
@@ -350,7 +350,7 @@ export function buildDiffDocument(
         object: candidate.leftName,
         change: "rename-suggested",
         severity: "info",
-        detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}) — not applied`,
+        detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}), not applied`,
         manual: false,
       });
     }
@@ -367,7 +367,7 @@ export function buildDiffDocument(
               ? "dropped"
               : "changed",
         severity: constraintDiffSeverity(diff),
-        detail: `${diff.kind} — ${diff.summary}`,
+        detail: `${diff.kind}: ${diff.summary}`,
         manual: false,
       });
     }
@@ -410,7 +410,7 @@ export function buildDiffDocument(
       object: candidate.leftName,
       change: "rename-suggested",
       severity: "info",
-      detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}) — not applied`,
+      detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}), not applied`,
       manual: false,
     });
   }

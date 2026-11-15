@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Connections. Shown in the Help panel; the blurb is the page header's one line. */
@@ -7,13 +8,13 @@ export const connectionsHelp: HelpTopic = {
   purpose:
     "A connection is one saved database on a PostgreSQL server this app can reach, local or hosted. Compare, Drift and Deploy all read through connections, so this is the first thing to set up. Passwords are encrypted when saved and are never shown again.",
   steps: [
-    "Press Add connection. On an empty list the button reads Add your first connection.",
+    { text: "Press Add connection. On an empty list the button reads Add your first connection.", target: anchor("add-connection", ".cn-page .page-head__actions") },
     "Under Quick start, pick Local Postgres or Hosted to fill in a name and the SSL mode each one needs. Hosted leaves the connection string to you.",
-    "Type a Friendly name, such as production or dev local. It is the name shown in lists and breadcrumbs.",
+    "Type a Friendly name, such as students live or students local. It is the name shown in lists and breadcrumbs.",
     "Give the details either way round: paste a postgres:// connection string, or fill in Host, Port, Database, User and Password.",
     "Pick the SSL mode, then choose who may run migrations here.",
     "Press Test now to check that the database answers, then press Save connection.",
-    "Later, use Test, Edit or Delete on a connection's row. Delete removes it from the app, not the real database.",
+    { text: "Later, use Test, Edit or Delete on a connection's row. Delete removes it from the app, not the real database.", target: anchor("connection-list", ".cn-group-block") },
   ],
   terms: [
     {

@@ -155,7 +155,7 @@ describe("asking for something", () => {
   it("names the page and says in one line what it is for", async () => {
     await draw(payload());
     // How an answer reaches you (the app sends no email) is in the page's help.
-    expect(await screen.findByRole("heading", { level: 1, name: "What needs you. What you asked for." })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Requests" })).toBeInTheDocument();
     expect(screen.getByText(HELP_TOPICS["/requests"].blurb)).toBeInTheDocument();
     expect(HELP_TOPICS["/requests"].purpose).toMatch(/does not send email/);
   });
@@ -309,7 +309,10 @@ describe("asking for something", () => {
   it("does not offer an Admin the form, because an Admin already holds everything", async () => {
     setUser("admin");
     await draw(payload({ canAnswer: true }));
-    await screen.findByRole("heading", { level: 1, name: "What needs you. What you asked for." });
+    await screen.findByRole("heading", { level: 1, name: "Requests" });
+    // One list is not a choice of tabs: it gets a plain heading and no tab bar.
+    expect(await screen.findByRole("heading", { level: 2, name: "Needs you" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "What do you need?" })).toBeNull();
   });
 });

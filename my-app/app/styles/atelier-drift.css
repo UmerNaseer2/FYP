@@ -88,50 +88,39 @@
 .dr-watch__count { font-size: 12px; color: var(--text-3); }
 .dr-watch__hint { font-size: 12px; color: var(--text-3); padding: 8px 10px 6px; }
 .dr-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+/* A row wears its state twice, the same way as everywhere else: a left edge
+   in the state's colour (.st-edge) and a chip with the glyph and the word. */
 .dr-row {
   display: flex;
   align-items: flex-start;
-  gap: 11px;
+  gap: 10px;
   width: 100%;
   min-height: 44px;
-  padding: 11px 10px;
+  padding: 11px 10px 11px 14px;
   border-radius: var(--r-md);
-  border: 1px solid transparent;
   text-align: left;
-  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+  transition: background var(--dur-1) var(--ease-out);
 }
 a.dr-row:hover { background: var(--surface-2); }
+/* The schema on screen: a tint plus a neutral ring, drawn beside the state edge. */
 .dr-row[aria-current="true"] {
   background: var(--surface-2);
-  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--st-ink), inset 0 0 0 1px var(--border-strong);
 }
 .dr-row--ghost { align-items: center; }
 .dr-row__text { display: grid; gap: 3px; min-width: 0; flex: 1; }
-.dr-row__name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.dr-row__schema {
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 14.5px;
-  overflow-wrap: anywhere;
+/* Long names end with an ellipsis. The full name is in the title tooltip. */
+.dr-row__schema,
+.dr-row__source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.dr-row__source { font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
+.dr-row__schema { font-family: var(--display); font-weight: 700; font-size: 14.5px; }
+.dr-row__source { font-size: 12px; color: var(--text-3); }
 .dr-row__status { font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
-.dr-row__status--drift { color: var(--drift); font-weight: 600; }
-.dr-row__status--down { color: var(--break); font-weight: 600; }
 .dr-row__when { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
-
-.dr-dot {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  margin-top: 5px;
-  border-radius: 999px;
-  background: var(--text-3);
-}
-.dr-dot--sync { background: var(--sync); }
-.dr-dot--drift { background: var(--drift); box-shadow: 0 0 0 4px var(--drift-soft); }
-.dr-dot--down { background: var(--break); box-shadow: 0 0 0 4px var(--break-soft); }
-.dr-dot--none { background: transparent; border: 2px solid var(--text-3); }
 
 /* ── The case ─────────────────────────────────────────────────────────── */
 .dr-case {
@@ -143,8 +132,10 @@ a.dr-row:hover { background: var(--surface-2); }
   animation: rise var(--dur-3) var(--ease-out) both;
 }
 .dr-case > * { min-width: 0; }
-.dr-case--drift { border-color: color-mix(in oklab, var(--drift) 45%, var(--border)); }
-.dr-case--down { border-color: color-mix(in oklab, var(--break) 45%, var(--border)); }
+/* The card's border leans to the state's colour when there is something to
+   look at. The st--<tone> class on the card supplies --st-ink. */
+.dr-case.st--drift,
+.dr-case.st--down { border-color: color-mix(in oklab, var(--st-ink) 45%, var(--border)); }
 
 .dr-bar {
   position: absolute;
@@ -162,19 +153,7 @@ a.dr-row:hover { background: var(--surface-2); }
 
 .dr-case__head { display: flex; align-items: flex-start; gap: 14px; }
 .dr-case__headtext { display: grid; gap: 6px; min-width: 0; flex: 1; }
-.dr-case__icon {
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  background: var(--surface-2);
-  color: var(--text-2);
-}
-.dr-case__icon--drift { background: var(--drift-soft); color: var(--drift); }
-.dr-case__icon--sync { background: var(--sync-soft); color: var(--sync); }
-.dr-case__icon--down { background: var(--break-soft); color: var(--break); }
+.dr-case__chip { justify-self: start; }
 .dr-case__title {
   font-family: var(--display);
   font-size: 21px;
@@ -191,7 +170,7 @@ a.dr-row:hover { background: var(--surface-2); }
   font-size: 12.5px;
   color: var(--text-3);
 }
-.dr-case__schema { font-weight: 650; color: var(--text-2); overflow-wrap: anywhere; }
+.dr-case__schema { font-weight: 650; color: var(--text-2); overflow-wrap: anywhere; min-width: 0; }
 .dr-case__host { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
 .dr-facts {
@@ -237,6 +216,9 @@ a.dr-row:hover { background: var(--surface-2); }
 }
 .dr-counts .dr-stat { background: var(--surface-2); }
 .dr-stat__label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -252,11 +234,13 @@ a.dr-row:hover { background: var(--surface-2); }
 }
 .dr-stat__note { font-size: 11px; color: var(--text-3); }
 .dr-stat--zero .dr-stat__value { color: var(--text-3); }
-.dr-stat--add .dr-stat__value,
-.dr-stat--sync .dr-stat__value { color: var(--sync); }
+/* Kinds of change (added, removed, changed) are not states, so they keep the
+   diff colours. A tile that counts a state takes that state's ink. */
+.dr-stat--add .dr-stat__value { color: var(--sync); }
 .dr-stat--rem .dr-stat__value { color: var(--break); }
-.dr-stat--chg .dr-stat__value,
-.dr-stat--drift .dr-stat__value { color: var(--drift); }
+.dr-stat--chg .dr-stat__value { color: var(--drift); }
+.dr-stat--state .dr-stat__label,
+.dr-stat--state .dr-stat__value { color: var(--st-ink); }
 
 /* ── Sections inside the case ─────────────────────────────────────────── */
 .dr-section { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -313,6 +297,9 @@ a.dr-row:hover { background: var(--surface-2); }
 
 /* ── Empty and loading ────────────────────────────────────────────────── */
 .dr-empty { padding: 0; overflow: hidden; min-height: 300px; display: grid; }
+/* A read that failed: a heading and an error notice with its next step. */
+.dr-failed { padding: 20px; display: grid; gap: 12px; align-content: start; }
+.dr-failed > * { min-width: 0; }
 .dr-skel-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 /* ── Shared pieces, restyled only inside this page ────────────────────── */
@@ -333,7 +320,7 @@ a.dr-row:hover { background: var(--surface-2); }
   .dr-counts,
   .dr-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dr-hist__item { flex-wrap: wrap; }
-  .dr-hist__when { flex-basis: 100%; padding-left: 22px; }
+  .dr-hist__when { flex-basis: 100%; }
   .dr-facts li { border-radius: var(--r-md); }
   /* Fingers need 44px. */
   .dr-page .btn { min-height: 44px; }

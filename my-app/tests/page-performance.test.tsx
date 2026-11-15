@@ -85,7 +85,7 @@ describe("which tab the Performance screen opens on", () => {
     setRoutes(baseRoutes());
     render(<PerformancePage />);
 
-    expect(screen.getByRole("heading", { name: "Performance suggestions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Performance" })).toBeInTheDocument();
     // The tabs were styled-only until this landed: a screen reader heard six
     // identical links and no clue which one it was already on.
     expect(screen.getByRole("link", { name: "Suggestions" })).toHaveAttribute(
@@ -109,7 +109,7 @@ describe("which tab the Performance screen opens on", () => {
       }]);
     render(<PerformancePage />);
 
-    expect(screen.getByRole("heading", { name: "Alert thresholds" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Performance" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Alerts" })).toHaveAttribute("aria-current", "page");
     // The header is drawn before anything is fetched, so the assertions above
     // pass with the picker's reads still in flight. Waiting for the panel's own
@@ -127,7 +127,7 @@ describe("which tab the Performance screen opens on", () => {
     setRoutes(baseRoutes());
     render(<PerformancePage />);
 
-    expect(screen.getByRole("heading", { name: "Performance suggestions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Performance" })).toBeInTheDocument();
     await adviceRequest();
   });
 });
@@ -168,6 +168,11 @@ describe("which database the Performance screen asks about", () => {
     render(<PerformancePage />);
 
     expect(await screen.findByText("No PostgreSQL connections saved")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Connection to analyse" })).toBeDisabled();
+    // With nothing to pick from, the picker is left out and the note points
+    // at the page where a connection is added.
+    expect(screen.getByRole("link", { name: "Open Connections" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Choose a connection and schema" })
+    ).not.toBeInTheDocument();
   });
 });

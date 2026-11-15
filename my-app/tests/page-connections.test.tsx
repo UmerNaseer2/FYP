@@ -26,6 +26,8 @@ import "@testing-library/jest-dom";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
+// The page reads ?edit= and clears it again, so it needs the router.
+jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import ConnectionsPage from "@/app/[org]/(studio)/connections/page";
 import {
@@ -34,7 +36,9 @@ import {
   render,
   resetPageState,
   setCustomRole,
+  routerCalls,
   setRoutes,
+  setSearchParams,
   setSessionLoading,
   setUser,
 } from "./helpers/render-page";
@@ -94,6 +98,35 @@ async function loaded() {
 
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
+
+describe("a link that asks for one connection's edit form (?edit=)", () => {
+  afterEach(() => setSearchParams(""));
+
+  it("opens that connection's form and takes the parameter off the address", async () => {
+    setSearchParams("edit=2");
+    setRoutes([
+      {
+        match: "/api/connections",
+        body: [conn({ id: 1, name: "Orders DB" }), conn({ id: 2, name: "Billing DB" })],
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(await screen.findByDisplayValue("Billing DB")).toBeInTheDocument();
+    expect(routerCalls.replace).toEqual(["/test-org/connections"]);
+  });
+
+  it("ignores an id that is not in the list", async () => {
+    setSearchParams("edit=999");
+    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(screen.queryByDisplayValue("Orders DB")).toBeNull();
+    expect(routerCalls.replace).toEqual(["/test-org/connections"]);
+  });
+});
 
 describe("what the screen says about the list itself", () => {
   it("says the connections are still there when the read fails", async () => {
@@ -348,7 +381,7 @@ describe("deleting a connection other things are using", () => {
     expect(screen.queryByText(/also removes/)).not.toBeInTheDocument();
     expect(screen.getByText("shop_dev, shop_staging")).toBeInTheDocument();
     // A saved set survives, so it is described differently from a snapshot.
-    expect(screen.getByText(/1 saved comparison set — the set is kept/)).toBeInTheDocument();
+    expect(screen.getByText(/1 saved comparison set\. The set is kept/i)).toBeInTheDocument();
     expect(screen.getByText("Nightly")).toBeInTheDocument();
 
     // The first press asked; nothing has been deleted.
@@ -513,7 +546,7 @@ describe("the add drawer", () => {
 
   it("names a quick start after the latest pill, and keeps what the person typed", async () => {
     const drawer = await openAdd();
-    const nameBox = () => drawer.getByPlaceholderText("e.g. Staging — Neon");
+    const nameBox = () => drawer.getByPlaceholderText("e.g. Orders on Neon");
     const uriBox = () => drawer.getByPlaceholderText(URI_PLACEHOLDER);
 
     // Local then Hosted used to leave a hosted database named "Local
@@ -542,7 +575,7 @@ describe("the add drawer", () => {
     const drawer = within(document.querySelector(".drawer") as HTMLElement);
 
     fireEvent.click(drawer.getByRole("button", { name: "Local Postgres" }));
-    expect(drawer.getByPlaceholderText("e.g. Staging — Neon")).toHaveValue("Local Postgres 2");
+    expect(drawer.getByPlaceholderText("e.g. Orders on Neon")).toHaveValue("Local Postgres 2");
   });
 });
 
@@ -680,10 +713,15 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(screen.getByText(refusal.create("Viewer"))).toBeInTheDocument();
     expect(screen.queryByText(refusal.update("Viewer"))).toBeNull();
     expect(screen.queryByText(refusal.delete("Viewer"))).toBeNull();
-    // One refusal, so asking for it opens Requests with that line picked.
-    expect(screen.getByRole("link", { name: "Ask for it" })).toHaveAttribute(
-      "href",
-      expect.stringMatching(/\/requests\?ask=connections%3Acreate$/)
+    // A Viewer has nothing to ask for one line at a time: they are told an
+    // Admin can move them to another role, in a sentence with no link.
+    expect(screen.getByText(/An Admin can move you to another role\./)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Ask/ })).toBeNull();
+    // The switched-off button points at the line that says why.
+    const why = screen.getByText(refusal.create("Viewer")).closest("[id]");
+    expect(screen.getByRole("button", { name: /^Add connection/ })).toHaveAttribute(
+      "aria-describedby",
+      why?.id
     );
   });
 
@@ -737,7 +775,7 @@ describe("for a role that may not add, change or delete connections", () => {
     await loaded();
 
     fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
-    fireEvent.change(screen.getByPlaceholderText("e.g. Staging — Neon"), {
+    fireEvent.change(screen.getByPlaceholderText("e.g. Orders on Neon"), {
       target: { value: "Orders DB" },
     });
     fireEvent.change(
@@ -915,7 +953,7 @@ describe("finding databases on this computer, in the desktop app", () => {
   function fields() {
     const [database, user] = drawer().getAllByPlaceholderText("postgres");
     return {
-      name: drawer().getByPlaceholderText("e.g. Staging — Neon"),
+      name: drawer().getByPlaceholderText("e.g. Orders on Neon"),
       host: drawer().getByPlaceholderText("db.example.com"),
       port: drawer().getByPlaceholderText("5432"),
       database,
@@ -1179,7 +1217,7 @@ describe("the website and this computer, in the desktop app", () => {
 
   async function addOne(name: string, uri: string) {
     fireEvent.click(screen.getByRole("button", { name: /^Add connection/ }));
-    fireEvent.change(screen.getByPlaceholderText("e.g. Staging — Neon"), { target: { value: name } });
+    fireEvent.change(screen.getByPlaceholderText("e.g. Orders on Neon"), { target: { value: name } });
     fireEvent.change(
       screen.getByPlaceholderText("postgres://user:pass@host:5432/database?sslmode=require"),
       { target: { value: uri } }

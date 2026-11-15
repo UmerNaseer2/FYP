@@ -1,18 +1,19 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Admin. Shown in the Help panel; the blurb is the page header's one line. */
 export const adminHelp: HelpTopic = {
   title: "Admin",
-  blurb: "Manage people, roles, the organization, GitHub and AI settings.",
+  blurb: "Who can do what: people, roles, the organization, GitHub and AI settings.",
   purpose:
     "Admin is where you decide who is in this organization, what each role may do in it, and how it is run. " +
     "It has up to five tabs, and each tab shows only to a role allowed to see it. " +
     "On a new install that is the Admin role alone.",
   steps: [
-    "Open Admin from the sidebar and pick a tab. You see only the tabs your role may open.",
+    { text: "Open Admin from the sidebar and pick a tab. You see only the tabs your role may open.", target: anchor("admin-tabs", ".ad-page [role=\"tablist\"]") },
     "On Roles & permissions, pick a role or press New role, turn on what it may do, then press Save changes.",
     "On Users, give each person a role with the role picker. The change applies straight away.",
-    "Under the list of users, make an invitation, then copy its link and send it yourself. The app sends no email.",
+    { text: "Under the list of users, make an invitation, then copy its link and send it yourself. The app sends no email.", target: anchor("invite-people") },
     "On Organization, rename the organization.",
     "On GitHub, save the repository and the access token for where the organization's scripts are kept.",
     "On AI, switch AI assistance on if you want it, then switch single features on or off.",

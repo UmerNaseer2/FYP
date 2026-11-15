@@ -64,6 +64,7 @@ import {
   render,
   resetPageState,
   routerCalls,
+  setSearchParams,
   setRoutes,
   setUser,
   type FetchRoute,
@@ -243,7 +244,7 @@ describe("the page header", () => {
     setRoutes([invitesRoute(), listRoute()]);
     render(<AdminPage />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Who can do what." })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin" })).toBeInTheDocument();
     expect(screen.getByText(HELP_TOPICS["/admin"].blurb)).toBeInTheDocument();
   });
 });
@@ -604,6 +605,23 @@ describe("the Users tab", () => {
 });
 
 describe("the Roles & permissions tab", () => {
+  it("opens straight away when the address asks for it with ?tab=roles", async () => {
+    setSearchParams("tab=roles");
+    try {
+      setRoutes(rolesRoutes());
+      render(<AdminPage />);
+      expect(await screen.findByRole("tab", { name: "Roles & permissions" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      // A press on another tab still wins over the address.
+      fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+      expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
+    } finally {
+      setSearchParams("");
+    }
+  });
+
   it("loads the roles the first time the tab is opened, not before", async () => {
     setRoutes(rolesRoutes());
     render(<AdminPage />);

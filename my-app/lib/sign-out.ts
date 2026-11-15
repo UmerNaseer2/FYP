@@ -1,5 +1,6 @@
 import { signOut } from "next-auth/react";
 import { getDesktopBridge } from "@/lib/desktop-bridge";
+import { forgetAllRecents } from "@/lib/recents";
 
 /**
  * Sign out, wherever the app is running. The Sign out button on the studio
@@ -25,9 +26,11 @@ import { getDesktopBridge } from "@/lib/desktop-bridge";
  *
  * Both ways load a new page, so nothing the old page knew survives to be shown
  * to whoever signs in next, including what hooks/useUser learned about the
- * person's access. That is why nothing here has to be forgotten by hand.
+ * person's access. Only what this browser keeps on disk outlives the page:
+ * the command bar's recent list (lib/recents.ts), forgotten first.
  */
 export async function signOutEverywhere(callbackUrl = "/login") {
+  forgetAllRecents();
   const desktop = getDesktopBridge();
   if (desktop) {
     await desktop.signOut();

@@ -15,36 +15,23 @@
 
 .cp-h2 { margin: 0; font: 700 20px/26px var(--display); letter-spacing: -0.02em; color: var(--ink); }
 
-/* --- The picker card: source, a dashed line, the targets ----------------- */
+/* --- The picker card: source, Swap, the targets ---------------------------
+   The two pickers come from components/studio/TargetPicker.tsx and sit
+   straight in the card. Nothing here wraps them in a second tinted box. */
 
-.cp-form { position: relative; padding: 0; animation: rise var(--dur-3) var(--ease-out) backwards; }
-.cp-pair { display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px 0; padding: 14px 16px; }
-.cp-targets { flex: 1 1 280px; display: grid; gap: 8px; min-width: 0; }
-.cp-db { flex: 1 1 280px; display: flex; align-items: flex-start; gap: 12px; padding: 12px;
-  border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
-.cp-db__icon { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
-  flex: none; background: var(--tint); color: var(--ink); }
-.cp-db--target .cp-db__icon { background: var(--accent-soft); color: var(--accent-ink); }
-.cp-db__body { flex: 1; min-width: 0; display: grid; gap: 8px; }
-.cp-db__label { font: 700 16px/20px var(--display); color: var(--ink); }
-.cp-db__remove { flex: none; width: 44px; height: 44px; }
+/* Above the cards that follow, so an open picker panel is never covered. */
+.cp-form { position: relative; z-index: 5; padding: 18px 18px 0;
+  animation: rise var(--dur-3) var(--ease-out) backwards; }
+.cp-form__title { margin-bottom: 12px; }
+.cp-pair { padding-bottom: 14px; }
+.cp-skel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-bottom: 18px; }
 
-.cp-pick { display: grid; gap: 6px; min-width: 0; }
-.cp-pick__role { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  font-size: 12.5px; line-height: 16px; color: var(--ink-2); }
-.cp-pick__problem { font-size: 12.5px; color: var(--change); }
-.cp-live { font: 600 11px/18px var(--sans); padding: 0 8px; border-radius: var(--r-pill);
-  background: var(--add-soft); color: var(--add); }
-.cp-pick .ds-select { width: 100%; }
-.cp-pick .ds-select__trigger { min-height: 44px; padding: 0 12px; border-radius: var(--r-md);
-  background: var(--surface); border: 1px solid var(--line); }
-.cp-pick .ds-select__trigger--sub { font-size: 12.5px; color: var(--ink-2); }
+/* One target: its picker, and a remove button when there are several. */
+.cp-target { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+.cp-target__picker { flex: 1; min-width: 0; }
+/* Lined up with the field, which starts under the label. */
+.cp-target__remove { flex: none; width: 44px; height: 44px; margin-top: 28px; }
 
-.cp-flow { position: relative; flex: 0 0 96px; min-height: 40px; display: grid; place-items: center; }
-.cp-flow::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
-  background: repeating-linear-gradient(90deg, var(--line-strong) 0 6px, transparent 6px 12px);
-  background-size: 12px 2px; animation: cp-flow 900ms linear infinite; }
-@keyframes cp-flow { to { background-position: 12px 0; } }
 .cp-swap { position: relative; min-height: 44px; padding: 0 14px; border-radius: var(--r-pill);
   background: var(--pill); color: var(--on-pill); display: inline-flex; align-items: center; gap: 6px;
   font-weight: 600; font-size: 12.5px; text-decoration: none;
@@ -56,7 +43,7 @@
 
 /* --- The option row: two switches, add target, Compare ------------------- */
 
-.cp-opts { display: flex; align-items: center; gap: 6px 18px; flex-wrap: wrap; padding: 0 18px 14px; }
+.cp-opts { display: flex; align-items: center; gap: 6px 18px; flex-wrap: wrap; padding: 0 0 14px; }
 .cp-opt { display: inline-flex; align-items: center; font-size: 13.5px; color: var(--ink-2); }
 .cp-opts__limit { font-size: 12.5px; color: var(--ink-3); }
 .cp-opts .btn-sm { min-height: 44px; }
@@ -99,18 +86,8 @@
   flex: none; background: var(--tint); color: var(--ink); }
 .cp-quiet p { margin: 4px 0 0; font-size: 14px; line-height: 21px; color: var(--ink-2); max-width: 62ch; }
 
-.cp-state { max-width: 620px; margin: 6vh auto 0; padding: 34px 36px 30px;
-  animation: rise var(--dur-3) var(--ease-spring) backwards; }
-.cp-state--inline { max-width: none; margin: 0; padding: 22px 24px; }
-.cp-state__icon { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center;
-  background: var(--remove-soft); color: var(--remove); margin-bottom: 18px; }
-.cp-state small { display: block; font-size: 12.5px; font-weight: 700; color: var(--ink-3); }
-.cp-state h2 { font: 800 clamp(24px, 3.4vw, 32px)/1.1 var(--display); letter-spacing: -0.03em;
-  margin: 2px 0 8px; color: var(--ink); }
-.cp-state--inline h2 { font-size: 22px; }
-.cp-state p { margin: 0; color: var(--ink-2); max-width: 60ch; overflow-wrap: anywhere; }
-.cp-state__actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
-.cp-state__actions .btn { min-height: 44px; }
+/* A problem: a plain heading, then the shared ErrorNotice under it. */
+.cp-problem { display: grid; gap: 10px; max-width: 760px; }
 
 .cp-loading-say { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 13px;
   font-weight: 600; color: var(--ink-2); }
@@ -136,7 +113,11 @@
 @media (max-width: 1100px) { .cp-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* The four counts. Each is a button that narrows the diff under it. */
-.cp-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+/* Four across when the column has room (708px), else two across. The column
+   beside the migration rail is narrow even on a wide screen, so this goes by
+   the column width, not the screen width. */
+.cp-tiles { display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(clamp(25% - 9px, (708px - 100%) * 999, 50% - 6px), 1fr)); }
 .cp-tile { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 12px 16px;
   border-radius: var(--r-xl); border: 2px solid transparent; text-align: left; cursor: pointer;
   color: var(--ink); font-family: inherit;
@@ -147,9 +128,13 @@
 .cp-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .cp-tile[aria-pressed="true"] { border-color: var(--ink); }
 .cp-tiles--filtered .cp-tile[aria-pressed="false"] { opacity: 0.55; }
+/* The glyph says the kind of change, so the colour is never the only sign. */
+.cp-tile__glyph { flex: none; width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--surface); border: 1px solid var(--line);
+  font: 700 17px/1 var(--mono), ui-monospace, monospace; color: var(--ink); }
 .cp-tile b { font: 800 38px/40px var(--display); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
-.cp-tile > span { font-weight: 600; font-size: 13px; line-height: 16px; min-width: 0; }
-.cp-tile > span i { display: block; font-style: normal; font-weight: 400; font-size: 12px; color: var(--ink-2); }
+.cp-tile > span:last-child { font-weight: 600; font-size: 13px; line-height: 16px; min-width: 0; }
+.cp-tile > span:last-child i { display: block; font-style: normal; font-weight: 400; font-size: 12px; color: var(--ink-2); }
 .cp-tile--add { background: var(--add-soft); }
 .cp-tile--add b { color: var(--add); }
 .cp-tile--chg { background: var(--change-soft); }
@@ -164,10 +149,42 @@
 
 /* --- Shared panels, restyled only inside this page ------------------------ */
 
-/* Saved sets read as a quiet strip of pills above the card. */
-.cp-sets .set-bar { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
-.cp-sets .set-bar .btn-sm, .cp-sets .set-bar .input, .cp-sets .set-bar .ds-select__trigger { min-height: 44px; }
-.cp-sets .set-bar .btn-sm, .cp-sets .set-bar .input { border-radius: var(--r-pill); }
+/* --- Saved comparisons (components/studio/ComparisonSetBar.tsx) -----------
+   The button sits in the page header and opens the saved ones. The row that
+   names and saves this comparison comes after the results. */
+
+.cp-savedset { display: grid; gap: 12px; }
+.cp-saved { position: relative; }
+.cp-saved__button { min-height: 44px; gap: 8px; }
+.cp-saved__count { min-width: 22px; padding: 0 7px; border-radius: var(--r-pill); background: var(--tint);
+  font: 600 12px/20px var(--sans); font-variant-numeric: tabular-nums; color: var(--ink); }
+.cp-saved__panel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 80;
+  width: min(360px, calc(100vw - 32px)); max-height: min(420px, 60vh); overflow-y: auto; padding: 6px;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
+  box-shadow: var(--shadow-lg); }
+.cp-saved__none { margin: 0; padding: 10px 12px; font-size: 13.5px; line-height: 20px; color: var(--ink-2); }
+.cp-saved__row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 52px;
+  padding: 6px 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--ink);
+  font: inherit; text-align: left; cursor: pointer; }
+.cp-saved__row:hover:not(:disabled) { background: var(--surface-2); }
+.cp-saved__row:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.cp-saved__row[aria-current="true"] { background: var(--tint); }
+.cp-saved__row:disabled { opacity: 0.55; cursor: not-allowed; }
+.cp-saved__tick { flex: none; width: 16px; height: 16px; display: grid; place-items: center; }
+.cp-saved__text { flex: 1; min-width: 0; display: grid; }
+.cp-saved__text b, .cp-saved__text small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-saved__text b { font-weight: 600; font-size: 14px; line-height: 20px; }
+.cp-saved__text small { font-size: 12.5px; line-height: 17px; color: var(--ink-2); }
+
+/* "Save this comparison": one flat row, not a card inside the page's cards. */
+.cp-save { display: grid; gap: 8px; padding-top: 18px; border-top: 1px solid var(--line); }
+.cp-save__label { font: 700 16px/22px var(--display); color: var(--ink); }
+.cp-save__controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cp-save__controls .input { flex: 1 1 220px; min-width: 0; max-width: 360px; min-height: 44px;
+  text-overflow: ellipsis; }
+.cp-save__controls .btn { min-height: 44px; }
+.cp-save__note { display: grid; gap: 4px; font-size: 13px; line-height: 19px; color: var(--ink-2); }
+.cp-save__note:empty { display: none; }
 
 /* Diff cards: rounder, lifted, with the table name in the display face. */
 .cp-page .table-group { border-color: transparent; border-radius: var(--r-xl); box-shadow: var(--lift); }
@@ -197,20 +214,21 @@
 /* --- Phones --------------------------------------------------------------- */
 
 @media (max-width: 720px) {
-  .cp-pair { padding: 12px; }
-  .cp-flow { flex: 1 0 100%; min-height: 48px; }
-  .cp-db, .cp-targets { flex: 1 0 100%; }
-  .cp-opts { padding: 0 12px 12px; }
+  .cp-form { padding: 14px 14px 0; }
+  .cp-skel { grid-template-columns: minmax(0, 1fr); }
+  /* The header's actions wrap under the title on a phone, so the list opens
+     from the left edge and stays on the screen. */
+  .cp-saved__panel { left: 0; right: auto; }
+  .cp-save__controls .input { flex: 1 1 100%; max-width: none; }
   .cp-run { margin-left: 0; width: 100%; justify-content: space-between; }
   .cp-run .btn { flex: 1 1 auto; }
   .cp-outcome__path { margin-left: 0; flex: 1 0 100%; }
-  .cp-state { padding: 24px 20px; margin-top: 0; }
 }
 
 /* --- Motion --------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .cp-flow::before, .cp-bar, .cp-loading-say i, .cp-form, .cp-state { animation: none; }
+  .cp-bar, .cp-loading-say i, .cp-form { animation: none; }
   .cp-tile:hover, .cp-swap:hover svg { transform: none; }
 }
 
@@ -222,7 +240,7 @@
 
 @media print {
   .cp-page { display: block; padding: 0; }
-  .cp-sets, .cp-form, .cp-quiet, .cp-swap, .cp-loading-say { display: none !important; }
+  .cp-saved, .cp-save, .cp-form, .cp-quiet, .cp-swap, .cp-loading-say { display: none !important; }
   .cp-grid { display: block !important; }
   .cp-grid > aside { display: none !important; }
   .cp-results, .cp-outcome, .cp-col { display: block; }
@@ -233,3 +251,6 @@
     -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .cp-page .table-group, .cp-page .panel { box-shadow: none !important; border-color: var(--line); }
 }
+
+/* "Deleted …" beside Saved comparisons, when the save row is not on the page. */
+.cp-saved__done { margin-left: 10px; font-size: 12.5px; color: var(--text-3); }

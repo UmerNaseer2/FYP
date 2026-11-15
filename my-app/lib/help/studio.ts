@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Dashboard. Shown in the Help panel; the blurb is the page header's one line. */
@@ -8,12 +9,12 @@ export const studioHelp: HelpTopic = {
     "The Dashboard lists every schema your organization tracks. Each schema is drawn as a building in a small city. The roof colour is what the last drift check found, and you choose what the height shows. Press a building to read about it. Start here to see what needs attention.",
   steps: [
     "Save a connection on the Connections page first. Schema Studio can only track a schema on a PostgreSQL server you have saved.",
-    "Press Track a schema, pick a Connection, then pick one of its schemas.",
+    { text: "Press Track a schema, pick a Connection, then pick one of its schemas.", target: anchor("track-schema", ".sk-page .page-head__actions") },
     "Add a Label if you want a friendly name beside the schema, then press Track schema. A baseline snapshot is taken straight away and recorded as v1.0.0.",
-    "The numbers under the city count the schemas on screen.",
-    "Use Height shows to choose what a building's height means: its recorded versions, or the tables in its latest recorded version.",
-    "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.",
-    "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.",
+    { text: "The numbers under the city count the schemas on screen.", target: anchor("schema-counts") },
+    { text: "Use Height shows to choose what a building's height means: its recorded versions, or the tables in its latest recorded version.", target: anchor("height-shows", ".sk-seg") },
+    { text: "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.", target: anchor("city", ".sk-stage") },
+    { text: "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.", target: anchor("schema-actions", ".sk-acts") },
     "Press Open to see the picked schema's details and its history of versions.",
     "Press the stop tracking button when you no longer need to watch the picked schema.",
   ],

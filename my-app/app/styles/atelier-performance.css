@@ -3,30 +3,11 @@
    another page. Colours come from the tokens in globals.css, so both themes
    work without a second set of rules. */
 
-/* ---- Tabs: links drawn as pills. The open one carries aria-current. ---- */
-.pf-page .pf-tabs {
-  display: inline-flex; max-width: 100%; gap: 2px;
-  padding: 4px; margin-top: 18px;
-  border-radius: var(--r-pill); background: var(--surface-2);
-  overflow-x: auto; scrollbar-width: none;
-}
-.pf-page .pf-tabs::-webkit-scrollbar { display: none; }
-.pf-page .pf-tab {
-  flex: none; display: inline-flex; align-items: center;
-  height: 44px; padding: 0 16px; border-radius: var(--r-pill);
-  font-weight: 600; font-size: 13.5px; color: var(--ink-2); white-space: nowrap;
-  transition: background var(--dur-2), color var(--dur-2);
-}
-.pf-page .pf-tab:hover { color: var(--ink); }
-.pf-page .pf-tab[aria-current="page"] { background: var(--pill); color: var(--on-pill); }
-.pf-page .pf-tab:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+/* The tabs are the shared PageTabs (atelier-tabs.css), so there is nothing to
+   style for them here. */
 
-/* ---- "Looking at": the connection and schema picker ---- */
-.pf-page .pf-pick {
-  margin-top: 4px; padding: 14px 16px;
-  border: 0; border-radius: var(--r-xl); box-shadow: var(--lift);
-}
-.pf-page .pf-pick .picker { border-radius: var(--r-lg); }
+/* ---- "Looking at": the shared connection and schema picker ---- */
+.pf-page .pf-pick { margin-top: 18px; max-width: 560px; }
 
 /* ---- The body of the open tab ---- */
 .pf-page .pf-body { margin-top: 20px; animation: fade var(--dur-3) var(--ease-out); }
@@ -161,7 +142,6 @@
 
 /* ---- Phones ---- */
 @media (max-width: 640px) {
-  .pf-page .pf-tabs { display: flex; }
   .pf-page .pf-f > div > div,
   .pf-page .pf-ed { padding: 16px; }
   .pf-page .pf-h { font-size: 18px; }
@@ -172,7 +152,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pf-page .pf-body { animation: none; }
-  .pf-page .pf-tab,
   .pf-page .pf-f,
   .pf-page .pf-a__name input[type="checkbox"],
   .pf-page .pf-a__name input[type="checkbox"]::after { transition: none; }

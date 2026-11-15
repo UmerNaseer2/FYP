@@ -17,9 +17,10 @@ import { FixScriptBuilder } from "./FixScriptBuilder";
 // that produces the response, means the two can never silently disagree.
 import type { AdviceItem, AdviceView } from "@/lib/perf-advice";
 import { apiFetch } from "@/lib/api-fetch";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /**
- * Spec feature 09 — performance suggestions, as a screen.
+ * Spec feature 09, performance suggestions, as a screen.
  *
  * Reads GET /api/performance/advice and lays the findings out worst-first. Two
  * things about the presentation are deliberate rather than decorative:
@@ -39,7 +40,7 @@ import { apiFetch } from "@/lib/api-fetch";
 const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }> = {
   structure: {
     label: "From the schema",
-    help: "True of the schema as it is defined right now — no counters involved.",
+    help: "True of the schema as it is defined right now, with no counters involved.",
   },
   statistics: {
     label: "From live counters",
@@ -120,23 +121,12 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="pf-note pf-note--warn">
-        <AlertCircleIcon size={15} className="ico" />
-        <div>
-          <div className="title">Could not analyse this schema</div>
-          <div className="body">
-            {current.error}{" "}
-            <button
-              type="button"
-              className="underline"
-              onClick={() => setReload((n) => n + 1)}
-            >
-              Try again
-            </button>
-            .
-          </div>
-        </div>
-      </div>
+      <ErrorNotice
+        error={current.error}
+        connectionName={target?.connectionName}
+        connectionId={connectionId}
+        onRetry={() => setReload((n) => n + 1)}
+      />
     );
   }
 

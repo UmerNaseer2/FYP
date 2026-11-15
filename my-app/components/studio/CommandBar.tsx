@@ -7,6 +7,7 @@ import { useDialogFocus } from "@/hooks/useDialogFocus";
 import {
   BellIcon,
   ChevronRightIcon,
+  ClockIcon,
   HelpIcon,
   MoonIcon,
   PlayIcon,
@@ -19,6 +20,7 @@ import {
 import { replayIntro } from "@/lib/intro";
 import { startTour } from "@/lib/tour";
 import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
+import { readRecents, recordRecent, type Recent } from "@/lib/recents";
 import type { NavItem } from "./nav";
 
 // The command bar: press Ctrl K (Cmd K on a Mac), or the search pill in the
@@ -26,12 +28,17 @@ import type { NavItem } from "./nav";
 //
 // It lists the pages your role can open and a few actions (switch theme, Ask
 // AI, Help, Replay intro, Sign out). With nothing typed it shows what needs
-// you first, then the last three things you picked, then every page.
+// you first, then "Recent" (the last few pages, schemas and actions you
+// opened, kept by lib/recents.ts), then every page.
 //
 // Typing ">" first shows only actions. Up and Down move, Enter runs the one
 // that is lit, Escape closes it.
 
-const RECENT_KEY = "schema-studio:recent-commands";
+/** How many recent things the empty bar lists, so the pages stay in view. */
+const RECENT_ROWS = 5;
+
+/** Actions never offered again under Recent: signing out is not somewhere to go back to. */
+const NOT_RECENT = new Set(["act:sign-out"]);
 
 /** Extra words each page answers to, so "diff" finds Compare. */
 const PAGE_WORDS: Record<string, string> = {
@@ -63,6 +70,8 @@ type Command = {
   words: string;
   icon: ReactNode;
   run: () => void;
+  /** A page's address (with the organization), so Recent can find it again. */
+  href?: string;
 };
 
 type Row = Command & { shownIn: Group; score: number; span: [number, number] | null };
@@ -90,24 +99,6 @@ export function scoreMatch(query: string, text: string): [number, [number, numbe
     from = found + 1;
   }
   return [34 - (from - first) * 0.6, null];
-}
-
-function readRecent(): string[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
-    return Array.isArray(saved) ? saved.filter((id) => typeof id === "string").slice(0, 3) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecent(id: string) {
-  try {
-    const next = [id, ...readRecent().filter((r) => r !== id)].slice(0, 3);
-    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-  } catch {
-    // Storage blocked: the list just stays empty.
-  }
 }
 
 /** The label with the matched letters underlined. */
@@ -164,7 +155,8 @@ function CommandPanel({
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<Scope>("all");
   const [selected, setSelected] = useState(0);
-  const [recent] = useState(readRecent);
+  // Read once, when the bar opens (the panel only exists while it is open).
+  const [recent] = useState<Recent[]>(() => readRecents());
   useDialogFocus(true, panelRef);
 
   const commands = useMemo<Command[]>(() => {
@@ -179,6 +171,7 @@ function CommandPanel({
         words: PAGE_WORDS[key] ?? "",
         icon: page.icon,
         run: go(page.href),
+        href: page.href,
       };
     });
     list.push({
@@ -267,9 +260,36 @@ function CommandPanel({
           span: null,
         });
       }
-      for (const id of recent) {
-        const c = inScope.find((x) => x.id === id);
-        if (c) out.push({ ...c, shownIn: "Recent", score: 0, span: null });
+      // Recent: newest first. A page or an action is shown only while it is
+      // still on offer (the role may have changed since), and never the page
+      // you are already on. A schema, or any other saved link, opens its address.
+      let shown = 0;
+      for (const entry of recent) {
+        if (shown >= RECENT_ROWS) break;
+        if (entry.href === activeHref) continue;
+        let row: Row | null = null;
+        if (entry.kind === "page" || entry.href.startsWith("act:")) {
+          const c = inScope.find((x) => (entry.kind === "page" ? x.href === entry.href : x.id === entry.href));
+          if (c) row = { ...c, shownIn: "Recent", score: 0, span: null };
+        } else if (effectiveScope !== "actions" && entry.href.startsWith("/")) {
+          row = {
+            id: `recent:${entry.kind}:${entry.href}`,
+            group: "Pages",
+            shownIn: "Recent",
+            label: entry.label,
+            hint: entry.kind === "schema" ? "Schema" : "Action",
+            words: "",
+            icon: <ClockIcon size={16} />,
+            run: () => router.push(entry.href),
+            href: entry.href,
+            score: 0,
+            span: null,
+          };
+        }
+        if (row && !out.some((o) => o.id === row.id)) {
+          out.push(row);
+          shown += 1;
+        }
       }
       for (const c of inScope) {
         if (!out.some((o) => o.id === c.id)) out.push({ ...c, shownIn: c.group, score: 0, span: null });
@@ -285,12 +305,22 @@ function CommandPanel({
     }
     // Pages before actions, the best match first inside each.
     return matched.sort((a, b) => (a.group === b.group ? b.score - a.score : a.group === "Pages" ? -1 : 1));
-  }, [commands, effectiveScope, text, waiting, requestsHref, recent, router]);
+  }, [commands, effectiveScope, text, waiting, requestsHref, recent, router, activeHref]);
 
   const lit = rows.length === 0 ? -1 : Math.min(selected, rows.length - 1);
 
   function run(row: Row) {
-    if (row.id !== "needs:requests") saveRecent(row.id);
+    // Remember it for next time. A page is saved by its address, an action
+    // by its command id; a saved link (a schema) just moves back to the top.
+    if (row.id.startsWith("page:") && row.href) {
+      recordRecent({ kind: "page", label: row.label, href: row.href });
+    } else if (row.id.startsWith("act:") && !NOT_RECENT.has(row.id)) {
+      recordRecent({ kind: "action", label: row.label, href: row.id });
+    } else if (row.id.startsWith("recent:schema:") && row.href) {
+      recordRecent({ kind: "schema", label: row.label, href: row.href });
+    } else if (row.id.startsWith("recent:action:") && row.href) {
+      recordRecent({ kind: "action", label: row.label, href: row.href });
+    }
     onClose();
     row.run();
   }

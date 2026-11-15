@@ -52,7 +52,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -213,8 +213,7 @@ describe("when the analysis fails", () => {
     mount();
     await flushAsync();
 
-    expect(screen.getByText("Could not analyse this schema")).toBeInTheDocument();
-    expect(screen.getByText(/password authentication failed/)).toBeInTheDocument();
+    expect(within(screen.getByRole("alert")).getByText(/password authentication failed/)).toBeInTheDocument();
   });
 
   it("has words of its own when the server sent none", async () => {

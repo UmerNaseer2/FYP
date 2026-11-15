@@ -134,12 +134,24 @@ export default function AuthGuard({
           {"The app could not be reached, or its database did not answer. " +
             "Reload the page in a moment."}
         </div>
+        <div className="actions">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
       </div>
     );
   }
 
   // The line to ask for: the first one that opens this page. A page behind
-  // only admin-only features (none today) has nothing to ask for.
+  // only admin-only features (none today) has nothing to ask for. What comes
+  // after the sentence follows the role (AskAdmin): an Editor gets the link to
+  // Requests, a Viewer is told an Admin decides what Viewers see, and nobody
+  // is told to ask for something they could do themselves.
   const askFor = [first, ...rest].find((key) => !isAdminOnly(key));
 
   if (!open && !can(first, ...rest)) {
@@ -151,8 +163,8 @@ export default function AuthGuard({
             ? `You are viewing the app as ${roleLabel}. Change "View as" to Admin to see every screen again.`
             : `You are signed in as ${user.email || "an unknown account"}. ` +
               (askFor === undefined
-                ? "Only admins can open it."
-                : `Ask an admin to turn on "${permissionLabel(askFor)}" for your role, then reload.`)}
+                ? "Only Admins can open it."
+                : `It needs "${permissionLabel(askFor)}" turned on for your role.`)}
           {askFor !== undefined && <AskAdmin permission={askFor} />}
         </div>
       </div>

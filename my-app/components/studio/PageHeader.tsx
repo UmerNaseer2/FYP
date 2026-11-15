@@ -1,29 +1,36 @@
 "use client";
 
 import { Fragment, type CSSProperties, type ReactNode } from "react";
-import { HelpButton } from "@/components/help/HelpPanel";
 import { helpForPage } from "@/lib/help";
 
 type PageHeaderProps = {
   /** The page's key in lib/help, the same as its menu address: "/deploy". */
   page: string;
-  /** Use a different title from the page's name, such as a tab's name. */
+  /**
+   * Only for a real name, such as a schema's name on its details page. Leave
+   * it out everywhere else, so the title is the page's menu name. Slogans and
+   * tab names do not go here: a slogan belongs in the blurb.
+   */
   title?: string;
-  /** Use a different line from the page's blurb. Keep it to 15 words or fewer. */
+  /** Use a different line from the page's tagline. Keep it to 15 words or fewer. */
   blurb?: string;
-  /** Buttons shown on the right, before Help. */
+  /** Buttons shown on the right. Help lives only in the top bar. */
   actions?: ReactNode;
-  /** Anything that belongs under the title, such as tabs. */
+  /** Anything that belongs under the title, such as PageTabs. */
   children?: ReactNode;
 };
 
 /**
- * The top of every studio page: the big title, one short line saying what
- * the page is for, and the Help button. The title and the line come from the
- * page's help file, so they are written in one place.
+ * The top of every studio page: the big title (the page's menu name, so the
+ * menu, the title and Help all call the page the same thing) and one short
+ * line under it, the page's tagline. Both come from the page's help file, so
+ * they are written in one place. Help itself lives only in the top bar; a
+ * page never adds a second Help button.
+ *
+ *   <PageHeader page="/admin" />
  *
  * Longer explanations do not go here. They go in the page's help file
- * (lib/help), which the Help button opens.
+ * (lib/help), which the top bar's Help opens.
  */
 export function PageHeader({ page, title, blurb, actions, children }: PageHeaderProps) {
   const topic = helpForPage(page);
@@ -36,10 +43,7 @@ export function PageHeader({ page, title, blurb, actions, children }: PageHeader
           <PageTitle text={text} />
           <p className="page-sub">{blurb ?? topic.blurb}</p>
         </div>
-        <div className="page-head__actions">
-          {actions}
-          <HelpButton className="btn btn-secondary btn-sm" />
-        </div>
+        {actions && <div className="page-head__actions">{actions}</div>}
       </div>
       {children}
     </header>

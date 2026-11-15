@@ -1,7 +1,11 @@
 /* Script Editor, Atelier design. Every class starts with se- and every colour
    is a token from app/globals.css, so both themes follow data-theme. */
 
-.se-page { padding: 16px; max-width: 1240px; }
+/* The same gutters as Connections, so the page title sits in the same place. */
+.se-page { padding: 32px 32px 56px; max-width: 1240px; }
+@media (max-width: 640px) { .se-page { padding: 20px 16px 40px; } }
+/* An error notice inside a narrow side card must be able to shrink. */
+.se-card .notice { min-width: 0; }
 .se-empty { min-height: 360px; }
 .se-stackall { display: grid; gap: 16px; min-width: 0; }
 
@@ -26,7 +30,6 @@
 .se-main { grid-area: main; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
 .se-rest { grid-area: rest; display: grid; gap: 16px; min-width: 0; }
 @media (min-width: 1021px) {
-  .se-page { padding: 24px; }
   .se-grid { grid-template-columns: minmax(0, 1fr) 360px; grid-template-areas: "main place" "main rest"; grid-template-rows: auto 1fr; }
 }
 

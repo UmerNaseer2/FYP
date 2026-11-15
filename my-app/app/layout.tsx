@@ -1,5 +1,6 @@
 import ClientProvider from "./ClientProvider";
 import "./globals.css";
+import "./styles/atelier-system.css";
 import type { ReactNode } from "react";
 import { Bricolage_Grotesque, DM_Mono, Figtree } from "next/font/google";
 

@@ -5,7 +5,11 @@
 //   - In here: everything that explains how a page works.
 // A page's file holds what the page is for, the steps, what its words mean and
 // its common problems. The Help panel (components/help) shows it, and the
-// shared page header shows its one-line blurb.
+// shared page header shows its title (the page's menu name) and its one-line
+// blurb (the page's tagline).
+//
+// A step can also name the control it is about, which gives it a "Show me"
+// link in the Help panel. See ./steps.
 import { orgSlugFromPath } from "@/lib/org-slug";
 import type { HelpTopic } from "./types";
 import { generalHelp } from "./general";
@@ -25,7 +29,8 @@ import { linkComputerHelp } from "./link-computer";
 import { devicesHelp } from "./devices";
 import { historyHelp } from "./history";
 
-export type { HelpTopic, HelpTerm, HelpProblem, HelpSection } from "./types";
+export type { HelpTopic, HelpStep, HelpTerm, HelpProblem, HelpSection } from "./types";
+export { anchor, stepTarget, stepText } from "./steps";
 
 /** A blurb is the one line under a page's title, so it has to stay short. */
 export const BLURB_MAX_WORDS = 15;

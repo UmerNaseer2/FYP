@@ -1,0 +1,24 @@
+/* The Help panel's own extras (components/help). The panel's main layout,
+   .help-topic, is in globals.css. Every class here starts with help- so
+   nothing leaks onto a page. */
+
+/* A step with a Show me link: the words, then the link on its own short line
+   so a long step never squeezes it. */
+.help-step__show {
+  display: flex; width: fit-content; align-items: center; gap: 5px;
+  min-height: 28px; margin-top: 2px; padding: 0 2px;
+  border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 700; color: var(--accent-ink);
+  text-decoration: underline; text-underline-offset: 3px;
+  border-radius: 6px;
+}
+.help-step__show:hover { color: var(--text); }
+.help-step__show:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* Fingers need a taller target than a mouse does. */
+@media (hover: none) { .help-step__show { min-height: 44px; } }
+
+/* The small card beside the spotlight (Spotlight.tsx). It is the tour's card
+   with no heading, so the words sit a little under the "Show me" line and the
+   one button goes to the right. */
+.help-spot .tr-in p { margin-top: 10px; }
+.help-spot .tr-f { justify-content: flex-end; }

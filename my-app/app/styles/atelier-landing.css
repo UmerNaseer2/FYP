@@ -19,7 +19,7 @@
 }
 .lp [tabindex="-1"]:focus { outline: none; }
 
-/* ——— header ——— */
+/* Header. */
 .lp-nav {
   display: flex;
   align-items: center;
@@ -42,7 +42,7 @@
 }
 .lp-links button:hover { background: var(--surface); color: var(--ink); }
 
-/* ——— hero ——— */
+/* Hero. */
 .lp-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
@@ -59,8 +59,9 @@
 }
 .lp-hero h1 {
   margin: 0;
-  font: 800 clamp(40px, 6.4vw, 80px)/.98 var(--display);
-  letter-spacing: -.045em;
+  max-width: 14ch;
+  font: 800 clamp(34px, 5vw, 62px)/1.02 var(--display);
+  letter-spacing: -.04em;
 }
 /* Each word rises out of its own line box. The padding keeps the tails of
    g and p from being clipped. */
@@ -78,14 +79,59 @@
   line-height: 1.5;
   color: var(--ink-2);
 }
-.lp-cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.lp-cta { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; }
+/* "Try it now": the one orange button, two lines tall. */
+.lp-try { display: flex; }
+.lp-try__btn {
+  min-height: 56px;
+  padding: 0 26px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+}
+.lp-try__btn small { font: 500 12px/15px var(--sans); letter-spacing: 0; }
+/* With the trial on offer, Create account matches its height and Log in is a link. */
+.lp-try ~ .btn { min-height: 56px; }
+.lp-login {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px;
+  font: 700 15px var(--sans);
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.lp-login:hover { color: var(--ink); }
+.lp-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 16px 0 0;
+  max-width: 54ch;
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--ink-2);
+}
+.lp-note svg { flex: none; margin-top: 2px; color: var(--ink-3); }
+/* The other two trial accounts, as links in a sentence. */
+.lp-roles { margin: 6px 0 0 24px; font-size: 13px; line-height: 20px; color: var(--ink-3); }
+.lp-roles button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.lp-roles button:hover { color: var(--ink); }
 .lp-fine { margin-top: 14px; font-size: 12.5px; color: var(--ink-3); }
-.lp-trial { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); max-width: 52ch; }
-.lp-trial__lead { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); }
-.lp-trial__row { display: flex; gap: 8px; flex-wrap: wrap; }
-.lp-trial__row .btn { min-height: 44px; }
 
-/* ——— the example card ——— */
+/* The example card: one change and the approval rule. */
 .lp-stage {
   margin: 0;
   padding: 20px 22px;
@@ -94,47 +140,23 @@
   gap: 14px;
   animation: rise var(--dur-3) var(--ease-out) 300ms backwards;
 }
-.lp-dh { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.lp-dh b { font: 700 18px var(--display); }
-.lp-envs, .lp-df { list-style: none; margin: 0; padding: 0; }
-.lp-envs { display: grid; gap: 6px; }
-.lp-envs li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: var(--surface-2);
-  animation: rise var(--dur-3) var(--ease-out) backwards;
-  animation-delay: calc(var(--d, 0) * 1ms);
-}
-.lp-envs b { font-weight: 600; font-size: 14px; }
-.lp-envs code { font: 12.5px var(--mono); color: var(--ink-3); }
-.lp-df li {
+.lp-dh { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.lp-dh b { font-weight: 600; font-size: 14px; margin-right: auto; }
+.lp-change {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
-  animation: rise var(--dur-3) var(--ease-out) backwards;
-  animation-delay: calc(var(--d, 0) * 1ms);
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
 }
-.lp-df li > div { min-width: 0; display: grid; gap: 2px; }
-.lp-df b { font: 600 13px/19px var(--mono); overflow-wrap: anywhere; }
-.lp-df span { font-size: 12.5px; color: var(--ink-3); }
-.lp-cap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-.lp-lock { display: inline-flex; align-items: center; gap: 8px; }
+.lp-change > div { min-width: 0; display: grid; gap: 2px; }
+.lp-change b { font: 600 13px/19px var(--mono); overflow-wrap: anywhere; }
+.lp-change span { font-size: 12.5px; color: var(--ink-3); }
+.lp-cap { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 19px; color: var(--ink-2); }
+.lp-cap svg { flex: none; margin-top: 1px; }
 
-/* ——— sections ——— */
+/* Sections. */
 .lp-sec { margin-top: clamp(48px, 8vw, 104px); scroll-margin-top: 20px; }
 .lp-sec > small { display: block; font-size: 13px; font-weight: 700; color: var(--accent-ink); }
 .lp-sec > h2 {
@@ -147,18 +169,18 @@
 .lp-rv { transition: opacity 600ms var(--ease-out), transform 700ms var(--ease-out); }
 .lp-rv.lp-wait { opacity: 0; transform: translateY(26px); }
 
-.lp-3 { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.lp-3 > li { padding: 22px 24px; }
-.lp-3 i.n {
+.lp-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.lp-steps > li { padding: 20px; }
+.lp-steps i.n {
   display: block;
   margin-bottom: 10px;
-  font: 800 44px/1 var(--display);
+  font: 800 36px/1 var(--display);
   letter-spacing: -.04em;
   font-style: normal;
   color: var(--accent);
 }
-.lp-3 b, .lp-bento h3 { display: block; margin: 0; font: 700 18px/23px var(--display); letter-spacing: -.01em; }
-.lp-3 p, .lp-bento p, .lp-store p { margin: 4px 0 0; font-size: 14px; line-height: 21px; color: var(--ink-2); }
+.lp-steps b, .lp-bento h3 { display: block; margin: 0; font: 700 18px/23px var(--display); letter-spacing: -.01em; }
+.lp-steps p, .lp-bento p, .lp-store p { margin: 4px 0 0; font-size: 14px; line-height: 21px; color: var(--ink-2); }
 
 .lp-bento { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
 .lp-bento > li {
@@ -216,26 +238,31 @@
   color: var(--ink-3);
 }
 
-/* ——— narrower screens ——— */
+/* Narrower screens. */
 @media (max-width: 960px) {
   .lp-hero { grid-template-columns: 1fr; }
+  .lp-hero h1 { max-width: none; }
+  .lp-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lp-bento > .s2, .lp-bento > .s3, .lp-bento > .s4 { grid-column: span 3; }
 }
 @media (max-width: 760px) {
   .lp-links { display: none; }
-  .lp-3 { grid-template-columns: 1fr; }
+  .lp-steps { grid-template-columns: 1fr; }
   .lp-bento > .s2, .lp-bento > .s3, .lp-bento > .s4 { grid-column: span 6; }
   .lp-bento > li { min-height: 0; }
 }
 @media (max-width: 420px) {
-  .lp-envs li { grid-template-columns: minmax(0, 1fr) auto; }
-  .lp-envs code { display: none; }
+  /* A phone: every button full width, so each is easy to reach. With the
+     trial on offer, Create account and Log in share the second row. */
   .lp-cta .btn { flex: 1 1 100%; }
-  .lp-trial__row .btn { flex: 1 1 100%; }
+  .lp-try { flex: 1 1 100%; }
+  .lp-try__btn { align-items: center; text-align: center; }
+  .lp-try ~ .btn { flex: 1 1 0; }
+  .lp-roles { margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lp-nav, .lp-eyebrow, .lp-w > span, .lp-in, .lp-stage, .lp-envs li, .lp-df li { animation: none; }
+  .lp-nav, .lp-eyebrow, .lp-w > span, .lp-in, .lp-stage { animation: none; }
   .lp-rv, .lp-bento > li { transition: none; }
   .lp-rv.lp-wait { opacity: 1; transform: none; }
   .lp-bento > li:hover { transform: none; }

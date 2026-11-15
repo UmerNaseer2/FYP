@@ -37,9 +37,9 @@ const NEW_ORGANIZATION = ":new";
  * Draws nothing when there is nothing to choose: one organization and no way
  * to make another. That is the desktop app, which keeps a single hidden
  * organization of its own, and a demo with one organization. It also draws
- * nothing until the list arrives, and nothing if it never does: the name of
- * the organization is already in the top bar, so a picker that could only
- * fail would add a broken control and nothing else.
+ * nothing until the list arrives, and nothing if it never does: the account
+ * menu already names the organization, so a picker that could only fail
+ * would add a broken control and nothing else.
  */
 export function OrgSwitcher() {
   const id = useId();
@@ -90,7 +90,8 @@ export function OrgSwitcher() {
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    // A long name ends with an ellipsis in the picker; the whole of it is the tooltip.
+    <div className="flex flex-col gap-1 min-w-0" title={org.name}>
       <label className="section-title" htmlFor={id}>
         Organization
       </label>

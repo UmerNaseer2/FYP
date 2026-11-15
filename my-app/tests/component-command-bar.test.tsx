@@ -316,7 +316,7 @@ describe("what you picked last", () => {
     expect(options().filter((o) => o === "Deploy")).toHaveLength(1);
   });
 
-  test("keeps three at most", () => {
+  test("leaves out the page you are already on", () => {
     for (const name of [/Dashboard/, /Compare/, /Version Sync/, /Deploy/]) {
       const bar = renderBar();
       fireEvent.click(screen.getByRole("option", { name }));
@@ -327,7 +327,7 @@ describe("what you picked last", () => {
   });
 
   test("shrugs off a broken saved list", () => {
-    localStorage.setItem("schema-studio:recent-commands", "not json");
+    localStorage.setItem("schema-studio:recents:_", "not json");
     renderBar();
     expect(group("Recent")).toBeNull();
     expect(options()[0]).toBe("Dashboard");

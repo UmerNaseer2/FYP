@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Deploy. Shown in the Help panel; the blurb is the page header's one line. */
@@ -8,11 +9,11 @@ export const deployHelp: HelpTopic = {
     "Deploy brings one schema of a database up to a version. It runs versions saved to the registry from Compare & Author or the Script Editor, not pasted SQL. Each run goes in one transaction, so all of its migrations are applied or none are.",
   steps: [
     "Save the migration to the registry first, on Compare & Author or in the Script Editor.",
-    "On Pre-flight, pick the connection, the schema and the script group, then press Check database.",
+    { text: "On Pre-flight, pick the connection, the schema and the script group, then press Check database.", target: anchor("deploy-target", ".dp-fields") },
     "Read Applied to target, the version timeline and the list of pending migrations.",
-    "Choose how far to go. Tick a version, press its Run button, or press Run all. This only picks the range. Nothing runs yet.",
-    "Read the Pre-flight checklist. It warns you about breaking changes, deleted rows and drift. The warnings do not stop a run.",
-    "Press Dry run to rehearse. The scripts run on the target and are then rolled back, so nothing is written.",
+    { text: "Choose how far to go. Tick a version, press its Run button, or press Run all. This only picks the range. Nothing runs yet.", target: anchor("deploy-pending", ".dp-mig-list") },
+    { text: "Read the Pre-flight checklist. It warns you about breaking changes, deleted rows and drift. The warnings do not stop a run.", target: anchor("deploy-checklist", ".dp-gates") },
+    { text: "Press Dry run to rehearse. The scripts run on the target and are then rolled back, so nothing is written.", target: anchor("deploy-run", ".dp-zone") },
     "Press Deploy to run for real. The Run step shows how each migration went.",
     "On Verify, read what was applied, then record it on Version Sync or watch the database on Drift.",
   ],

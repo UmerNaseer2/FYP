@@ -7,7 +7,7 @@
  * steps, the page's words explained, and at least one common problem.
  */
 import { NAV_ITEMS } from "@/components/studio/nav";
-import { BLURB_MAX_WORDS, GENERAL_HELP, HELP_TOPICS, helpForPage, helpForPath } from "@/lib/help";
+import { BLURB_MAX_WORDS, GENERAL_HELP, HELP_TOPICS, helpForPage, helpForPath, stepTarget, stepText } from "@/lib/help";
 
 const ALL_TOPICS = [...Object.entries(HELP_TOPICS), ["general", GENERAL_HELP] as const];
 
@@ -50,7 +50,7 @@ describe("help topics", () => {
   test.each(ALL_TOPICS)("%s: nothing is said twice, and no long dashes", (_page, topic) => {
     // The panel uses each line as its React key, so a repeat would also warn.
     const lines = [
-      ...topic.steps,
+      ...topic.steps.map(stepText),
       ...topic.terms.map((entry) => entry.term),
       ...topic.problems.map((entry) => entry.problem),
       ...(topic.sections ?? []).map((section) => section.title),
@@ -58,6 +58,29 @@ describe("help topics", () => {
     ];
     expect(new Set(lines).size).toBe(lines.length);
     expect(JSON.stringify(topic)).not.toMatch(/[–—]/);
+  });
+
+  test("every page's help is named after its page, with no slogan in the way", () => {
+    expect(HELP_TOPICS["/history"].title).toBe("History");
+    expect(HELP_TOPICS["/admin"].title).toBe("Admin");
+    expect(HELP_TOPICS["/requests"].title).toBe("Requests");
+  });
+
+  test.each(ALL_TOPICS)("%s: a step's Show me target is a named anchor the page can carry", (_page, topic) => {
+    for (const step of topic.steps) {
+      const target = stepTarget(step);
+      if (target === null) continue;
+      // The name comes first, so a page only has to add data-tour="name".
+      expect(target).toMatch(/^\[data-tour="[a-z-]+"\]/);
+      expect(stepText(step).trim()).not.toBe("");
+    }
+  });
+
+  test("a step is plain words, or words with a target", () => {
+    expect(stepText("Do this.")).toBe("Do this.");
+    expect(stepTarget("Do this.")).toBeNull();
+    expect(stepText({ text: "Press Run.", target: ".run" })).toBe("Press Run.");
+    expect(stepTarget({ text: "Press Run.", target: ".run" })).toBe(".run");
   });
 
   test("the help for a path sets the organization aside", () => {

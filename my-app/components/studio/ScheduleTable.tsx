@@ -53,9 +53,9 @@ type ScheduleView = {
 
 /** "3m ago" for a past instant, against a clock the caller controls. */
 function ago(iso: string | null, now: number | null): string {
-  if (!iso || now === null) return "—";
+  if (!iso || now === null) return "…";
   const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
+  if (Number.isNaN(then)) return "…";
   const mins = Math.floor(Math.max(0, now - then) / 60_000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
@@ -72,9 +72,9 @@ function callGap(seconds: number): string {
 
 /** "in 8m" for a future instant, "now" once it has passed. */
 function until(iso: string | null, now: number | null): string {
-  if (!iso || now === null) return "—";
+  if (!iso || now === null) return "…";
   const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
+  if (Number.isNaN(then)) return "…";
   const mins = Math.round((then - now) / 60_000);
   if (mins <= 0) return "now";
   if (mins < 60) return `in ${mins}m`;
@@ -378,7 +378,7 @@ export function ScheduleTable() {
                         className="mono whitespace-nowrap"
                         style={{ color: r.due ? "var(--pending)" : "var(--text-2)" }}
                       >
-                        {r.lastCheckedAt ? until(r.nextDueAt, now) : "now — never checked"}
+                        {r.lastCheckedAt ? until(r.nextDueAt, now) : "now, never checked"}
                       </span>
                     )}
                   </td>

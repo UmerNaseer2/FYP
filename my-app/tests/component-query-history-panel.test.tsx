@@ -262,7 +262,7 @@ describe("what one stored run says", () => {
 
     await listed();
     expect(screen.getByText("Estimated")).toBeInTheDocument();
-    expect(screen.getByText("— · —")).toBeInTheDocument();
+    expect(screen.getByText("not timed · rows not counted")).toBeInTheDocument();
     // Anchored, so the retention line's "2,000 rows" cannot answer for the row.
     expect(screen.queryByText(/^0 ms · /)).not.toBeInTheDocument();
     expect(screen.queryByText(/ · 0 rows$/)).not.toBeInTheDocument();
@@ -396,7 +396,7 @@ describe("the newest run set against an earlier one", () => {
 
     await listed();
     expect(
-      screen.getByText(/No timing to compare — one of the two runs was an estimate/)
+      screen.getByText(/No timing to compare: one of the two runs was an estimate/)
     ).toBeInTheDocument();
   });
 
@@ -445,8 +445,8 @@ describe("choosing what to compare against", () => {
     const options = Array.from(baselinePicker().querySelectorAll("option")).map((o) => o.textContent);
     expect(options).toEqual([
       "The previous run",
-      `${shown("2026-09-11T09:00:00.000Z")} — 95 ms`,
-      `${shown("2026-09-10T09:00:00.000Z")} — 80 ms`,
+      `${shown("2026-09-11T09:00:00.000Z")} · 95 ms`,
+      `${shown("2026-09-10T09:00:00.000Z")} · 80 ms`,
     ]);
   });
 

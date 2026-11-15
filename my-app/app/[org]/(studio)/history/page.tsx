@@ -6,10 +6,11 @@ import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { downloadText } from "@/components/studio/ExportBar";
 import { PageHeader } from "@/components/studio/PageHeader";
-import { AlertCircleIcon, AlertTriangleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
-import { Pill, type PillTone } from "@/components/ui/Pill";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { InfoIcon } from "@/components/ui/icons";
 import { Select } from "@/components/ui/Select";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { StatusChip, StatusGlyph } from "@/components/ui/StatusChip";
 import { useNow } from "@/hooks/useNow";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
@@ -25,17 +26,17 @@ import {
   isKind,
   lastDays,
   matchesFilters,
-  statusLabel,
   type ActivityFilters,
+  type ActivityKind,
 } from "@/lib/activity";
 import { apiFetch } from "@/lib/api-fetch";
 import { DRIFT_SOURCES, driftSourceLabel } from "@/lib/drift-source";
-import { historyHelp } from "@/lib/help/history";
 import type { DriftEventFeedItem, DriftStatus } from "@/lib/lineage-db";
 import { refusalMessage } from "@/lib/permissions";
+import { statusLook } from "@/lib/status-look";
 
 /**
- * Your activity: every drift check recorded for the organization, newest
+ * History: every drift check recorded for the organization, newest
  * first. The data is GET /api/lineage/audit, the same list the Drift page's
  * Audit log tab reads, and it is read only.
  *
@@ -129,7 +130,7 @@ export default function HistoryPage() {
   }
 
   const actions = (
-    <div className="hi-acts no-print">
+    <div className="hi-acts no-print" data-tour="history-export">
       <button
         type="button"
         className="hi-btn"
@@ -154,12 +155,8 @@ export default function HistoryPage() {
 
   return (
     <div className="hi-page">
-      <PageHeader
-        page="/history"
-        title={historyHelp.title}
-        blurb={historyHelp.blurb}
-        actions={cannotRead ? null : actions}
-      />
+      {/* The title is the menu name and the line under it comes from lib/help. */}
+      <PageHeader page="/history" actions={cannotRead ? null : actions} />
 
       {cannotRead ? (
         <div className="role-note">
@@ -173,12 +170,10 @@ export default function HistoryPage() {
           </div>
         </div>
       ) : error ? (
-        <div className="hi-none" role="alert">
+        <div className="hi-failed">
           <h2>Couldn&apos;t load the activity</h2>
-          <p>{error}</p>
-          <button type="button" className="btn btn-secondary" onClick={retry}>
-            Retry
-          </button>
+          {/* Says what happened and offers Try again. */}
+          <ErrorNotice error={error} onRetry={retry} />
         </div>
       ) : events === null ? (
         <div className="hi-skel" role="status" aria-label="Loading the activity">
@@ -206,7 +201,7 @@ export default function HistoryPage() {
             />
           )}
 
-          <div className="hi-f" role="group" aria-label="Filter by result">
+          <div className="hi-f" data-tour="history-filters" role="group" aria-label="Filter by result">
             {ACTIVITY_KINDS.map((kind) => (
               <button
                 key={kind.key}
@@ -215,7 +210,7 @@ export default function HistoryPage() {
                 aria-pressed={filters.kind === kind.key}
                 onClick={() => changeFilters({ kind: kind.key })}
               >
-                {kind.label}
+                {kindLabel(kind)}
                 <em>{all.filter((event) => isKind(event, kind.key)).length}</em>
               </button>
             ))}
@@ -244,6 +239,7 @@ export default function HistoryPage() {
             <input
               type="search"
               className="hi-search"
+              data-tour="history-search"
               aria-label="Search the activity"
               placeholder="Search, for example a schema name"
               value={filters.search}
@@ -354,16 +350,33 @@ function statusPhrase(status: DriftStatus): string {
   return "could not be reached";
 }
 
-function statusTone(status: DriftStatus): PillTone {
-  if (status === "drifted") return "drift";
-  if (status === "in_sync") return "sync";
-  return "break";
+/**
+ * A filter button's word. The three that name a state use the shared status
+ * words (lib/status-look), so "Can't be reached" reads the same on every page.
+ */
+function kindLabel(kind: { key: ActivityKind; label: string }): string {
+  if (kind.key === "all" || kind.key === "acknowledged") return kind.label;
+  return statusLook(kind.key).label;
 }
 
-function StatusIcon({ status }: { status: DriftStatus }) {
-  if (status === "drifted") return <AlertTriangleIcon size={16} />;
-  if (status === "in_sync") return <CheckIcon size={16} />;
-  return <AlertCircleIcon size={16} />;
+/** The three results a check can have, in the order the key lists them. */
+const CHECK_RESULTS: DriftStatus[] = ["in_sync", "drifted", "unreachable"];
+
+/**
+ * One check in the strip: a small square in the state's colour with the
+ * state's glyph on it, so the colour is never the only clue.
+ */
+function Mark({ status, off }: { status: DriftStatus; off?: boolean }) {
+  return (
+    <span
+      className={`hi-mark st--${statusLook(status).tone}`}
+      data-status={status}
+      data-off={off ? "true" : undefined}
+      aria-hidden="true"
+    >
+      <StatusGlyph status={status} size={10} strokeWidth={3.2} />
+    </span>
+  );
 }
 
 /** One option per schema that appears in the list, plus "All schemas". */
@@ -430,7 +443,7 @@ function Ribbon({
         )}
       </div>
 
-      <div className="hi-days" ref={strip}>
+      <div className="hi-days" data-tour="history-days" ref={strip}>
         {days.map((key) => {
           const dayEvents = byDay.get(key) ?? [];
           const dayNumber = Number(key.slice(8));
@@ -455,7 +468,7 @@ function Ribbon({
           const label =
             `${shortDay(key)}: ${checks(dayEvents.length)}` +
             (drifted > 0 ? `, ${drifted} drifted` : "") +
-            (unreachable > 0 ? `, ${unreachable} unreachable` : "");
+            (unreachable > 0 ? `, ${unreachable} can't be reached` : "");
 
           return (
             <button
@@ -469,12 +482,7 @@ function Ribbon({
             >
               <b aria-hidden="true">{dayNumber}</b>
               {marks.map((event) => (
-                <span
-                  key={event.id}
-                  className="hi-mark"
-                  data-status={event.status}
-                  data-off={kept.includes(event) ? undefined : "true"}
-                />
+                <Mark key={event.id} status={event.status} off={!kept.includes(event)} />
               ))}
               {extra > 0 && <span className="hi-more">+{extra}</span>}
             </button>
@@ -483,18 +491,13 @@ function Ribbon({
       </div>
 
       <div className="hi-key">
-        <span>
-          <span className="hi-mark" data-status="in_sync" />
-          In sync
-        </span>
-        <span>
-          <span className="hi-mark" data-status="drifted" />
-          Drifted
-        </span>
-        <span>
-          <span className="hi-mark" data-status="unreachable" />
-          Unreachable
-        </span>
+        {/* The same square, glyph and word as the strip and the list below. */}
+        {CHECK_RESULTS.map((status) => (
+          <span key={status}>
+            <Mark status={status} />
+            {statusLook(status).label}
+          </span>
+        ))}
         <span>
           One square is one check, up to {RIBBON_MARKS} a day. Pick a day to see only that day.
         </span>
@@ -537,22 +540,23 @@ function Feed({
             {dayTitle(group.key, now)}
             <small>{checks(group.events.length)}</small>
           </h2>
-          <ul className="hi-list">
+          <ul className="hi-list" data-tour="history-list">
             {group.events.map((event) => (
               <li key={event.id}>
                 <button
                   type="button"
-                  className="hi-row"
+                  className={`hi-row st--${statusLook(event.status).tone}`}
                   data-status={event.status}
                   aria-current={event.id === pickedId ? "true" : undefined}
                   onClick={() => onPick(event.id)}
                 >
                   <time dateTime={event.detectedAt}>{clock(event.detectedAt)}</time>
-                  <span className="hi-ic" aria-hidden="true">
-                    <StatusIcon status={event.status} />
-                  </span>
                   <span className="hi-tx">
-                    <span className="hi-tx-main">
+                    {/* A long name ends with an ellipsis; the full line is in the tooltip. */}
+                    <span
+                      className="hi-tx-main"
+                      title={`${event.schemaName} ${statusPhrase(event.status)}`}
+                    >
                       <b>{event.schemaName}</b> {statusPhrase(event.status)}
                     </span>
                     <small>
@@ -561,7 +565,7 @@ function Feed({
                       {event.acknowledgedAt ? ", acknowledged" : ""}
                     </small>
                   </span>
-                  <Pill tone={statusTone(event.status)}>{statusLabel(event.status)}</Pill>
+                  <StatusChip status={event.status} size="sm" />
                 </button>
                 {event.id === openId && event.id === pickedId && (
                   <div className="hi-inline">{detail}</div>
@@ -584,7 +588,7 @@ function Detail({ event, href }: { event: DriftEventFeedItem; href: string }) {
     <aside className="hi-det" aria-label="Check detail">
       <div className="hi-dk">
         Drift check
-        <Pill tone={statusTone(event.status)}>{statusLabel(event.status)}</Pill>
+        <StatusChip status={event.status} />
       </div>
       <h2>
         {event.schemaName} {statusPhrase(event.status)}

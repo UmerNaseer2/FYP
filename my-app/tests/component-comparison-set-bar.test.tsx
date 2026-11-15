@@ -106,8 +106,10 @@ let asked: string[] = [];
 let confirmAnswer = true;
 
 const nameBox = () => screen.getByLabelText("Comparison set name");
-const saveButton = () => screen.getByRole("button", { name: /^(Save|Update|Saving)/ });
+const saveButton = () => screen.getByRole("button", { name: /^(Save|Update|Saving)(?!d)/ });
 const deleteButton = () => screen.getByRole("button", { name: /^Delete the set/ });
+/** Opens the "Saved comparisons" list in the page header. */
+const openList = () => fireEvent.click(screen.getByRole("button", { name: /^Saved comparisons/ }));
 const posts = () => fetchCalls.filter((call) => call.method === "POST");
 const sent = (index = 0) => JSON.parse(posts()[index].body ?? "{}");
 
@@ -148,16 +150,17 @@ afterEach(() => {
 describe("opening a saved set", () => {
   it("says how to make the first one when there are none", () => {
     show({ sets: [] });
+    openList();
 
     expect(
-      screen.getByText("None yet — set up a comparison below, then name it and save it.")
+      screen.getByText("None yet. Run a comparison, then name it and save it under the results.")
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Open a saved comparison set")).not.toBeInTheDocument();
   });
 
   it("does not tell a role that may not save one to save one", () => {
     setUser("viewer");
     show({ sets: [] });
+    openList();
 
     expect(screen.getByText("None saved yet.")).toBeInTheDocument();
   });
@@ -173,10 +176,10 @@ describe("opening a saved set", () => {
       ],
     });
 
-    fireEvent.click(screen.getByLabelText("Open a saved comparison set"));
+    openList();
 
     expect(
-      screen.getByRole("option", {
+      screen.getByRole("button", {
         name: "Nightly check · 2 targets · row data · connection deleted · never run",
       })
     ).toBeInTheDocument();
@@ -187,16 +190,16 @@ describe("opening a saved set", () => {
     // of the option reads as a gap rather than an answer.
     show({ sets: [set({ lastRunAt: "not a date" })] });
 
-    fireEvent.click(screen.getByLabelText("Open a saved comparison set"));
+    openList();
 
-    expect(screen.getByRole("option", { name: /never run$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /never run$/ })).toBeInTheDocument();
   });
 
   it("opens a set as a link anyone could have typed, and runs it", () => {
     show({ sets: [set({ id: 12 })] });
 
-    fireEvent.click(screen.getByLabelText("Open a saved comparison set"));
-    fireEvent.click(screen.getByRole("option", { name: /Nightly check/ }));
+    openList();
+    fireEvent.click(screen.getByRole("button", { name: /^Nightly check/ }));
 
     expect(routerCalls.push).toEqual(["/test-org/compare?set=12&run=1"]);
   });
@@ -271,7 +274,7 @@ describe("when Save is off", () => {
     fireEvent.change(nameBox(), { target: { value: "Nightly check" } });
     expect(
       screen.getByText(
-        "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet."
+        "Press Compare first. Save stores the selection as the page last loaded it, and your latest changes are not in it yet."
       )
     ).toBeInTheDocument();
   });
@@ -282,7 +285,7 @@ describe("when Save is off", () => {
     expect(saveButton()).toBeDisabled();
     expect(saveButton()).toHaveAttribute(
       "title",
-      "Nothing to update — this is the comparison the set already holds"
+      "Nothing to update. This is the comparison the set already holds."
     );
   });
 
@@ -483,7 +486,7 @@ describe("a name that belongs to another set", () => {
 
     expect(posts()).toHaveLength(1);
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Not saved — pick a different name, or confirm to replace it."
+      "Not saved. Pick a different name, or confirm to replace it."
     );
     expect(routerCalls.push).toEqual([]);
   });
@@ -686,7 +689,7 @@ describe("the one sentence under the bar", () => {
 
     expect(
       screen.getByText(
-        "A connection this set used has been deleted. Pick a replacement below, press Compare, then Update the set."
+        "A connection this set used has been deleted. Pick a replacement in the pickers, press Compare, then Update the set."
       )
     ).toBeInTheDocument();
   });
@@ -719,7 +722,7 @@ describe("the one sentence under the bar", () => {
     show({ activeSetId: 7, modified: true });
 
     expect(
-      screen.getByText("Changed since it was saved — reopen the set to go back.")
+      screen.getByText("Changed since it was saved. Reopen the set to go back.")
     ).toBeInTheDocument();
   });
 
@@ -728,7 +731,7 @@ describe("the one sentence under the bar", () => {
 
     expect(
       screen.getByText(
-        "Changed since it was saved — press Update to keep it, or reopen the set to go back."
+        "Changed since it was saved. Press Update to keep it, or reopen the set to go back."
       )
     ).toBeInTheDocument();
   });
@@ -740,7 +743,7 @@ describe("the one sentence under the bar", () => {
     require("./helpers/render-page").setSessionLoading();
     show();
 
-    expect(screen.getByText("Saved sets")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Saved comparisons/ })).toBeInTheDocument();
     expect(screen.queryByText(/can't/)).not.toBeInTheDocument();
     expect(saveButton()).not.toHaveAttribute("title");
   });
@@ -836,7 +839,7 @@ describe("a role an admin has given only some of the boxes", () => {
 
     expect(
       screen.getByText(
-        "A connection this set used has been deleted. Pick a replacement below, press Compare, then save it under a new name."
+        "A connection this set used has been deleted. Pick a replacement in the pickers, press Compare, then save it under a new name."
       )
     ).toBeInTheDocument();
   });
@@ -849,7 +852,7 @@ describe("a role an admin has given only some of the boxes", () => {
     expect(saveButton()).toBeEnabled();
     expect(
       screen.getByText(
-        "Changed since it was saved — press Update to keep it, or reopen the set to go back."
+        "Changed since it was saved. Press Update to keep it, or reopen the set to go back."
       )
     ).toBeInTheDocument();
   });
@@ -869,6 +872,7 @@ describe("a role an admin has given only some of the boxes", () => {
   it("does not tell a role that may only update sets to make the first one", () => {
     updater();
     show({ sets: [] });
+    openList();
 
     expect(screen.getByText("None saved yet.")).toBeInTheDocument();
   });

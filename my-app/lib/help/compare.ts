@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Compare & Author. Shown in the Help panel; the blurb is the page header's one line. */
@@ -7,11 +8,11 @@ export const compareHelp: HelpTopic = {
   purpose:
     "Compare one source schema with up to six target schemas. Each target gets its own report of the differences and its own script that makes that target match the source. Comparing changes nothing in either database, and you can edit the script before you save it.",
   steps: [
-    "Pick the source: the connection and schema that already look the way you want.",
-    "Pick the target: the connection and schema that should be updated. Press Add target to compare the same source with more targets.",
-    "Tick Allow data loss or Compare row data only if you need them. A change to either one takes effect the next time you press Compare.",
-    "Press Compare. The app reads the schemas and shows one result for each target.",
-    "Read the Summary table and the report under it. Look at anything marked destructive or breaking first.",
+    { text: "Pick the source: the connection and schema that already look the way you want.", target: anchor("compare-pickers", ".cp-pair") },
+    { text: "Pick the target: the connection and schema that should be updated. Press Add target to compare the same source with more targets.", target: anchor("compare-targets", ".cp-target") },
+    { text: "Tick Allow data loss or Compare row data only if you need them. A change to either one takes effect the next time you press Compare.", target: anchor("compare-options", ".cp-opts") },
+    { text: "Press Compare. The app reads the schemas and shows one result for each target.", target: anchor("compare-run", ".cp-run") },
+    { text: "Read the Summary table and the report under it. Look at anything marked destructive or breaking first.", target: anchor("compare-results", ".cp-results") },
     "Review the Generated migration under the report. You can edit the Migration tab and the Rollback tab freely.",
     "Check the migration name, pick a change level and press Push to GitHub. That saves the script to your organization's registry.",
     "Open Deploy to run the saved script. Compare never runs it.",

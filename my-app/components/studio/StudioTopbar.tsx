@@ -1,18 +1,26 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { MenuIcon, SearchIcon } from "@/components/ui/icons";
+import { ChevronRightIcon, MenuIcon, SearchIcon } from "@/components/ui/icons";
 import { useOrg } from "@/hooks/useOrg";
 
 type StudioTopbarProps = {
-  /** Current screen name, shown after the organization's name in the breadcrumb. */
+  /** Current screen name, the last part of the breadcrumb. */
   breadcrumbScreen: string;
+  /** The screen's menu group ("Watch"), shown before it. Dashboard has none. */
+  breadcrumbGroup?: string;
   /** Show the button that opens the navigation drawer (phones). */
   showMenu?: boolean;
   onMenuClick?: () => void;
+  /** Requests waiting on this person. Above 0 the menu button carries a dot. */
+  menuWaiting?: number;
   /** Opens the command bar. Leave it out and the search pill is not drawn. */
   onOpenCommand?: () => void;
-  /** The round buttons at the right end: Ask AI, Help, Needs you, theme, account. */
+  /**
+   * The round buttons at the right end: Ask AI, Help, Needs you, theme and
+   * account. On a phone the shell passes the account button only; the rest
+   * are in the drawer.
+   */
   action?: ReactNode;
 };
 
@@ -26,16 +34,21 @@ type StudioTopbarProps = {
  */
 export function StudioTopbar({
   breadcrumbScreen,
+  breadcrumbGroup,
   showMenu = false,
   onMenuClick,
+  menuWaiting = 0,
   onOpenCommand,
   action,
 }: StudioTopbarProps) {
-  // The breadcrumb starts with the organization the page is open in, so
-  // someone who belongs to two can see which one they are working in. Every
-  // studio page has one (app/[org]/layout.tsx); without one, as in a component
-  // test, the screen name stands alone.
+  // The breadcrumb reads "Group › Page", the same two names the menu shows.
+  // The organization the page is open in is its tooltip, and is named in the
+  // account menu and the menu's organization picker.
   const orgName = useOrg()?.name ?? null;
+  const menuLabel =
+    menuWaiting > 0
+      ? `Open navigation, ${menuWaiting} ${menuWaiting === 1 ? "request" : "requests"} waiting on you`
+      : "Open navigation";
 
   // "⌘ K" on a Mac, "Ctrl K" everywhere else. Read after the first draw, so
   // the server and the browser start out drawing the same thing.
@@ -49,25 +62,31 @@ export function StudioTopbar({
   return (
     <div className="top topbar">
       {showMenu && (
-        <button type="button" className="tb" aria-label="Open navigation" onClick={onMenuClick}>
+        <button type="button" className="tb tb-menu" aria-label={menuLabel} onClick={onMenuClick}>
           <MenuIcon size={18} />
+          {/* A dot, not a number: the count is on Requests inside the drawer. */}
+          {menuWaiting > 0 && <i className="tb-dot" aria-hidden="true" />}
         </button>
       )}
 
-      {/* The organization half hides on narrower windows (.crumb-org in
-          globals.css); the screen name always stays. */}
-      <nav className="org" aria-label="Breadcrumb">
-        {orgName && (
+      {/* The group half hides on narrow windows (.crumb-group in globals.css);
+          the screen name always stays, cut short with an ellipsis if it must be. */}
+      <nav
+        className="org"
+        aria-label="Breadcrumb"
+        title={orgName ? `${breadcrumbScreen}, in ${orgName}` : undefined}
+      >
+        {breadcrumbGroup && (
           <>
-            <b className="crumb-org" title={orgName}>
-              {orgName}
-            </b>
-            <span className="crumb-org" aria-hidden="true">
-              {" · "}
+            <span className="crumb-group">{breadcrumbGroup}</span>
+            <span className="crumb-group crumb-sep" aria-hidden="true">
+              <ChevronRightIcon size={13} />
             </span>
           </>
         )}
-        <span className="crumb-screen">{breadcrumbScreen}</span>
+        <span className="crumb-screen" aria-current="page">
+          {breadcrumbScreen}
+        </span>
       </nav>
 
       {onOpenCommand && (

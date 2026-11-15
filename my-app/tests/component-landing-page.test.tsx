@@ -39,17 +39,41 @@ function links(): [string | null, string | null][] {
 }
 
 describe("LandingPage", () => {
-  it("offers the shared trial as one button per role, only when the server has it", () => {
+  it("offers the shared trial as Try it now, only when the server has it", () => {
     const { rerender } = render(<LandingPage {...SIGN_IN} />);
-    expect(screen.queryByRole("button", { name: /^Try as/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Try/ })).toBeNull();
+    expect(screen.queryByText(/shared trial/)).toBeNull();
     rerender(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    const buttons = screen.getAllByRole("button", { name: /^Try as/ });
-    expect(buttons.map((b) => [b.textContent, b.getAttribute("name"), b.getAttribute("value")])).toEqual([
-      ["Try as Admin", "role", "admin"],
-      ["Try as Editor", "role", "editor"],
-      ["Try as Viewer", "role", "viewer"],
+    // One main button, which signs the visitor in as the Trial Admin, and the
+    // other two accounts as links in the line under it.
+    const buttons = screen.getAllByRole("button", { name: /^Try/ });
+    expect(buttons.map((b) => [b.getAttribute("aria-label"), b.getAttribute("name"), b.getAttribute("value")])).toEqual([
+      ["Try it now, no account needed", "role", "admin"],
+      ["Try as an Editor", "role", "editor"],
+      ["Try as a Viewer", "role", "viewer"],
     ]);
-    expect(screen.getByText(/Everyone shares one trial organization/)).toBeInTheDocument();
+    expect(buttons[0]).toHaveTextContent("Try it now");
+    expect(buttons[0]).toHaveTextContent("No account needed");
+    for (const button of buttons) {
+      expect(button.closest("form")).toHaveAttribute("action", "/api/trial");
+      expect(button.closest("form")).toHaveAttribute("method", "post");
+    }
+    expect(
+      screen.getByText(
+        "Try it now opens a shared trial with example data. Everyone in it sees the same organization."
+      )
+    ).toBeInTheDocument();
+    // Create account and Log in stay, next to it.
+    expect(links()).toEqual([
+      ["Create account", "/login?callbackUrl=/onboarding"],
+      ["Log in", "/login"],
+    ]);
+  });
+
+  it("never says the trial resets by itself, and names no environments", () => {
+    render(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
+    expect(document.body).not.toHaveTextContent(/every night|nightly|resets? (every|each|at)/i);
+    expect(document.body).not.toHaveTextContent(/\b(dev|staging|prod|production)\b/i);
   });
 
   it("offers exactly two ways in", () => {
@@ -82,7 +106,7 @@ describe("LandingPage", () => {
   it("says what the product is for and lists six features", () => {
     render(<LandingPage {...SIGN_IN} />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "Keep dev, staging and prod from drifting apart."
+      "Catch the schema changes nobody shipped."
     );
     const features = within(screen.getByRole("region", { name: "What it does" }));
     expect(features.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
@@ -103,15 +127,27 @@ describe("LandingPage", () => {
     expect(document.body).not.toHaveTextContent(/second person/);
   });
 
-  it("labels the made-up schema in the hero as an example", () => {
-    // It shows drift and a waiting deploy, and nobody should read it as the
-    // state of a real database.
+  it("labels the made-up schema in the hero as an example, with one change and the approval rule", () => {
+    // Nobody should read it as the state of a real database.
     render(<LandingPage {...SIGN_IN} />);
-    const example = within(screen.getByRole("figure", { name: "Example: one schema in three databases" }));
+    const example = within(screen.getByRole("figure", { name: "Example: a schema that has drifted" }));
     expect(example.getByText("Example")).toBeInTheDocument();
-    for (const status of ["In sync", "Drifted", "Outdated"]) {
-      expect(example.getByText(status)).toBeInTheDocument();
-    }
+    expect(example.getByText("Drifted")).toBeInTheDocument();
+    expect(example.getByText("Changed by hand, outside a deploy")).toBeInTheDocument();
+    expect(example.getByText("A run your role does not allow waits for an Admin.")).toBeInTheDocument();
+    expect(example.queryByText(/approval needed|In sync|Outdated/)).toBeNull();
+  });
+
+  it("walks through the five steps the app's menu uses", () => {
+    render(<LandingPage {...SIGN_IN} />);
+    const how = within(screen.getByRole("region", { name: "How it works" }));
+    expect(how.getAllByRole("listitem").map((item) => item.querySelector("b")?.textContent)).toEqual([
+      "Connect",
+      "Compare",
+      "Script",
+      "Ship",
+      "Watch",
+    ]);
   });
 
   it("says how passwords are stored, and does not claim encryption the server lacks", () => {

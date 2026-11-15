@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Pill, type PillTone } from "@/components/ui";
+import { StatusChip } from "@/components/ui/StatusChip";
+import { statusLook } from "@/lib/status-look";
 import { CheckIcon, SearchIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
 import { driftSourceLabel, type DriftSource } from "@/lib/drift-source";
@@ -35,20 +36,9 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "drifted", label: "Drifted" },
   { key: "in_sync", label: "In sync" },
-  { key: "unreachable", label: "Unreachable" },
+  { key: "unreachable", label: "Can't be reached" },
   { key: "acknowledged", label: "Acknowledged" },
 ];
-
-function statusMeta(status: DriftStatus): { tone: PillTone; label: string } {
-  switch (status) {
-    case "drifted":
-      return { tone: "drift", label: "Drifted" };
-    case "in_sync":
-      return { tone: "sync", label: "In sync" };
-    case "unreachable":
-      return { tone: "break", label: "Unreachable" };
-  }
-}
 
 /**
  * The dense, filterable audit log (Pass-7 "S7"). Every recorded drift check —
@@ -175,7 +165,8 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
             </thead>
             <tbody>
               {filtered.map((r) => {
-                const meta = statusMeta(r.status);
+                // The state's word, the same one every other page uses.
+                const label = statusLook(r.status).label;
                 const href = orgPath(`/drift?tab=detail&schema=${r.trackedSchemaId}`);
                 return (
                   <tr
@@ -205,7 +196,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                     </Td>
                     <Td label="Status">
                       <span className="inline-flex items-center gap-1.5">
-                        <Pill tone={meta.tone}>{meta.label}</Pill>
+                        <StatusChip status={r.status} size="sm" />
                         {r.acknowledgedAt && (
                           <span
                             className="inline-flex items-center gap-1 text-[11px]"
@@ -218,7 +209,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                       </span>
                     </Td>
                     <Td label="Summary">
-                      <span style={{ color: "var(--text-2)" }}>{r.summary ?? "—"}</span>
+                      <span style={{ color: "var(--text-2)" }}>{r.summary ?? "No summary"}</span>
                     </Td>
                     <Td label="Schema">
                       <Link
@@ -231,7 +222,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                       >
                         {r.schemaName}
                         <span className="sr-only">
-                          {` — open the drift detail for this check, ${meta.label.toLowerCase()} ${timeAgo(
+                          {`, open the drift detail for this check, ${label.toLowerCase()} ${timeAgo(
                             r.detectedAt
                           )}`}
                         </span>

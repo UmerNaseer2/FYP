@@ -19,7 +19,7 @@ import type { PerfTarget } from "./PerfTargetPicker";
 import { apiFetch } from "@/lib/api-fetch";
 
 /**
- * Spec feature 10 — "Allow custom alert thresholds for performance issues."
+ * Spec feature 10, "Allow custom alert thresholds for performance issues."
  *
  * A form over the five things this app can watch. Two decisions carried from
  * lib/perf-thresholds.ts, both visible on screen:
@@ -418,7 +418,7 @@ function validateDraft(draft: Draft): Partial<Record<ThresholdKey, string>> {
   for (const k of THRESHOLD_KEYS) {
     // An empty box is not a zero. Number("") is 0, and three of these rules
     // take 0 as their minimum, so without this a cleared box saved quietly as
-    // 0 — a score rule that can never fire, or a dead-row rule that fires on
+    // 0, a score rule that can never fire, or a dead-row rule that fires on
     // everything. Checking the text before it is turned into a number is the
     // only place the difference between "0" and "" still exists.
     if (draft[k].text.trim() === "") {

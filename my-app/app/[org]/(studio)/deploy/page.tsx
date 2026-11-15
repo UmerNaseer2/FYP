@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type React
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
+import { TargetPicker, type TargetChoice } from "@/components/studio/TargetPicker";
 import {
   DeployIcon,
   RefreshIcon,
@@ -51,10 +52,13 @@ import {
 import { changeNoteSummary, readChangeNote } from "@/lib/change-note";
 import type { DeployAttemptRow } from "@/lib/deploy-attempts";
 import { countOf } from "@/lib/plural";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { Select } from "@/components/ui/Select";
+import { SetupChecklist, type SetupStep } from "@/components/ui/SetupChecklist";
 import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { permissionLabel, refusalMessage } from "@/lib/permissions";
+import { describeError } from "@/lib/friendly-error";
+import { DEFAULT_ROLE, permissionLabel, refusalMessage } from "@/lib/permissions";
 import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
 import {
   listVersions,
@@ -77,6 +81,7 @@ import {
   type TimelineRow,
   type TimelineStatus,
 } from "@/lib/version-timeline";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
@@ -92,7 +97,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 
 // ---------------------------------------------------------------------------
-// Deploy (S5) — Pre-flight → Run → Verify stepper.
+// Deploy (S5): Pre-flight → Run → Verify stepper.
 //
 // This is the Pass-6 reskin of the deploy panel that used to live inside the
 // legacy /scripts page. The page previews the run and warns about each risk
@@ -105,7 +110,7 @@ import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 //   • pendingScripts = GitHub scripts for (schema, group) whose semver is
 //     greater than the target's current version.
 //   • /api/scripts/apply takes the WHOLE batch in one request and runs it in
-//     one transaction. All of them or none of them — a failure anywhere rolls
+//     one transaction. All of them or none of them, a failure anywhere rolls
 //     the run back, so there is no partial deploy to unwind by hand. A real run
 //     first commits the ledger table and any enum value the batch adds, which
 //     no rollback can take back. The same call with dryRun skips those two and
@@ -173,7 +178,7 @@ type PatchEntry = {
   version: string;
   title: string | null;
   /**
-   * The change log stored with the row (spec 07 — "change logs with user
+   * The change log stored with the row (spec 07, "change logs with user
    * notes"). Optional: a row written by an older build, or by another tool,
    * has none.
    */
@@ -203,7 +208,7 @@ type PreflightResult = {
   /** Does the schema exist on the target? See lib/deploy-init.ts. */
   /**
    * What the target says it hosts, read from the connection's application
-   * table. Used here only to say so on screen — the apply route runs the same
+   * table. Used here only to say so on screen, the apply route runs the same
    * check again and is the one that refuses, because a screen is a courtesy
    * and the rule has to hold whatever reaches the endpoint.
    */
@@ -257,13 +262,13 @@ type OtherScriptEntry = {
 //
 // "rehearsed" is a dry run's version of "applied": the SQL really executed
 // against the target and then the whole run was rolled back.
-// "unknown" is not a state the run passes through — it is what is left when
+// "unknown" is not a state the run passes through, it is what is left when
 // the answer never arrived: the COMMIT did not report back, or the request
 // itself never completed. Neither "applied" nor "skipped" is a thing this page
 // can claim then, and picking one would send the reader off to do the wrong
 // thing about half the time.
 // "not-in-run" is a pending row the chosen target version stops short of. It
-// is not a run state at all — the run never reaches it — but the pending list
+// is not a run state at all, the run never reaches it, but the pending list
 // draws the same rows, and calling those "queued" promised the reader a run
 // they had not asked for.
 type RunStatus =
@@ -294,9 +299,9 @@ type ApplyResponse = {
   error?: string;
   results?: ApplyOutcome[];
   message?: string;
-  /** Set on a dry run the server could not rehearse — see the 55P04 branch. */
+  /** Set on a dry run the server could not rehearse, see the 55P04 branch. */
   dryRunLimitation?: boolean;
-  /** Set when the COMMIT did not report back — see the route's catch block. */
+  /** Set when the COMMIT did not report back, see the route's catch block. */
   outcomeUnknown?: boolean;
   /**
    * Set on every answer the route gives before its first write to the target
@@ -306,7 +311,7 @@ type ApplyResponse = {
   /**
    * What the run recorded in the GitHub registry (spec 07). Unknown rather
    * than typed, because readArchivedVersions is the one place that decides
-   * what a well-formed entry is — and an older server sends no such field.
+   * what a well-formed entry is, and an older server sends no such field.
    *
    * Nearly always absent HERE: Deploy's scripts were pulled from the registry,
    * so their files are already in it and the route leaves those out. It shows
@@ -378,7 +383,7 @@ function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
   return [...scripts].sort((a, b) => compareVersions(a.version, b.version));
 }
 
-// Stable unique key — must include schema_name because two schemas can hold the
+// Stable unique key, must include schema_name because two schemas can hold the
 // same script_name@version pair.
 function scriptKey(s: GitHubScript): string {
   return `${s.schema_name}@${s.script_name}@${s.version}`;
@@ -388,7 +393,7 @@ function getSqlLineCount(sql: string): number {
   return sql.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
 }
 
-// The version bump a change kind implies — used for the "bump" summary.
+// The version bump a change kind implies, used for the "bump" summary.
 function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
   if (kind === "breaking") return "major";
   if (kind === "additive") return "minor";
@@ -397,9 +402,9 @@ function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
 
 // The COMMIT/ROLLBACK pre-flight check uses the SAME helper as the server apply
 // route (lib/sql-guard), so the advisory warning here can never disagree with
-// what the route actually rejects — including the dollar-quoted-body handling.
+// what the route actually rejects, including the dollar-quoted-body handling.
 
-// "1 statement" / "4 statements" — the count PostgreSQL reported for one script.
+// "1 statement" / "4 statements": the count PostgreSQL reported for one script.
 function fmtStatements(n: number): string {
   return `${n} statement${n === 1 ? "" : "s"}`;
 }
@@ -436,7 +441,7 @@ function ledgerStatus(
   if (entry.status === "applied") {
     if (entry.inRegistry) return { text: "Applied", tone: "applied" };
     return {
-      text: "Applied — no registry file",
+      text: "Applied · no registry file",
       tone: "applied",
       title: pullWarned
         ? "Applied to this database, but the registry has no file for it: applied directly, " +
@@ -600,7 +605,7 @@ function RightStatus({ cell }: { cell: RunCell }) {
   if (cell.status === "not-in-run") {
     return <span className="dp-stat">not in this run</span>;
   }
-  // queued — waiting to run is not a warning, so it gets a dot, not an alert.
+  // queued, waiting to run is not a warning, so it gets a dot, not an alert.
   return (
     <span className="dp-stat">
       <span className="dp-dot" />
@@ -626,7 +631,7 @@ function MigRow({
 }: {
   seq: string;
   /**
-   * Makes the sequence circle a tick box (spec 11.5 — select or deselect which
+   * Makes the sequence circle a tick box (spec 11.5, select or deselect which
    * pending scripts to run). Absent on the run and rollback lists, where the
    * batch is already fixed and a box that changed nothing would be a lie.
    */
@@ -932,7 +937,7 @@ function DeployBody() {
   // to know whether to offer Approve at all (a box an admin ticks for a role
   // on the Admin screen), and whether this is the same person who asked for
   // the run (nobody approves their own).
-  const { user, roleLabel, isAdmin, bypass, can, loading: sessionLoading } = useUser();
+  const { user, role, roleLabel, isAdmin, bypass, can, viewingAs, loading: sessionLoading } = useUser();
   const orgPath = useOrgHref();
   const mayReadApprovals = can("approvals:read");
   // Said at the top of the page, as Dashboard and Connections do, so a role
@@ -975,6 +980,10 @@ function DeployBody() {
   const [githubScripts, setGithubScripts] = useState<GitHubScript[] | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
+  // True when the pull answered that GitHub is not set up for this
+  // organization. That is a setup step still to do, not a failure, so the
+  // page shows it in the setup checklist and not as an error.
+  const [githubMissing, setGithubMissing] = useState(false);
   // What the pull could not read: a family folder, a version file, a rollback
   // file. The rest of the registry still loads, so the page lists what is
   // missing instead of letting it pass as "not there".
@@ -992,7 +1001,7 @@ function DeployBody() {
   const driftSeq = useRef(0);
   const [targetVersion, setTargetVersion] = useState<string>("");
   /**
-   * What has been ATTEMPTED against this schema, successful or not (spec 07 —
+   * What has been ATTEMPTED against this schema, successful or not (spec 07,
    * "Track SQL execution history for auditing").
    *
    * Separate from the applied history above, and read from a different
@@ -1083,7 +1092,7 @@ function DeployBody() {
   // ── Stepper + run ────────────────────────────────────────────────────────
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   const [isDeploying, setIsDeploying] = useState(false);
-  // The exact ordered batch captured at run start — the run/verify lists render
+  // The exact ordered batch captured at run start, the run/verify lists render
   // from this, so a post-run preflight refresh can't reshuffle them.
   const [runScripts, setRunScripts] = useState<GitHubScript[]>([]);
   // Where the run started from, captured before it starts. See handleRun.
@@ -1098,7 +1107,7 @@ function DeployBody() {
   // Was the target empty when this run started? Spec feature 11 asks the
   // screen to offer the patches "after initialization", and by the time the
   // run finishes the ledger has been re-read and the target is no longer
-  // empty — so the answer has to be taken before the run, not worked out
+  // empty, so the answer has to be taken before the run, not worked out
   // afterwards from a target that has already changed under it.
   const [runInitialised, setRunInitialised] = useState(false);
   // What the last clean dry run rehearsed (its batchBody), or null. "Deploy
@@ -1106,7 +1115,7 @@ function DeployBody() {
   // selection's body is this one: a rehearsal of v5.0.1 → v5.0.2 must not
   // clear a deploy of v5.0.1 → v6.0.0, nor SQL that a re-pull has changed.
   const [rehearsedBody, setRehearsedBody] = useState<string | null>(null);
-  // A failure that belongs to the run rather than to any one migration — a
+  // A failure that belongs to the run rather than to any one migration, a
   // rejected request, an unreadable response, a connection that never landed.
   const [runError, setRunError] = useState<string | null>(null);
   // How the last run failed, as lib/apply-failure reads the answer; null after
@@ -1144,7 +1153,7 @@ function DeployBody() {
 
   // ── Toast ────────────────────────────────────────────────────────────────
   // The toast carries failures as well as successes, so it has to know which
-  // it is holding — a green tick over "Deploy failed" reads as the opposite of
+  // it is holding, a green tick over "Deploy failed" reads as the opposite of
   // what happened. It is mounted only while it is on screen, so the aria-live
   // announcement fires once per run instead of sitting invisible in the DOM.
   const [toast, setToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
@@ -1168,7 +1177,10 @@ function DeployBody() {
           const list = data as Connection[];
           setConnections(list);
           const wanted = linked.current.connection;
-          if (wanted && list.some((c) => String(c.id) === wanted)) setConnectionId(wanted);
+          if (wanted && list.some((c) => String(c.id) === wanted)) {
+            setConnectionId(wanted);
+            setSchemasLoading(true);
+          }
         } else {
           setConnectionsFailed(true);
         }
@@ -1203,12 +1215,36 @@ function DeployBody() {
     [connections, connectionId]
   );
 
+  // ── Setup: what Deploy needs before it can do anything ───────────────────
+  // Three things: a connection, GitHub set up for the organization, and at
+  // least one saved migration. All three come from the two lists the page
+  // already loads (connections and the GitHub pull), so nothing extra is asked.
+  const mayDeploy = can("deploy:run");
+  const maySetUpGitHub = can("github:update");
+  // Inside the desktop app the GitHub details live in its Settings.
+  const desktop = useDesktopBridge();
+  // GitHub was set up, but the saved token was locked with another key.
+  const githubTokenUnreadable = githubMissing && /can.?t be read/i.test(pullError ?? "");
+  // Nothing is said about setup until both lists and the role have arrived.
+  const setupKnown = connectionsLoaded && !pullLoading && !sessionLoading;
+  const hasConnection = connections.length > 0;
+  const savedMigrationCount = githubScripts?.length ?? 0;
+  // A list that could not be read is a failure, not a missing step, so it
+  // does not put the checklist up by itself.
+  const connectionMissing = !connectionsFailed && !hasConnection;
+  const migrationMissing = githubMissing || (githubScripts !== null && savedMigrationCount === 0);
+  const needsSetup = setupKnown && (connectionMissing || migrationMissing);
+  // Somebody who can neither run a deploy nor set up GitHub has nothing to do
+  // on a checklist, so they get one plain line and the run history instead.
+  const onlyLooks = !mayDeploy && !maySetUpGitHub;
+  const historyOnly = needsSetup && onlyLooks;
+
   // The selected target's execution setting, and whether this caller clears it.
   //
   // useUser reads the role out of the same session the API routes read it out
   // of, so the page can answer this rather than hedge. It is still only a
-  // prediction of what the route will say — the route re-checks on its own, and
-  // it is the one that counts — but a button that greys itself out for the
+  // prediction of what the route will say, the route re-checks on its own, and
+  // it is the one that counts, but a button that greys itself out for the
   // right stated reason beats one that lets you press it and come back with a
   // 403 you have to interpret.
   //
@@ -1283,7 +1319,7 @@ function DeployBody() {
     ).sort();
   }, [scopedScripts, schema]);
 
-  // Scripts not yet applied to the target — strictly greater than its version.
+  // Scripts not yet applied to the target, strictly greater than its version.
   const aheadOfTarget = useMemo<GitHubScript[]>(() => {
     if (!scriptGroup || !preflightResult) return [];
     const groupVersions = (groupedScripts[scriptGroup] ?? []).filter(
@@ -1296,7 +1332,7 @@ function DeployBody() {
     );
   }, [scriptGroup, preflightResult, groupedScripts, schema]);
 
-  // Of those, the ones addressed to some other application — the target's
+  // Of those, the ones addressed to some other application, the target's
   // application table was read, it names applications, and none of them is one
   // the script's "Applies-to" header lists.
   //
@@ -1304,9 +1340,9 @@ function DeployBody() {
   // contiguous range of versions: a script that cannot run and cannot be
   // stepped over blocks every later version behind it, and the screen ends up
   // telling the reader to "pick a range without it" when no such range exists.
-  // Stepping over this one case is safe by the feature's own premise — the
+  // Stepping over this one case is safe by the feature's own premise, the
   // script touches another application's tables, which are not in this
-  // database — and it is the only refusal that may be stepped over. See
+  // database, and it is the only refusal that may be stepped over. See
   // addressedElsewhere in lib/application-targeting.ts for the other two.
   const addressedElsewhere = useMemo<GitHubScript[]>(() => {
     const applications = preflightResult?.applications ?? { known: false, names: [], source: null };
@@ -1338,9 +1374,9 @@ function DeployBody() {
 
   // Forward view (Phase 3): every GitHub version of the chosen family labelled
   // Applied / Pending / Skipped against the target's applied history. Both
-  // inputs are scoped to one (database, schema, script_name) — scopedScripts is
+  // inputs are scoped to one (database, schema, script_name), scopedScripts is
   // already database-filtered, the schema filter narrows it, and the preflight
-  // timeline is the target DB's script_patch for this exact family — so two
+  // timeline is the target DB's script_patch for this exact family, so two
   // databases sharing a script_name@version can never cross-contaminate.
   const versionLedger = useMemo<LedgerEntry[]>(() => {
     if (!scriptGroup || !preflightResult) return [];
@@ -1358,7 +1394,7 @@ function DeployBody() {
     .filter((e) => e.status === "skipped")
     .map((e) => e.version);
 
-  // A version we asked for is not a version we read — never print one as the
+  // A version we asked for is not a version we read, never print one as the
   // other. A failed ledger read leaves preflightResult null, and "fresh" there
   // would be a claim about the target that nothing has checked.
   // vLabel, not a bare "v" prefix: the ledger may store "v5.0.2", and the
@@ -1370,7 +1406,7 @@ function DeployBody() {
       ? vLabel(preflightResult.currentVersion)
       : "fresh";
 
-  // Spec feature 11 — "If no schema or tables exist, prompt to run
+  // Spec feature 11: "If no schema or tables exist, prompt to run
   // /scripts_init." Which of the three states this target is in, and the one
   // thing worth saying about it. Both come from lib/deploy-init.ts rather than
   // being decided here, because the after-the-run prompt has to agree with
@@ -1430,13 +1466,13 @@ function DeployBody() {
     };
     return rollbackTargets(appliedNewestFirst).map(({ target, undoCount }) =>
       target !== null
-        ? { value: target, label: `${vLabel(target)} — undo ${undone(undoCount)}` }
+        ? { value: target, label: `${vLabel(target)} · undo ${undone(undoCount)}` }
         : {
             value: BEFORE_FIRST,
             label:
               undoCount === 1
-                ? `Before the first version — undo ${vLabel(appliedNewestFirst[0])}`
-                : `Before the first version — undo all ${undoCount} versions`,
+                ? `Before the first version · undo ${vLabel(appliedNewestFirst[0])}`
+                : `Before the first version · undo all ${undoCount} versions`,
           }
     );
   }, [appliedNewestFirst]);
@@ -1559,7 +1595,7 @@ function DeployBody() {
     !rollbackReady ||
     // A target this caller may not execute against refuses a rollback for the
     // same reason it refuses a deploy: a rollback executes SQL. It is if
-    // anything the one to be surer about — it drops what a migration added.
+    // anything the one to be surer about, it drops what a migration added.
     // Unless they may ask for one: then the approval below is what stops it.
     (!mayExecuteOnTarget && !askToRun) ||
     rollbackBusy !== null ||
@@ -1576,11 +1612,11 @@ function DeployBody() {
     : !mayExecuteOnTarget && !askToRun
       ? `Rolling back on this connection ${executeBlockedWhy}`
     : isDeploying
-      ? "A deploy is running on this target — wait for it to finish"
+      ? "A deploy is running on this target. Wait for it to finish"
       : askToRun && !approvedRollback
         ? "Your role may not roll back here by itself, so this waits for an Admin to approve it. " +
           "A dry run is not open to you here"
-        : "The rollback runs in one transaction — every version above or none";
+        : "The rollback runs in one transaction: every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
   // (see rollbackError) is shown whatever the plan.
   const rollbackErrorShown =
@@ -1619,7 +1655,7 @@ function DeployBody() {
       sqlContent: row.sql_content ?? null,
       // A title that is only the script group's name or the version itself
       // says nothing beside the group heading and the version, so it is not
-      // shown. Any other title is — and failing that, the change log the
+      // shown. Any other title is, and failing that, the change log the
       // author wrote, which is the only human sentence most rows carry (this
       // screen sends the script's own name as the title). Only its first line
       // goes here, since a row is one line; the rest is in the note's header,
@@ -1702,7 +1738,7 @@ function DeployBody() {
       .catch(() => {
         if (cancelled) return;
         setRollbackHashError(
-          "This browser cannot check the approval — crypto.subtle needs " +
+          "This browser cannot check the approval: crypto.subtle needs " +
             "https or localhost. Open the app over https to approve a rollback."
         );
       });
@@ -1792,13 +1828,13 @@ function DeployBody() {
     const present = new Set(
       scriptsUpToTarget.map((s) => bumpWord(describeChangeType(s.sql_content).recorded))
     );
-    return order.filter((b) => present.has(b)).join(" + ") || "—";
+    return order.filter((b) => present.has(b)).join(" + ") || "None";
   }, [scriptsUpToTarget]);
   const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
   // Asked separately from the change type, because they are separate questions.
   // The change type answers "how far does the version move", and a TRUNCATE moves
-  // it not at all — so a run that empties a table used to arrive here graded
+  // it not at all, so a run that empties a table used to arrive here graded
   // "patch" with the checklist reporting that nothing in it was breaking.
   // The migrations that delete rows, each with the statements that do it.
   const dataLossScripts = runRisk.dataLoss;
@@ -1826,8 +1862,8 @@ function DeployBody() {
   // The third risk, and the only one of the three that is not about what
   // succeeding costs you. These statements are valid SQL that the rows already
   // in the table can refuse: a NOT NULL column with no default, a UNIQUE
-  // constraint over duplicates. Nothing above catches them — they break no
-  // contract and delete nothing — so a run that cannot possibly commit used to
+  // constraint over duplicates. Nothing above catches them, they break no
+  // contract and delete nothing, so a run that cannot possibly commit used to
   // arrive here with a clean checklist.
   //
   // Warned about quietly. The run is one transaction, so a failure here
@@ -1844,7 +1880,7 @@ function DeployBody() {
   // by another statement in the same transaction, so the apply route lifts
   // those statements out and runs them first, on their own, in autocommit. They
   // are therefore committed before the transaction that this page promises will
-  // undo everything — six times over — has even opened, and PostgreSQL has no
+  // undo everything, six times over, has even opened, and PostgreSQL has no
   // statement that removes an enum value, so a failed run leaves them behind
   // for good. Small and usually harmless, but the page said the opposite of it.
   // runRisk reads them across the whole batch, the way the apply route hoists them.
@@ -1874,7 +1910,7 @@ function DeployBody() {
         // approval had gone missing.
         setRunHash(null);
         setHashError(
-          "This browser cannot check the approval — crypto.subtle needs " +
+          "This browser cannot check the approval: crypto.subtle needs " +
             "https or localhost. Open the app over https to approve a run."
         );
       });
@@ -2070,7 +2106,7 @@ function DeployBody() {
   const dryRunLabel = selectionCount === 0 ? "Dry run" : `Dry run ${selectionRange}`;
   // The version the selection ends at, for "Deploy to" and the summary.
   const selectionLastLabel =
-    selectionCount > 0 ? vLabel(selectionVersions[selectionCount - 1]) : "—";
+    selectionCount > 0 ? vLabel(selectionVersions[selectionCount - 1]) : "None";
 
   // The run on screen (the Run stage) against the selection. "Deploy for
   // real" after a clean rehearsal and "Run again" after a failed run both
@@ -2091,6 +2127,7 @@ function DeployBody() {
   async function handlePull() {
     setPullLoading(true);
     setPullError(null);
+    setGithubMissing(false);
     setPullWarnings([]);
     try {
       const res = await apiFetch("/api/github/pull");
@@ -2098,9 +2135,11 @@ function DeployBody() {
         scripts?: GitHubScript[];
         warnings?: unknown;
         error?: string;
+        code?: string;
       };
       if (!res.ok || !data.scripts) {
         setPullError(data.error ?? "Could not fetch scripts from GitHub.");
+        setGithubMissing(data.code === "github_unconfigured");
       } else {
         setGithubScripts(data.scripts);
         // The parts of the registry the pull could not read. Only strings are
@@ -2145,7 +2184,7 @@ function DeployBody() {
     }
   }
 
-  // Bare pre-flight call — also used to refresh the ledger after a run.
+  // Bare pre-flight call, also used to refresh the ledger after a run.
   // Resolves true when the ledger was read, so a caller can say whether the
   // page now shows the target as it is.
   async function runPreflightCheck(id: string, sch: string, group: string): Promise<boolean> {
@@ -2175,7 +2214,7 @@ function DeployBody() {
       // The audit trail refreshes with the ledger, which is also what makes a
       // run that just FAILED show up: the failure path refreshes the ledger
       // too, and that is the one case the ledger itself has nothing to say
-      // about. Not awaited — a slow or unreachable metadata read must not hold
+      // about. Not awaited, a slow or unreachable metadata read must not hold
       // up the pre-flight answer the buttons depend on.
       void loadAttempts(id, sch, ticket);
       return true;
@@ -2240,7 +2279,7 @@ function DeployBody() {
   async function runRollback(dryRun: boolean) {
     if (!connectionId || !schema || !scriptGroup) return;
     // The disabled buttons already say this, but a disabled button is a hint,
-    // not a rule — this is the rule.
+    // not a rule; this is the rule.
     if (dryRun ? rollbackBlocked : rollbackRunBlocked) return;
     // Captured now: the plan changes once the ledger is read again below.
     const key = rollbackKey;
@@ -2309,7 +2348,7 @@ function DeployBody() {
               "check it before you try again.",
             true
           );
-          showToast("Rollback outcome unknown — check the ledger", "bad");
+          showToast("Rollback outcome unknown. Check the ledger", "bad");
           await refreshAfterRollback();
           return;
         }
@@ -2321,7 +2360,7 @@ function DeployBody() {
         // The route's sentence says what happened and what to do next.
         fail(refusal, data.outcomeUnknown === true || staleLedger);
         if (data.outcomeUnknown) {
-          showToast("Rollback outcome unknown — check the ledger", "bad");
+          showToast("Rollback outcome unknown. Check the ledger", "bad");
           await refreshAfterRollback();
         } else if (data.needsApproval) {
           setApprovalReloadKey((reload) => reload + 1);
@@ -2343,7 +2382,7 @@ function DeployBody() {
 
       if (dryRun) {
         setRollbackDryRun({ key, message: data.message ?? "Dry run passed. Nothing changed." });
-        showToast("Dry run passed — nothing changed");
+        showToast("Dry run passed, nothing changed");
         return;
       }
 
@@ -2352,7 +2391,7 @@ function DeployBody() {
       // The next plan starts from the smallest rollback again, closed, so a
       // second rollback is always a new decision. The run panel still
       // describes the deploy that put these versions on the target, so clear
-      // it too — leaving it up would contradict the ledger.
+      // it too, leaving it up would contradict the ledger.
       setRollbackChoice(null);
       setRollbackOpen(false);
       resetRun();
@@ -2534,7 +2573,7 @@ function DeployBody() {
 
   // Phase 6 drift pre-check. If the chosen target (connection + schema) is
   // tracked, compare its live structure against its expected snapshot via the
-  // real lineage APIs. When it isn't tracked we say so honestly — never a fake
+  // real lineage APIs. When it isn't tracked we say so honestly, never a fake
   // diff. The drift POST also records a drift_events row, which feeds the audit
   // log. Used both as a stage-1 pre-check and a stage-3 post-deploy verify.
   async function runDriftCheck(id: string, sch: string) {
@@ -2556,7 +2595,7 @@ function DeployBody() {
         { cache: "no-store" }
       );
       if (!current()) return;
-      // A failed lookup must not read as "not tracked" — that answer skips the
+      // A failed lookup must not read as "not tracked", that answer skips the
       // drift pre-check, so a dead metadata database would quietly remove the
       // warning.
       if (!lookupRes.ok) {
@@ -2599,7 +2638,7 @@ function DeployBody() {
     }
   }
 
-  // "Check database" button — resets the run and re-reads the ledger.
+  // "Check database" button, resets the run and re-reads the ledger.
   async function handlePreflight() {
     if (!connectionId || !schema || !scriptGroup) return;
     resetRun();
@@ -2641,7 +2680,7 @@ function DeployBody() {
   // rows outside it read "not in this run", and focus moves on to what is
   // left to do. Nothing runs until Deploy or Dry run is pressed.
   // The last version in the run. "" selects nothing, which is what unticking
-  // the first pending row means — there is no earlier row to end at.
+  // the first pending row means, there is no earlier row to end at.
   function selectRun(version: string) {
     setTargetVersion(version);
     // After React has drawn the new selection's gates.
@@ -2684,7 +2723,7 @@ function DeployBody() {
   // One call to /api/scripts/apply carrying the whole batch. The server runs
   // every migration inside ONE transaction, so the run is all-or-nothing: there
   // is no state where some of these are applied and the rest are not, and there
-  // is nothing to "stop" partway — by the time a failure is visible here, the
+  // is nothing to "stop" partway, by the time a failure is visible here, the
   // database has already put itself back.
   //
   // `dryRun` rehearses instead: the SQL really executes against the target and
@@ -2703,7 +2742,7 @@ function DeployBody() {
   async function runBatch(dryRun: boolean) {
     const batch = scriptsUpToTarget;
     // The disabled buttons say all of this already, but a disabled button is a
-    // hint, not a rule — this is the rule. A rehearsal is held to everything
+    // hint, not a rule; this is the rule. A rehearsal is held to everything
     // except the approval, exactly as the apply route holds it.
     if (dryRun ? runBlocked : deployBlocked) return;
     // This run replaces the one on screen, and with it any rehearsal pin.
@@ -2717,7 +2756,7 @@ function DeployBody() {
     setRollbackOtherScripts(null);
     setRunScripts(batch);
     // The ledger is re-read before Verify shows, so the live current version is
-    // already the new one — the arrow has to remember where the run started.
+    // already the new one, the arrow has to remember where the run started.
     setRunFromVersion(currentLabel);
     setRunIsDryRun(dryRun);
     setRunInitialised(targetStage === "needs-init");
@@ -2761,7 +2800,7 @@ function DeployBody() {
             version: script.version,
             title: script.script_name,
             // The change log the author wrote when they published this
-            // version (spec 07 — "change logs with user notes"). It rides in
+            // version (spec 07, "change logs with user notes"). It rides in
             // the file's own "-- Note:" header, so it survives the round trip
             // through GitHub, and this is where it reaches the ledger: before
             // this, script_patch.description was NULL on every version
@@ -2783,7 +2822,7 @@ function DeployBody() {
       // Read the body as text and parse it separately. A proxy 502 or a Next.js
       // error page is HTML, and letting res.json() throw inside this try would
       // drop into the catch below and report "could not reach the server" about
-      // a request that reached it — and, before the run became one transaction,
+      // a request that reached it, and, before the run became one transaction,
       // may well have committed something.
       const raw = await res.text();
       let data: ApplyResponse | null = null;
@@ -2795,7 +2834,7 @@ function DeployBody() {
 
       if (data?.results) outcomes = data.results;
       // Spec 07's automatic push, as it landed. The route sends this only when
-      // a version was added to the registry or could not be — and on a dry run
+      // a version was added to the registry or could not be, and on a dry run
       // it never writes at all, so there is nothing to read.
       if (!dryRun && data?.success) {
         const note = describeRegistry(readArchivedVersions(data.registry));
@@ -2869,7 +2908,7 @@ function DeployBody() {
     setRunComplete(true);
 
     // Always re-read the ledger so the current version reflects what is really
-    // applied — a dry run should leave it exactly where it was, and this is what
+    // applied, a dry run should leave it exactly where it was, and this is what
     // proves that on screen rather than asserting it. The drift check is re-run
     // so the Verify step reflects the post-deploy state, and starts first for
     // the reason handlePreflight gives.
@@ -2882,18 +2921,18 @@ function DeployBody() {
     if (failure) {
       showToast(
         outcomeUnknown
-          ? "Deploy outcome not known — check the target before retrying"
+          ? "Deploy outcome not known. Check the target before retrying"
           : failureKind === "refused"
             ? dryRun
-              ? "Dry run refused — nothing was run"
-              : "Deploy refused — nothing was applied"
+              ? "Dry run refused, nothing was run"
+              : "Deploy refused, nothing was applied"
             : failureKind === "not-started"
               ? dryRun
-                ? "Dry run did not start — nothing was run"
-                : "Deploy did not start — nothing was applied"
+                ? "Dry run did not start, nothing was run"
+                : "Deploy did not start, nothing was applied"
               : dryRun
-                ? "Dry run failed — nothing was written"
-                : "Deploy failed — nothing was applied",
+                ? "Dry run failed, nothing was written"
+                : "Deploy failed, nothing was applied",
         "bad"
       );
     } else if (dryRun) {
@@ -2909,7 +2948,7 @@ function DeployBody() {
   const appliedScripts = runScripts.filter(
     (s) => runStatus[scriptKey(s)]?.status === "applied"
   );
-  // A clean run: every migration came back applied, or — for a rehearsal —
+  // A clean run: every migration came back applied, or, for a rehearsal,
   // every one came back rehearsed. Only the first unlocks Verify, because only
   // the first left anything behind to verify.
   const allApplied =
@@ -2919,7 +2958,7 @@ function DeployBody() {
     runScripts.length > 0 &&
     runScripts.every((s) => runStatus[scriptKey(s)]?.status === "rehearsed");
 
-  // Spec feature 11 — "After initialization, prompt whether to run
+  // Spec feature 11: "After initialization, prompt whether to run
   // /scripts_patch." pendingScripts is read AFTER the run, from the re-read
   // ledger, so it is what is genuinely left rather than what was left before.
   // patchPrompt answers null for an ordinary patch run, a rehearsal, or a run
@@ -2936,7 +2975,7 @@ function DeployBody() {
     return status === "applied" || status === "rehearsed";
   }).length;
   // "0 of 3 applied" is itself a claim, and on an unknown outcome it is the
-  // wrong one — it reads as "nothing happened", which is the half of the
+  // wrong one, it reads as "nothing happened", which is the half of the
   // possibilities the reader must not assume.
   const runOutcomeUnknown = runScripts.some(
     (s) => runStatus[scriptKey(s)]?.status === "unknown"
@@ -2957,6 +2996,117 @@ function DeployBody() {
     if (n === stage) return "dp-step dp-on";
     return n < stage ? "dp-step dp-done" : "dp-step";
   }
+
+  // Somebody who only looks gets the run history of the target they pick,
+  // without the pre-flight read that normally brings it.
+  useEffect(() => {
+    if (!historyOnly || !connectionId || !schema) return;
+    void loadAttempts(connectionId, schema, preflightSeq.current);
+  }, [historyOnly, connectionId, schema]);
+
+  // The target picker changed. Picking another connection clears the schema
+  // (the new list picks one when it has only one). Either way everything
+  // read for the old target is dropped.
+  function changeTarget(next: TargetChoice) {
+    forgetLink();
+    if (next.connectionId !== connectionId) {
+      setConnectionId(next.connectionId);
+      setSchema("");
+      // The new list is asked for right after this render. Saying so now
+      // keeps the picker from showing "no schemas" for a moment.
+      setSchemas([]);
+      setSchemasError(null);
+      setSchemasLoading(next.connectionId !== "");
+    } else {
+      setSchema(next.schema);
+    }
+    setScriptGroup("");
+    forgetPreflight();
+    setAttempts([]);
+    setTargetVersion("");
+    resetRun();
+    resetDrift();
+  }
+
+  // The one picker for the connection and the schema. Deploy has no status
+  // for each schema, so the list shows names only.
+  const targetPicker = (
+    <TargetPicker
+      label="Target"
+      hint="the database and schema to deploy to"
+      connections={connections.map((c) => ({ id: c.id, name: c.name, detail: c.database_name }))}
+      connectionId={connectionId}
+      schema={schema}
+      schemas={schemas}
+      loading={schemasLoading}
+      error={schemasError}
+      onRetry={() => void fetchSchemas(connectionId)}
+      disabled={targetLocked}
+      onChange={changeTarget}
+    />
+  );
+
+  // The setup checklist's three steps. Each line says what is missing, who
+  // can fix it, and what to press.
+  const firstConnection = connections[0]?.name ?? "";
+  const setupSteps: SetupStep[] = [
+    {
+      key: "connection",
+      label: "Connect a database",
+      done: hasConnection,
+      detail: hasConnection
+        ? connections.length === 1
+          ? `Done. ${firstConnection} is connected.`
+          : `Done. ${connections.length} databases are connected.`
+        : connectionsFailed
+          ? "Your saved connections could not be read. Reload the page to try again."
+          : can("connections:create")
+            ? "Deploy runs migrations on a database you have connected."
+            : "Deploy runs migrations on a connected database. An Admin can add one.",
+      action:
+        !connectionsFailed && can("connections:create")
+          ? { label: "Open Connections", href: orgPath("/connections") }
+          : undefined,
+    },
+    {
+      key: "github",
+      label: "Set up GitHub",
+      done: !githubMissing,
+      detail: !githubMissing
+        ? "Done. Every deploy saves its script there first."
+        : desktop
+          ? "GitHub is not set up on this computer yet: add it in Settings."
+          : githubTokenUnreadable
+            ? "The saved GitHub token can't be read on this server. An Admin adds it again under Admin › GitHub."
+            : maySetUpGitHub
+              ? "GitHub is not set up for this organization yet. Set it up once and every deploy saves its script there first."
+              : "Deploys need GitHub, which an Admin sets up. Your ask lands in Requests, where any Admin can act on it.",
+      action: desktop
+        ? { label: "Open Settings", onClick: () => desktop.openSettings() }
+        : maySetUpGitHub
+        ? {
+            label: githubTokenUnreadable ? "Add the token again" : "Set up GitHub",
+            href: orgPath("/admin?tab=github"),
+          }
+        : // While viewing the app as another role there is nobody to ask:
+          // the answer is to change "View as" back.
+          viewingAs
+          ? undefined
+          : { label: "Ask an Admin", href: orgPath("/requests") },
+    },
+    {
+      key: "migration",
+      label: "Save a migration in Script Editor",
+      done: savedMigrationCount > 0,
+      detail:
+        savedMigrationCount > 0
+          ? `Done. ${savedMigrationCount} saved ${savedMigrationCount === 1 ? "version" : "versions"}.`
+          : githubMissing
+            ? "Deploy ships a script you have saved. Saving one needs GitHub first."
+            : "Deploy ships a script you have saved.",
+      action: { label: "Open Script Editor", href: orgPath("/script-editor") },
+    },
+  ];
 
   const STEPS: { n: 1 | 2 | 3; name: string; sub: string }[] = [
     { n: 1, name: "Pre-flight", sub: "checks · pending list" },
@@ -3002,7 +3152,22 @@ function DeployBody() {
             </div>
           }
         />
-        {runRefusal && (
+        {/* Somebody who only looks, on a Deploy that is not set up: one plain
+            line. Nothing to set up and nothing to ask for, so no button. */}
+        {historyOnly && (
+          <div className="role-note dp-note">
+            <InfoIcon size={15} className="ico" />
+            <div className="body">
+              <p>
+                You can see deploys once they run.{" "}
+                {role === DEFAULT_ROLE
+                  ? "Viewers can't start deploys, so there is nothing to set up here."
+                  : `Your role (${roleLabel}) can't start deploys, so there is nothing to set up here.`}
+              </p>
+            </div>
+          </div>
+        )}
+        {runRefusal && !historyOnly && (
           <div className="role-note dp-note">
             <InfoIcon size={15} className="ico" />
             <div className="body space-y-0.5">
@@ -3018,7 +3183,8 @@ function DeployBody() {
             </div>
           </div>
         )}
-        {pullError && (
+        {/* GitHub not being set up is a step on the checklist below, not an error. */}
+        {pullError && !githubMissing && (
           <div className="banner">
             <span className="ico">
               <AlertCircleIcon size={16} />
@@ -3047,56 +3213,57 @@ function DeployBody() {
         )}
       </div>
 
-      {/* ═══════════════════ STAGE 1 — PRE-FLIGHT ═══════════════════ */}
-      {stage === 1 && (
+      {/* ═══════════════════ STAGE 1: PRE-FLIGHT ═══════════════════ */}
+      {/* Not set up yet: a short checklist in place of controls that could
+          not be used, with the three steps it opens up shown underneath. */}
+      {stage === 1 && needsSetup && !historyOnly && (
+        <section className="dp-stage">
+          <div data-tour="deploy-checklist">
+            <SetupChecklist
+              title="Deploy needs a few things first"
+              lead="Finish these and the deploy steps below open up."
+              steps={setupSteps}
+            >
+              <div className="setup__locked">
+                <p className="setup__locked-title">Unlocks after setup</p>
+                <ol>
+                  {STEPS.map((s) => (
+                    <li key={s.n}>
+                      <span>{`0${s.n}`}</span>
+                      {s.name}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </SetupChecklist>
+          </div>
+        </section>
+      )}
+
+      {/* Not set up, and this person can only look: what has run before. */}
+      {stage === 1 && historyOnly && hasConnection && (
+        <section className="dp-stage">
+          <div className="card dp-card">
+            <h2 className="dp-h-sm">Run history</h2>
+            <div className="dp-fields dp-fields--one" data-tour="deploy-target">
+              {targetPicker}
+            </div>
+          </div>
+          {connectionId && schema && <RunTimeline attempts={attempts} schema={schema} nextLabel={null} />}
+        </section>
+      )}
+
+      {stage === 1 && !needsSetup && (
         <section className="dp-stage">
           {/* Selection */}
           <div className="card dp-card">
-            <h2 className="dp-h-sm">Target</h2>
-            <div className="dp-fields">
-              <div>
-                <label className="label" htmlFor="dep-conn">Connection</label>
-                <Select
-                  variant="input"
-                  id="dep-conn"
-                  className="mt-1"
-                  ariaLabel="Connection"
-                  value={connectionId}
-                  disabled={targetLocked}
-                  placeholder="Select a connection…"
-                  options={connections.map((c) => ({
-                    value: String(c.id),
-                    label: `${c.name} — ${c.host}/${c.database_name}`,
-                  }))}
-                  onChange={(value) => {
-                    forgetLink();
-                    setConnectionId(value);
-                    setSchema("");
-                    setScriptGroup("");
-                    forgetPreflight();
-                    setAttempts([]);
-                    setTargetVersion("");
-                    resetRun();
-                    resetDrift();
-                  }}
-                />
-                {connectionsLoaded && connections.length === 0 && (
+            <h2 className="dp-h-sm">Deploy to</h2>
+            <div className="dp-fields" data-tour="deploy-target">
+              <div className="dp-field">
+                {targetPicker}
+                {connectionsLoaded && connections.length === 0 && connectionsFailed && (
                   <p className="help mt-1">
-                    {connectionsFailed ? (
-                      "Could not read your saved connections. Reload the page to try again."
-                    ) : (
-                      // Naming the screen without linking to it leaves the one
-                      // person who most needs a next step — somebody on their
-                      // first run — hunting the sidebar for a word they were
-                      // just told. Compare's empty state has always linked.
-                      <>
-                        No connections saved yet.{" "}
-                        <Link href={orgPath("/connections")} className="underline">
-                          Add one on Connections
-                        </Link>{" "}
-                        first.
-                      </>
-                    )}
+                    Could not read your saved connections. Reload the page to try again.
                   </p>
                 )}
                 {activeConn && (
@@ -3104,7 +3271,7 @@ function DeployBody() {
                     <ExecuteRolePill role={targetExecuteRole} />
                     {targetIsReadOnly && (
                       <span className="help dp-bad-text">
-                        Marked read-only on Connections — this app will not run migrations
+                        Marked read-only on Connections, so this app will not run migrations
                         against it. Everything else on this page still works.
                       </span>
                     )}
@@ -3118,46 +3285,13 @@ function DeployBody() {
                       </span>
                     )}
                     {targetExecuteRole === "admin" && mayExecuteOnTarget && (
-                      <span className="help">
-                        Restricted to admins — which includes you.
-                      </span>
+                      <span className="help">Restricted to admins, which includes you.</span>
                     )}
                   </div>
                 )}
               </div>
 
-              <div>
-                <label className="label" htmlFor="dep-schema">Schema</label>
-                <Select
-                  variant="input"
-                  id="dep-schema"
-                  className="mt-1"
-                  ariaLabel="Schema"
-                  value={schema}
-                  disabled={schemasLoading || !connectionId || targetLocked}
-                  placeholder={
-                    !connectionId
-                      ? "Select a connection first"
-                      : schemasLoading
-                        ? "Loading schemas…"
-                        : "Select a schema…"
-                  }
-                  options={schemas.map((s) => ({ value: s, label: s }))}
-                  onChange={(value) => {
-                    forgetLink();
-                    setSchema(value);
-                    setScriptGroup("");
-                    forgetPreflight();
-                    setAttempts([]);
-                    setTargetVersion("");
-                    resetRun();
-                    resetDrift();
-                  }}
-                />
-                {schemasError && <p className="help mt-1 dp-bad-text">{schemasError}</p>}
-              </div>
-
-              <div>
+              <div className="dp-field">
                 <label className="label" htmlFor="dep-group">Script group</label>
                 <HelpHint label="Script group">
                   One named set of migrations that carries a schema forward, one version
@@ -3183,7 +3317,7 @@ function DeployBody() {
                 />
                 {/*
                   This used to be a note beside the Check button, and it required
-                  scriptGroup to be set — which it can never be when the list is
+                  scriptGroup to be set, which it can never be when the list is
                   empty, because an empty list is exactly what leaves the picker
                   on its placeholder. So the one case it was written for was the
                   one case it never appeared in: the reader opened the picker,
@@ -3208,7 +3342,7 @@ function DeployBody() {
               </div>
             </div>
 
-            <div className="dp-actions">
+            <div className="dp-check">
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -3221,14 +3355,16 @@ function DeployBody() {
             </div>
           </div>
 
-          {preflightError && (
-            <div className="banner">
-              <span className="ico"><AlertCircleIcon size={16} /></span>
-              <span>{preflightError}</span>
-            </div>
-          )}
+          {/* A read that failed says what to press: enter the password
+              again, or try again. The server's words go under Technical details. */}
+          <ErrorNotice
+            error={preflightError}
+            connectionName={activeConn?.name}
+            connectionId={connectionId}
+            onRetry={handlePreflight}
+          />
 
-          {/* Target context card + pending grid — once pre-flight has run */}
+          {/* Target context card + pending grid, once pre-flight has run */}
           {preflightResult && activeConn && (
             <>
               {/* Everything run on this schema from here, by date. Built from
@@ -3245,9 +3381,9 @@ function DeployBody() {
                 </div>
                 <div className="dp-where">
                   <div className="dp-where-name">
-                    <span>{preflightResult.schema}</span>
+                    <span className="dp-clip" title={preflightResult.schema}>{preflightResult.schema}</span>
                     <span className="dp-at">@</span>
-                    <span className="dp-conn">{activeConn.name}</span>
+                    <span className="dp-conn dp-clip" title={activeConn.name}>{activeConn.name}</span>
                     <span className="pill pill-sync"><span className="dot" />reachable</span>
                   </div>
                   <div className="dp-where-host">
@@ -3281,7 +3417,7 @@ function DeployBody() {
                 <div className="card dp-card">
                   <div className="dp-card-top mb-3">
                     <h2 className="dp-h-sm">
-                      Version timeline · <span className="mono">{scriptGroup}</span>
+                      Version timeline · <span className="mono dp-clip" title={scriptGroup}>{scriptGroup}</span>
                     </h2>
                     <div className="dp-pills">
                       <span className="pill pill-sync"><span className="dot" />{appliedCount} applied</span>
@@ -3476,7 +3612,7 @@ function DeployBody() {
                               .join(" ") +
                             (rollbackLossSure
                               ? " Those take rows out of a live table, and deploying the " +
-                                "version again does not bring them back — it rebuilds " +
+                                "version again does not bring them back: it rebuilds " +
                                 "structure, not data. Have a backup you can restore from " +
                                 "before running this."
                               : " Deploying the version again does not bring deleted rows " +
@@ -3636,7 +3772,7 @@ function DeployBody() {
                 </div>
               )}
 
-              {/* Spec feature 11 — the prompt for a target that has nothing on
+              {/* Spec feature 11: the prompt for a target that has nothing on
                   it yet, or has tables this app has never deployed to. Above
                   the pending list rather than inside it, because it is true
                   whether or not a version is waiting: an empty schema with no
@@ -3722,7 +3858,7 @@ function DeployBody() {
                           <p className="help mt-1">
                             {`Not in this run: ${listVersions(skippedVersions)} ${
                               skippedVersions.length === 1 ? "was" : "were"
-                            } skipped — never applied and below ${currentLabel}, the version applied to the target. See Skipped in the version timeline above.`}
+                            } skipped: never applied and below ${currentLabel}, the version applied to the target. See Skipped in the version timeline above.`}
                           </p>
                         )}
                       </div>
@@ -3742,7 +3878,7 @@ function DeployBody() {
                       )}
                     </div>
 
-                    <div className="dp-mig-list">
+                    <div className="dp-mig-list" data-tour="deploy-pending">
                       {pendingScripts.map((script, i) => {
                         const reading = describeChangeType(script.sql_content);
                         const kind = reading.recorded;
@@ -3817,7 +3953,7 @@ function DeployBody() {
                     </div>
                     </div>
 
-                    {/* Drift pre-check — real lineage compare when the target is tracked */}
+                    {/* Drift pre-check, real lineage compare when the target is tracked */}
                     <div className="card dp-card">
                     <DriftPanel
                       phase={driftPhase}
@@ -3838,7 +3974,7 @@ function DeployBody() {
                             line they learn to skip. */}
                         {targetIsReadOnly ? (
                           <ChecklistItem ok={false}>
-                            Execution · read-only — this app will not write to this database
+                            Execution · read-only: this app will not write to this database
                           </ChecklistItem>
                         ) : askToRun ? (
                           <ChecklistItem ok={Boolean(approvedRun)}>
@@ -3856,17 +3992,17 @@ function DeployBody() {
                           <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
                         ) : null}
                         <ChecklistItem ok>
-                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
+                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh, no versions yet"}
                         </ChecklistItem>
                         <ChecklistItem ok={blockedByApplication.length === 0}>
                           {/* Silent when nothing is restricted, which is every
-                              run until somebody writes the header — but a tick
+                              run until somebody writes the header, but a tick
                               rather than nothing, so a reader who has used the
                               feature can see it was checked. */}
                           {blockedByApplication.length > 0
                             ? `Restriction could not be checked · ${blockedByApplication
                                 .map((script) => vLabel(script.version))
-                                .join(", ")} — see the note on the row`
+                                .join(", ")} (see the note on the row)`
                             : addressedElsewhere.length > 0
                               ? `Applications · ${addressedElsewhere.length} pending ${
                                   addressedElsewhere.length === 1 ? "version is" : "versions are"
@@ -3883,12 +4019,12 @@ function DeployBody() {
                         </ChecklistItem>
                         <ChecklistItem ok={!hasTxnViolation}>
                           {/* A count leaves the reader to open every script and
-                              hunt. The versions are already in scope — name them,
+                              hunt. The versions are already in scope, name them,
                               and state the rule the apply route enforces. */}
                           {hasTxnViolation
                             ? `COMMIT or ROLLBACK found in ${txnViolationScripts
                                 .map((s) => vLabel(s.version))
-                                .join(", ")} — the run is already one transaction, so ` +
+                                .join(", ")}. The run is already one transaction, so ` +
                               "remove them from the SQL"
                             : "No transaction-control in SQL"}
                         </ChecklistItem>
@@ -3957,7 +4093,7 @@ function DeployBody() {
                           <ChecklistItem info>
                             {/* The apply route creates it before BEGIN, so it is
                                 not covered by the run's rollback either. */}
-                            Ledger table will be created on first deploy — it is
+                            Ledger table will be created on first deploy. It is
                             created before the transaction opens, so it stays even if
                             the run fails
                           </ChecklistItem>
@@ -4044,19 +4180,19 @@ function DeployBody() {
                         <dd>one transaction</dd>
                       </dl>
 
-                      <div className="dp-gates">
+                      <div className="dp-gates" data-tour="deploy-checklist">
                         {breakingCount > 0 && (
                           <RiskGate
                             tone="break"
                             title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
                             body={
-                              // "Breaking" grades a contract break, not data loss —
+                              // "Breaking" grades a contract break, not data loss,
                               // a rename is breaking and loses nothing. The rows
                               // question belongs to the deletes-rows warning below,
                               // which names its own backup.
                               "A breaking migration drops or rewrites structure that is " +
-                              "already there. Anything reading the old shape — an app, a " +
-                              "view, a report — stops working the moment this commits. The " +
+                              "already there. Anything reading the old shape (an app, a " +
+                              "view, a report) stops working the moment this commits. The " +
                               "breaking ones in the list on the left are open already, " +
                               "showing the statements they will run." +
                               (louderCount === 0
@@ -4081,7 +4217,7 @@ function DeployBody() {
                             body={
                               (dataLossSure
                                 ? `This run contains ${dataLossKinds}. Those take rows out of ` +
-                                  "a live table, and no rollback puts them back — a down " +
+                                  "a live table, and no rollback puts them back: a down " +
                                   "script rebuilds structure, not data. "
                                 : "") +
                               (dataLoss.unread ? UNREAD_SQL_SENTENCE : "") +
@@ -4093,10 +4229,10 @@ function DeployBody() {
                                 ? ""
                                 : unflaggedDataLossKinds.length === 1
                                   ? `A ${unflaggedDataLossKinds[0]} changes no structure, so it is never ` +
-                                    "graded breaking and gets no breaking pill — this box is the only " +
+                                    "graded breaking and gets no breaking pill, so this box is the only " +
                                     "warning it gets. "
                                   : `${unflaggedDataLossKinds.join(" and ")} change no structure, so they ` +
-                                    "are never graded breaking and get no breaking pill — this box is " +
+                                    "are never graded breaking and get no breaking pill, so this box is " +
                                     "the only warning they get. ") +
                               "Have a backup you can restore from before running this."
                             }
@@ -4116,7 +4252,7 @@ function DeployBody() {
                                 refused by the data already in the table.
                               </b>{" "}
                               This run contains {mightFailKinds}. Those are valid SQL
-                              that PostgreSQL checks against every existing row — one
+                              that PostgreSQL checks against every existing row, one
                               NULL, one duplicate or one value that will not cast and
                               the statement stops. Nothing is half-applied if that
                               happens: the run is one transaction, so it rolls back and
@@ -4140,12 +4276,12 @@ function DeployBody() {
                               " first, on their own. They commit straight away. If the run " +
                               "then fails, everything else is rolled back and " +
                               (enumAdditions.length === 1 ? "this stays" : "these stay") +
-                              " — there is no statement in PostgreSQL that removes an enum " +
+                              ": there is no statement in PostgreSQL that removes an enum " +
                               "value, so it cannot be undone by hand either. A label " +
                               "nothing uses does no harm; it is simply the one part of the " +
                               "run that is not all-or-nothing. A dry run cannot lift them " +
                               "out without leaving them behind, so it runs them inside the " +
-                              "transaction instead — which is why rehearsing a script that " +
+                              "transaction instead, which is why rehearsing a script that " +
                               "uses its own new value fails where the real run succeeds."
                             }
                           />
@@ -4178,7 +4314,7 @@ function DeployBody() {
                                     "report on the left before running this."
                                   : "The drift check could not reach the target, so nothing " +
                                     "here has confirmed what state it is in. The run will " +
-                                    "still connect — this only means it starts unverified."
+                                    "still connect. This only means it starts unverified."
                             }
                           />
                         )}
@@ -4233,7 +4369,7 @@ function DeployBody() {
                         )}
                       </div>
 
-                      <div className="dp-zone">
+                      <div className="dp-zone" data-tour="deploy-run">
                         <h3 className="dp-h-sm">Rehearse</h3>
                         <p>
                           Runs this SQL on the target inside one transaction, then rolls it
@@ -4275,27 +4411,27 @@ function DeployBody() {
                       <p className="dp-why">
                         {targetIsReadOnly
                           ? "This connection is marked read-only on Connections, so nothing " +
-                            "here will run against it — not a deploy and not a dry run"
+                            "here will run against it, not a deploy and not a dry run"
                           : !mayExecuteOnTarget && !askToRun
                           ? `Running migrations on this connection ${executeBlockedWhy}`
                           : blockedByApplication.length > 0
                           ? `${versionRange(
                               blockedByApplication.map((script) => script.version)
                             )} is restricted, and nothing here can confirm this database is ` +
-                            "one of the applications named — name this database's application " +
+                            "one of the applications named. Name this database's application " +
                             "table on its connection, or take the restriction out of the script"
                           : hasTxnViolation
                           ? "Remove the COMMIT or ROLLBACK from the versions named in " +
                             "the checklist, then pull again"
                           : driftChecking
-                            ? "Checking the target for drift first — these unlock when the check finishes"
+                            ? "Checking the target for drift first. These unlock when the check finishes"
                             : askToRun && !approvedRun
                               ? "Your role may not run migrations here by itself, so the deploy waits " +
                                 "for an Admin to approve it. A dry run is not open to you here"
                               : enumAdditions.length > 0
-                              ? "All migrations run in one transaction — all of them or " +
+                              ? "All migrations run in one transaction: all of them or " +
                                 "none, apart from the enum values noted above"
-                              : "All migrations run in one transaction — all of them or none"}
+                              : "All migrations run in one transaction: all of them or none"}
                       </p>
                     </div>
 
@@ -4307,7 +4443,7 @@ function DeployBody() {
         </section>
       )}
 
-      {/* ═══════════════════ STAGE 2 — RUN ═══════════════════ */}
+      {/* ═══════════════════ STAGE 2: RUN ═══════════════════ */}
       {stage === 2 && (
         <section className="dp-stage">
           <div className="card dp-card">
@@ -4315,34 +4451,34 @@ function DeployBody() {
               <div>
                 <h2 className="dp-h">
                 {/* "nothing was applied" is a verdict, and on an unknown outcome
-                    it is the wrong one — it used to sit directly above an error
+                    it is the wrong one, it used to sit directly above an error
                     saying the run may still have landed. */}
                 {isDeploying
                   ? runIsDryRun
                     ? "Rehearsing migrations…"
                     : "Applying migrations…"
                   : runOutcomeUnknown
-                    ? "Run outcome not known — check the target before retrying"
+                    ? "Run outcome not known. Check the target before retrying"
                     : allApplied
                       ? "Run finished"
                       : allRehearsed
-                        ? "Dry run finished — nothing was written"
+                        ? "Dry run finished, nothing was written"
                         : runRefused
                           ? runIsDryRun
-                            ? "Dry run refused — nothing was run"
-                            : "Run refused — nothing was applied"
+                            ? "Dry run refused, nothing was run"
+                            : "Run refused, nothing was applied"
                           : runNotStarted
                             ? runIsDryRun
-                              ? "Dry run did not start — nothing was run"
-                              : "Run did not start — nothing was applied"
+                              ? "Dry run did not start, nothing was run"
+                              : "Run did not start, nothing was applied"
                             : runIsDryRun
                               ? "Dry run halted"
-                              : "Run halted — nothing was applied"}
+                              : "Run halted, nothing was applied"}
                 </h2>
                 <p className="dp-sub">
                 {/* The enum values are lifted out and committed before the
                     transaction opens, so the unqualified promise is false for
-                    exactly this run — the same exception the gate above states.
+                    exactly this run, the same exception the gate above states.
                     A refused run or one that did not start stopped before that
                     step (the only refusal after it names its enum values in its
                     own card below), so the exception would claim a commit that
@@ -4351,9 +4487,9 @@ function DeployBody() {
                   ? "Every migration really runs against the target, inside one transaction that always ends in ROLLBACK."
                   : enumAdditions.length > 0 && !runRefused && !runNotStarted
                     ? "Every migration runs inside one transaction. A failure rolls " +
-                      "the whole run back — all of them or none, apart from the enum " +
+                      "the whole run back: all of them or none, apart from the enum " +
                       "values that were committed first."
-                    : "Every migration runs inside one transaction. A failure rolls the whole run back — all of them or none."}
+                    : "Every migration runs inside one transaction. A failure rolls the whole run back: all of them or none."}
                 </p>
               </div>
               <div className="dp-pills">
@@ -4374,11 +4510,17 @@ function DeployBody() {
           </div>
 
           {/* A failure that belongs to the run, not to any one migration. */}
-          {runError && (
-            <div className="dp-result dp-bad">
-              <div className="dp-result-body">{runError}</div>
-            </div>
-          )}
+          {/* A saved password the server can't open gets the notice with
+              its "Enter the password again" button. Every other failure keeps
+              the server's own words, because they say what the run did. */}
+          {runError &&
+            (describeError(runError).kind === "password" ? (
+              <ErrorNotice error={runError} connectionName={activeConn?.name} connectionId={connectionId} />
+            ) : (
+              <div className="dp-result dp-bad">
+                <div className="dp-result-body">{runError}</div>
+              </div>
+            ))}
 
           <div className="card dp-card">
           <div className="dp-mig-list">
@@ -4398,7 +4540,7 @@ function DeployBody() {
                 applied: `applied · committed with the run${ran}`,
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
                 // The row says what happened; the dp-err below says what
-                // Postgres said — one each, not both twice.
+                // Postgres said, one each, not both twice.
                 // A refused run, or one that never started, never got going,
                 // so there is nothing to have rolled back; the row names what
                 // happened instead.
@@ -4412,7 +4554,7 @@ function DeployBody() {
                   : runNotStarted
                     ? "skipped · the run never started, so nothing in it ran"
                     : "skipped · the run rolled back before this one could commit",
-                unknown: "not known · the commit never reported back — read script_patch",
+                unknown: "not known · the commit never reported back, read script_patch",
               };
               return (
                 <MigRow
@@ -4471,12 +4613,12 @@ function DeployBody() {
             </div>
           )}
 
-          {/* Clean rehearsal — say what it proved, and offer the real thing. */}
+          {/* Clean rehearsal, say what it proved, and offer the real thing. */}
           {runComplete && allRehearsed && (
             <div className="dp-result dp-good">
               <h3>
                 <CheckIcon size={20} />
-                  Rehearsal clean — the target accepted every migration.
+                  Rehearsal clean: the target accepted every migration.
               </h3>
               <p>
                   Then it was rolled back: no ledger rows, no lineage advance, no schema
@@ -4530,7 +4672,7 @@ function DeployBody() {
             </div>
           )}
 
-          {/* Recovery bar — only after a failed run */}
+          {/* Recovery bar, only after a failed run */}
           {runComplete && !allApplied && !allRehearsed && (
             <div className={runOutcomeUnknown ? "dp-result dp-mid" : "dp-result dp-bad"}>
               <h3>
@@ -4545,7 +4687,7 @@ function DeployBody() {
               </h3>
               <p>
                   {/* Only a response we actually read licenses the claim that
-                      nothing changed. "Fix the script" is gone too — a lock
+                      nothing changed. "Fix the script" is gone too, a lock
                       timeout and a duplicate version have no script to fix, and
                       the server's own instruction is already in the card above. */}
                   {runOutcomeUnknown
@@ -4565,7 +4707,7 @@ function DeployBody() {
                         ? "The dry run rolled back, so nothing was written to the target."
                         : "The run rolled back, so none of the migrations above are " +
                           "applied. Anything that had to commit before the transaction " +
-                          "opened is still there — the ledger table on a first deploy, and " +
+                          "opened is still there: the ledger table on a first deploy, and " +
                           "any enum value listed on Pre-flight.") +
                       (ledgerReread === "read"
                         ? " The ledger has been re-read."
@@ -4616,18 +4758,17 @@ function DeployBody() {
         </section>
       )}
 
-      {/* ═══════════════════ STAGE 3 — VERIFY ═══════════════════ */}
+      {/* ═══════════════════ STAGE 3: VERIFY ═══════════════════ */}
       {stage === 3 && (
         <section className="dp-stage">
           {/* The ledger re-read is the only thing that knows what the target
-              reports now. When it failed, its error belongs on this stage too —
+              reports now. When it failed, its error belongs on this stage too,
               until now it only ever rendered on Pre-flight. */}
-          {preflightError && (
-            <div className="banner">
-              <span className="ico"><AlertCircleIcon size={16} /></span>
-              <span>{preflightError}</span>
-            </div>
-          )}
+          <ErrorNotice
+            error={preflightError}
+            connectionName={activeConn?.name}
+            connectionId={connectionId}
+          />
           <div className="dp-result dp-good dp-hero">
               <div className="dp-big-check">
                 <CheckIcon size={28} />
@@ -4654,7 +4795,7 @@ function DeployBody() {
                 ) : (
                   <p>
                     The deploy committed, but the ledger could not be read back
-                    afterwards — this page cannot confirm what the target now
+                    afterwards. This page cannot confirm what the target now
                     reports.
                   </p>
                 )}
@@ -4663,7 +4804,7 @@ function DeployBody() {
                   <ChevronRightIcon size={16} />
                   {/* The batch that ran, not the selection: Pre-flight can move
                       the selection after a deploy. */}
-                  <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "—"}</b></span>
+                  <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "None"}</b></span>
                   <span className="dp-quiet text-[12px]">
                     {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
                   </span>
@@ -4679,7 +4820,7 @@ function DeployBody() {
                       left a finished deploy with no way onward except the
                       sidebar. These are the two things that actually happen
                       next: record the version against the schema, and start
-                      watching the database that just changed — the moment it is
+                      watching the database that just changed, the moment it is
                       most likely to drift is right after somebody changed it.
 
                       Links and not primary buttons: the deploy is finished, so
@@ -4694,7 +4835,7 @@ function DeployBody() {
               </div>
           </div>
 
-          {/* Spec feature 11 — the patches, offered rather than started. The
+          {/* Spec feature 11: the patches, offered rather than started. The
               button only takes the reader back to Pre-flight with the rest
               selected: running them is a deploy like any other, with the same
               preview and the same approval, and chaining straight on would
@@ -4738,7 +4879,7 @@ function DeployBody() {
               </div>
             </div>
 
-            {/* Verify re-diff — real lineage compare when the target is tracked */}
+            {/* Verify re-diff, real lineage compare when the target is tracked */}
             <div className="card dp-card">
               <h2 className="dp-h-sm mb-3">Verify diff</h2>
               <DriftPanel
@@ -4765,7 +4906,7 @@ function DeployBody() {
 }
 
 // Drift pre-check panel (Phase 6). Renders the real lineage drift state for the
-// chosen target — or an honest "not tracked" message — in place of the old stub.
+// chosen target, or an honest "not tracked" message, in place of the old stub.
 // Shared by the stage-1 pre-check, the stage-3 post-deploy verify and the check
 // after a rollback; the copy shifts slightly via `context`.
 function DriftPanel({
@@ -4804,7 +4945,7 @@ function DriftPanel({
     icon = <DriftIcon size={16} />;
     title = "Target schema isn't tracked";
     body =
-      "Track this schema on the Dashboard to capture a baseline snapshot — drift checks then compare the live structure against it. Until then Deploy assumes the target matches its migration ledger.";
+      "Track this schema on the Dashboard to capture a baseline snapshot. Drift checks then compare the live structure against it. Until then Deploy assumes the target matches its migration ledger.";
     pillText = "not tracked";
   } else if (phase === "error") {
     icon = <AlertCircleIcon size={16} />;
@@ -4826,8 +4967,8 @@ function DriftPanel({
       tone = "dp-good";
       title =
         context === "precheck"
-          ? `No drift — target matches ${v}`
-          : `Verified — live schema matches ${v}`;
+          ? `No drift: target matches ${v}`
+          : `Verified: live schema matches ${v}`;
       body = result.summary;
       pillClass = "pill pill-sync";
       pillText = "in sync";
@@ -4854,7 +4995,7 @@ function DriftPanel({
             "the schema outside Schema Studio. Check the difference on the Dashboard " +
             "before re-snapshotting the target there."
           ) : (
-            "Review before deploying — the live structure differs from its tracked snapshot."
+            "Review before deploying: the live structure differs from its tracked snapshot."
           )}
         </>
       );
@@ -4875,7 +5016,7 @@ function DriftPanel({
   );
 }
 
-// Small checklist line — green check (ok), warn (ok=false), info, or stub.
+// Small checklist line: green check (ok), warn (ok=false), info, or stub.
 function ChecklistItem({
   ok,
   info,

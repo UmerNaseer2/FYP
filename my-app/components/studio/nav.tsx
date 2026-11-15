@@ -11,9 +11,18 @@ import {
   VersionSyncIcon,
   UsersIcon,
   InboxIcon,
+  ClockIcon,
 } from "@/components/ui/icons";
 import type { FeatureKey } from "@/lib/permissions";
 import { orgSlugFromPath } from "@/lib/org-slug";
+
+/**
+ * The menu's group headings, in the order they are drawn. The first five are
+ * the five words the app tour uses for the work: connect, compare, script,
+ * ship, watch. People holds the pages about who may do what.
+ */
+export const NAV_GROUPS = ["Connect", "Compare", "Script", "Ship", "Watch", "People"] as const;
+export type NavGroup = (typeof NAV_GROUPS)[number];
 
 export type NavItem = {
   /** Short name shown in the breadcrumb. */
@@ -33,25 +42,22 @@ export type NavItem = {
    * screen that every member may open.
    */
   feature?: FeatureKey | FeatureKey[];
+  /** The heading this screen sits under. Left out for Dashboard, which stands alone on top. */
+  group?: NavGroup;
   /** How many things are waiting on this screen, shown beside its label. */
   badge?: number;
 };
 
-// The order is the order the work happens in, not alphabetical and not by how
-// often a screen is opened. Somebody who has never used this app should be able
-// to read the rail top to bottom and get a working answer to "what do I do
-// next": look at the dashboard, compare two databases, edit what that
-// generated, deploy it, record the version, then watch for drift and for
-// performance. Visualizer sits after those because it explains a schema rather
-// than changing one.
+// The menu reads top to bottom in the order the work happens, under the same
+// five words the app tour uses. Somebody who has never used this app can read
+// it as a working answer to "what do I do next": look at the dashboard,
+// connect a database, compare two of them, edit the script that made, ship
+// it, then watch for drift.
 //
-// Requests sits just above them: anyone can use it, whatever their role, so it
-// is not a step in that sequence either.
-//
-// Connections and Admin are last together, away from that sequence. They are
-// both setup — things you do once and come back to rarely — and Connections
-// used to sit in the middle of the pipeline, which made the rail stop reading
-// as a sequence exactly where somebody new needed it to.
+// Visualizer sits under Compare because it explains a schema rather than
+// changing one. History (what happened, and who did it) sits under Watch.
+// People comes last: Requests, which anyone can use whatever their role, and
+// Admin.
 export const NAV_ITEMS: NavItem[] = [
   {
     screen: "Dashboard",
@@ -61,46 +67,20 @@ export const NAV_ITEMS: NavItem[] = [
     feature: "dashboard",
   },
   {
+    screen: "Connections",
+    label: "Connections",
+    href: "/connections",
+    icon: <ConnectionsIcon className="ico" />,
+    feature: "connections",
+    group: "Connect",
+  },
+  {
     screen: "Compare & Author",
     label: "Compare & Author",
     href: "/compare",
     icon: <CompareIcon className="ico" />,
     feature: "compare",
-  },
-  {
-    screen: "Script Editor",
-    label: "Script Editor",
-    href: "/script-editor",
-    icon: <EditIcon className="ico" />,
-    feature: "scripts",
-  },
-  {
-    screen: "Deploy",
-    label: "Deploy",
-    href: "/deploy",
-    icon: <DeployIcon className="ico" />,
-    feature: "deploy",
-  },
-  {
-    screen: "Version Sync",
-    label: "Version Sync",
-    href: "/versionsync",
-    icon: <VersionSyncIcon className="ico" />,
-    feature: "version_sync",
-  },
-  {
-    screen: "Drift",
-    label: "Drift",
-    href: "/drift",
-    icon: <DriftIcon className="ico" />,
-    feature: "drift",
-  },
-  {
-    screen: "Performance",
-    label: "Performance",
-    href: "/performance",
-    icon: <GaugeIcon className="ico" />,
-    feature: "performance",
+    group: "Compare",
   },
   {
     screen: "Visualizer",
@@ -108,19 +88,63 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/visualizer",
     icon: <SchemaMapIcon className="ico" />,
     feature: "visualizer",
+    group: "Compare",
   },
   {
-    screen: "Connections",
-    label: "Connections",
-    href: "/connections",
-    icon: <ConnectionsIcon className="ico" />,
-    feature: "connections",
+    screen: "Script Editor",
+    label: "Script Editor",
+    href: "/script-editor",
+    icon: <EditIcon className="ico" />,
+    feature: "scripts",
+    group: "Script",
+  },
+  {
+    screen: "Deploy",
+    label: "Deploy",
+    href: "/deploy",
+    icon: <DeployIcon className="ico" />,
+    feature: "deploy",
+    group: "Ship",
+  },
+  {
+    screen: "Version Sync",
+    label: "Version Sync",
+    href: "/versionsync",
+    icon: <VersionSyncIcon className="ico" />,
+    feature: "version_sync",
+    group: "Ship",
+  },
+  {
+    screen: "Drift",
+    label: "Drift",
+    href: "/drift",
+    icon: <DriftIcon className="ico" />,
+    feature: "drift",
+    group: "Watch",
+  },
+  {
+    screen: "Performance",
+    label: "Performance",
+    href: "/performance",
+    icon: <GaugeIcon className="ico" />,
+    feature: "performance",
+    group: "Watch",
+  },
+  {
+    // The History page asks for drift:read itself, so the menu asks the same.
+    screen: "History",
+    label: "History",
+    href: "/history",
+    icon: <ClockIcon className="ico" />,
+    feature: "drift",
+    group: "Watch",
   },
   {
     screen: "Requests",
     label: "Requests",
     href: "/requests",
     icon: <InboxIcon className="ico" />,
+    group: "People",
   },
   {
     screen: "Admin",
@@ -128,8 +152,30 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin",
     icon: <UsersIcon className="ico" />,
     feature: ["users", "roles", "organization", "github"],
+    group: "People",
   },
 ];
+
+export type NavSection<T extends NavItem = NavItem> = {
+  /** The heading over these rows, or null for the rows that stand alone on top. */
+  group: NavGroup | null;
+  items: T[];
+};
+
+/**
+ * The menu's rows under their headings, in NAV_GROUPS order. A group with no
+ * rows left (the role can open none of them) is dropped, heading and all.
+ */
+export function groupNavItems<T extends NavItem>(items: T[]): NavSection<T>[] {
+  const sections: NavSection<T>[] = [];
+  const alone = items.filter((item) => item.group === undefined);
+  if (alone.length > 0) sections.push({ group: null, items: alone });
+  for (const group of NAV_GROUPS) {
+    const rows = items.filter((item) => item.group === group);
+    if (rows.length > 0) sections.push({ group, items: rows });
+  }
+  return sections;
+}
 
 /**
  * Pick the nav item whose route matches the current path (falls back to
@@ -156,18 +202,40 @@ function routeOf(pathname: string): string {
  */
 export const ACCOUNT_SCREENS: { screen: string; href: string }[] = [
   { screen: "Phone and desktop", href: "/devices" },
-  { screen: "Your activity", href: "/history" },
 ];
 
+/** What the shell shows for the current path. */
+export type ActiveScreen = {
+  /** The page's name, the last part of the breadcrumb. */
+  screen: string;
+  /** The address of the rail row to light up. */
+  href: string;
+  /** The page's menu group, the first part of the breadcrumb ("Watch › Drift"). */
+  group?: NavGroup;
+};
+
 /**
- * What the shell shows for the current path: the name in the breadcrumb and
+ * What the shell shows for the current path: the names in the breadcrumb and
  * the address of the rail row to light up. On an account page that address
  * matches no row, so nothing in the rail looks chosen.
  */
-export function activeScreen(pathname: string): { screen: string; href: string } {
+export function activeScreen(pathname: string): ActiveScreen {
   const route = routeOf(pathname);
   const account = ACCOUNT_SCREENS.find(
     (page) => route === page.href || route.startsWith(page.href + "/")
   );
-  return account ?? activeNavItem(pathname);
+  if (account) return account;
+  const item = activeNavItem(pathname);
+  return { screen: item.screen, href: item.href, group: item.group };
+}
+
+/**
+ * Whether the path really is one of the app's named pages. activeScreen falls
+ * back to Dashboard for an address it does not know; this says when it did
+ * not have to.
+ */
+export function isKnownScreen(pathname: string): boolean {
+  const route = routeOf(pathname);
+  const { href } = activeScreen(pathname);
+  return route === href || route.startsWith(href + "/");
 }

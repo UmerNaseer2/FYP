@@ -214,14 +214,13 @@ describe("the items", () => {
     expect(menu()).toBeNull();
   });
 
-  test('"Your activity" and "Phone and desktop" go to History and Devices, after "Your requests"', () => {
-    renderMenu({ requestsHref: "/acme/requests", activityHref: "/acme/history", devicesHref: "/acme/devices" });
+  test('"Phone and desktop" goes to Devices, after "Your requests"', () => {
+    // History used to be here as "Your activity". It is in the menu now, under Watch.
+    renderMenu({ requestsHref: "/acme/requests", devicesHref: "/acme/devices" });
     fireEvent.click(trigger());
-    expect(item("Your activity")).toHaveAttribute("href", "/acme/history");
     expect(item("Phone and desktop")).toHaveAttribute("href", "/acme/devices");
     expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
       "Your requests",
-      "Your activity",
       "Phone and desktop",
       "Take the tour",
       "Replay intro",
@@ -231,10 +230,9 @@ describe("the items", () => {
     expect(menu()).toBeNull();
   });
 
-  test('"Your activity" and "Phone and desktop" are left out without an address', () => {
+  test('"Phone and desktop" is left out without an address', () => {
     renderMenu({ requestsHref: "/acme/requests" });
     fireEvent.click(trigger());
-    expect(screen.queryByRole("menuitem", { name: "Your activity" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Phone and desktop" })).toBeNull();
   });
 

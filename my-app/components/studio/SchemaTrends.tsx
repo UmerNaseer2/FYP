@@ -20,7 +20,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
- * Spec feature 10 — monitoring, as a screen.
+ * Spec feature 10, monitoring, as a screen.
  *
  * The other two Performance tabs answer their question from the live database
  * the moment you ask. This one cannot: a trend has to have been collected in
@@ -28,7 +28,7 @@ import { useOrgHref } from "@/hooks/useOrg";
  * everything here.
  *
  *  • A schema nobody is watching gets an explanation and the link that starts
- *    the watching — not an empty chart. An empty chart claims "nothing
+ *    the watching, not an empty chart. An empty chart claims "nothing
  *    happened"; the truth is "nobody was looking", and those are different.
  *  • A reading that could not be taken is a gap, never a zero. The size
  *    metrics need a privilege the counts do not, so a chart says how many of
@@ -36,8 +36,8 @@ import { useOrgHref } from "@/hooks/useOrg";
  *  • One reading is a dot with a caption saying there is nothing to compare it
  *    to yet, not a flat line through a single number.
  *
- * The charts are drawn by hand. Every number on screen — every coordinate,
- * every rule, every caption — comes out of lib/metrics-series, which is pure
+ * The charts are drawn by hand. Every number on screen, every coordinate,
+ * every rule, every caption, comes out of lib/metrics-series, which is pure
  * and unit-tested; this file only turns that geometry into elements.
  */
 
@@ -65,7 +65,7 @@ type MetricsView = {
  * Width 100 on purpose: with the SVG stretched by `preserveAspectRatio="none"`,
  * an x of 42 is 42% of whatever width the card ended up with, so the same
  * numbers position the HTML labels laid over the top. Height is real pixels,
- * which is why the plot is not allowed to scale vertically — a y of 90 is 90px
+ * which is why the plot is not allowed to scale vertically, a y of 90 is 90px
  * down in both the drawing and the overlay.
  */
 const PLOT: SeriesBox = { width: 100, height: 128, pad: 2 };
@@ -178,7 +178,7 @@ export function SchemaTrends({ target }: { target: PerfTarget | null }) {
     );
   }
 
-  // Not tracked is a complete answer, not a failure — and the only useful thing
+  // Not tracked is a complete answer, not a failure, and the only useful thing
   // to show is the reason and the way to fix it.
   if (!view.tracking) {
     return (
@@ -344,7 +344,7 @@ function TrendCard({ metric, samples }: { metric: MetricKey; samples: MetricSamp
  *
  * The SVG holds only shapes, and every stroke in it is marked non-scaling so
  * that stretching the box sideways does not thicken the line. Everything made
- * of text — the value rules, the dot on the latest reading — is HTML laid over
+ * of text, the value rules, the dot on the latest reading, is HTML laid over
  * the top, positioned with the same coordinates, so it stays a readable size
  * whatever width the card ended up with.
  */

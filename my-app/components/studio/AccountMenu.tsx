@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronDownIcon, ClockIcon, InboxIcon, PhoneIcon, PlayIcon, RouteIcon, SignOutIcon } from "@/components/ui/icons";
+import { ChevronDownIcon, InboxIcon, PhoneIcon, PlayIcon, RouteIcon, SignOutIcon } from "@/components/ui/icons";
 import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
 import { replayIntro } from "@/lib/intro";
 import { readTourMemory, startTour } from "@/lib/tour";
@@ -10,10 +10,11 @@ import { useOrg } from "@/hooks/useOrg";
 import type { StudioUser } from "./StudioSidebar";
 
 // The round button at the right end of the top bar: who is signed in, with
-// what role, and a small menu: "Your requests", "Your activity" (the History
-// page), "Phone and desktop" (the Devices page), "Take the tour" (or
-// "Resume the tour" after it was closed part way), "Replay intro" and
-// "Sign out". The three links show only when the shell gives their address.
+// what role, and a small menu: "Your requests", "Phone and desktop" (the
+// Devices page), "Take the tour" (or "Resume the tour" after it was closed
+// part way), "Replay intro" and "Sign out". The two links show only when the
+// shell gives their address. History used to be here as "Your activity"; it
+// is in the main menu now, under Watch.
 //
 // Keyboard: Enter, Space or Down Arrow opens it and puts you on the first
 // item. Up and Down move (and wrap), Home and End jump to the ends, Escape
@@ -34,8 +35,6 @@ type AccountMenuProps = {
   orgName?: string | null;
   /** Where "Your requests" goes. Leave it out to hide that item. */
   requestsHref?: string;
-  /** Where "Your activity" goes (the History page). Leave it out to hide it. */
-  activityHref?: string;
   /** Where "Phone and desktop" goes (the Devices page). Leave it out to hide it. */
   devicesHref?: string;
   onSignOut: () => void;
@@ -55,7 +54,6 @@ export function AccountMenu({
   roleLabel,
   orgName,
   requestsHref,
-  activityHref,
   devicesHref,
   onSignOut,
 }: AccountMenuProps) {
@@ -133,7 +131,8 @@ export function AccountMenu({
         <i className="av" aria-hidden="true">
           {user.initials}
         </i>
-        <span className="who-t">
+        {/* A long name ends with an ellipsis (.who-t); the whole of it is the tooltip. */}
+        <span className="who-t" title={roleName ? `${user.name} · ${roleName}` : user.name}>
           <b>{user.name}</b>
           {roleName && <> · {roleName}</>}
         </span>
@@ -151,8 +150,8 @@ export function AccountMenu({
       >
         <div className="who-h">
           <i aria-hidden="true">{user.initials}</i>
-          <b>{user.name}</b>
-          {user.email && <small>{user.email}</small>}
+          <b title={user.name}>{user.name}</b>
+          {user.email && <small title={user.email}>{user.email}</small>}
           {roleName && role && (
             <small title={roleTitle(role)} data-testid="account-role">
               {orgName ? `${roleName} at ${orgName}` : roleName}
@@ -163,12 +162,6 @@ export function AccountMenu({
           <Link href={requestsHref} role="menuitem" tabIndex={-1} onClick={() => setOpen(false)}>
             <span>Your requests</span>
             <InboxIcon size={15} />
-          </Link>
-        )}
-        {activityHref && (
-          <Link href={activityHref} role="menuitem" tabIndex={-1} onClick={() => setOpen(false)}>
-            <span>Your activity</span>
-            <ClockIcon size={15} />
           </Link>
         )}
         {devicesHref && (

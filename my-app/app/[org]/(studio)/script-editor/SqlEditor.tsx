@@ -109,7 +109,7 @@ export function SqlEditor({
   }
 
   return (
-    <div className="se-ed">
+    <div className="se-ed" data-tour="script-sql">
       <div className="se-h">
         <div className="se-tabs" role="tablist" aria-label="Which script to write">
           <span className={`se-thumb${tab === "down" ? " se-thumb--right" : ""}`} aria-hidden="true" />

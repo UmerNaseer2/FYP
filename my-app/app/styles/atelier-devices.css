@@ -74,7 +74,7 @@ a.dv-a { color:var(--accent-ink); font-weight:600; text-decoration:underline; te
           border-radius:var(--r-lg); background:var(--surface-2); }
 .dv-row__text { flex:1 1 180px; min-width:0; display:flex; flex-direction:column; gap:2px;
                 font-size:13px; line-height:1.45; color:var(--ink-3); overflow-wrap:anywhere; }
-.dv-row__text b { font-size:14.5px; font-weight:600; color:var(--ink); }
+.dv-row__text b { font-size:14.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dv-loading { display:grid; gap:8px; }
 
 /* The drawing of a phone. No data in it: five real tab names and plain shapes. */

@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Script Editor. Shown in the Help panel; the blurb is the page header's one line. */
@@ -8,12 +9,12 @@ export const scriptEditorHelp: HelpTopic = {
     "Script Editor is where you write a migration by hand and save it to the GitHub registry as a numbered version. " +
     "Nothing runs against a database from this page. Running a saved version is done on Deploy.",
   steps: [
-    "Under Where this script belongs, pick a Connection, a Schema and a Script group. Use Pick existing for a group already in the registry, or + New group and type a name.",
-    "Type the migration under SQL.",
+    { text: "Under Where this script belongs, pick a Connection, a Schema and a Script group. Use Pick existing for a group already in the registry, or + New group and type a name.", target: anchor("script-place", ".se-place") },
+    { text: "Type the migration under SQL.", target: anchor("script-sql") },
     "Type the statements that undo it under Rollback SQL. To save without them, tick the box that starts Save without a rollback.",
     "Fill in the Change log if you want to say why this version exists.",
-    "Under Version, check the number. It is suggested from your SQL. Version bump lets you pick another step, and custom lets you type a number.",
-    "Press the save button. It reads Save, then the version number, then to GitHub.",
+    { text: "Under Version, check the number. It is suggested from your SQL. Version bump lets you pick another step, and custom lets you type a number.", target: anchor("script-version", ".se-seg") },
+    { text: "Press the save button. It reads Save, then the version number, then to GitHub.", target: anchor("script-save") },
     "When it has saved, follow the link to the file on GitHub, or the link to Deploy to run it.",
   ],
   terms: [

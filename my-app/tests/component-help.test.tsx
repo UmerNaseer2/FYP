@@ -1,16 +1,18 @@
 /** @jest-environment jsdom */
 
 /**
- * The three shared help pieces: the Help panel and its button, the small "?"
- * note, and the shared page header.
+ * The shared help pieces: the Help panel, its button and its Show me links,
+ * the small "?" note, the shared page header and the page's section tabs.
  *
  * The text itself is checked in tests/help-topics.test.ts.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { HelpButton, HelpProvider } from "@/components/help/HelpPanel";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { PageTabs } from "@/components/studio/PillTabs";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { BLURB_MAX_WORDS, HELP_TOPICS } from "@/lib/help";
+import { BLURB_MAX_WORDS, HELP_TOPICS, stepText } from "@/lib/help";
 
 let mockPathname = "/acme/deploy";
 jest.mock("next/navigation", () => ({ usePathname: () => mockPathname }));
@@ -32,7 +34,7 @@ describe("Help panel", () => {
 
     const panel = screen.getByRole("dialog", { name: "Help: Deploy" });
     expect(panel.textContent).toContain("What this page is for");
-    expect(panel.textContent).toContain(HELP_TOPICS["/deploy"].steps[0]);
+    expect(panel.textContent).toContain(stepText(HELP_TOPICS["/deploy"].steps[0]));
     expect(panel.textContent).toContain(HELP_TOPICS["/deploy"].problems[0].problem);
   });
 
@@ -65,6 +67,64 @@ describe("Help panel", () => {
   test("with no panel around it, the button draws nothing", () => {
     const { container } = render(<HelpButton />);
     expect(container.innerHTML).toBe("");
+  });
+});
+
+/** jsdom lays nothing out, so give an element a size: that is what "on the page" means. */
+function putOnScreen(element: HTMLElement) {
+  const box = { left: 100, top: 100, right: 300, bottom: 140, width: 200, height: 40, x: 100, y: 100, toJSON: () => ({}) };
+  element.getBoundingClientRect = () => box as DOMRect;
+  element.getClientRects = () => [box] as unknown as DOMRectList;
+}
+
+describe("Show me links in Help", () => {
+  function openHelp(withTarget: boolean) {
+    const view = render(
+      <HelpProvider>
+        <HelpButton />
+        {withTarget ? <button data-tour="deploy-run">Deploy</button> : null}
+      </HelpProvider>
+    );
+    if (withTarget) putOnScreen(screen.getByRole("button", { name: "Deploy" }));
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    return view;
+  }
+
+  test("a step whose control is not on the page has no link", () => {
+    openHelp(false);
+    expect(screen.queryByRole("button", { name: /^Show me/ })).toBeNull();
+  });
+
+  test("a step whose control is on the page gets a link, and only that step", () => {
+    openHelp(true);
+    expect(screen.getAllByRole("button", { name: /^Show me/ })).toHaveLength(1);
+  });
+
+  test("the link closes Help and points at the control, with the step's words", () => {
+    openHelp(true);
+    fireEvent.click(screen.getByRole("button", { name: /^Show me/ }));
+
+    expect(screen.queryByRole("dialog", { name: "Help: Deploy" })).toBeNull();
+    const spot = screen.getByRole("dialog", { name: "Show me" });
+    const step = HELP_TOPICS["/deploy"].steps.find((one) => typeof one !== "string" && one.target.includes("deploy-run"));
+    expect(spot.textContent).toContain(stepText(step!));
+  });
+
+  test("Escape, Got it and a click anywhere each end it", () => {
+    openHelp(true);
+    fireEvent.click(screen.getByRole("button", { name: /^Show me/ }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show me/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show me/ }));
+    fireEvent.click(document.querySelector(".tour")!);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
@@ -122,25 +182,81 @@ describe("PageHeader", () => {
     expect(HELP_TOPICS["/deploy"].blurb.split(/\s+/).length).toBeLessThanOrEqual(BLURB_MAX_WORDS);
   });
 
-  test("a tab can give its own title and line, and extra buttons", () => {
-    render(<PageHeader page="/performance" title="Slow queries" blurb="The slowest statements." actions={<button>Refresh</button>} />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Slow queries");
-    expect(screen.getByText("The slowest statements.")).toBeTruthy();
+  test("a page about one thing can show that thing's name, and extra buttons", () => {
+    render(<PageHeader page="/schemas" title="students_main" blurb="12 tables." actions={<button>Refresh</button>} />);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("students_main");
+    expect(screen.getByText("12 tables.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   });
 
-  test("inside the studio it carries a Help button that opens the panel", () => {
+  test("it has no Help button of its own: the one Help button is in the top bar", () => {
     render(
       <HelpProvider>
         <PageHeader page="/deploy" />
       </HelpProvider>
     );
-    fireEvent.click(screen.getByRole("button", { name: "Help" }));
-    expect(screen.getByRole("dialog", { name: "Help: Deploy" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Help" })).toBeNull();
+  });
+});
+
+describe("PageTabs", () => {
+  const TABS = [
+    { key: "users", label: "Users" },
+    { key: "roles", label: "Roles", count: 2 },
+    { key: "github", label: "GitHub" },
+  ];
+
+  function Sections() {
+    const [tab, setTab] = useState("users");
+    return <PageTabs label="Admin sections" tabs={TABS} value={tab} onChange={setTab} idPrefix="t-" panelPrefix="p-" />;
+  }
+
+  test("as buttons it is a tablist, and only the picked tab is in the Tab order", () => {
+    render(<Sections />);
+    expect(screen.getByRole("tablist", { name: "Admin sections" })).toBeTruthy();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1]);
+    expect(tabs[1].id).toBe("t-roles");
+    expect(tabs[1].getAttribute("aria-controls")).toBe("p-roles");
+    expect(tabs[1].textContent).toBe("Roles2");
   });
 
-  test("on its own (a page test) it has no Help button", () => {
-    render(<PageHeader page="/deploy" />);
-    expect(screen.queryByRole("button", { name: "Help" })).toBeNull();
+  test("a click picks a tab, and the arrow keys, Home and End move along the row", () => {
+    render(<Sections />);
+    const picked = () => screen.getByRole("tab", { selected: true });
+
+    fireEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+    expect(picked().textContent).toBe("GitHub");
+
+    picked().focus();
+    fireEvent.keyDown(picked(), { key: "ArrowRight" });
+    expect(picked().textContent).toBe("Users");
+    expect(document.activeElement).toBe(picked());
+
+    fireEvent.keyDown(picked(), { key: "ArrowLeft" });
+    expect(picked().textContent).toBe("GitHub");
+    fireEvent.keyDown(picked(), { key: "Home" });
+    expect(picked().textContent).toBe("Users");
+    fireEvent.keyDown(picked(), { key: "End" });
+    expect(picked().textContent).toBe("GitHub");
+  });
+
+  test("as links it is a nav, and the open one is marked", () => {
+    const links = [
+      { key: "detail", label: "Drift detail", href: "/acme/drift?tab=detail" },
+      { key: "audit", label: "Audit log", href: "/acme/drift?tab=audit" },
+    ];
+    render(<PageTabs label="Drift views" tabs={links} value="audit" />);
+    expect(screen.getByRole("navigation", { name: "Drift views" })).toBeTruthy();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    const open = screen.getByRole("link", { name: "Audit log" });
+    expect(open.getAttribute("aria-current")).toBe("page");
+    expect(open.getAttribute("href")).toBe("/acme/drift?tab=audit");
+    expect(screen.getByRole("link", { name: "Drift detail" }).getAttribute("aria-current")).toBeNull();
+
+    open.focus();
+    fireEvent.keyDown(open, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Drift detail" }));
   });
 });

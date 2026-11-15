@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Pill, type PillTone } from "@/components/ui";
+import { StatusChip } from "@/components/ui/StatusChip";
 import { DriftIcon, MonitorIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
@@ -44,12 +44,6 @@ type Row = {
 };
 
 type Place = { key: string; name: string; online: boolean; lastSeenAt: string | null; rows: Row[] };
-
-function pillFor(status: string): { tone: PillTone; label: string } {
-  if (status === "drifted") return { tone: "drift", label: "Drifted" };
-  if (status === "in_sync") return { tone: "sync", label: "In sync" };
-  return { tone: "break", label: "Unreachable" };
-}
 
 export function ElsewhereDrift() {
   const bridge = useDesktopBridge();
@@ -260,21 +254,20 @@ function RowList({ rows, label }: { rows: Row[]; label: string }) {
   return (
     <ul className="panel p-0 overflow-hidden" aria-label={label}>
       {rows.map((row, i) => {
-        const pill = row.latest ? pillFor(row.latest.status) : null;
+        const name = row.label ?? row.schema;
+        const where = `on ${row.connectionName}${row.label ? ` (${row.schema})` : ""}`;
         return (
           <li
             key={row.key}
             className="flex items-center gap-3 px-4 py-2.5 text-[12.5px] flex-wrap"
             style={{ borderTop: i === 0 ? "none" : "1px solid var(--border)" }}
           >
-            {pill ? <Pill tone={pill.tone}>{pill.label}</Pill> : <Pill tone="neutral">Not checked</Pill>}
-            <span className="min-w-0">
-              <span className="font-medium">{row.label ?? row.schema}</span>
-              <span style={{ color: "var(--text-3)" }}>
-                {" "}
-                on {row.connectionName}
-                {row.label ? ` (${row.schema})` : ""}
-              </span>
+            {/* The same chip as the watch list above. No check yet reads "Not checked yet". */}
+            <StatusChip status={row.latest ? row.latest.status : null} size="sm" />
+            {/* A long name ends with an ellipsis; the full name is in the tooltip. */}
+            <span className="min-w-0 max-w-full truncate" title={`${name} ${where}`}>
+              <span className="font-medium">{name}</span>
+              <span style={{ color: "var(--text-3)" }}> {where}</span>
             </span>
             <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-2)" }}>
               {row.latest?.summary || ""}

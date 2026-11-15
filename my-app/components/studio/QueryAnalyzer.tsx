@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
-import { AlertCircleIcon, CheckIcon, PlayIcon } from "@/components/ui/icons";
+import { CheckIcon, PlayIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
 import {
@@ -48,10 +48,11 @@ import {
   subqueryCaption,
 } from "@/lib/query-analysis";
 import { apiFetch } from "@/lib/api-fetch";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
- * Spec feature 08 — query execution analysis, as a screen.
+ * Spec feature 08, query execution analysis, as a screen.
  *
  * Paste a query, get back what the server would actually do with it, in
  * English. The screen is built around one belief: a query plan is not hard
@@ -62,7 +63,7 @@ import { useOrgHref } from "@/hooks/useOrg";
  * uses.
  *
  * There is no effect in this file. The request happens when a button is
- * pressed, which is where it belongs — nothing here should fire at a database
+ * pressed, which is where it belongs, nothing here should fire at a database
  * because a prop changed.
  */
 
@@ -118,7 +119,7 @@ export function QueryAnalyzer({
   // The answer on screen together with the target it was asked about, so the
   // card can never outlive the picker. It used to be a bare `view`, which meant
   // analysing against staging and then switching the picker to production left
-  // staging's plan on screen — under a line naming PRODUCTION, because that
+  // staging's plan on screen, under a line naming PRODUCTION, because that
   // line reads the live picker. Nothing on the card named the database it came
   // from, so there was no way to tell. Storing the key with the answer also
   // makes this the race guard: a reply to the older target no longer matches
@@ -227,7 +228,7 @@ export function QueryAnalyzer({
           placeholder={PLACEHOLDER}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={(e) => {
-            // Ctrl/Cmd+Enter runs it — the shortcut every SQL box has, and the
+            // Ctrl/Cmd+Enter runs it, the shortcut every SQL box has, and the
             // one people try before they look for the button.
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && ready) void analyse();
           }}
@@ -289,13 +290,11 @@ export function QueryAnalyzer({
       </Card>
 
       {error && (
-        <div className="pf-note pf-note--warn">
-          <AlertCircleIcon size={15} className="ico" />
-          <div>
-            <div className="title">Could not analyse this query</div>
-            <div className="body">{error}</div>
-          </div>
-        </div>
+        <ErrorNotice
+          error={error}
+          connectionName={target?.connectionName}
+          connectionId={target?.connectionId}
+        />
       )}
 
       {view && (
@@ -394,12 +393,12 @@ function Result({
                   // estimate was, or how often a step was repeated, so an
                   // estimate cannot vouch for any of those.
                   view.mode === "measured"
-                    ? "Neither the plan nor the query text tripped any of the checks — " +
+                    ? "Neither the plan nor the query text tripped any of the checks: " +
                       "no whole-table reads on large tables, no sort spilling to disk, " +
                       "no estimate wildly out, and nothing in the SQL that usually " +
                       "costs more than it looks."
                     : "Neither the plan nor the query text tripped any of the checks " +
-                      "that work without running the query — no whole-table reads on " +
+                      "that work without running the query: no whole-table reads on " +
                       "large tables, no big table read in full to join a few rows, and " +
                       "nothing in the SQL that usually costs more than it looks. A sort " +
                       "spilling to disk, an estimate far off or a table read again for " +

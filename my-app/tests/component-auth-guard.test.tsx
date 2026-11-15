@@ -165,8 +165,12 @@ describe("signed in", () => {
     expect(screen.getByText("Your role (Auditor) can't open this page.")).toBeInTheDocument();
     const hint = screen.getByText(/You are signed in as/);
     expect(hint).toHaveTextContent("You are signed in as auditor@example.com.");
-    expect(hint).toHaveTextContent(
-      'Ask an admin to turn on "See saved connections" for your role, then reload.'
+    expect(hint).toHaveTextContent('It needs "See saved connections" turned on for your role.');
+    // A role that can ask is told where the ask goes, and given the link.
+    expect(hint).toHaveTextContent("Your ask lands in Requests, where any Admin can act on it.");
+    expect(screen.getByRole("link", { name: "Ask an Admin" })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/\/requests\?ask=connections%3Aread$/)
     );
   });
 
@@ -180,9 +184,9 @@ describe("signed in", () => {
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
     expect(screen.getByText("Your role (Viewer) can't open this page.")).toBeInTheDocument();
     expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
-      "Only admins can open it."
+      "Only Admins can open it."
     );
-    expect(screen.queryByText(/Ask an admin to turn on/)).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("on the Admin screen, sends them after the first box the grid offers", () => {
@@ -192,9 +196,11 @@ describe("signed in", () => {
     show(["users", "roles", "organization", "github"]);
 
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
-    expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
-      'Ask an admin to turn on "See the user list" for your role, then reload.'
-    );
+    const hint = screen.getByText(/You are signed in as/);
+    expect(hint).toHaveTextContent('It needs "See the user list" turned on for your role.');
+    // A Viewer has nothing to press, so there is a sentence and no link.
+    expect(hint).toHaveTextContent("An Admin decides what Viewers can see.");
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("opens an admin-only page to an admin", () => {

@@ -3,7 +3,9 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
-import { Select } from "@/components/ui/Select";
+import { TargetPicker, TargetPickerPair } from "@/components/studio/TargetPicker";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal, Skeleton } from "@/components/ui";
 import {
@@ -66,8 +68,8 @@ import "@/app/styles/atelier-versionsync.css";
 // check, and an approval where one is needed. Confirming it sends the
 // versions to /api/scripts/apply as ONE request, which runs them in ONE
 // transaction. Every run stops before the first version the route would refuse
-// — one with no stored SQL, or one that does not move its script group forward
-// — so the screen never offers a run the server is certain to turn down.
+//, one with no stored SQL, or one that does not move its script group forward
+//, so the screen never offers a run the server is certain to turn down.
 
 type Connection = {
   id: number;
@@ -94,6 +96,8 @@ function useLedgerSource() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  // Counts presses of Try again on the schema list, so the list loads again.
+  const [schemasRetry, setSchemasRetry] = useState(0);
 
   useEffect(() => {
     setSchemas([]);
@@ -117,7 +121,7 @@ function useLedgerSource() {
     return () => {
       active = false;
     };
-  }, [connectionId]);
+  }, [connectionId, schemasRetry]);
 
   useEffect(() => {
     setEntries(null);
@@ -158,6 +162,7 @@ function useLedgerSource() {
   return {
     connectionId, setConnectionId, schema, setSchema,
     schemas, schemasLoading, schemasError,
+    retrySchemas: () => setSchemasRetry((n) => n + 1),
     entries, phase, error, retry: () => setRetry((n) => n + 1),
     // Optimistically mark a version as now-applied (after a successful replay),
     // so the diff/timeline update instantly without a re-fetch + loading flash.
@@ -389,7 +394,7 @@ export default function VersionSyncPage() {
   const [progress, setProgress] = useState("");
   const [applyError, setApplyError] = useState<ApplyError | null>(null);
   const [applyDone, setApplyDone] = useState("");
-  // What the apply route recorded in GitHub for the last replay (spec 07 —
+  // What the apply route recorded in GitHub for the last replay (spec 07,
   // automatically push approved scripts). Null when there is nothing to say:
   // GitHub not configured, or the Target's registry already had the file.
   const [registryNote, setRegistryNote] = useState<RegistryNote | null>(null);
@@ -403,7 +408,7 @@ export default function VersionSyncPage() {
     if (check.stoppedBefore) {
       setApplyDone("");
       setRegistryNote(null);
-      setApplyError({ title: "Replay did not start — nothing ran", detail: stopSentence(check) });
+      setApplyError({ title: "Replay did not start. Nothing ran", detail: stopSentence(check) });
       return;
     }
     setApplyError(null);
@@ -446,10 +451,10 @@ export default function VersionSyncPage() {
         // forward-only check runs under its locks, after a real run has
         // committed the enum values it adds, and answers 409 too. Its error
         // names the enum values that stay.
-        setApplyError({ title: "Replay refused — none of its versions were applied", detail: result.error });
+        setApplyError({ title: "Replay refused. None of its versions were applied", detail: result.error });
       } else if (result.failure === "not-started") {
         // A 5xx the route marks nothingRan: it stopped before its first write.
-        setApplyError({ title: "Replay did not start — nothing ran", detail: result.error });
+        setApplyError({ title: "Replay did not start. Nothing ran", detail: result.error });
       } else if (result.failure === "rolled-back") {
         // The one part of a run that can outlive its rollback.
         const enumNote =
@@ -457,7 +462,7 @@ export default function VersionSyncPage() {
             ? " Any enum value the run added before its transaction opened stays: PostgreSQL has no statement that removes one."
             : "";
         setApplyError({
-          title: "Replay failed — none of its versions were applied",
+          title: "Replay failed. None of its versions were applied",
           detail: result.error + enumNote,
         });
       } else {
@@ -487,7 +492,7 @@ export default function VersionSyncPage() {
     // A replayed version's SQL came from the Source's ledger, so the Target's
     // registry folder had no file for it until the apply route wrote one. This
     // is the case spec 07's automatic push exists for, so say plainly what
-    // reached GitHub — and what did not.
+    // reached GitHub, and what did not.
     const note = describeRegistry(result.registry);
     setRegistryNote(note.saved || note.problem ? note : null);
   }
@@ -502,6 +507,8 @@ export default function VersionSyncPage() {
   }, [source.connectionId, source.schema, target.connectionId, target.schema]);
 
   const noConnections = connectionsLoaded && connections.length === 0;
+  /** A connection's name, for an error that should say which one it is about. */
+  const nameOf = (id: string) => connections.find((c) => String(c.id) === id)?.name ?? null;
   const bothPicked = !!(source.connectionId && source.schema && target.connectionId && target.schema);
   const sameTarget =
     bothPicked && source.connectionId === target.connectionId && source.schema === target.schema;
@@ -534,36 +541,35 @@ export default function VersionSyncPage() {
         )
       ) : (
         <div className="vs-stack">
-          {/* ── Source → Target pickers ──────────────────────────────────── */}
-          {/* Locked while a replay runs: the run's banner and the ledgers it
-              updates belong to the pair it was started on. */}
-          <div className="card vs-pick">
-              <SidePicker
-                side={source}
-                label="Source"
-                sub="ahead"
-                connections={connections}
-                loaded={connectionsLoaded}
-                locked={applying}
+          {/* ---- Source and Target pickers ---- */}
+          {/* The same picker as on Compare and Deploy. Locked while a replay
+              runs: the run's banner and the ledgers it updates belong to the
+              pair it was started on. */}
+          <div className="vs-pick" data-tour="sync-pickers">
+            {!connectionsLoaded ? (
+              <Skeleton width="100%" height={78} radius={12} />
+            ) : (
+              <TargetPickerPair
+                source={<SidePicker side={source} label="Source" hint="ahead" connections={connections} locked={applying} />}
+                between={
+                  <button
+                    type="button"
+                    className="vs-swap"
+                    data-tour="sync-swap"
+                    title="Swap Source and Target"
+                    aria-label="Swap source and target"
+                    disabled={applying}
+                    onClick={swap}
+                  >
+                    <VersionSyncIcon size={16} />
+                  </button>
+                }
+                target={<SidePicker side={target} label="Target" hint="catch up" connections={connections} locked={applying} />}
+                error={
+                  sameTarget ? "Source and Target are the same schema. Pick a different Target." : null
+                }
               />
-              <button
-                type="button"
-                className="vs-swap"
-                title="Swap Source and Target"
-                aria-label="Swap source and target"
-                disabled={applying}
-                onClick={swap}
-              >
-                <VersionSyncIcon size={16} />
-              </button>
-              <SidePicker
-                side={target}
-                label="Target"
-                sub="catch up"
-                connections={connections}
-                loaded={connectionsLoaded}
-                locked={applying}
-              />
+            )}
           </div>
 
           {/* ── Result ───────────────────────────────────────────────────── */}
@@ -577,20 +583,25 @@ export default function VersionSyncPage() {
                 />
               </div>
             ) : anyError ? (
-              <div className="banner">
-                <AlertTriangleIcon size={16} className="ico" />
-                <div className="body">
-                  <div className="title">Couldn&apos;t read a ledger</div>
-                  <div className="help mt-0.5">
-                    {source.phase === "error" ? `Source: ${source.error}` : `Target: ${target.error}`}
-                  </div>
-                  <button
-                    className="btn btn-secondary btn-sm mt-2"
-                    onClick={() => (source.phase === "error" ? source.retry() : target.retry())}
-                  >
-                    <RefreshIcon size={13} /> Try again
-                  </button>
-                </div>
+              // One notice per side that failed. It names the connection and
+              // says what to press: enter the password again, or try again.
+              <div className="vs-stack">
+                {source.phase === "error" && (
+                  <ErrorNotice
+                    error={source.error}
+                    connectionName={nameOf(source.connectionId)}
+                    connectionId={source.connectionId}
+                    onRetry={source.retry}
+                  />
+                )}
+                {target.phase === "error" && (
+                  <ErrorNotice
+                    error={target.error}
+                    connectionName={nameOf(target.connectionId)}
+                    connectionId={target.connectionId}
+                    onRetry={target.retry}
+                  />
+                )}
               </div>
             ) : !bothReady ? (
               <div className="card vs-wait">
@@ -601,17 +612,6 @@ export default function VersionSyncPage() {
               </div>
             ) : diff && reach ? (
               <>
-                {sameTarget && (
-                  <div className="banner">
-                    <InfoIcon size={16} className="ico" />
-                    <div className="body">
-                      <div className="title">Source and Target are the same schema</div>
-                      <div className="help mt-0.5">
-                        Pick two different schemas to sync — there&apos;s nothing to replay between a schema and itself.
-                      </div>
-                    </div>
-                  </div>
-                )}
                 <Result
                   diff={diff}
                   source={source}
@@ -659,52 +659,31 @@ export default function VersionSyncPage() {
   );
 }
 
-// ── One side's picker (connection + schema) ──────────────────────────────────
+// ---- One side's picker: the shared TargetPicker, fed from that side's hook ----
 function SidePicker({
-  side, label, sub, connections, loaded, locked,
+  side, label, hint, connections, locked,
 }: {
-  side: Side; label: string; sub: string; connections: Connection[]; loaded: boolean;
+  side: Side; label: string; hint: string; connections: Connection[];
   /** True while a replay runs: the pair cannot change under it. */
   locked: boolean;
 }) {
   return (
-    <div className="vs-side">
-      <div className="vs-side-head">
-        <h2>{label}</h2>
-        <span className="vs-side-sub">{sub}</span>
-      </div>
-        {!loaded ? (
-          <>
-            <Skeleton width="100%" height={36} radius={8} />
-            <Skeleton width="100%" height={36} radius={8} />
-          </>
-        ) : (
-          <>
-            <Select
-              variant="input"
-              ariaLabel={`${label} connection`}
-              value={side.connectionId}
-              disabled={locked}
-              placeholder="Select a connection…"
-              options={connections.map((c) => ({ value: String(c.id), label: `${c.name} — ${c.host}/${c.database_name}` }))}
-              onChange={(v) => { side.setConnectionId(v); side.setSchema(""); }}
-            />
-            <Select
-              variant="input"
-              mono
-              ariaLabel={`${label} schema`}
-              value={side.schema}
-              disabled={locked || side.schemasLoading || !side.connectionId}
-              placeholder={
-                !side.connectionId ? "Pick a connection first" : side.schemasLoading ? "Loading schemas…" : "Select a schema…"
-              }
-              options={side.schemas.map((s) => ({ value: s, label: s }))}
-              onChange={(v) => side.setSchema(v)}
-            />
-            {side.schemasError && <p className="vs-hint vs-bad">{side.schemasError}</p>}
-          </>
-        )}
-    </div>
+    <TargetPicker
+      label={label}
+      hint={hint}
+      connections={connections.map((c) => ({ id: c.id, name: c.name, detail: c.database_name }))}
+      connectionId={side.connectionId}
+      schema={side.schema}
+      schemas={side.schemas}
+      loading={side.schemasLoading}
+      error={side.schemasError || null}
+      onRetry={side.retrySchemas}
+      disabled={locked}
+      onChange={(next) => {
+        side.setConnectionId(next.connectionId);
+        side.setSchema(next.schema);
+      }}
+    />
   );
 }
 
@@ -743,7 +722,7 @@ function Result({
   const sourceEmpty = sourceEntries.length === 0;
   // "Up to date" = nothing is left to replay forward (missing is empty). Any
   // divergence (Target-only versions) is a separate concern, shown in its own
-  // banner — it must NOT flip this to the "N behind" branch.
+  // banner, it must NOT flip this to the "N behind" branch.
   const inSync = diff.upToDate;
 
   const missing = diff.missing;
@@ -779,12 +758,12 @@ function Result({
 
   const upToDateHelp =
     (belowCount === 1
-      ? "1 version the Source has is not on the Target, but the Target is already at or past it in that script, so a replay cannot run it — see Cannot be replayed forward below."
+      ? "1 version the Source has is not on the Target, but the Target is already at or past it in that script, so a replay cannot run it. See Cannot be replayed forward below."
       : belowCount > 1
-        ? `${belowCount} versions the Source has are not on the Target, but the Target is already at or past them in their scripts, so a replay cannot run them — see Cannot be replayed forward below.`
+        ? `${belowCount} versions the Source has are not on the Target, but the Target is already at or past them in their scripts, so a replay cannot run them. See Cannot be replayed forward below.`
         : "The Target has every version the Source has.") +
     (diff.diverged.length > 0
-      ? ` It also has ${countOf(diff.diverged.length, "version")} the Source does not — see below.`
+      ? ` It also has ${countOf(diff.diverged.length, "version")} the Source does not. See below.`
       : "");
 
   // The note behind the "?" beside the list's title. It only describes Run
@@ -872,7 +851,7 @@ function Result({
         </div>
       )}
       {/* The other half, and amber rather than green: the replay succeeded, so
-          this is not a failure — but the Target now holds a version GitHub does
+          this is not a failure, but the Target now holds a version GitHub does
           not list, which is the drift this feature exists to stop and is worth
           acting on. */}
       {apply.registry?.problem && (
@@ -896,7 +875,7 @@ function Result({
               <div>
                 <b>The Source has no applied scripts</b>
                 <p>
-                  Its ledger is empty — there&apos;s nothing to replay. Pick a Source that has migrations applied.
+                  Its ledger is empty, so there&apos;s nothing to replay. Pick a Source that has migrations applied.
                 </p>
               </div>
             </div>
@@ -914,7 +893,7 @@ function Result({
               <div className="vs-chips">
                 <span className="pill pill-pending">{countOf(total, "version")} behind</span>
                 {diff.missingWithoutSql > 0 && (
-                  <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
+                  <span className="pill pill-drift" title="Applied before SQL was stored, so it can't be replayed">
                     {diff.missingWithoutSql} without stored SQL
                   </span>
                 )}
@@ -977,7 +956,7 @@ function Result({
 
         {/* ── Missing list ─────────────────────────────────────────────────── */}
         {total > 0 && (
-          <div className="card vs-hist">
+          <div className="card vs-hist" data-tour="sync-missing">
             <div className="vs-hist-head">
               <h2>Missing on the Target ({total})</h2>
               <HelpHint label="Missing on the Target">{listHelp}</HelpHint>
@@ -1007,7 +986,7 @@ function Result({
                       ) : (
                         <div className="vs-nosql">
                           <InfoIcon size={14} />
-                          No stored script — this version was applied before SQL was tracked, so it can&apos;t be replayed.
+                          No stored script. This version was applied before SQL was tracked, so it can&apos;t be replayed.
                         </div>
                       )}
                       <div className="vs-row-act">
@@ -1060,7 +1039,7 @@ function Result({
             {diff.belowTarget.map((e) => (
               <details key={entryKey(e)} className="vs-more">
                 <summary>
-                  {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)} · the Target runs{" "}
+                  {scriptLabel(e.scriptName, e.version)} · {changeLevelWord(e.changeType)} · the Target runs{" "}
                   {scriptLabel(e.scriptName, targetHeads.get(e.scriptName) ?? "")}
                 </summary>
                 <pre className="vs-sql">
@@ -1080,7 +1059,7 @@ function Result({
             <div className="title">These schemas have diverged.</div>
             <div className="help mt-0.5">
               The Target has {countOf(diff.diverged.length, "version")}{" "}
-              the Source doesn&apos;t — they&apos;re on different branches.
+              the Source doesn&apos;t. They&apos;re on different branches.
               Review before syncing; nothing is merged automatically.
             </div>
             {/* "Review before syncing" needs something to review, so the
@@ -1088,7 +1067,7 @@ function Result({
             {diff.diverged.map((e) => (
               <details key={entryKey(e)} className="vs-more">
                 <summary>
-                  {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)}
+                  {scriptLabel(e.scriptName, e.version)} · {changeLevelWord(e.changeType)}
                 </summary>
                 <pre className="vs-sql">
                   {e.sqlContent ?? "No stored script for this version."}
@@ -1284,7 +1263,7 @@ function ReplayBody({
       () => {
         if (active) {
           setHashError(
-            "This browser cannot check the approval — crypto.subtle needs https or localhost. Open the app over https to approve a run.",
+            "This browser cannot check the approval, because crypto.subtle needs https or localhost. Open the app over https to approve a run.",
           );
         }
       },
@@ -1298,15 +1277,15 @@ function ReplayBody({
   // They used to be a bare list with the error beside it, and neither was reset
   // when the target changed: the previous target's rows stayed on screen while
   // the new ones were being read, and a run is matched to an approval by its
-  // fingerprint — which is built from the SCRIPTS alone (see `runHash` above),
-  // not the target — so the old target's "approved" row went on matching and
+  // fingerprint, which is built from the SCRIPTS alone (see `runHash` above),
+  // not the target, so the old target's "approved" row went on matching and
   // this panel went on saying the run was cleared for a target nobody had
   // approved. The server scopes its own claim by connection and schema and
   // would have refused the run, so what this cost was the truth of the screen,
   // not the gate itself: you were told to press Deploy and then refused.
   //
-  // Those leftover rows also kept `unreadable` false when the new read FAILED —
-  // that test asks for an empty list — so a target whose approvals could not be
+  // Those leftover rows also kept `unreadable` false when the new read FAILED,
+  // that test asks for an empty list, so a target whose approvals could not be
   // read at all was reported using another target's answer.
   //
   // Same {key, …} shape the Performance tabs use, and the key doubles as the
@@ -1332,7 +1311,7 @@ function ReplayBody({
     ? (currentApprovals?.error ?? null)
     : refusalMessage(roleLabel, "approvals:read");
   // Derived, not stored. Changing target makes the key stop matching, which is
-  // the same instant the old answer stops counting — so this turns true again
+  // the same instant the old answer stops counting, so this turns true again
   // with no reset to forget. `approvalsReloading` covers the other case: a
   // re-read of the SAME target, where the key still matches.
   const approvalsLoading =
@@ -1503,11 +1482,11 @@ function ReplayBody({
       ok: false,
       title:
         result.failure === "refused"
-          ? "Dry run refused — nothing was run"
+          ? "Dry run refused. Nothing was run"
           : result.failure === "not-started"
-            ? "Dry run did not start — nothing was run"
+            ? "Dry run did not start. Nothing was run"
             : result.failure === "rolled-back"
-              ? "Dry run failed — nothing was written"
+              ? "Dry run failed. Nothing was written"
               : "Dry run result not known",
       detail:
         result.failure === "unknown"
@@ -1549,8 +1528,8 @@ function ReplayBody({
     unflaggedKinds.length === 0
       ? ""
       : unflaggedKinds.length === 1
-        ? `A ${unflaggedKinds[0]} changes no structure, so it is never graded breaking and gets no breaking pill — this box is the only warning it gets. `
-        : `${unflaggedKinds.join(" and ")} change no structure, so they are never graded breaking and get no breaking pill — this box is the only warning they get. `;
+        ? `A ${unflaggedKinds[0]} changes no structure, so it is never graded breaking and gets no breaking pill. This box is the only warning it gets. `
+        : `${unflaggedKinds.join(" and ")} change no structure, so they are never graded breaking and get no breaking pill. This box is the only warning they get. `;
   const oneEnum = enumCount === 1;
 
   return (
@@ -1587,7 +1566,7 @@ function ReplayBody({
             return (
               <details key={entryKey(e)} open={listed(e, risk.breaking) || listed(e, risk.dataLoss)}>
                 <summary>
-                  {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {recorded}
+                  {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> · {recorded}
                   {sourceLevel === "unknown"
                     ? " (the Source recorded no level, so the Target records what its SQL reads as)"
                     : sourceLevel !== recorded
@@ -1631,7 +1610,7 @@ function ReplayBody({
               title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
               body={
                 "A breaking migration drops or rewrites structure that is already there. Anything " +
-                "reading the old shape — an app, a view, a report — stops working the moment this " +
+                "reading the old shape (an app, a view, a report) stops working the moment this " +
                 "commits. The breaking ones are open in the list above, showing the statements they " +
                 "will run." +
                 louderSentence
@@ -1650,7 +1629,7 @@ function ReplayBody({
               body={
                 (dataLossSure
                   ? `This replay contains ${namedLossKinds.join(", ")}. Those take rows out of a live table, ` +
-                    "and no rollback puts them back — a down script rebuilds structure, not data. "
+                    "and no rollback puts them back: a down script rebuilds structure, not data. "
                   : "") +
                 (unreadSql
                   ? "Part of the SQL could not be read: an EXECUTE inside a DO block runs SQL " +
@@ -1680,7 +1659,7 @@ function ReplayBody({
               </span>
               <span>
                 <b>{countOf(risk.mightFail.length, "version")} may be refused by the data already in the table.</b>{" "}
-                {`This replay contains ${mightFailKinds}. Those are valid SQL that PostgreSQL checks against every existing row — one NULL, one duplicate or one value that will not cast and the statement stops. Nothing is half-applied if that happens: the replay is one transaction, so it rolls back and the Target is left as it is now. A dry run finds this out without writing anything.`}
+                {`This replay contains ${mightFailKinds}. Those are valid SQL that PostgreSQL checks against every existing row: one NULL, one duplicate or one value that will not cast and the statement stops. Nothing is half-applied if that happens: the replay is one transaction, so it rolls back and the Target is left as it is now. A dry run finds this out without writing anything.`}
               </span>
             </div>
           )}
@@ -1695,10 +1674,10 @@ function ReplayBody({
                 (oneEnum ? "this one first, on its own. It commits" : "these first, on their own. They commit") +
                 " straight away. If the run then fails, everything else is rolled back and " +
                 (oneEnum ? "this stays" : "these stay") +
-                " — there is no statement in PostgreSQL that removes an enum value, so it cannot be " +
+                ": there is no statement in PostgreSQL that removes an enum value, so it cannot be " +
                 "undone by hand either. A label nothing uses does no harm; it is simply the one part " +
                 "of the run that is not all-or-nothing. A dry run cannot lift them out without leaving " +
-                "them behind, so it runs them inside the transaction instead — which is why rehearsing " +
+                "them behind, so it runs them inside the transaction instead, which is why rehearsing " +
                 "a script that uses its own new value fails where the real run succeeds."
               }
             >
@@ -1728,6 +1707,8 @@ function ReplayBody({
               }
             >
               <p className="prod-gate__body">
+                {/* The same chip the Drift page uses for this state. */}
+                <StatusChip status={record.drift} size="sm" />{" "}
                 <Link href={orgPath("/drift")} style={{ textDecoration: "underline" }}>
                   Open the Drift screen
                 </Link>

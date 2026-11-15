@@ -16,11 +16,11 @@
  * What is NOT here:
  *  - Who decides the screen name or when the menu shows:
  *    tests/component-studio-shell.test.tsx, which owns both.
- *  - That the organization half disappears on a narrow window. That is a CSS
- *    rule hung on the crumb-org class and jsdom applies no stylesheet, so what
- *    is asserted is that the class is on both halves of the crumb (the name and
- *    the chevron after it), because hiding one without the other leaves a stray
- *    arrow pointing at nothing.
+ *  - That the group half disappears on a narrow window. That is a CSS rule
+ *    hung on the crumb-group class and jsdom applies no stylesheet, so what
+ *    is asserted is that the class is on both halves of the crumb (the group
+ *    and the chevron after it), because hiding one without the other leaves a
+ *    stray arrow pointing at nothing.
  */
 
 import "@testing-library/jest-dom";
@@ -30,10 +30,10 @@ import { OrgProvider } from "@/components/OrgProvider";
 import { StudioTopbar } from "@/components/studio/StudioTopbar";
 
 /** The bar as every studio page draws it: inside an organization. */
-function renderInOrg(screenName: string) {
+function renderInOrg(screenName: string, group?: string) {
   return render(
     <OrgProvider slug="acme" name="Acme Ltd">
-      <StudioTopbar breadcrumbScreen={screenName} />
+      <StudioTopbar breadcrumbScreen={screenName} breadcrumbGroup={group} />
     </OrgProvider>
   );
 }
@@ -44,32 +44,38 @@ describe("the breadcrumb", () => {
     expect(screen.getByText("Version Sync")).toBeInTheDocument();
   });
 
-  test("puts it under the organization the page is open in", () => {
-    // It said "Workspace" in every organization, a word the studio uses
-    // nowhere else, so someone in two could not tell which one they were in.
-    renderInOrg("Drift");
-    expect(screen.getByRole("navigation")).toHaveTextContent("Acme Ltd");
-    expect(screen.getByRole("navigation")).toHaveTextContent("Drift");
-    expect(screen.getByRole("navigation")).not.toHaveTextContent("Workspace");
+  test("puts it under its menu group, and names the organization in the tooltip", () => {
+    // The crumb reads "Watch › Drift", the same words as the menu. The
+    // organization's name is in the rail, so here it is only the tooltip.
+    renderInOrg("Drift", "Watch");
+    expect(screen.getByRole("navigation")).toHaveTextContent(/^Watch\s*Drift$/);
+    expect(screen.getByRole("navigation")).toHaveAttribute("title", "Drift, in Acme Ltd");
+    expect(screen.getByText("Drift")).toHaveAttribute("aria-current", "page");
+  });
+
+  test("is the screen name alone for a page with no group, such as the Dashboard", () => {
+    const { container } = renderInOrg("Dashboard");
+    expect(screen.getByRole("navigation")).toHaveTextContent(/^Dashboard$/);
+    expect(container.querySelectorAll(".crumb-group")).toHaveLength(0);
   });
 
   test("is the screen name alone outside every organization", () => {
     const { container } = render(<StudioTopbar breadcrumbScreen="Drift" />);
     expect(screen.getByRole("navigation")).toHaveTextContent(/^Drift$/);
-    expect(container.querySelectorAll(".crumb-org")).toHaveLength(0);
+    expect(container.querySelectorAll(".crumb-group")).toHaveLength(0);
   });
 
-  test("marks the organization half so a narrow window can drop it whole", () => {
-    const { container } = renderInOrg("Drift");
-    const dropped = container.querySelectorAll(".crumb-org");
+  test("marks the group half so a narrow window can drop it whole", () => {
+    const { container } = renderInOrg("Drift", "Watch");
+    const dropped = container.querySelectorAll(".crumb-group");
     expect(dropped).toHaveLength(2);
-    expect(dropped[0]).toHaveTextContent("Acme Ltd");
+    expect(dropped[0]).toHaveTextContent("Watch");
   });
 
   test("leaves the screen name itself alone, whatever the width", () => {
     // The screen you are on is the one thing the bar cannot afford to hide.
-    renderInOrg("Drift");
-    expect(screen.getByText("Drift")).not.toHaveClass("crumb-org");
+    renderInOrg("Drift", "Watch");
+    expect(screen.getByText("Drift")).not.toHaveClass("crumb-group");
   });
 });
 
@@ -82,6 +88,18 @@ describe("the menu button", () => {
   test("says what it opens, since it is an icon and nothing else", () => {
     render(<StudioTopbar breadcrumbScreen="Drift" showMenu />);
     expect(screen.getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
+  });
+
+  test("carries a dot, and says so in words, while requests wait", () => {
+    // The dot alone would be colour and shape only, so the count is in the name.
+    const { container, rerender } = render(<StudioTopbar breadcrumbScreen="Drift" showMenu menuWaiting={2} />);
+    expect(screen.getByRole("button", { name: "Open navigation, 2 requests waiting on you" })).toBeInTheDocument();
+    expect(container.querySelector(".tb-dot")).toHaveAttribute("aria-hidden");
+    rerender(<StudioTopbar breadcrumbScreen="Drift" showMenu menuWaiting={1} />);
+    expect(screen.getByRole("button", { name: "Open navigation, 1 request waiting on you" })).toBeInTheDocument();
+    rerender(<StudioTopbar breadcrumbScreen="Drift" showMenu menuWaiting={0} />);
+    expect(screen.getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
+    expect(container.querySelector(".tb-dot")).toBeNull();
   });
 
   test("hands the tap back to whoever owns the drawer", () => {

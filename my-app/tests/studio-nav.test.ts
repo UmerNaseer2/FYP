@@ -31,7 +31,15 @@
 import path from "path";
 import { existsSync } from "fs";
 
-import { NAV_ITEMS, activeNavItem, activeScreen, type NavItem } from "@/components/studio/nav";
+import {
+  NAV_GROUPS,
+  NAV_ITEMS,
+  activeNavItem,
+  activeScreen,
+  groupNavItems,
+  isKnownScreen,
+  type NavItem,
+} from "@/components/studio/nav";
 import {
   FEATURES,
   isAdminOnly,
@@ -52,16 +60,45 @@ describe("the list of screens", () => {
   test("reads top to bottom as the order the work happens in", () => {
     expect(NAV_ITEMS.map((item) => item.screen)).toEqual([
       "Dashboard",
+      "Connections",
       "Compare & Author",
+      "Visualizer",
       "Script Editor",
       "Deploy",
       "Version Sync",
       "Drift",
       "Performance",
-      "Visualizer",
-      "Connections",
+      "History",
       "Requests",
       "Admin",
+    ]);
+  });
+
+  test("is grouped the way the tour tells it, with the Dashboard on its own", () => {
+    const sections = groupNavItems(NAV_ITEMS).map((section) => [
+      section.group ?? null,
+      section.items.map((item) => item.screen),
+    ]);
+    expect(sections).toEqual([
+      [null, ["Dashboard"]],
+      ["Connect", ["Connections"]],
+      ["Compare", ["Compare & Author", "Visualizer"]],
+      ["Script", ["Script Editor"]],
+      ["Ship", ["Deploy", "Version Sync"]],
+      ["Watch", ["Drift", "Performance", "History"]],
+      ["People", ["Requests", "Admin"]],
+    ]);
+    expect(NAV_GROUPS).toEqual(["Connect", "Compare", "Script", "Ship", "Watch", "People"]);
+  });
+
+  test("drops a group whose rows were all filtered away", () => {
+    const some = NAV_ITEMS.filter((item) => item.group !== "People" && item.group !== "Ship");
+    expect(groupNavItems(some).map((section) => section.group ?? null)).toEqual([
+      null,
+      "Connect",
+      "Compare",
+      "Script",
+      "Watch",
     ]);
   });
 
@@ -226,12 +263,26 @@ describe("deciding which screen you are on", () => {
 });
 
 describe("activeScreen", () => {
-  it("names the account pages in the breadcrumb and lights up no rail row", () => {
+  it("names the account page in the breadcrumb and lights up no rail row", () => {
     expect(activeScreen("/acme/devices")).toEqual({ screen: "Phone and desktop", href: "/devices" });
-    expect(activeScreen("/acme/history")).toEqual({ screen: "Your activity", href: "/history" });
-    for (const page of ["/devices", "/history"]) {
-      expect(NAV_ITEMS.some((item) => item.href === page)).toBe(false);
-    }
+    expect(NAV_ITEMS.some((item) => item.href === "/devices")).toBe(false);
+  });
+
+  it("puts History in the menu, under Watch", () => {
+    // It was "Your activity" in the account menu. Same address, new home.
+    expect(activeScreen("/acme/history")).toEqual({ screen: "History", href: "/history", group: "Watch" });
+  });
+
+  it("hands the breadcrumb the group, and none for the Dashboard", () => {
+    expect(activeScreen("/acme/drift").group).toBe("Watch");
+    expect(activeScreen("/acme/deploy").group).toBe("Ship");
+    expect(activeScreen("/acme").group).toBeUndefined();
+  });
+
+  it("tells a real screen from an address that only falls back to the Dashboard", () => {
+    expect(isKnownScreen("/acme/drift")).toBe(true);
+    expect(isKnownScreen("/acme/devices")).toBe(true);
+    expect(isKnownScreen("/acme/no-such-page")).toBe(false);
   });
 
   it("falls through to the rail for every other page", () => {

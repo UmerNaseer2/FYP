@@ -67,7 +67,7 @@ export default function DevicesPage() {
 
   return (
     <div className="dv-page">
-      <PageHeader page="/devices" title={devicesHelp.title} blurb={devicesHelp.blurb} />
+      <PageHeader page="/devices" blurb={devicesHelp.blurb} />
 
       <div className="dv-tabs" role="group" aria-label="Ways in">
         {TABS.map((item) => (
@@ -239,7 +239,7 @@ function ThisComputer() {
               <MonitorIcon size={18} />
             </span>
             <span className="dv-row__text">
-              <b>Linked to {status.orgName}</b>
+              <b title={`Linked to ${status.orgName}`}>Linked to {status.orgName}</b>
               <span>
                 {status.online
                   ? "The website can be reached."
@@ -347,7 +347,7 @@ function LinkedComputers() {
                   <MonitorIcon size={18} />
                 </span>
                 <span className="dv-row__text">
-                  <b>{computer.name}</b>
+                  <b title={computer.name}>{computer.name}</b>
                   <span>
                     {computer.mine ? "Yours" : computer.owner}
                     {" · "}

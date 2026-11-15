@@ -13,13 +13,13 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
- * Spec feature 8 — "store query history for comparison" — and feature 10's
+ * Spec feature 8, "store query history for comparison", and feature 10's
  * "Historical Query Monitoring (query, exec_time, rows_returned, capture_time)"
  * and "compare historical performance with current performance", as a screen.
  *
  * One list, two modes. Without a fingerprint it is everything analysed against
  * this schema; click a row and it becomes every run of that one query, with the
- * newest two compared. The second mode is the point — a single measurement is
+ * newest two compared. The second mode is the point, a single measurement is
  * a fact about one afternoon, and the useful question is always "is this worse
  * than it was".
  *
@@ -68,7 +68,7 @@ export function QueryHistoryPanel({
   fingerprint,
 }: {
   target: PerfTarget | null;
-  /** From ?fingerprint= — the single query to show, or null for the schema. */
+  /** From ?fingerprint=, the single query to show, or null for the schema. */
   fingerprint: string | null;
 }) {
   const router = useRouter();
@@ -251,7 +251,7 @@ export function QueryHistoryPanel({
             row={row}
             // Only in single-query mode, where there is a comparison at all.
             // The newest run is index 0 because the server orders by
-            // captured_at DESC — see the route.
+            // captured_at DESC, see the route.
             role={
               !view.comparison ? null : index === 0 ? "newest" : row.id === view.baselineId ? "baseline" : null
             }
@@ -268,14 +268,14 @@ export function QueryHistoryPanel({
 /**
  * Which earlier run to measure the newest one against.
  *
- * The default — the run immediately before — answers "did the change I just
+ * The default, the run immediately before, answers "did the change I just
  * made help?". It cannot answer the other question people bring to this screen:
  * a query that has degraded over months does so a few percent at a time, and
  * every consecutive pair looks fine. Picking the run from before the slide is
  * the only way to see it.
  *
  * rows[0] is left out of the list because it is the run being measured, and
- * comparing it with itself would print "about the same" — which reads as a
+ * comparing it with itself would print "about the same", which reads as a
  * finding and is not one.
  */
 function BaselinePicker({
@@ -308,7 +308,7 @@ function BaselinePicker({
         {older.map((row) => (
           <option key={row.id} value={row.id}>
             {new Date(row.captured_at).toLocaleString()}
-            {row.exec_time_ms !== null ? ` — ${round(row.exec_time_ms)} ms` : " — estimated"}
+            {row.exec_time_ms !== null ? ` · ${round(row.exec_time_ms)} ms` : " · estimated"}
           </option>
         ))}
       </select>
@@ -331,7 +331,7 @@ function ComparisonLine({
 }: {
   comparison: QueryComparison;
   newest: QueryHistoryRow;
-  /** Null only if the row list and the chosen id ever disagree — see below. */
+  /** Null only if the row list and the chosen id ever disagree, see below. */
   baseline: QueryHistoryRow | null;
 }) {
   return (
@@ -343,7 +343,7 @@ function ComparisonLine({
         {new Date(newest.captured_at).toLocaleString()}
         {" against "}
         {/* The server picks the baseline and sends back its id, so this only
-            fails to match if the two ever disagree — in which case saying so
+            fails to match if the two ever disagree, in which case saying so
             is better than naming a run that was not the one compared. */}
         {baseline ? new Date(baseline.captured_at).toLocaleString() : "an earlier run"}
       </div>
@@ -352,7 +352,7 @@ function ComparisonLine({
           ? `${comparison.execTimeDeltaMs >= 0 ? "+" : ""}${round(
               comparison.execTimeDeltaMs
             )} ms`
-          : "No timing to compare — one of the two runs was an estimate"}
+          : "No timing to compare: one of the two runs was an estimate"}
         {" · score "}
         {comparison.scoreDelta >= 0 ? "+" : ""}
         {comparison.scoreDelta}
@@ -378,7 +378,7 @@ function HistoryRow({
    * when there is no comparison.
    */
   role: "newest" | "baseline" | null;
-  /** Null in single-query mode — see the call site. */
+  /** Null in single-query mode, see the call site. */
   onOpen: (() => void) | null;
 }) {
   return (
@@ -391,11 +391,11 @@ function HistoryRow({
         {role && <Pill tone="brand">{role === "newest" ? "Newest" : "Baseline"}</Pill>}
         <span className="text-[12px] tabular-nums" style={{ color: "var(--text)" }}>
           {/* exec_time_ms and rows_returned are null for an estimate by design,
-              and are shown as an em dash rather than a 0 — a zero would be a
+              and are shown in words rather than as a 0, because a zero would be a
               claim that the query took no time and returned nothing. */}
-          {row.exec_time_ms !== null ? `${round(row.exec_time_ms)} ms` : "—"}
+          {row.exec_time_ms !== null ? `${round(row.exec_time_ms)} ms` : "not timed"}
           {" · "}
-          {row.rows_returned !== null ? `${row.rows_returned.toLocaleString("en-US")} rows` : "—"}
+          {row.rows_returned !== null ? `${row.rows_returned.toLocaleString("en-US")} rows` : "rows not counted"}
         </span>
         <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
           {new Date(row.captured_at).toLocaleString()} · {row.captured_by}
@@ -472,7 +472,7 @@ function TrendChart({
       {timed.length === 0 ? (
         <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
           Nothing in this window was timed. Tick &ldquo;really run it&rdquo; when
-          analysing a query and its time is recorded here — an estimate has no
+          analysing a query and its time is recorded here, an estimate has no
           time to plot.
         </div>
       ) : (
@@ -493,7 +493,7 @@ function TrendChart({
                     background: "var(--brand)",
                     opacity: 0.75,
                   }}
-                  title={`${point.day} — median ${round(ms)} ms over ${
+                  title={`${point.day}: median ${round(ms)} ms over ${
                     point.measuredRuns
                   } timed ${point.measuredRuns === 1 ? "run" : "runs"}`}
                 />
@@ -514,7 +514,7 @@ function TrendChart({
   );
 }
 
-/** Two decimals under 10 ms, none above — the same rule the analyser uses. */
+/** Two decimals under 10 ms, none above, the same rule the analyser uses. */
 function round(n: number): number {
   return Math.abs(n) < 10 ? Math.round(n * 100) / 100 : Math.round(n);
 }

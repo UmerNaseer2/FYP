@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card, EmptyState, Pill, Skeleton, type PillTone } from "@/components/ui";
-import { AlertCircleIcon, GaugeIcon, RefreshIcon } from "@/components/ui/icons";
+import { GaugeIcon, RefreshIcon } from "@/components/ui/icons";
 import {
   ACTIVITY_KIND_LABEL,
   type ActivityKind,
@@ -13,15 +13,16 @@ import type { DbHealth, HealthLevel } from "@/lib/db-health";
 import { ThresholdBanner } from "./ThresholdBanner";
 import type { PerfTarget } from "./PerfTargetPicker";
 import { apiFetch } from "@/lib/api-fetch";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /**
- * Spec feature 10 — "Long-Running Query Detection", as a screen.
+ * Spec feature 10, "Long-Running Query Detection", as a screen.
  *
  * Everything on this screen is true for the instant it was read and for no
  * longer. That is the one thing the design has to carry, and it does it in
  * three ways: the reading is stamped with the moment it was taken, refreshing
  * is a button the reader presses rather than a timer that quietly redraws under
- * them, and nothing is stored — there is no history here, because a list of
+ * them, and nothing is stored, there is no history here, because a list of
  * sessions that were running four hours ago is not something anyone can act on.
  *
  * There is deliberately no "kill this session" button. Terminating somebody
@@ -140,19 +141,12 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
   const view = current.view;
   if (!view) {
     return (
-      <div className="pf-note pf-note--warn">
-        <AlertCircleIcon size={15} className="ico" />
-        <div>
-          <div className="title">Could not read this server&apos;s activity</div>
-          <div className="body">
-            {current.error}{" "}
-            <button type="button" className="underline" onClick={() => setReload((n) => n + 1)}>
-              Try again
-            </button>
-            .
-          </div>
-        </div>
-      </div>
+      <ErrorNotice
+        error={current.error}
+        connectionName={target?.connectionName}
+        connectionId={connectionId}
+        onRetry={() => setReload((n) => n + 1)}
+      />
     );
   }
 
@@ -192,7 +186,7 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
         <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
           As of {new Date(view.takenAt).toLocaleTimeString()} on{" "}
           <span className="mono">{view.database}</span>. Nothing here refreshes on
-          its own — this is one reading, and it is already out of date. Anything
+          its own: this is one reading, and it is already out of date. Anything
           on the same statement for more than {view.longRunningSeconds}s counts as
           long-running
           {view.thresholdConfigured
@@ -231,7 +225,7 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
 }
 
 /**
- * Spec feature 10 — the database half of "Table/Database Health Metrics".
+ * Spec feature 10, the database half of "Table/Database Health Metrics".
  *
  * Every number here is a total since the counters were last reset, which is
  * printed above the grid rather than left for the reader to assume. Without it

@@ -39,9 +39,17 @@
 .dp-stack { display:flex; flex-direction:column; gap:12px; }
 
 /* Target pickers */
-.dp-fields { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; margin-top:14px; }
+/* The target picker (connection and schema in one) beside the script group. */
+.dp-fields { display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(0, 1fr); gap:16px; margin-top:14px; align-items:start; }
+.dp-fields--one { grid-template-columns:minmax(0, 1fr); max-width:560px; }
+.dp-field { min-width:0; }
+/* A long name ends with an ellipsis. Its full text is in the title attribute. */
+.dp-clip { display:inline-block; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; vertical-align:bottom; }
+/* Long connection and script names end with an ellipsis, never a sideways scroll. */
+.dp-field .ds-select { max-width:100%; }
 .dp-field-notes { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
-.dp-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:16px; }
+.dp-check { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:16px; }
 
 /* Timeline: what has run on this schema */
 .dp-tl-m { margin-right:auto; font-size:13px; color:var(--ink-2); }
@@ -303,3 +311,4 @@ label.dp-seq:has(input:focus-visible) { outline:2px solid var(--ink); outline-of
 .dp-card > .dp-mig-list:first-child { margin-top: 0; }
 .dp-result > .dp-result-body:first-child { margin-top: 0; }
 .dp-good-text { color: var(--add); }
+.dp-card-top > .dp-h-sm { min-width:0; }

@@ -195,7 +195,7 @@ describe("what one row says", () => {
 
   it("says a check found nothing to summarise, rather than leaving the cell blank", () => {
     mount([IN_SYNC]);
-    expect(cell("billing", "Summary")).toHaveTextContent("—");
+    expect(cell("billing", "Summary")).toHaveTextContent("No summary");
   });
 
   it("says the connection is gone rather than naming nothing", () => {
@@ -209,9 +209,13 @@ describe("what one row says", () => {
     mount([UNREACHABLE]);
 
     const status = cell("reporting", "Status");
-    expect(status).toHaveTextContent("Unreachable");
+    expect(status).toHaveTextContent("Can't be reached");
     expect(status).toHaveTextContent("ack'd");
-    expect(status.querySelector("[title]")).toHaveAttribute("title", "Acknowledged 1d ago");
+    // The status chip carries a tooltip of its own, so ask for this one by its text.
+    expect(status.querySelector('[title^="Acknowledged"]')).toHaveAttribute(
+      "title",
+      "Acknowledged 1d ago"
+    );
   });
 
   it("leaves an unacknowledged check unmarked", () => {
@@ -223,7 +227,7 @@ describe("what one row says", () => {
     mount(ROWS);
     expect(cell("public", "Status")).toHaveTextContent("Drifted");
     expect(cell("billing", "Status")).toHaveTextContent("In sync");
-    expect(cell("reporting", "Status")).toHaveTextContent("Unreachable");
+    expect(cell("reporting", "Status")).toHaveTextContent("Can't be reached");
   });
 });
 
@@ -242,7 +246,8 @@ describe("opening a check", () => {
     mount([DRIFTED]);
     expect(
       screen.getByRole("link", {
-        name: "public — open the drift detail for this check, drifted 5m ago",
+        // The test page puts a space between the name and the hidden words.
+        name: /^public ?, open the drift detail for this check, drifted 5m ago$/,
       })
     ).toBeInTheDocument();
   });
@@ -268,7 +273,7 @@ describe("the filter chips", () => {
     expect(chipCount("All")).toBe("5");
     expect(chipCount("Drifted")).toBe("2");
     expect(chipCount("In sync")).toBe("2");
-    expect(chipCount("Unreachable")).toBe("1");
+    expect(chipCount("Can't be reached")).toBe("1");
     // Two of five, so a chip counting the other side of this column would
     // not happen to print the same number.
     expect(chipCount("Acknowledged")).toBe("2");
@@ -291,7 +296,7 @@ describe("the filter chips", () => {
     expect(chipCount("All")).toBe("5");
     expect(chipCount("Drifted")).toBe("2");
     expect(chipCount("In sync")).toBe("2");
-    expect(chipCount("Unreachable")).toBe("1");
+    expect(chipCount("Can't be reached")).toBe("1");
     expect(chipCount("Acknowledged")).toBe("2");
   });
 
@@ -311,14 +316,14 @@ describe("the filter chips", () => {
 
   it("goes back to everything", () => {
     mount();
-    fireEvent.click(chip("Unreachable"));
+    fireEvent.click(chip("Can't be reached"));
     fireEvent.click(chip("All"));
     expect(shown()).toEqual(["archive", "public", "sessions", "billing", "reporting"]);
   });
 
   it("says a filter is the reason the list is empty, not that nothing was recorded", () => {
     mount([DRIFTED]);
-    fireEvent.click(chip("Unreachable"));
+    fireEvent.click(chip("Can't be reached"));
 
     expect(screen.getByText("No audit rows match this filter.")).toBeInTheDocument();
     expect(screen.queryByText(/No drift checks have been recorded yet/)).not.toBeInTheDocument();
@@ -403,7 +408,7 @@ describe("the line under the table", () => {
     // front of it: one row out of five is still "1 of 5 recorded checks".
     // Agreeing with the row count instead would read "1 of 5 recorded check".
     mount();
-    fireEvent.click(chip("Unreachable"));
+    fireEvent.click(chip("Can't be reached"));
     expect(
       screen.getByText("Showing 1 of 5 recorded checks · newest first.")
     ).toBeInTheDocument();

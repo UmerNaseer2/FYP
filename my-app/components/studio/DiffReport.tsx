@@ -26,10 +26,10 @@ import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { HelpHint } from "@/components/ui/HelpHint";
 
 // ---------------------------------------------------------------------------
-// DiffReport — the reusable diff canvas.
+// DiffReport: the reusable diff canvas.
 //
-// It renders a CompareReport — whether the two sides came from two live
-// databases or from a stored snapshot against a live one — as collapsible
+// It renders a CompareReport, whether the two sides came from two live
+// databases or from a stored snapshot against a live one, as collapsible
 // per-table groups whose rows are colour-coded add / change / remove. It
 // deliberately keeps ALL the richness the compare engine produces: rename
 // candidates with similarity scores, the columns-only-in-A/B split, per-column
@@ -38,7 +38,7 @@ import { HelpHint } from "@/components/ui/HelpHint";
 //
 // No "use client" of its own, but it is NOT a server component: the compare
 // page is a client component, so this is compiled into the browser bundle along
-// with it. That is fine and is the reason it may only import pure modules —
+// with it. That is fine and is the reason it may only import pure modules,
 // lib/compare grades changes and opens no connection. It also means every group
 // here collapses through a native <details>, with no state and no effects, so
 // nothing about being in the bundle costs anything to hydrate. The one thing
@@ -53,12 +53,12 @@ type DiffKind = "add" | "rem" | "chg";
  * How this view should talk about the drops that making the target match the
  * source would require.
  *
- *   "none"  — no migration script is rendered beside the report (/drift). The
+ *   "none":  no migration script is rendered beside the report (/drift). The
  *             copy states what a sync would cost and claims nothing else.
- *   "safe"  — a script is rendered and its DROP statements are commented out.
- *   "armed" — a script is rendered and its DROP statements will run.
+ *   "safe":  a script is rendered and its DROP statements are commented out.
+ *   "armed": a script is rendered and its DROP statements will run.
  *
- * These map 1:1 onto generateMigration()'s allowDataLoss option — see
+ * These map 1:1 onto generateMigration()'s allowDataLoss option, see
  * lib/generate-sql.ts, which is the only thing that actually emits SQL.
  */
 export type DropMode = "none" | "safe" | "armed";
@@ -80,11 +80,11 @@ export function dropModeFrom(allowDataLoss: boolean | undefined): DropMode {
  * around it. The compare engine only knows "left" and "right"; this says what
  * those two mean here, and that decides which way round a changed value reads.
  *
- *   "source-target"  (/compare) — left is the schema you want, right is the one
+ *   "source-target"  (/compare): left is the schema you want, right is the one
  *                     the migration rewrites. A changed value reads
  *                     right → left: what it is now, then what the script makes
  *                     it. That is the direction the generated SQL comments use.
- *   "expected-live"  (/drift)   — left is the tracked baseline, right is the
+ *   "expected-live"  (/drift):   left is the tracked baseline, right is the
  *                     live database. A changed value reads left → right: what
  *                     it was, then what somebody changed it to.
  */
@@ -100,7 +100,7 @@ const SIDE_WORDS: Record<ReportSides, { left: string; right: string }> = {
  * One changed column value, printed in the direction this page reads.
  *
  * Falls back to the engine's own sentence when the change has no single
- * before/after pair — a sequence-settings change lists several at once.
+ * before/after pair, a sequence-settings change lists several at once.
  */
 function changeText(change: ColumnChange, sides: ReportSides): string {
   if (
@@ -185,7 +185,7 @@ function columnBody(col: ColumnSnapshot) {
 // ColumnChange now arrives already graded by lib/compare.ts, which is also
 // where the migration generator gets its grades from. Rewording a message can
 // no longer mis-colour the report, and the four changes that had no matching
-// branch at all — default, generated, unique and foreign-key participation —
+// branch at all, default, generated, unique and foreign-key participation,
 // are no longer silently graded "info".
 
 const CONSTRAINT_TAG: Record<ConstraintDiff["kind"], string> = {
@@ -248,7 +248,7 @@ function objectKindOf(diff: ObjectDiff): DiffKind {
  *
  * ObjectDiff.summary is a full sentence naming the object again ("Index idx_x
  * exists only in …"), which reads badly on a line that already shows the name
- * in bold. This is the tail of that sentence and nothing more — display text,
+ * in bold. This is the tail of that sentence and nothing more, display text,
  * never a severity: the grade comes from objectDiffSeverity, which is the same
  * function the SQL generator's statements are graded by.
  */
@@ -279,18 +279,18 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
   if (diff.kind === "EXTENSION" && diff.status === "changedDefinition") {
     // The version each side is on is the whole content of this line, so print
     // both rather than the word "changed". Whether ALTER EXTENSION can get from
-    // one to the other is the compare engine's answer, read off the diff — the
+    // one to the other is the compare engine's answer, read off the diff, the
     // same answer the generator gates its statement on. Ahead of the general
     // by-hand line below because that one says "replaced", and an extension
     // that cannot be updated is not replaced by anything.
     const versions = sideValues(diff, sides);
     if (drift) return versions;
     return diff.needsManualWork === true
-      ? `${versions} — no update path, has to be moved by hand`
-      : `${versions} — updated`;
+      ? `${versions} · no update path, has to be moved by hand`
+      : `${versions} · updated`;
   }
   if (diff.kind === "PRIVILEGES") {
-    // Which way the access moved is the whole point of this line — "definition
+    // Which way the access moved is the whole point of this line, "definition
     // changed" over a REVOKE tells the reader nothing they came here for. Read
     // off the grade the compare engine already decided (breaking there means
     // the right-hand side loses something) rather than re-comparing the two
@@ -303,65 +303,65 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
         // live database has access the baseline does not, so the same grade
         // states a fact about now instead of a plan for later.
         return rightLoses
-          ? "access changed — the live database grants more than the baseline"
-          : "access changed — the live database grants less than the baseline";
+          ? "access changed: the live database grants more than the baseline"
+          : "access changed: the live database grants less than the baseline";
       }
       return rightLoses
-        ? "access changed — the target loses some"
-        : "access changed — the target only gains";
+        ? "access changed: the target loses some"
+        : "access changed: the target only gains";
     }
     if (diff.status === "onlyA") {
       return drift
-        ? "granted in the baseline — gone from the live database"
-        : "only in source — granted";
+        ? "granted in the baseline, gone from the live database"
+        : "only in source, granted";
     }
   }
   // Set by the compare engine wherever no statement can carry the change. Read
   // rather than re-decided so this line and the generator's MANUAL note come
   // from one answer: a range type the snapshot cannot describe well enough to
-  // create used to be drawn as "only in source — created" while the script
+  // create used to be drawn as "only in source, created" while the script
   // could do nothing but describe it.
   if (diff.needsManualWork === true) {
     if (diff.status === "onlyA") {
       return drift
-        ? "in the baseline — gone from the live database, no automatic way back"
-        : "only in source — has to be created by hand";
+        ? "in the baseline, gone from the live database, no automatic way back"
+        : "only in source, has to be created by hand";
     }
-    return "definition changed — has to be replaced by hand";
+    return "definition changed, has to be replaced by hand";
   }
   if (diff.status === "onlyA") {
     return drift
-      ? "in the baseline — gone from the live database"
-      : "only in source — created";
+      ? "in the baseline, gone from the live database"
+      : "only in source, created";
   }
   if (diff.status === "onlyB") {
-    if (drift) return "only in the live database — added since the baseline";
+    if (drift) return "only in the live database, added since the baseline";
     // /compare. This line used to say "dropped" whatever the switch was set to,
     // which put it in direct contradiction with the banner at the top of the
     // same report: that one says the destructive statements are commented out
     // and the script deletes nothing. One of the two was always lying, and this
-    // was the one — with the reader's rows at stake.
+    // was the one, with the reader's rows at stake.
     //
     // Not every drop is held back, though, so "held back" everywhere would be
     // the same mistake pointing the other way. Safe mode comments out the
     // statements the generator marked destructive, and for an object that means
-    // exactly the ones whose drop throws stored rows away — a materialized view
+    // exactly the ones whose drop throws stored rows away, a materialized view
     // keeps its own copy of the result set. DROP VIEW on a plain view, DROP
     // INDEX, DROP SEQUENCE and the rest still run. `dropDestroysData` is the
     // compare engine's own answer to that question, the same one the banner
     // counts, so the two cannot drift apart.
-    if (dropMode === "armed") return "only in target — dropped";
+    if (dropMode === "armed") return "only in target, dropped";
     if (dropMode === "safe") {
-      return diff.dropDestroysData ? "only in target — drop held back" : "only in target — dropped";
+      return diff.dropDestroysData ? "only in target, drop held back" : "only in target, dropped";
     }
-    // "none" — no script has been generated, so there is nothing to promise.
+    // "none": no script has been generated, so there is nothing to promise.
     return "only in target";
   }
   if (diff.kind === "ROW SECURITY" || diff.kind === "PARTITIONING") {
     // Which way the switch moves is the entire content of these lines.
     // "definition changed", over the setting that decides whether the table
-    // returns any rows at all — or over the difference between a plain table
-    // and a partitioned one, which no ALTER can carry — tells the reader
+    // returns any rows at all, or over the difference between a plain table
+    // and a partitioned one, which no ALTER can carry, tells the reader
     // nothing they came here for.
     return sideValues(diff, sides);
   }
@@ -373,11 +373,11 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
     return "definition changed";
   }
   if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
-    // Whether a drop is needed is the compare engine's call, not this file's —
+    // Whether a drop is needed is the compare engine's call, not this file's,
     // re-deciding it here is how a report comes to describe a migration the
     // generator did not write. `false` means the WITH (...) settings moved and
     // the SELECT did not, which CREATE OR REPLACE can carry on its own.
-    if (diff.replaceNeedsDrop === false) return "options changed — replaced in place";
+    if (diff.replaceNeedsDrop === false) return "options changed, replaced in place";
     // Otherwise CREATE OR REPLACE VIEW refuses the change (or the object is a
     // materialized view), so the generator drops it with CASCADE and rebuilds.
     //
@@ -388,34 +388,34 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
     // object is neither dropped nor rebuilt, and saying it was is the same
     // contradiction the "only in target" line above carried.
     if (dropMode === "safe" && diff.dropDestroysData) {
-      return "definition changed — rebuild held back";
+      return "definition changed, rebuild held back";
     }
-    return "definition changed — dropped and rebuilt";
+    return "definition changed, dropped and rebuilt";
   }
   // An index cannot be altered in place either, but nothing depends on one, so
   // the drop takes nothing with it.
-  if (diff.kind === "INDEX") return "definition changed — dropped and recreated";
+  if (diff.kind === "INDEX") return "definition changed, dropped and recreated";
   // CREATE TRIGGER has no OR REPLACE, so the generator drops and writes it
   // again. Said here rather than falling through to "replaced", which reads as
   // if one statement carried it.
-  if (diff.kind === "TRIGGER") return "definition changed — dropped and recreated";
+  if (diff.kind === "TRIGGER") return "definition changed, dropped and recreated";
   // ALTER POLICY can move the roles and the expressions but not the command the
   // policy applies to, so the generator drops it and writes it again.
-  if (diff.kind === "POLICY") return "rule changed — dropped and recreated";
+  if (diff.kind === "POLICY") return "rule changed, dropped and recreated";
   // ALTER SEQUENCE, ALTER DOMAIN and ALTER TYPE ... ADD VALUE change these
   // where they stand. They fell through to "replaced", which reads as if the
   // object were swapped for a new one: for a type that columns use, that is a
   // drop the script never runs.
   if (diff.kind === "SEQUENCE" || diff.kind === "ENUM" || diff.kind === "DOMAIN") {
-    return "definition changed — altered in place";
+    return "definition changed, altered in place";
   }
   // CREATE OR REPLACE carries a routine, unless its return type or an argument
   // name moved: PostgreSQL refuses that replace, so the generator drops the
   // old one first. The compare engine decides which, as for a view.
   if ((diff.kind === "FUNCTION" || diff.kind === "PROCEDURE") && diff.replaceNeedsDrop === true) {
-    return "definition changed — dropped and recreated";
+    return "definition changed, dropped and recreated";
   }
-  return "definition changed — replaced";
+  return "definition changed, replaced";
 }
 
 /**
@@ -423,8 +423,8 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
  *
  * The grade comes off the diff itself. This component used to hand
  * objectDiffSeverity a Set of the target's unique index names that each caller
- * assembled by hand, which is how a created unique index — present only in the
- * source, so never in that Set — came to be drawn as a harmless addition.
+ * assembled by hand, which is how a created unique index, present only in the
+ * source, so never in that Set, came to be drawn as a harmless addition.
  */
 function ObjectLines({
   label,
@@ -435,7 +435,7 @@ function ObjectLines({
   label: string;
   diffs: ObjectDiff[];
   sides: ReportSides;
-  /** What the script does with a drop — see objectNote, which reads it. */
+  /** What the script does with a drop, see objectNote, which reads it. */
   dropMode: DropMode;
 }) {
   if (diffs.length === 0) return null;
@@ -558,7 +558,7 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
  * Compact `+a ~c −r` chips for a group/table header.
  *
  * The symbols carry the whole meaning on screen, so read aloud they were "plus
- * 3, tilde 1, minus 0" — and the prose legend above the report is a separate
+ * 3, tilde 1, minus 0", and the prose legend above the report is a separate
  * paragraph no screen reader ties to them. Each chip names itself instead, in
  * the direction this page reads (see ReportSides).
  */
@@ -623,7 +623,7 @@ function ChevronDown() {
  *
  * On /compare that is a table the migration CREATEs in the target, so the card
  * is headed "new". On /drift the left-hand side is the tracked baseline, so
- * the same bucket is a table that HAS BEEN DROPPED from the live database —
+ * the same bucket is a table that HAS BEEN DROPPED from the live database,
  * and this card used to head it with a green "new" pill and a list of columns
  * marked "added", which is the exact opposite of what happened.
  *
@@ -636,7 +636,7 @@ function ChevronDown() {
 function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSides }) {
   const drift = sides === "expected-live";
   // undefined means the snapshot has no record of the category, which is not
-  // the same as the table having none — see ComparedObjectCategories.
+  // the same as the table having none, see ComparedObjectCategories.
   const indexes = table.indexes ?? [];
   const triggers = table.triggers ?? [];
   // Same rule, and it matters most here: a table created with row security on
@@ -764,7 +764,7 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
       {/* Row security. Only when it is actually on: every table has a switch,
           so drawing "DISABLED" on all of them would bury the ones that matter.
           A new table is created with the switch OFF whatever the source says,
-          so the script writes it out — and until this group existed, the one
+          so the script writes it out, and until this group existed, the one
           statement that decides who can read the new table appeared in the SQL
           and nowhere in the report. */}
       {rls && rlsIsOn && (
@@ -773,7 +773,7 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
             label="Row security"
             note={
               policies.length === 0
-                ? "on, with no policies — nobody but the owner can read it"
+                ? "on, with no policies, so nobody but the owner can read it"
                 : undefined
             }
           />
@@ -796,7 +796,7 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
 
       {/* Partitioning, when there is any. It is part of the CREATE TABLE rather
           than a statement of its own, which is why it is last and why it does
-          not move the count above — but "this new table is a partition of
+          not move the count above, but "this new table is a partition of
           orders" is the single most important line on the card when it is
           true. */}
       {partitioning && partitioned && (
@@ -912,7 +912,7 @@ function ExtraTableCard({
               </>
             ) : (
               <>
-                Nothing is dropped by viewing this report — open the comparison
+                Nothing is dropped by viewing this report. Open the comparison
                 in Compare to generate the SQL.
               </>
             )}
@@ -936,7 +936,7 @@ function ChangedTableCard({
   const tally = matchTally(match);
   const level = matchLevel(match);
   // Disjoint on purpose. A column that was renamed AND retyped used to appear
-  // in both lists — two rows for one column, while matchTally (see its comment)
+  // in both lists, two rows for one column, while matchTally (see its comment)
   // counts it once, so the chip above said ~1 over two rows. The rename row
   // below carries its changes instead.
   const changedColumns = match.columnMatches.filter(
@@ -1005,12 +1005,12 @@ function ChangedTableCard({
               {columnBody(col)}{" "}
               <span className="muted">
                 {sides === "expected-live"
-                  ? "— added to the live database, not in the baseline"
+                  ? "· added to the live database, not in the baseline"
                   : dropMode === "armed"
-                    ? `— only in ${SIDE_WORDS[sides].right} · dropped with its data`
+                    ? `· only in ${SIDE_WORDS[sides].right} · dropped with its data`
                     : dropMode === "safe"
-                      ? `— only in ${SIDE_WORDS[sides].right} · drop is commented out`
-                      : `— only in ${SIDE_WORDS[sides].right} · a sync would drop it`}
+                      ? `· only in ${SIDE_WORDS[sides].right} · drop is commented out`
+                      : `· only in ${SIDE_WORDS[sides].right} · a sync would drop it`}
               </span>
             </DiffLine>
           ))}
@@ -1046,7 +1046,7 @@ function ChangedTableCard({
                   <s>{cm.right.name}</s> → <b>{cm.left.name}</b>
                 </>
               )}{" "}
-              <span className="muted">· {columnMatchPercent(cm.score)}% match — verify</span>
+              <span className="muted">· {columnMatchPercent(cm.score)}% match, verify</span>
               {cm.changes.length > 0 && (
                 <span className="muted">
                   {" "}
@@ -1226,7 +1226,7 @@ function RenameChip({
         </div>
         <div className="what mt-0.5">
           <s>{before}</s> → <b style={{ color: "var(--text)" }}>{after}</b>{" "}
-          · {percent}% similarity — verify before treating as a rename
+          · {percent}% similarity, verify before treating as a rename
         </div>
       </div>
     </div>
@@ -1278,14 +1278,14 @@ export function DiffReport({
     0,
   );
   // A materialized view holds its own copy of the rows, so dropping one throws
-  // data away exactly like a table does — generate-sql marks those statements
+  // data away exactly like a table does, generate-sql marks those statements
   // destructive, and this banner has to count them or it under-reports what the
   // script is about to delete. A plain view is a stored query and holds nothing.
   //
   // Which diffs those are is the compare engine's answer, not this file's. The
   // test here used to be `kind === "MATERIALIZED VIEW" && status === "onlyB"`,
-  // which missed a matview whose SELECT changed — dropped and rebuilt, so still
-  // dropped — and missed a plain view in the source that is a matview in the
+  // which missed a matview whose SELECT changed, dropped and rebuilt, so still
+  // dropped, and missed a plain view in the source that is a matview in the
   // target, because `kind` is stamped from the SOURCE and reads "VIEW". Both
   // put a destructive DROP in the script this banner sits above.
   const droppedMatviews = report.objectDiffs.filter((d) => d.dropDestroysData).length;
@@ -1293,7 +1293,7 @@ export function DiffReport({
 
   // Object differences count as changes. They did not, which meant a schema
   // whose only difference was a dropped view rendered "Schemas are in sync"
-  // above a script containing DROP VIEW — the same shape of lie as the old
+  // above a script containing DROP VIEW, the same shape of lie as the old
   // "report says untouched while the generator emits DROP TABLE" bug.
   const anyChanges =
     report.tablesOnlyInA.length > 0 ||
@@ -1392,7 +1392,7 @@ export function DiffReport({
       )}
 
       {only === null && destructiveCount > 0 && (
-        // Same rule as DataCompare.tsx — colour tracks risk, so a script whose
+        // Same rule as DataCompare.tsx, colour tracks risk, so a script whose
         // drops are commented out does not spend the loudest signal on the page.
         <div className={dropMode === "armed" ? "banner" : "warn-inline"}>
           <div>
@@ -1436,7 +1436,7 @@ export function DiffReport({
                   ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
                   : dropMode === "safe"
                     ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss and press Compare again to arm them."
-                    : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
+                    : "Viewing this report changes nothing. Open the comparison in Compare to generate that SQL."}
               {sides !== "expected-live" && dropMode === "safe" && droppedMatviews > 0 ? (
                 // A matview is rebuilt by CREATE MATERIALIZED VIEW IF NOT
                 // EXISTS, which does nothing while the old one is still there.
@@ -1464,7 +1464,7 @@ export function DiffReport({
         />
       ))}
 
-      {/* Tables only on the left — created by the migration on /compare,
+      {/* Tables only on the left, created by the migration on /compare,
           already gone from the live database on /drift. */}
       {newTables.map((table) => (
         <NewTableCard key={`new-${table.name}`} table={table} sides={sides} />
@@ -1480,7 +1480,7 @@ export function DiffReport({
         />
       ))}
 
-      {/* Tables only on the right — dropped by the migration when armed on
+      {/* Tables only on the right, dropped by the migration when armed on
           /compare, created outside the tracked schema on /drift. */}
       {extraTables.map((table) => (
         <ExtraTableCard
@@ -1491,11 +1491,11 @@ export function DiffReport({
         />
       ))}
 
-      {/* Views, sequences, types and functions — after the tables, because they
+      {/* Views, sequences, types and functions, after the tables, because they
           are usually consequences of a table change rather than the point. */}
       <SchemaObjectsCard diffs={objectDiffs} sides={sides} dropMode={dropMode} />
 
-      {/* Unchanged tables — collapsed summary so the diff stays focused */}
+      {/* Unchanged tables: collapsed summary so the diff stays focused */}
       {showUnchanged && (
         <div
           className="panel p-3 flex items-center gap-3 text-[12.5px]"
@@ -1534,7 +1534,7 @@ export function tallyDelta(report: CompareReport): {
   let adds = report.tablesOnlyInA.length;
   let rems = report.tablesOnlyInB.length;
   // Rename suggestions are deliberately NOT counted. A suggestion means the
-  // matcher saw two unmatched tables that might be the same one — but it did
+  // matcher saw two unmatched tables that might be the same one, but it did
   // not accept the pairing, so both tables are still in the only-in-A and
   // only-in-B lists above and the migration still emits a CREATE and a DROP.
   // Adding the suggestion turned one suspected rename into three headline

@@ -87,7 +87,7 @@ describe("signing in", () => {
     setRoutes(UNCONFIGURED);
     render(<LoginPage />);
 
-    expect(await screen.findByText("Single sign-on is not set up.")).toBeInTheDocument();
+    expect(await screen.findByText("Sign-in isn't set up on this server yet.")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Continue with Microsoft (unavailable)" })
     ).toBeDisabled();
@@ -101,7 +101,7 @@ describe("signing in", () => {
     setRoutes([{ match: "/api/auth/providers", networkError: true }]);
     render(<LoginPage />);
 
-    expect(await screen.findByText("Single sign-on is not set up.")).toBeInTheDocument();
+    expect(await screen.findByText("Sign-in isn't set up on this server yet.")).toBeInTheDocument();
   });
 
   it("shows no button until the server has said which ways it offers", async () => {
@@ -144,14 +144,53 @@ describe("signing in", () => {
     ).toBeInTheDocument();
   });
 
-  it("names both sets of keys when the server has neither", async () => {
+  it("names both sets of keys when the server has neither, only under Technical details", async () => {
     setRoutes(UNCONFIGURED);
     render(<LoginPage />);
 
     const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent("AZURE_AD_CLIENT_SECRET");
-    expect(banner).toHaveTextContent("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET");
-    expect(banner).toHaveTextContent("NEXTAUTH_SECRET");
+    // A person signing in can't act on setting names, so the part they read
+    // says what happened and who can fix it.
+    expect(banner).toHaveTextContent("Whoever runs this server needs to finish setting up sign-in.");
+    const details = banner.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(details).toHaveTextContent("AZURE_AD_CLIENT_SECRET");
+    expect(details).toHaveTextContent("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET");
+    expect(details).toHaveTextContent("NEXTAUTH_SECRET");
+    details?.remove();
+    expect(banner).not.toHaveTextContent(/AZURE|GITHUB_|NEXTAUTH/);
+    // No trial on this server, so no button that could only fail.
+    expect(screen.queryByRole("button", { name: "Try it now" })).toBeNull();
+  });
+
+  it("offers the shared trial beside the greyed out button when the server has it", async () => {
+    setRoutes([{ match: "/api/auth/providers", body: { trial: { id: "trial" } } }]);
+    render(<LoginPage />);
+
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent("Microsoft sign-in isn't set up here yet.");
+    expect(banner).toHaveTextContent("You can still try the shared trial.");
+    // The same entry the front page uses: a form post to /api/trial.
+    const tryIt = screen.getByRole("button", { name: "Try it now" });
+    expect(tryIt).toHaveAttribute("name", "role");
+    expect(tryIt).toHaveAttribute("value", "admin");
+    expect(tryIt.closest("form")).toHaveAttribute("action", "/api/trial");
+    expect(tryIt.closest("form")).toHaveAttribute("method", "post");
+    expect(
+      screen.getByRole("button", { name: "Continue with Microsoft (unavailable)" })
+    ).toBeDisabled();
+  });
+
+  it("says so when the trial itself could not be opened", async () => {
+    arriveWith("?error=TrialUnavailable");
+    setRoutes([{ match: "/api/auth/providers", body: { trial: { id: "trial" } } }]);
+    render(<LoginPage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The trial could not be opened just now. Try again in a moment."
+    );
+    expect(screen.getByRole("button", { name: "Try it now" })).toBeEnabled();
   });
 
   it("tells a newcomer how to join or start an organization", async () => {
@@ -281,7 +320,7 @@ describe("coming back from a refused sign-in", () => {
     setRoutes(UNCONFIGURED);
     render(<LoginPage />);
 
-    expect(await screen.findByText("Single sign-on is not set up.")).toBeInTheDocument();
+    expect(await screen.findByText("Sign-in isn't set up on this server yet.")).toBeInTheDocument();
     expect(
       screen.queryByText("Could not start the sign-in. Try again in a moment.")
     ).not.toBeInTheDocument();
@@ -454,7 +493,9 @@ describe("inside the desktop app", () => {
     setRoutes(UNCONFIGURED);
     render(<LoginPage />);
 
-    expect(await screen.findByText("Single sign-on is not set up.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Microsoft sign-in isn't set up in this copy of the app.")
+    ).toBeInTheDocument();
     expect(screen.getByText(/This copy of the desktop app was built without/)).toBeInTheDocument();
     // A desktop build has no client secret at all, so the browser's list of
     // four keys would send whoever builds it looking for one.
@@ -471,7 +512,9 @@ describe("inside the desktop app", () => {
     setRoutes(CONFIGURED);
     render(<LoginPage />);
 
-    expect(await screen.findByText("Single sign-on is not set up.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Microsoft sign-in isn't set up in this copy of the app.")
+    ).toBeInTheDocument();
   });
 
   it("carries on to the page that sent the person here", async () => {

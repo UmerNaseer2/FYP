@@ -28,9 +28,9 @@
  *   knowing, and a reader cannot act on the wrong one.
  *
  * What is NOT here:
- *  - The combobox itself — opening it, the keyboard, re-seeding from its prop.
- *    That is components/ui/Select, and tests/component-select.test.tsx covers
- *    it. These tests only drive it: click the trigger, click an option.
+ *  - The picker itself: opening it, the keyboard, the search box. That is
+ *    components/studio/TargetPicker, and tests/component-target-picker.test.tsx
+ *    covers it. These tests only drive it: press Change, press a row.
  *  - Which URL the panels underneath then fetch. tests/page-performance.test.tsx
  *    drives this picker through the page and checks the address the advice
  *    request carries. The seeds are checked here as well because the guards
@@ -46,7 +46,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
 import { PerfTargetPicker, type PerfTarget } from "@/components/studio/PerfTargetPicker";
 import {
@@ -106,17 +106,39 @@ function mount(props: { initialConnectionId?: string | null; initialSchema?: str
   return { onChange, ...view };
 }
 
-const combo = (name: string) => screen.getByRole("combobox", { name });
+const CHANGE = "Change looking at connection and schema";
 
-/** Open one of the two boxes and choose from it, the way a reader would. */
-function pick(box: string, option: string) {
-  fireEvent.click(combo(box));
-  fireEvent.click(screen.getByRole("option", { name: option }));
+/** The field that shows what is chosen. Its label is "Looking at". */
+const field = () => screen.getByRole("group", { name: /Looking at/ });
+const chosenConnection = () => field().querySelector("b")?.textContent ?? "";
+const chosenSchema = () => field().querySelector(".tp__schema")?.textContent ?? "";
+
+/** The open panel, opened first when it is shut. */
+function panel() {
+  if (!screen.queryByRole("dialog")) fireEvent.click(screen.getByRole("button", { name: CHANGE }));
+  return screen.getByRole("dialog");
+}
+
+/** The names on the rows of one of the panel's two lists. */
+function rowNames(list: "Connections" | "Schemas"): string[] {
+  const group = within(panel()).getByRole("group", { name: list });
+  return within(group)
+    .queryAllByRole("button")
+    .map((row) => row.querySelector(".tp__name")?.textContent ?? "");
+}
+
+/** Open the panel and choose another connection, the way a reader would. */
+function pickConnection(name: string) {
+  const group = within(panel()).getByRole("group", { name: "Connections" });
+  const row = within(group)
+    .getAllByRole("button")
+    .find((button) => button.querySelector(".tp__name")?.textContent === name);
+  fireEvent.click(row!);
 }
 
 /**
- * Both reads done. They are a chain, not a pair — the schema list cannot be
- * asked for until the connection list has said which server to ask about — so
+ * Both reads done. They are a chain, not a pair: the schema list cannot be
+ * asked for until the connection list has said which server to ask about, so
  * one flush is not enough.
  */
 async function settle() {
@@ -138,11 +160,7 @@ describe("what it offers to analyse", () => {
     mount();
     await settle();
 
-    fireEvent.click(combo("Connection to analyse"));
-    expect(screen.getAllByRole("option").map((option) => option.textContent?.trim())).toEqual([
-      "Local Postgres (shop)",
-      "Warehouse (dw)",
-    ]);
+    expect(rowNames("Connections")).toEqual(["Local Postgres", "Warehouse"]);
   });
 
   it("starts on the first usable server, not the first one saved", async () => {
@@ -150,23 +168,20 @@ describe("what it offers to analyse", () => {
     mount();
     await settle();
 
-    expect(combo("Connection to analyse")).toHaveTextContent("Warehouse (dw)");
+    expect(chosenConnection()).toBe("Warehouse");
     expect(schemaUrls()[0].url).toContain("connectionId=2");
   });
 
-  it("stops the schema row claiming to load when there is nothing to load one for", async () => {
-    // The row starts out saying "Loading schemas…" because normally one is on
-    // its way. With no server to ask, nothing would ever arrive to change it,
-    // and the reader would be left watching a list that is never coming.
+  it("leaves the picker out when there is no server to pick", async () => {
+    // A picker that opens on an empty list says there is a choice to make
+    // here, and there is not. The note says what is missing and where to go.
     setRoutes(baseRoutes([MYSQL]));
     mount();
     await settle();
 
     expect(await screen.findByText("No PostgreSQL connections saved")).toBeInTheDocument();
-    expect(combo("Schema to analyse")).toHaveTextContent("Select a schema");
-    // An empty box that opens is worse than one that does not: it says there
-    // is a choice to make here, and there is not.
-    expect(combo("Connection to analyse")).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Open Connections" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /connection and schema/ })).not.toBeInTheDocument();
     expect(schemaUrls()).toHaveLength(0);
   });
 });
@@ -178,7 +193,7 @@ describe("the schema it lands on", () => {
     await settle();
 
     // "audit" is first in the list this server returned.
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(chosenSchema()).toBe("public");
   });
 
   it("falls back to the first schema on a server with no public", async () => {
@@ -186,22 +201,19 @@ describe("the schema it lands on", () => {
     mount();
     await settle();
 
-    expect(combo("Schema to analyse")).toHaveTextContent("audit");
+    expect(chosenSchema()).toBe("audit");
   });
 
   it("says so when the login cannot see a single schema on the server", async () => {
-    // The connection worked, so this is not a failure to report as one — but
-    // it is also not a screen anything below can be run on, and saying nothing
-    // would leave an empty box with no reason beside it.
+    // The connection worked, so this is not a failure to report as one. It is
+    // also not a screen anything below can be run on, and saying nothing
+    // would leave an empty field with no reason beside it.
     setRoutes(baseRoutes([PG], { "1": [] }));
     const { onChange } = mount();
     await settle();
 
-    expect(await screen.findByText("This server has no readable schemas")).toBeInTheDocument();
-    expect(
-      screen.getByText("The connection worked, but this user cannot see any schema on it.")
-    ).toBeInTheDocument();
-    expect(combo("Schema to analyse")).toBeDisabled();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(field()).toHaveTextContent("No schema chosen");
     expect(onChange).toHaveBeenLastCalledWith(null);
   });
 });
@@ -215,7 +227,7 @@ describe("a target carried in from a link", () => {
     mount({ initialConnectionId: "2" });
     await settle();
 
-    expect(combo("Connection to analyse")).toHaveTextContent("Warehouse (dw)");
+    expect(chosenConnection()).toBe("Warehouse");
   });
 
   it("opens on the schema the link named, when that server has it", async () => {
@@ -223,18 +235,18 @@ describe("a target carried in from a link", () => {
     mount({ initialConnectionId: "1", initialSchema: "shop_dev" });
     await settle();
 
-    expect(combo("Schema to analyse")).toHaveTextContent("shop_dev");
+    expect(chosenSchema()).toBe("shop_dev");
   });
 
   it("ignores a schema the named server does not have", async () => {
     // A link is written on whichever screen the reader came from, and the name
     // it carries can belong to a different database entirely. Showing it as
-    // selected would put a name in the box that nothing here answers to.
+    // selected would put a name in the field that nothing here answers to.
     setRoutes(baseRoutes());
     mount({ initialConnectionId: "2", initialSchema: "shop_dev" });
     await settle();
 
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(chosenSchema()).toBe("public");
   });
 
   it("is a starting point and not a lock", async () => {
@@ -242,10 +254,10 @@ describe("a target carried in from a link", () => {
     mount({ initialConnectionId: "1", initialSchema: "shop_dev" });
     await settle();
 
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await settle();
 
-    expect(combo("Connection to analyse")).toHaveTextContent("Warehouse (dw)");
+    expect(chosenConnection()).toBe("Warehouse");
     expect(schemaUrls().at(-1)!.url).toContain("connectionId=2");
   });
 
@@ -257,12 +269,12 @@ describe("a target carried in from a link", () => {
     setRoutes(baseRoutes());
     mount({ initialConnectionId: "1", initialSchema: "warehouse" });
     await settle();
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(chosenSchema()).toBe("public");
 
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await settle();
 
-    expect(combo("Schema to analyse")).toHaveTextContent("warehouse");
+    expect(chosenSchema()).toBe("warehouse");
   });
 });
 
@@ -272,54 +284,50 @@ describe("changing the connection", () => {
     mount();
     await settle();
 
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await settle();
 
     expect(schemaUrls().map((call) => call.url)).toHaveLength(2);
     expect(schemaUrls().at(-1)!.url).toContain("connectionId=2");
-    fireEvent.click(combo("Schema to analyse"));
-    expect(screen.getAllByRole("option").map((option) => option.textContent?.trim())).toEqual([
-      "public",
-      "warehouse",
-    ]);
+    expect(rowNames("Schemas")).toEqual(["public", "warehouse"]);
   });
 
   it("will not let a schema be chosen while the new server's list is on its way", async () => {
-    // The box still holds the old server's schemas at this point. Leaving it
-    // open would let a reader pick a name that means nothing on the server
-    // they just moved to, and every panel below would ask about it.
+    // Offering the old server's schemas at this point would let a reader pick
+    // a name that means nothing on the server they just moved to, and every
+    // panel below would ask about it.
     setRoutes(baseRoutes());
     const { onChange } = mount();
     await settle();
 
     const release = holdNext("/api/lineage/schemas");
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await flushAsync();
 
-    expect(combo("Schema to analyse")).toBeDisabled();
-    expect(combo("Schema to analyse")).toHaveTextContent("Loading schemas…");
+    expect(rowNames("Schemas")).toEqual([]);
+    expect(field()).toHaveTextContent("Loading schemas from Warehouse…");
     expect(onChange).toHaveBeenLastCalledWith(null);
 
     release();
     await settle();
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(chosenSchema()).toBe("public");
   });
 
   it("clears the complaint the server it left behind had made", async () => {
     setRoutes([
       { match: "/api/connections", body: [PG, WAREHOUSE] },
-      { match: "/api/lineage/schemas", status: 500, body: { error: "permission denied" } },
+      { match: "/api/lineage/schemas", status: 500, body: { error: "the list could not be read" } },
     ]);
     mount();
     await settle();
-    expect(await screen.findByText("Could not list schemas")).toBeInTheDocument();
+    expect(await screen.findByText(/the list could not be read/)).toBeInTheDocument();
 
     setRoutes(baseRoutes());
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await settle();
 
-    expect(screen.queryByText("Could not list schemas")).not.toBeInTheDocument();
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(screen.queryByText(/the list could not be read/)).not.toBeInTheDocument();
+    expect(chosenSchema()).toBe("public");
   });
 });
 
@@ -351,7 +359,7 @@ describe("what it reports upward", () => {
     const { onChange } = mount();
     await settle();
 
-    pick("Connection to analyse", "Warehouse (dw)");
+    pickConnection("Warehouse");
     await settle();
 
     expect(onChange).toHaveBeenLastCalledWith({
@@ -363,15 +371,15 @@ describe("what it reports upward", () => {
 });
 
 describe("when the saved connections cannot be read", () => {
-  it("says so instead of showing two boxes with nothing in them", async () => {
+  it("says so instead of showing a picker with nothing in it", async () => {
     setRoutes([{ match: "/api/connections", status: 500, body: { error: "no" } }]);
     mount();
     await settle();
 
-    expect(await screen.findByText("Could not load your saved connections")).toBeInTheDocument();
-    // The whole bar goes: two empty dropdowns with no reason beside them read
-    // as "you have saved nothing", which is a different thing to fix.
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(await screen.findByText(/Could not load your saved connections/)).toBeInTheDocument();
+    // The picker goes: an empty one with no reason beside it reads as "you
+    // have saved nothing", which is a different thing to fix.
+    expect(screen.queryByRole("button", { name: /connection and schema/ })).not.toBeInTheDocument();
     expect(schemaUrls()).toHaveLength(0);
   });
 
@@ -382,7 +390,7 @@ describe("when the saved connections cannot be read", () => {
     mount();
     await settle();
 
-    expect(await screen.findByText("Could not load your saved connections")).toBeInTheDocument();
+    expect(await screen.findByText(/Could not load your saved connections/)).toBeInTheDocument();
     expect(screen.queryByText("No PostgreSQL connections saved")).not.toBeInTheDocument();
   });
 
@@ -391,22 +399,22 @@ describe("when the saved connections cannot be read", () => {
     mount();
     await settle();
 
-    expect(await screen.findByText("Could not load your saved connections")).toBeInTheDocument();
+    expect(await screen.findByText(/Could not load your saved connections/)).toBeInTheDocument();
   });
 
   it("reads the list again when asked, and carries on where it left off", async () => {
     setRoutes([{ match: "/api/connections", networkError: true }]);
     mount();
     await settle();
-    expect(await screen.findByText("Could not load your saved connections")).toBeInTheDocument();
+    expect(await screen.findByText(/Could not load your saved connections/)).toBeInTheDocument();
 
     setRoutes(baseRoutes());
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await settle();
 
-    expect(screen.queryByText("Could not load your saved connections")).not.toBeInTheDocument();
-    expect(combo("Connection to analyse")).toHaveTextContent("Local Postgres (shop)");
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(screen.queryByText(/Could not load your saved connections/)).not.toBeInTheDocument();
+    expect(chosenConnection()).toBe("Local Postgres");
+    expect(chosenSchema()).toBe("public");
   });
 });
 
@@ -417,17 +425,16 @@ describe("when the schemas cannot be listed", () => {
       {
         match: "/api/lineage/schemas",
         status: 403,
-        body: { error: "permission denied for database shop" },
+        body: { error: "the list could not be read on shop" },
       },
     ]);
     mount();
     await settle();
 
-    expect(await screen.findByText("Could not list schemas")).toBeInTheDocument();
-    expect(screen.getByText(/permission denied for database shop/)).toBeInTheDocument();
-    // The connection itself is fine, so the server list stays usable.
-    expect(combo("Connection to analyse")).toBeEnabled();
-    expect(combo("Schema to analyse")).toBeDisabled();
+    expect(await screen.findByText(/the list could not be read on shop/)).toBeInTheDocument();
+    // The connection itself is fine, so the picker stays usable.
+    expect(screen.getByRole("button", { name: CHANGE })).toBeEnabled();
+    expect(field()).toHaveTextContent("No schema chosen");
   });
 
   it("has words of its own when the server sent none", async () => {
@@ -463,14 +470,14 @@ describe("when the schemas cannot be listed", () => {
     ]);
     mount();
     await settle();
-    expect(await screen.findByText("Could not list schemas")).toBeInTheDocument();
+    expect(await screen.findByText(/Network error while listing schemas\./)).toBeInTheDocument();
 
     setRoutes(baseRoutes([PG]));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await settle();
 
-    expect(screen.queryByText("Could not list schemas")).not.toBeInTheDocument();
-    expect(combo("Schema to analyse")).toHaveTextContent("public");
+    expect(screen.queryByText(/Network error while listing schemas\./)).not.toBeInTheDocument();
+    expect(chosenSchema()).toBe("public");
     expect(fetchCalls.filter((call) => call.url.includes("/api/connections"))).toHaveLength(1);
   });
 });

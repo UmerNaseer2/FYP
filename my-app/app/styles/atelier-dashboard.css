@@ -8,14 +8,16 @@
 @keyframes sk-rise { from { opacity: 0; transform: translateY(10px); } }
 @keyframes sk-fade { from { opacity: 0; transform: translateY(6px); } }
 
-/* ---------- the numbers above the city ---------- */
-.sk-vit { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+/* ---------- the page: one column, with the same gap between every part ---------- */
+.sk-page { display: flex; flex-direction: column; gap: 24px; }
+.sk-page > * { min-width: 0; }
+.sk-page > .page-header { margin-bottom: 0; }
+
+/* ---------- the numbers under the city ---------- */
+.sk-vit { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .sk-v { display: grid; gap: 2px; align-content: start; padding: 14px 16px; min-width: 0; }
 .sk-v small { font: 700 11px/16px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
 .sk-v b { font: 800 34px/40px var(--display); letter-spacing: -.04em; color: var(--ink); }
-.sk-v[data-tone="drift"] b { color: var(--drift); }
-.sk-v[data-tone="sync"] b { color: var(--sync); }
-.sk-v[data-tone="break"] b { color: var(--break); }
 
 /* ---------- the stage ---------- */
 .sk-stage {
@@ -27,13 +29,19 @@
   --sk-glass: color-mix(in srgb, var(--sky-ink) 8%, transparent);
   --sk-line: color-mix(in srgb, var(--sky-ink) 16%, transparent);
 }
-.sk-stage [data-s="drifted"] { --c: var(--sky-drift); }
-.sk-stage [data-s="unreachable"] { --c: var(--sky-change); }
-.sk-stage [data-s="unchecked"] { --c: var(--sky-wait); }
-.sk-stage [data-s="in_sync"] { --c: var(--sky-new); }
+/* A roof takes its colour from the shared status system (atelier-system.css),
+   so a state looks the same here as on every other page. */
+.sk-stage [data-s="in_sync"] { --c: var(--st-sync-roof); }
+.sk-stage [data-s="drifted"] { --c: var(--st-drift-roof); }
+.sk-stage [data-s="unreachable"] { --c: var(--st-down-roof); }
+.sk-stage [data-s="unchecked"] { --c: var(--st-new-roof); }
 .sk-stage button:focus-visible, .sk-stage a:focus-visible, .sk-stage summary:focus-visible { outline: 3px solid var(--sky-ink); outline-offset: 2px; }
+/* A glyph and a word on the dark stage: the glyph tells the states apart, so
+   the words can all use the stage's own ink and stay readable in both themes. */
+.sk-stage .st-mark { color: var(--sky-ink); }
 
 .sk-top { display: flex; gap: 10px 14px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.sk-top h2 { margin: 0; font: 700 18px/24px var(--display); letter-spacing: -.01em; color: var(--sky-ink); }
 .sk-seg {
   display: flex; align-items: center; gap: 4px; padding: 4px; max-width: 100%; overflow-x: auto;
   border-radius: var(--r-pill); background: var(--sk-glass);
@@ -48,55 +56,97 @@
 .sk-seg > span { padding: 0 6px 0 10px; font: 700 11px/1 var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--sky-ink-2); white-space: nowrap; }
 .sk-seg button[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
 
+/* What the roofs mean: the four states, each a small roof with its glyph. */
+.sk-leg { list-style: none; margin: 12px 0 0; padding: 0; display: flex; gap: 6px 16px; flex-wrap: wrap; font-size: 12.5px; line-height: 18px; color: var(--sky-ink); }
+.sk-leg li { display: inline-flex; align-items: center; gap: 6px; }
+.sk-leg i {
+  display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px;
+  background: var(--c); color: var(--st-roof-glyph); border: 1px solid transparent;
+}
+.sk-leg [data-s="unchecked"] i { border: 1px dashed var(--st-new-edge); }
+
 .sk-mid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: center; margin-top: 8px; }
 .sk-city { display: grid; place-items: center; min-width: 0; }
-.sk-city svg { width: min(100%, 720px); height: auto; max-height: 440px; display: block; overflow: visible; }
 
-/* One building: a ground tile, two walls, a roof and its name. */
-.sk-tile { fill: var(--sky-ground); stroke: var(--sk-line); stroke-width: 1; }
-.sk-b { cursor: pointer; outline: none; animation: sk-rise var(--dur-3) var(--ease-out) backwards; }
-.sk-b:hover, .sk-b:focus-visible { filter: brightness(1.2); }
+/* The city: buildings side by side, wrapping onto more rows when there are many. */
+.sk-row { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 6px 2px; }
+.sk-row li { flex: 0 0 112px; min-width: 0; }
+
+/* One building: a ground tile, two walls, a roof with its glyph, and the name
+   on one line underneath. */
+.sk-b {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; width: 100%; padding: 4px 4px 6px;
+  border: 0; border-radius: 12px; background: transparent; color: inherit; cursor: pointer;
+  animation: sk-rise var(--dur-3) var(--ease-out) backwards;
+}
+.sk-b svg { display: block; width: 100%; height: auto; overflow: visible; }
+.sk-b:hover svg, .sk-b:focus-visible svg { filter: brightness(1.15); }
 .sk-b polygon { stroke-linejoin: round; }
+.sk-gd { fill: var(--sky-ground); stroke: var(--sk-line); stroke-width: 1; }
 .sk-fl { fill: var(--sky-left); }
 .sk-fr { fill: var(--sky-right); }
 .sk-ft { fill: var(--c, var(--sky-top)); }
-.sk-gd { fill: transparent; stroke: none; }
-.sk-b[aria-pressed="true"] .sk-gd { stroke: var(--sky-ink); stroke-width: 1.8; fill: var(--sk-glass); }
-.sk-b:focus-visible .sk-gd { stroke: var(--accent); stroke-width: 2.6; }
-.sk-name { font: 500 11px var(--mono); fill: var(--sky-ink); text-anchor: middle; pointer-events: none; paint-order: stroke; stroke: var(--sky-bg); stroke-width: 3px; stroke-linejoin: round; }
+/* Not checked yet: a dashed edge, so the roof differs by more than its colour. */
+.sk-b[data-s="unchecked"] .sk-ft { stroke: var(--st-new-edge); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.sk-glyph { fill: none; stroke: var(--st-roof-glyph); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+/* The picked building stands on a lit tile. */
+.sk-b[aria-pressed="true"] .sk-gd { stroke: var(--sky-ink); stroke-width: 1.8; fill: var(--sk-line); }
+.sk-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font: 500 11px/16px var(--mono); color: var(--sky-ink); }
+.sk-b[aria-pressed="true"] .sk-name { font-weight: 700; }
 
 /* The picked building, in words. */
 .sk-ins {
-  display: grid; gap: 10px; align-content: start; min-width: 0; padding: 18px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; justify-items: start; min-width: 0; padding: 18px;
   border-radius: 20px; background: var(--sk-glass); border: 1px solid var(--sk-line);
 }
 .sk-ins > * { animation: sk-fade var(--dur-2) var(--ease-out) backwards; }
-.sk-ins h2 { font: 500 24px/30px var(--mono); letter-spacing: -.03em; color: var(--sky-ink); overflow-wrap: anywhere; margin: 0; }
-.sk-ins p { margin: 0; font-size: 13.5px; line-height: 20px; color: var(--sky-ink-2); overflow-wrap: anywhere; }
-.sk-ins p b { color: var(--sky-ink); font-weight: 600; }
-.sk-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.sk-chip {
-  display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 10px 3px 8px;
-  border-radius: var(--r-pill); font: 700 11.5px/18px var(--sans);
-  background: var(--sk-line); color: var(--sky-ink);
-}
-.sk-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--sky-ink-2)); }
+.sk-ins > .sk-id, .sk-ins > .sk-st, .sk-ins > .sk-line, .sk-ins > .notice, .sk-ins > .sk-acts { justify-self: stretch; }
+.sk-id { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; min-width: 0; }
+/* One line each. A long name ends in an ellipsis; the full one is its tooltip. */
+.sk-id h2, .sk-id p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-id h2 { font: 500 24px/30px var(--mono); letter-spacing: -.03em; color: var(--sky-ink); }
+.sk-id p { font-size: 13px; line-height: 19px; color: var(--sky-ink-2); }
+.sk-id .sk-label { color: var(--sky-ink); font-weight: 600; }
 .sk-st { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
-.sk-st div { padding: 8px 11px; border-radius: 12px; background: var(--sk-glass); border: 1.5px solid transparent; min-width: 0; }
+.sk-st div { padding: 8px 11px; border-radius: 12px; background: var(--sk-glass); min-width: 0; }
 .sk-st dt { font: 700 10.5px/14px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--sky-ink-2); }
 .sk-st dd { margin: 0; font: 800 18px/24px var(--display); letter-spacing: -.02em; overflow-wrap: anywhere; }
-.sk-st .sk-on { border-color: var(--accent); }
-.sk-err { color: var(--sky-drift); font-weight: 600; }
-.sk-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
-.sk-acts .btn { min-height: 44px; }
-.sk-acts .btn-ghost { color: var(--sky-ink); }
-.sk-acts .btn-ghost:hover { background: var(--sk-glass); }
-.sk-acts .sk-stop { margin-left: auto; min-width: 44px; justify-content: center; }
+/* The one status line: the state, who found it, when, and how often. */
+.sk-line { margin: 0; min-height: 20px; font-size: 13.5px; line-height: 20px; color: var(--sky-ink); overflow-wrap: anywhere; }
 
-.sk-bot { display: flex; justify-content: space-between; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; line-height: 18px; color: var(--sky-ink-2); }
-.sk-leg { display: flex; gap: 6px 16px; flex-wrap: wrap; }
-.sk-leg span { display: inline-flex; align-items: center; gap: 6px; }
-.sk-leg i { width: 10px; height: 10px; border-radius: 3px; background: var(--c, var(--sky-top)); }
+/* One main action and the More button. The app's outlined button takes the
+   page's text colour, which is dark in the light theme and vanished on this
+   dark card, so here it uses the stage's own ink in both themes. */
+.sk-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sk-acts .btn { min-height: 44px; }
+.sk-stage .sk-acts .btn-secondary { background: transparent; color: var(--sky-ink); border-color: var(--sky-ink-2); }
+.sk-stage .sk-acts .btn-secondary:hover,
+.sk-stage .sk-acts .btn-secondary[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--sky-ink) 16%, transparent); color: var(--sky-ink); border-color: var(--sky-ink);
+}
+.sk-stage .sk-acts .btn[disabled],
+.sk-stage .sk-acts .btn[disabled]:hover { background: transparent; color: var(--sky-ink-2); border-color: var(--sk-line); }
+
+/* The More menu. It opens upward: the stage clips whatever hangs below it. */
+.sk-more { position: relative; }
+.sk-acts .sk-more-btn { width: 44px; padding: 0; justify-content: center; border-radius: 50%; }
+.sk-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5;
+  display: grid; min-width: 200px; max-width: calc(100vw - 48px); padding: 4px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+  box-shadow: var(--lift);
+}
+.sk-menu [role="menuitem"] {
+  display: flex; align-items: center; min-height: 40px; padding: 0 12px;
+  border: 0; border-radius: 8px; background: transparent; cursor: pointer; text-align: left; text-decoration: none;
+  font: 600 13.5px/20px var(--sans); color: var(--text);
+}
+.sk-menu [role="menuitem"]:hover, .sk-menu [role="menuitem"]:focus-visible { background: var(--surface-2); }
+.sk-menu [role="menuitem"][disabled] { color: var(--text-3); cursor: not-allowed; background: transparent; }
+/* The menu is a light surface, so its focus ring is the app's usual one. */
+.sk-stage .sk-menu [role="menuitem"]:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+.sk-bot { margin: 10px 0 0; font-size: 12.5px; line-height: 18px; color: var(--sky-ink-2); }
 
 /* The same city as a plain table, for anyone who would rather read rows. */
 .sk-tb { margin-top: 10px; font-size: 13px; }
@@ -115,18 +165,16 @@
 .sk-hd h2 { font: 700 18px/24px var(--display); letter-spacing: -.01em; margin: 0; }
 .sk-hd small { font: 700 11px/16px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
 .sk-nr {
-  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
   width: calc(100% + 20px); min-height: 44px; padding: 11px 10px; margin: 0 -10px; text-align: left;
   border: 0; border-top: 1px solid var(--line); border-radius: 12px; background: transparent; cursor: pointer;
   color: var(--ink); transition: background var(--dur-2);
 }
 .sk-nr:first-of-type { border-top-color: transparent; }
 .sk-nr:hover, .sk-nr[aria-pressed="true"] { background: var(--surface-2); }
-.sk-nr > i { width: 10px; height: 10px; border-radius: 3px; background: var(--drift); }
-.sk-nr[data-s="unreachable"] > i { background: var(--break); }
-.sk-nr b { font: 500 14px/20px var(--mono); margin-right: 8px; overflow-wrap: anywhere; }
-.sk-nr em { font: 700 11.5px/18px var(--sans); font-style: normal; color: var(--ink-3); }
-.sk-nr span span { display: block; font-size: 13px; line-height: 19px; color: var(--ink-2); }
+.sk-nr-main { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
+.sk-nr b { font: 500 14px/20px var(--mono); min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-nr-sum { flex: 1 0 100%; min-width: 0; font-size: 13px; line-height: 19px; color: var(--ink-2); overflow-wrap: anywhere; }
 .sk-nr-go { font: 700 13px/20px var(--sans); color: var(--accent-ink); text-decoration: none; white-space: nowrap; }
 .sk-quiet { margin: 0; font-size: 13.5px; color: var(--ink-2); }
 
@@ -162,13 +210,27 @@
   .sk-first-stage { min-height: 0; }
 }
 @media (max-width: 560px) {
-  .sk-stage { padding: 12px; }
+  /* On a phone the city comes first: the city, the names, what the roofs
+     mean, the card, and only then Getting started and the numbers. */
+  .sk-page { gap: 16px; }
+  .sk-setup { order: 1; }
+  .sk-vit, .sk-need { order: 2; }
+  .sk-stage { display: flex; flex-direction: column; padding: 12px; }
+  .sk-stage > * { min-width: 0; }
+  .sk-mid { display: contents; }
+  .sk-city { order: 1; margin-top: 10px; }
+  .sk-leg { order: 2; }
+  .sk-ins { order: 3; margin-top: 12px; padding: 14px; }
+  .sk-bot { order: 4; }
+  .sk-tb { order: 5; }
+  .sk-row li { flex-basis: calc(25% - 2px); }
+  .sk-b { padding: 2px 1px 4px; }
+  .sk-id h2 { font-size: 20px; line-height: 26px; }
   .sk-vit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sk-v b { font-size: 28px; line-height: 34px; }
   .sk-seg button { min-height: 44px; }
   .sk-seg > span { display: none; }
-  .sk-nr { grid-template-columns: 10px minmax(0, 1fr); }
-  .sk-nr-go { grid-column: 2; }
+  .sk-nr { grid-template-columns: minmax(0, 1fr); }
   .sk-first-side { padding: 20px 18px; }
   .sk-state { padding: 24px 20px; }
 }

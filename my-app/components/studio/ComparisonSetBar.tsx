@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Select } from "@/components/ui/Select";
 import { Input } from "@/components/ui/Input";
-import { AlertTriangleIcon, TrashIcon } from "@/components/ui/icons";
+import { AlertTriangleIcon, CheckIcon, ChevronDownIcon, TrashIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
@@ -18,12 +17,20 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
- * The saved-set bar above the Compare pickers: open a saved comparison, save
- * the one on screen, or delete one.
+ * Saved comparisons on the Compare page, in two parts:
+ *
+ * - "open": the "Saved comparisons" button at the top of the page. It opens a
+ *   list of the saved ones, and picking one opens and runs it.
+ * - "save": the "Save this comparison" row under the results, with the name
+ *   box, Save (or Update) and Delete. Saving comes after a result, never
+ *   before it.
+ *
+ * The page renders each part where it belongs with the `part` prop. Leaving
+ * `part` out draws both together.
  *
  * A client island rather than part of the pickers' form, because saving writes
  * to the database and that form is a GET that must stay safe to reload,
- * bookmark and share. Opening a set is still just a navigation — the URL is
+ * bookmark and share. Opening a set is still just a navigation: the URL is
  * `/compare?set=<id>&run=1`, so a saved comparison is a link somebody can put
  * in a runbook, and re-saving the set changes what that link does.
  */
@@ -66,6 +73,8 @@ type Props = {
    * Save. Server-rendered callers can leave this out and get router.refresh().
    */
   onDone?: () => void;
+  /** Which part to draw: "open", "save", or both when left out. */
+  part?: "open" | "save";
 };
 
 /**
@@ -114,6 +123,7 @@ export function ComparisonSetBar({
   hasUnappliedChanges,
   asked,
   onDone,
+  part,
 }: Props) {
   const router = useRouter();
   const orgPath = useOrgHref();
@@ -134,6 +144,10 @@ export function ComparisonSetBar({
   const [name, setName] = useState(activeSet?.name ?? "");
   const [busy, setBusy] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The list of saved comparisons, open or closed.
+  const [listOpen, setListOpen] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listButtonRef = useRef<HTMLButtonElement>(null);
   // What the last save or delete did, in words. It starts with the message a
   // save or delete on the previous screen left for this one.
   const [done, setDone] = useState<string | null>(() =>
@@ -177,10 +191,28 @@ export function ComparisonSetBar({
     router.push(orgPath(`/compare?${query}`));
   }
 
-  function open(value: string) {
-    const id = Number(value);
+  function open(id: number) {
     if (!Number.isInteger(id) || id <= 0) return;
+    setListOpen(false);
     goTo(`set=${id}&run=1`);
+  }
+
+  // While the list is open, a press anywhere outside it closes it.
+  useEffect(() => {
+    if (!listOpen) return;
+    function onPress(event: MouseEvent) {
+      if (listRef.current && !listRef.current.contains(event.target as Node)) setListOpen(false);
+    }
+    document.addEventListener("mousedown", onPress);
+    return () => document.removeEventListener("mousedown", onPress);
+  }, [listOpen]);
+
+  // Escape closes the list and puts the keyboard back on its button.
+  function onListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!listOpen || event.key !== "Escape") return;
+    event.preventDefault();
+    setListOpen(false);
+    listButtonRef.current?.focus();
   }
 
   async function postSet(trimmed: string, overwrite: boolean) {
@@ -218,7 +250,7 @@ export function ComparisonSetBar({
           `A saved set called "${trimmed}" already exists. Replace it with the comparison on screen?`,
         );
         if (!replace) {
-          setError("Not saved — pick a different name, or confirm to replace it.");
+          setError("Not saved. Pick a different name, or confirm to replace it.");
           return;
         }
         ({ res, data } = await postSet(trimmed, true));
@@ -280,11 +312,6 @@ export function ComparisonSetBar({
   // set still says why it did not open: the page says so under the pickers.
   if (!loading && !mayRead) return null;
 
-  const options = sets.map((set) => ({
-    value: String(set.id),
-    label: setOptionLabel(set, ranAgo(set.lastRunAt)),
-  }));
-
   // Save is one button for two boxes, so which one it needs depends on the
   // name, decided the way saveComparisonSet (lib/comparison-sets) decides it:
   // a name no saved set has makes a new set (Create), and a name a set already
@@ -318,24 +345,24 @@ export function ComparisonSetBar({
   } else if (activeSet?.hasMissingConnection) {
     note = {
       text: mayUpdate
-        ? "A connection this set used has been deleted. Pick a replacement below, press Compare, then Update the set."
+        ? "A connection this set used has been deleted. Pick a replacement in the pickers, press Compare, then Update the set."
         : mayCreate
-          ? "A connection this set used has been deleted. Pick a replacement below, press Compare, then save it under a new name."
+          ? "A connection this set used has been deleted. Pick a replacement in the pickers, press Compare, then save it under a new name."
           : "A connection this set used has been deleted. Someone whose role may update comparison sets can pick a replacement and update the set.",
       tone: "warn",
     };
   } else if (mayWrite && hasUnappliedChanges && workingOnASet) {
     note = {
-      text: "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet.",
+      text: "Press Compare first. Save stores the selection as the page last loaded it, and your latest changes are not in it yet.",
       tone: "warn",
     };
   } else if (modified) {
     note = {
       text: mayUpdate
-        ? "Changed since it was saved — press Update to keep it, or reopen the set to go back."
+        ? "Changed since it was saved. Press Update to keep it, or reopen the set to go back."
         : mayCreate
           ? "Changed since it was saved. Save it under a new name to keep it, or reopen the set to go back."
-          : "Changed since it was saved — reopen the set to go back.",
+          : "Changed since it was saved. Reopen the set to go back.",
       tone: "quiet",
     };
   } else if (saveRefusal) {
@@ -350,31 +377,72 @@ export function ComparisonSetBar({
   const nothingToUpdate =
     activeSet !== null && !modified && name.trim() === activeSet.name;
 
-  return (
-    <div className="set-bar">
-      <div className="set-bar__side">
-        <span className="set-bar__label">Saved sets</span>
-        {sets.length === 0 ? (
-          <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
-            {mayCreate
-              ? "None yet — set up a comparison below, then name it and save it."
-              : "None saved yet."}
-          </span>
-        ) : (
-          // The open set's last run is already in its label, so it is not
-          // repeated beside the picker.
-          <Select
-            value={activeSet ? String(activeSet.id) : ""}
-            options={options}
-            onChange={open}
-            placeholder="Open a saved set…"
-            variant="input"
-            ariaLabel="Open a saved comparison set"
-          />
-        )}
-      </div>
+  // The "Saved comparisons" button and the list it opens.
+  const openPart = (
+    <div className="cp-saved" ref={listRef} onKeyDown={onListKeyDown}>
+      <button
+        type="button"
+        ref={listButtonRef}
+        className="btn btn-secondary cp-saved__button"
+        aria-haspopup="dialog"
+        aria-expanded={listOpen}
+        onClick={() => setListOpen((now) => !now)}
+      >
+        Saved comparisons
+        {sets.length > 0 && <span className="cp-saved__count">{sets.length}</span>}
+        <ChevronDownIcon size={14} />
+      </button>
+      {/* After a delete before any run the save row is not on the page, so
+          the confirmation is said here instead. */}
+      {part === "open" && !error && done && !asked && activeSetId === null && (
+        <span className="cp-saved__done" role="status">
+          {done}
+        </span>
+      )}
+      {listOpen && (
+        <div className="cp-saved__panel" role="dialog" aria-label="Saved comparisons">
+          {sets.length === 0 ? (
+            <p className="cp-saved__none">
+              {mayCreate
+                ? "None yet. Run a comparison, then name it and save it under the results."
+                : "None saved yet."}
+            </p>
+          ) : (
+            sets.map((set) => {
+              // Everything worth knowing before opening it: targets, row
+              // data, a deleted connection, and when it last ran.
+              const label = setOptionLabel(set, ranAgo(set.lastRunAt));
+              const isOpen = set.id === activeSet?.id;
+              return (
+                <button
+                  key={set.id}
+                  type="button"
+                  className="cp-saved__row"
+                  aria-label={label}
+                  aria-current={isOpen ? "true" : undefined}
+                  onClick={() => open(set.id)}
+                >
+                  <span className="cp-saved__tick" aria-hidden="true">
+                    {isOpen && <CheckIcon size={14} />}
+                  </span>
+                  <span className="cp-saved__text">
+                    <b>{set.name}</b>
+                    <small>{label.slice(set.name.length).replace(/^ · /, "")}</small>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
 
-      <div className="set-bar__side set-bar__side--end">
+  // The "Save this comparison" row: name, Save, Delete, and one sentence.
+  const savePart = (
+    <div className="cp-save" role="group" aria-label="Save this comparison">
+      <span className="cp-save__label">Save this comparison</span>
+      <div className="cp-save__controls">
         <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -393,7 +461,7 @@ export function ComparisonSetBar({
             (hasUnappliedChanges
               ? "Press Compare first"
               : nothingToUpdate
-                ? "Nothing to update — this is the comparison the set already holds"
+                ? "Nothing to update. This is the comparison the set already holds."
                 : undefined)
           }
         >
@@ -415,7 +483,7 @@ export function ComparisonSetBar({
 
       {note && (
         <div
-          className="set-bar__note"
+          className="cp-save__note"
           role={note.tone === "error" ? "alert" : undefined}
           style={{
             color:
@@ -431,12 +499,21 @@ export function ComparisonSetBar({
         </div>
       )}
       {/* Once the comparison is changed again, the confirmation no longer
-          describes the screen — the note about the change says more. */}
+          describes the screen. The note about the change says more. */}
       {!error && done && !hasUnappliedChanges && !modified && (
-        <div className="set-bar__note" role="status" style={{ color: "var(--text-3)" }}>
+        <div className="cp-save__note" role="status" style={{ color: "var(--text-3)" }}>
           {done}
         </div>
       )}
+    </div>
+  );
+
+  if (part === "open") return openPart;
+  if (part === "save") return savePart;
+  return (
+    <div className="cp-savedset">
+      {openPart}
+      {savePart}
     </div>
   );
 }

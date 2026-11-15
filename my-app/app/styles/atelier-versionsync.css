@@ -1,16 +1,15 @@
 /* Version Sync, in the Atelier design. Every class here starts with vs-. */
 
-.vs-page { padding: 16px; max-width: 1240px; }
-@media (min-width: 640px) { .vs-page { padding: 24px; } }
+/* The same padding as Connections and Drift, so the h1 sits in the same
+   place on every page. */
+.vs-page { max-width: 1280px; padding: 32px 32px 56px; }
+@media (max-width: 640px) { .vs-page { padding: 20px 16px 40px; } }
 .vs-stack { display: grid; gap: 16px; }
 .vs-stack > * { min-width: 0; }
 
-/* ── Source and Target pickers ───────────────────────────────────────────── */
-.vs-pick { padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; align-items: center; }
-.vs-side { min-width: 0; display: grid; gap: 8px; }
-.vs-side-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.vs-side-head h2 { font: 700 17px/22px var(--display); color: var(--ink); }
-.vs-side-sub { font-size: 12.5px; color: var(--ink-3); }
+/* ---- Source and Target pickers: the shared TargetPickerPair. No card around
+   it, so there is no box inside a box. ---- */
+.vs-pick { min-width: 0; }
 .vs-swap {
   width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
   background: var(--tint); color: var(--ink-2); border: 1px solid var(--line);
@@ -18,12 +17,9 @@
 }
 .vs-swap:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-ink); transform: rotate(180deg); }
 .vs-swap:disabled { opacity: .5; cursor: not-allowed; }
+.vs-swap:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .vs-hint { font-size: 12.5px; line-height: 18px; color: var(--ink-3); }
 .vs-bad { color: var(--remove); }
-@media (max-width: 720px) {
-  .vs-pick { grid-template-columns: minmax(0, 1fr); }
-  .vs-swap { justify-self: center; }
-}
 
 /* ── Waiting and empty ───────────────────────────────────────────────────── */
 .vs-blank { padding: 28px 16px; }
@@ -157,7 +153,6 @@
 @media (max-width: 720px), (pointer: coarse) {
   .vs-page .btn, .vs-dialog .btn { min-height: 44px; }
   .vs-more > summary, .vs-runlist summary { min-height: 44px; display: flex; align-items: center; }
-  .vs-page .ds-select__trigger { min-height: 44px; }
 }
 @media (max-width: 480px) {
   .vs-dialog-acts .btn { flex: 1 1 100%; justify-content: center; }

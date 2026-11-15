@@ -228,7 +228,7 @@ function AskForm({ onSent }: { onSent: () => void }) {
   }
 
   return (
-    <Card className="rq-ask">
+    <Card className="rq-ask" data-tour="request-form">
       <h2>Ask for something</h2>
       <div className="rq-fld">
         <div>
@@ -921,18 +921,40 @@ function RequestsBody() {
   }
   const tab = picked !== null && tabs.some((entry) => entry.key === picked) ? picked : opening;
 
+  // One tab is not a choice, so it is drawn as a plain heading. An Admin
+  // usually has only "Needs you".
+  const onlyTab = tabs.length === 1 ? tabs[0] : null;
+  // What each list tells a screen reader: a tab panel named by its tab, or,
+  // with a single list, a section named by the heading.
+  const panelProps = (key: TabKey) =>
+    onlyTab
+      ? { id: `requests-panel-${key}`, "aria-labelledby": "requests-heading" }
+      : {
+          role: "tabpanel",
+          id: `requests-panel-${key}`,
+          "aria-labelledby": `requests-tab-${key}`,
+          hidden: tab !== key,
+        };
+
   return (
     <div className="rq-page">
       <PageHeader
         page="/requests"
-        title="What needs you. What you asked for."
         actions={
           <Link href={orgPath("/phone")} className="btn btn-secondary btn-sm">
             Phone app
           </Link>
         }
       >
-        {data && tabs.length > 0 && (
+        {data && onlyTab && (
+          <h2 id="requests-heading" className="rq-heading">
+            {onlyTab.label}
+            {typeof onlyTab.count === "number" && onlyTab.count > 0 && (
+              <span className="rq-heading__count">{onlyTab.count}</span>
+            )}
+          </h2>
+        )}
+        {data && tabs.length > 1 && (
           <PillTabs
             label="Requests"
             tabs={tabs}
@@ -955,14 +977,9 @@ function RequestsBody() {
 
       {data && (
         <div className={isAdmin ? "rq-grid" : "rq-grid rq-grid--side"}>
-          <div className="rq-main">
+          <div className="rq-main" data-tour="requests-waiting">
             {showWaiting && (
-              <section
-                role="tabpanel"
-                id="requests-panel-needs"
-                aria-labelledby="requests-tab-needs"
-                hidden={tab !== "needs"}
-              >
+              <section {...panelProps("needs")}>
                 {waitingCount === 0 && (
                   <EmptyCard title="Nothing is waiting for you">
                     Requests and runs that need you will show here.
@@ -989,12 +1006,7 @@ function RequestsBody() {
             )}
 
             {showOwn && (
-              <section
-                role="tabpanel"
-                id="requests-panel-asked"
-                aria-labelledby="requests-tab-asked"
-                hidden={tab !== "asked"}
-              >
+              <section {...panelProps("asked")}>
                 {askedCount === 0 && (
                   <EmptyCard title="Nothing of yours is waiting">
                     {doneCount === 0
@@ -1012,12 +1024,7 @@ function RequestsBody() {
             )}
 
             {showOwn && (
-              <section
-                role="tabpanel"
-                id="requests-panel-done"
-                aria-labelledby="requests-tab-done"
-                hidden={tab !== "done"}
-              >
+              <section {...panelProps("done")}>
                 {doneCount === 0 ? (
                   <EmptyCard title="No answers yet">
                     When someone answers a request of yours, it shows here.

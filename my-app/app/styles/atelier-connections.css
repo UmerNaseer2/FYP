@@ -46,7 +46,7 @@
 .cn-card__ico { width:38px; height:38px; flex:none; display:grid; place-items:center;
                 border-radius:var(--r-md); background:var(--tint); color:var(--ink); }
 .cn-card h3 { flex:1 1 120px; min-width:0; margin:0; font:700 18px/1.2 var(--display); letter-spacing:-.02em;
-              color:var(--ink); overflow-wrap:anywhere; }
+              color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cn-card__where { display:block; padding:8px 10px; border-radius:var(--r-sm); background:var(--surface-2);
                   font:400 12.5px/1.45 var(--mono); color:var(--ink); overflow-wrap:anywhere; }
 .cn-card__meta { margin:0; font-size:12.5px; line-height:1.45; color:var(--ink-3); overflow-wrap:anywhere; }
@@ -63,9 +63,12 @@
 .cn-dot--ok { background:var(--add); }
 .cn-dot--bad { background:var(--remove); }
 .cn-page .cn-spin { width:13px; height:13px; margin-top:3px; }
-/* Why the last test failed, in the database's own words. */
-.cn-why { margin:0; padding:9px 12px; border-radius:var(--r-md); background:var(--remove-soft); color:var(--remove);
-          font-size:12.5px; line-height:1.45; overflow-wrap:anywhere; }
+/* Why the last test failed is an ErrorNotice (components/ui/ErrorNotice). */
+.cn-card .notice { min-width:0; }
+
+/* The list could not be read: the notice, then one calming line under it. */
+.cn-loaderr { margin-top:22px; max-width:640px; }
+.cn-loaderr__still { margin:10px 2px 0; font-size:13.5px; line-height:1.5; color:var(--ink-2); }
 
 /* Page states: loading, could not read, nothing matches */
 .cn-grid[role="status"] { margin-top:22px; }

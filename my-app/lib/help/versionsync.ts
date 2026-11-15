@@ -1,3 +1,4 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Version Sync. Shown in the Help panel; the blurb is the page header's one line. */
@@ -9,10 +10,10 @@ export const versionsyncHelp: HelpTopic = {
     "A replay runs the exact scripts the ahead schema already ran, in the same order, so the version history is kept. " +
     "A structural compare jumps straight to the end state instead.",
   steps: [
-    "Pick a Source: a connection and a schema. This is the schema that is ahead.",
-    "Pick a Target the same way. This is the schema that is behind. The button between the two pickers swaps them.",
+    { text: "Pick a Source: a connection and a schema. This is the schema that is ahead.", target: anchor("sync-pickers", ".vs-pick") },
+    { text: "Pick a Target the same way. This is the schema that is behind. The button between the two pickers swaps them.", target: anchor("sync-swap", ".vs-swap") },
     "Wait while the page reads both ledgers. There is no button to start it.",
-    "Read Missing on the Target. It lists the versions the Source has and the Target lacks, in the order the Source ran them.",
+    { text: "Read Missing on the Target. It lists the versions the Source has and the Target lacks, in the order the Source ran them.", target: anchor("sync-missing", ".vs-hist") },
     "Press a Run button. It replays from the top of the list down to its own row, because a later version may depend on an earlier one. Run all replays the whole list.",
     "Check the Replay dialog. Nothing has run yet. It shows what runs, in order, with a warning for each risk you should read first.",
     "Press Dry run to rehearse. The scripts run and are then rolled back, so nothing is written.",

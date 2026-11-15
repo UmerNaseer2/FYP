@@ -6,7 +6,6 @@ import Link from "next/link";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { displayVersion } from "@/lib/version-timeline";
 import {
-  AlertTriangleIcon,
   AlertCircleIcon,
   CheckIcon,
   InfoIcon,
@@ -22,6 +21,9 @@ import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable"
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { ElsewhereDrift } from "@/components/studio/ElsewhereDrift";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { StatusChip, StatusGlyph } from "@/components/ui/StatusChip";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { statusLook } from "@/lib/status-look";
 import { describeCadence } from "@/lib/drift-schedule";
 import { utcStamp } from "@/lib/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -65,14 +67,9 @@ function fmtDate(iso: string | null): string {
 /** The three questions this screen answers, in the order they get asked. */
 type DriftTab = "detail" | "audit" | "schedule";
 
-const TAB_TITLES: Record<DriftTab, string> = {
-  detail: "Changes nobody shipped",
-  audit: "Audit log",
-  schedule: "Schedule",
-};
-
-// One short line per tab for the page header. The longer explanation of each
-// tab lives in the help file (lib/help/drift.ts), under its sections.
+// The page title is always the menu name, Drift (PageHeader reads it from
+// lib/help). Each tab adds one short line under it. The longer explanation of
+// each tab lives in the help file (lib/help/drift.ts), under its sections.
 const TAB_BLURBS: Record<DriftTab, string> = {
   detail: "Pick a tracked schema, see what changed outside a deploy, then decide what to do.",
   audit: "Every recorded drift check, newest first.",
@@ -93,32 +90,13 @@ function sortPriority(status: DriftStatus | null): number {
   }
 }
 
-/** How each recorded drift status reads in a list: a word and a colour class. */
-function statusWord(status: DriftStatus | null): { tone: string; label: string } {
-  switch (status) {
-    case "drifted":
-      return { tone: "drift", label: "Drifted" };
-    case "in_sync":
-      return { tone: "sync", label: "In sync" };
-    case "unreachable":
-      return { tone: "down", label: "Unreachable" };
-    default:
-      return { tone: "none", label: "Not checked yet" };
-  }
-}
-
-/** The small line under a schema's name in the watch list. */
-function watchLine(item: TrackedSchemaListItem): string {
-  switch (item.driftStatus) {
-    case "drifted":
-      return item.driftSummary ?? "Changed outside a deploy";
-    case "unreachable":
-      return "Can't be reached";
-    case "in_sync":
-      return "Matches its baseline";
-    default:
-      return "Not checked yet";
-  }
+/**
+ * The small line under a schema's name in the watch list. The chip beside the
+ * name already says the state, so this line only adds what the chip can't:
+ * what the last check found on a drifted schema.
+ */
+function watchLine(item: TrackedSchemaListItem): string | null {
+  return item.driftStatus === "drifted" ? item.driftSummary ?? "Changed outside a deploy" : null;
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -185,9 +163,9 @@ function Shell({
   const q = schema ? `&schema=${encodeURIComponent(schema)}` : "";
   return (
     <div className="dr-page">
-      <PageHeader page="/drift" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]} />
+      <PageHeader page="/drift" blurb={TAB_BLURBS[tab]} />
 
-      <nav className="dr-tabs" aria-label="Drift views">
+      <nav className="dr-tabs" data-tour="drift-tabs" aria-label="Drift views">
         <Tab href={orgPath(`/drift?tab=detail${q}`)} active={tab === "detail"}>
           Drift detail
         </Tab>
@@ -306,6 +284,8 @@ function DetailContent({ schema }: { schema: string | undefined }) {
       <DetailTab
         key={selected.id}
         selectedId={selected.id}
+        connectionId={selected.connectionId}
+        connectionName={selected.connectionName}
         onWebsite={selected.connectionOnWebsite === true}
         onListChanged={listChanged}
       />
@@ -394,11 +374,11 @@ function ContentSkeleton({ tab }: { tab: DriftTab }) {
         </div>
         {[0, 1, 2].map((i) => (
           <div key={i} className="dr-row dr-row--ghost">
-            <Skeleton width={10} height={10} radius={999} />
             <div className="dr-row__text">
               <Skeleton width={`${50 + i * 10}%`} height={14} />
               <Skeleton width="70%" height={11} />
             </div>
+            <Skeleton width={74} height={22} radius={999} />
           </div>
         ))}
       </div>
@@ -441,7 +421,7 @@ function WatchList({
   const drifted = tracked.filter((t) => t.driftStatus === "drifted").length;
 
   return (
-    <nav className="card dr-watch" aria-label="Tracked schemas">
+    <nav className="card dr-watch" data-tour="drift-schemas" aria-label="Tracked schemas">
       <div className="dr-watch__head">
         <h2 className="dr-h2">Tracked schemas</h2>
         <span className="dr-watch__count">
@@ -450,37 +430,40 @@ function WatchList({
       </div>
       <ul className="dr-rows">
         {tracked.map((item, i) => {
-          const status = statusWord(item.driftStatus);
+          const look = statusLook(item.driftStatus);
           const source = item.label ?? item.connectionName ?? "no connection";
+          const line = watchLine(item);
           return (
             <li key={item.id} className="rise" style={{ "--d": `${i * 40}ms` } as CSSProperties}>
               {/* A plain link, so the choice lives in the URL: it survives a
-                  reload and can be shared. */}
+                  reload and can be shared. The left edge and the chip carry
+                  the same state, in the same look as everywhere else. */}
               <Link
                 href={orgPath(`/drift?tab=detail&schema=${item.id}`)}
-                className="dr-row"
+                className={`dr-row st-edge st--${look.tone}`}
                 aria-current={item.id === selectedId ? "true" : undefined}
               >
-                <span className={`dr-dot dr-dot--${status.tone}`} aria-hidden="true" />
                 <span className="dr-row__text">
-                  <span className="dr-row__name">
-                    <span className="dr-row__schema">{item.schemaName}</span>
+                  {/* Long names end with an ellipsis; the full name is in the tooltip. */}
+                  <span className="dr-row__schema" title={item.schemaName}>
+                    {item.schemaName}
                   </span>
-                  <span className="dr-row__source">{source}</span>
-                  <span className={`dr-row__status dr-row__status--${status.tone}`}>
-                    {watchLine(item)}
+                  <span className="dr-row__source" title={source}>
+                    {source}
                   </span>
+                  {line && <span className="dr-row__status">{line}</span>}
                   {item.driftCheckedAt && (
                     <span className="dr-row__when">Recorded {fmtDate(item.driftCheckedAt)}</span>
                   )}
                 </span>
+                <StatusChip status={item.driftStatus} size="sm" />
               </Link>
             </li>
           );
         })}
       </ul>
       <p className="dr-watch__hint">
-        The dot is the last saved check. The case beside it is read live.
+        Each label is the last saved check. The case beside the list is read live.
       </p>
     </nav>
   );
@@ -490,10 +473,15 @@ function WatchList({
 
 function DetailTab({
   selectedId,
+  connectionId,
+  connectionName,
   onWebsite,
   onListChanged,
 }: {
   selectedId: number;
+  /** The schema's connection, so a failed read can say which one and link to it. */
+  connectionId: number;
+  connectionName: string | null;
   /** A desktop's copy of one of the website's connections: the website checks it now. */
   onWebsite: boolean;
   /** A fix changed this schema's drift status, which the watch list shows too. */
@@ -556,16 +544,30 @@ function DetailTab({
   // every time someone presses a button.
   if (loading && !view) return <CaseSkeleton />;
 
+  // The read failed. ErrorNotice says what happened and what to press, and
+  // keeps the server's own words under Technical details.
+  if (!view && error) {
+    return (
+      <div className="card dr-failed">
+        <h2 className="dr-h2">Could not read this schema&apos;s drift</h2>
+        <ErrorNotice
+          error={error}
+          connectionName={connectionName}
+          connectionId={connectionId}
+          onRetry={() => void load()}
+        />
+      </div>
+    );
+  }
+
   if (!view) {
     return (
       <Card className="dr-empty">
         <EmptyState
           tone="break"
           icon={<AlertCircleIcon size={22} />}
-          title={error ? "Could not read this schema's drift" : "Tracked schema not found"}
-          description={
-            error ?? "It may have been removed. Pick another schema or head back to the dashboard."
-          }
+          title="Tracked schema not found"
+          description="It may have been removed. Pick another schema or head back to the dashboard."
           actions={
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => void load()}>
               Try again
@@ -588,15 +590,14 @@ function DetailTab({
   const head = caseHead(view);
 
   return (
-    <div className={`card dr-case dr-case--${head.tone}`} aria-busy={loading}>
+    <div className={`card dr-case st--${head.tone}`} aria-busy={loading}>
       {/* A thin moving bar while a re-check is on its way. */}
       {loading && <div className="dr-bar" aria-hidden="true" />}
 
-      <header className="dr-case__head">
-        <span className={`dr-case__icon dr-case__icon--${head.tone}`} aria-hidden="true">
-          {head.icon}
-        </span>
+      <header className="dr-case__head" data-tour="drift-status">
         <div className="dr-case__headtext">
+          {/* The same chip as the watch list, but for what was read just now. */}
+          <StatusChip status={head.status} label={head.chip} className="dr-case__chip" />
           <h2 className="dr-case__title">{head.title}</h2>
           <div className="dr-case__where">
             <span className="dr-case__schema">{view.schemaName}</span>
@@ -612,11 +613,11 @@ function DetailTab({
       </header>
 
       {/*
-        The dot in the watch list is the last RECORDED status, while everything
+        The label in the watch list is the last RECORDED status, while everything
         in this card was recomputed live on this render. With no record yet
         that reads as a contradiction: "Not checked yet" beside a full drift
         report. Saying where the report came from resolves it: the diff is
-        live, the dot is the saved result, and Check drift now is what saves one.
+        live, the label is the saved result, and Check drift now is what saves one.
       */}
       <ul className="dr-facts">
         <li>Read live on this page load</li>
@@ -663,7 +664,7 @@ function DetailTab({
       <p className="dr-lead">{head.lead}</p>
 
       {/* What can be done about it. Every write re-reads this card and the list. */}
-      <div className="dr-actions">
+      <div className="dr-actions" data-tour="drift-actions">
         <DriftResolutionBar
           trackedSchemaId={view.trackedSchemaId}
           state={view.state}
@@ -710,7 +711,7 @@ function DetailTab({
         </div>
 
         {view.report ? (
-          <div className="dr-diff">
+          <div className="dr-diff" data-tour="drift-changes">
             {/* A baseline captured by an older build never recorded some of the
                 categories this one reads, and the comparator silently skips
                 those. Correct, but silence reads as "checked, and clean". */}
@@ -752,13 +753,11 @@ function DetailTab({
           <h3 className="dr-h3">Earlier on {view.schemaName}</h3>
           <ol className="dr-hist">
             {history.map((ev) => {
-              const status = statusWord(ev.status);
               return (
                 <li key={ev.id} className="dr-hist__item">
-                  <span className={`dr-dot dr-dot--${status.tone}`} aria-hidden="true" />
                   <div className="dr-hist__text">
                     <div className="dr-hist__title">
-                      {status.label}
+                      <StatusChip status={ev.status} variant="mark" />
                       {ev.acknowledgedAt && (
                         <span className="dr-hist__ack">
                           <CheckIcon size={11} /> Acknowledged
@@ -778,10 +777,15 @@ function DetailTab({
   );
 }
 
-/** The case card's icon, title and lead sentence for each state. */
+/**
+ * The case card's chip, title and lead sentence for each state. `status` is
+ * the state as the shared status system names it (null is "not checked yet").
+ */
 function caseHead(view: DriftDetailAnswer): {
-  tone: "drift" | "sync" | "down" | "none";
-  icon: React.ReactNode;
+  tone: "drift" | "sync" | "down" | "new";
+  status: DriftStatus | null;
+  /** A different word for the chip, where the state's own word would mislead. */
+  chip?: string;
   title: React.ReactNode;
   lead: string;
 } {
@@ -791,7 +795,7 @@ function caseHead(view: DriftDetailAnswer): {
     const t = view.report ? tallyDelta(view.report) : null;
     return {
       tone: "drift",
-      icon: <AlertTriangleIcon size={16} />,
+      status: "drifted",
       title: `The live schema has drifted from ${version ?? "its expected snapshot"}.`,
       lead: t
         ? `${t.total} difference${t.total === 1 ? "" : "s"} across ${t.tablesTouched} table${t.tablesTouched === 1 ? "" : "s"}. Review the diff below and choose how to resolve it.`
@@ -801,7 +805,7 @@ function caseHead(view: DriftDetailAnswer): {
   if (view.state === "in_sync") {
     return {
       tone: "sync",
-      icon: <CheckIcon size={16} />,
+      status: "in_sync",
       title: version
         ? `Live schema matches ${version}.`
         : "Live schema matches its expected snapshot.",
@@ -811,14 +815,15 @@ function caseHead(view: DriftDetailAnswer): {
   if (view.state === "unreachable") {
     return {
       tone: "down",
-      icon: <AlertCircleIcon size={16} />,
-      title: "This schema's database is unreachable.",
+      status: "unreachable",
+      title: "This schema's database can't be reached.",
       lead: view.summary,
     };
   }
   return {
-    tone: "none",
-    icon: <InfoIcon size={16} />,
+    tone: "new",
+    status: null,
+    chip: "Nothing to compare yet",
     title: "No baseline snapshot to compare against.",
     lead: view.summary,
   };
@@ -935,8 +940,8 @@ function AuditTab() {
       {total > 0 && (
         <div className="dr-stats">
           <StatTile label="Recorded checks" value={total} />
-          <StatTile label="Drifted" value={drifted} tone="drift" />
-          <StatTile label="In sync" value={inSync} tone="sync" />
+          <StatTile label="Drifted" value={drifted} status="drifted" />
+          <StatTile label="In sync" value={inSync} status="in_sync" />
           <StatTile label="Acknowledged" value={acknowledged} />
         </div>
       )}
@@ -949,17 +954,22 @@ function AuditTab() {
 function StatTile({
   label,
   value,
-  tone,
+  status,
 }: {
   label: string;
   value: number;
-  tone?: "drift" | "sync";
+  /** Set on the two tiles that count a state, so they wear that state's look. */
+  status?: "drifted" | "in_sync";
 }) {
   // A zero stays quiet: the colour is for a number worth looking at.
-  const toneClass = tone && value > 0 ? ` dr-stat--${tone}` : "";
+  const tone = status && value > 0 ? ` dr-stat--state st--${statusLook(status).tone}` : "";
   return (
-    <div className={`dr-stat${toneClass}`}>
-      <div className="dr-stat__label">{label}</div>
+    <div className={`dr-stat${tone}`}>
+      <div className="dr-stat__label">
+        {/* The glyph says the state without the colour. */}
+        {status && <StatusGlyph status={status} size={12} />}
+        {label}
+      </div>
       <div className="dr-stat__value">{value}</div>
     </div>
   );

@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { hasPostgresScheme, parsePostgresUri, uriToFields } from "@/lib/parse-uri";
 import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
 import {
@@ -30,6 +32,7 @@ import {
   type ExecuteRole,
 } from "@/lib/connection-access";
 import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
+import { TRIAL_BLOCKED_PERMISSIONS, TRIAL_REFUSAL } from "@/lib/trial-rules";
 import Link from "next/link";
 import {
   LogoIcon,
@@ -300,6 +303,10 @@ const SSL_CHOICES: { mode: SslMode; label: string; help: string }[] = [
 
 export default function ConnectionsPage() {
   const orgPath = useOrgHref();
+  const org = useOrg();
+  const router = useRouter();
+  // "?edit=5" in the address opens connection 5 for editing (see below).
+  const editAsked = useSearchParams()?.get("edit") ?? null;
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -311,7 +318,7 @@ export default function ConnectionsPage() {
   // Who may press what. A role without a box still sees the button, switched
   // off, and the page says why once, under its header. Null while the session
   // is still loading: the server decides then.
-  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const { roleLabel, loading: sessionLoading, can, isAdmin } = useUser();
   const createRefusal =
     sessionLoading || can("connections:create")
       ? null
@@ -349,6 +356,12 @@ export default function ConnectionsPage() {
   const [finderRound, setFinderRound] = useState(0);
   const pickedName = useRef<string | null>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  // The connection string box, which holds the password of a connection saved that way.
+  const uriRef = useRef<HTMLInputElement>(null);
+  // Names the line that says why buttons are off, for aria-describedby.
+  const whyOffId = useId();
+  // The "?edit=" value already acted on, so it is used once.
+  const editHandled = useRef<string | null>(null);
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
@@ -572,6 +585,47 @@ export default function ConnectionsPage() {
     setDrawerTest({ kind: "idle" });
     setDrawerOpen(true);
   }
+
+  // "?edit=<id>" opens that connection's edit form, the same one the Edit
+  // button opens. "Enter the password again" on other pages links here. The
+  // parameter is cleared once used, so a reload does not open the form again.
+  // When the form can't open (the role, a lock, an id no longer listed), a
+  // note says why instead of the link doing nothing.
+  useEffect(() => {
+    if (editAsked === null) {
+      editHandled.current = null;
+      return;
+    }
+    // Once per link: the list reloading must not open the form a second time.
+    if (loading || sessionLoading || editHandled.current === editAsked) return;
+    const conn = connections.find((c) => String(c.id) === editAsked);
+    // The desktop app is still asking whether it is linked: wait for the answer.
+    if (conn && siteLock(conn) === CHECKING_LOCK) return;
+    editHandled.current = editAsked;
+    router.replace(orgPath("/connections"));
+    if (!conn) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSyncNotice("The connection that link points to is not in this list any more.");
+      return;
+    }
+    const refused = updateRefusal ?? siteLock(conn) ?? elsewhereLock(conn);
+    if (refused !== null) {
+      setSyncNotice(`${conn.name} can't be edited here. ${refused}`);
+      return;
+    }
+    openEdit(conn);
+    // The link is there because the password is the problem, so the cursor
+    // goes to where the password is typed: the password box, or the
+    // connection string for a connection saved as one. Waits a moment so the
+    // drawer is open and its own focus handling has run.
+    window.setTimeout(() => {
+      const field = passwordRef.current ?? uriRef.current;
+      field?.scrollIntoView?.({ block: "center" });
+      field?.focus();
+    }, 60);
+    // openEdit is made fresh on every render. It reads only what is listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editAsked, loading, sessionLoading, connections, syncStatus]);
 
   function quickStart(kind: "local" | "hosted") {
     // A name the person typed stays. One a pill or the finder filled in
@@ -1292,7 +1346,21 @@ export default function ConnectionsPage() {
   if (createRefusal) refusedKeys.push("connections:create");
   if (connections.length > 0 && updateRefusal) refusedKeys.push("connections:update");
   if (connections.length > 0 && deleteRefusal) refusedKeys.push("connections:delete");
-  const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
+  // The shared trial switches these off for every role, so nobody can turn
+  // them on and there is nobody to ask.
+  const offInTrial =
+    org?.trial === true && refusedKeys.length > 0 && refusedKeys.every((key) => TRIAL_BLOCKED_PERMISSIONS.has(key));
+  let roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
+  if (roleNote && offInTrial) {
+    roleNote = TRIAL_REFUSAL;
+  } else if (roleNote && isAdmin) {
+    // An Admin is not told to ask an admin: they can turn it on themselves,
+    // and AskAdmin below gives them the link.
+    roleNote = roleNote.split(" Ask an admin to turn on")[0];
+  }
+  // The disabled buttons point at the note, so a screen reader hears the
+  // reason too and not only a tooltip.
+  const whyAddIsOff = createRefusal !== null && roleNote ? whyOffId : undefined;
 
   return (
     <div className="cn-page">
@@ -1306,6 +1374,8 @@ export default function ConnectionsPage() {
               onClick={openAdd}
               disabled={createRefusal !== null}
               title={createRefusal ?? undefined}
+              aria-describedby={whyAddIsOff}
+              data-tour="add-connection"
             >
               <PlusIcon size={14} />
               Add connection
@@ -1325,12 +1395,14 @@ export default function ConnectionsPage() {
 
         {/* Said once for the page rather than on every card's buttons. */}
         {roleNote && (
-          <div className="role-note cn-note">
+          <div className="role-note cn-note" id={whyOffId}>
             <InfoIcon size={15} className="ico" />
             <div className="body">
               <p>
                 {roleNote}
-                <AskAdmin permission={refusedKeys.length === 1 ? refusedKeys[0] : undefined} />
+                {!offInTrial && (
+                  <AskAdmin permission={refusedKeys.length === 1 ? refusedKeys[0] : undefined} />
+                )}
               </p>
             </div>
           </div>
@@ -1411,24 +1483,17 @@ export default function ConnectionsPage() {
 
         {/* The list could not be read */}
         {!loading && loadError && (
-          <div className="cn-state" role="alert">
-            <span className="cn-state__ico cn-state__ico--bad" aria-hidden="true">
-              <AlertTriangleIcon size={20} />
-            </span>
-            <div>
-              <h2>{loadError}</h2>
-              <p>Your saved connections are still there. This screen just could not read them.</p>
-              <button
-                className="btn btn-secondary cn-tap"
-                onClick={() => {
-                  setLoading(true);
-                  reload();
-                }}
-                type="button"
-              >
-                Try again
-              </button>
-            </div>
+          <div className="cn-loaderr">
+            <ErrorNotice
+              error={loadError}
+              onRetry={() => {
+                setLoading(true);
+                reload();
+              }}
+            />
+            <p className="cn-loaderr__still">
+              Your saved connections are still there. This screen just could not read them.
+            </p>
           </div>
         )}
 
@@ -1452,6 +1517,7 @@ export default function ConnectionsPage() {
                 onClick={openAdd}
                 disabled={createRefusal !== null}
                 title={createRefusal ?? undefined}
+                aria-describedby={whyAddIsOff}
               >
                 <PlusIcon size={14} />
                 Add your first connection
@@ -1502,7 +1568,7 @@ export default function ConnectionsPage() {
         {!loading &&
           !loadError &&
           [{ rows: visible }].map((group) => (
-            <section key="all" className="cn-group-block">
+            <section key="all" className="cn-group-block" data-tour="connection-list">
               <div className="cn-grid">
                 {group.rows.map((conn) => {
                   const result = rowResult(conn, rowResults);
@@ -1516,13 +1582,13 @@ export default function ConnectionsPage() {
                         <span className="cn-card__ico" aria-hidden="true">
                           <LogoIcon size={18} />
                         </span>
-                        <h3>{conn.name}</h3>
+                        <h3 title={conn.name}>{conn.name}</h3>
                         {/* Who may deploy here. The role only gets a badge
                             when it is not the default. */}
                         <ExecuteRolePill role={toExecuteRole(conn.execute_role)} />
                       </div>
 
-                      <code className="cn-card__where">
+                      <code className="cn-card__where" title={`${conn.host}:${conn.port}/${conn.database_name}`}>
                         {conn.host}:{conn.port}/{conn.database_name}
                       </code>
                       <p className="cn-card__meta">
@@ -1583,7 +1649,7 @@ export default function ConnectionsPage() {
                           )}
                       </div>
 
-                      <CardHealth result={result} />
+                      <CardHealth result={result} name={conn.name} id={conn.id} onRetry={() => testRow(conn)} />
 
                       <div className="cn-card__acts">
                         <button
@@ -1806,7 +1872,7 @@ export default function ConnectionsPage() {
             </div>
             <input
               className="input"
-              placeholder="e.g. Staging — Neon"
+              placeholder="e.g. Orders on Neon"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               aria-required="true"
@@ -1875,6 +1941,7 @@ export default function ConnectionsPage() {
                   placeholder="postgres://user:pass@host:5432/database?sslmode=require"
                   value={form.uri}
                   onChange={(e) => editConnectionField({ uri: e.target.value })}
+                  ref={uriRef}
                   aria-label="Connection string"
                   aria-required={editingId === null ? "true" : undefined}
                   {...fieldProps("connection_string")}
@@ -1887,7 +1954,7 @@ export default function ConnectionsPage() {
                       const text = await navigator.clipboard.readText();
                       if (text) editConnectionField({ uri: text.trim() });
                     } catch {
-                      showToast("Clipboard not available — paste manually.");
+                      showToast("Clipboard not available, so paste it by hand.");
                     }
                   }}
                   type="button"
@@ -2271,7 +2338,7 @@ export default function ConnectionsPage() {
                     <>
                       <div className="text-[12px] mt-2" style={{ color: "var(--text-2)" }}>
                         {deleteDependents.comparisonSets} saved comparison set
-                        {deleteDependents.comparisonSets === 1 ? "" : "s"} — the set
+                        {deleteDependents.comparisonSets === 1 ? "" : "s"}. The set
                         {deleteDependents.comparisonSets === 1 ? " is" : "s are"} kept, but the side
                         pointing here needs a new connection before it can run again.
                       </div>
@@ -2541,7 +2608,18 @@ function summaryLine(total: number, healthy: number, failing: number, untested: 
 }
 
 /** The health line on a connection's card: a dot, what the last test found, and when. */
-function CardHealth({ result }: { result?: RowResult }) {
+function CardHealth({
+  result,
+  name,
+  id,
+  onRetry,
+}: {
+  result?: RowResult;
+  /** The connection's name and id, so a failed test can say which one and open it for editing. */
+  name: string;
+  id: number;
+  onRetry: () => void;
+}) {
   if (!result) {
     return (
       <p className="cn-health">
@@ -2568,7 +2646,15 @@ function CardHealth({ result }: { result?: RowResult }) {
           <span className="cn-dot cn-dot--bad" aria-hidden="true" />
           Test failed{when && ` · ${when}`}
         </p>
-        <p className="cn-why">{result.error}</p>
+        {/* Says what to do: enter the password again, or try again. The
+            server's own wording goes under Technical details. */}
+        <ErrorNotice
+          variant="inline"
+          error={result.error}
+          connectionName={name}
+          connectionId={id}
+          onRetry={onRetry}
+        />
       </>
     );
   }

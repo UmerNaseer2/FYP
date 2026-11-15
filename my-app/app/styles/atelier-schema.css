@@ -336,3 +336,10 @@
   .sc-drf .btn,
   .sc-hd .btn { display: none; }
 }
+
+/* A schema name is one long word with no spaces. On a narrow screen it breaks
+   onto a second line instead of pushing the page sideways, so the whole name
+   can still be read. */
+.sc-page .page-head__text { min-width: 0; }
+.sc-page .page-title { overflow-wrap: anywhere; }
+.sc-page .page-title .w { max-width: 100%; }

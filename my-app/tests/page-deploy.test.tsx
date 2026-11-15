@@ -200,12 +200,37 @@ function runFingerprint() {
   );
 }
 
-/** Open one of the three pickers and take an option out of it. */
+/** The Target picker's field once a connection is chosen: its name, then the schema. */
+const targetField = () => screen.getByRole("group", { name: /^Target/ });
+
+/** The panel the Target picker opens, opened first when it is shut. */
+async function targetPanel(): Promise<HTMLElement> {
+  const open = screen.queryByRole("dialog", { name: "Choose target connection and schema" });
+  if (open) return open;
+  const opener = await screen.findByRole("button", {
+    name: /Choose a connection and schema|Change target connection and schema/,
+  });
+  await waitFor(() => expect(opener).toBeEnabled());
+  fireEvent.click(opener);
+  return screen.findByRole("dialog", { name: "Choose target connection and schema" });
+}
+
+/**
+ * Choose a connection or a schema in the Target picker, or a script group in
+ * its own list.
+ */
 async function pick(box: "Connection" | "Schema" | "Script group", option: string | RegExp) {
-  const combobox = await screen.findByRole("combobox", { name: box });
-  await waitFor(() => expect(combobox).toBeEnabled());
-  fireEvent.click(combobox);
-  fireEvent.click(await screen.findByRole("option", { name: option }, { timeout: 3000 }));
+  if (box === "Script group") {
+    const combobox = await screen.findByRole("combobox", { name: box });
+    await waitFor(() => expect(combobox).toBeEnabled());
+    fireEvent.click(combobox);
+    fireEvent.click(await screen.findByRole("option", { name: option }, { timeout: 3000 }));
+    return;
+  }
+  const panel = await targetPanel();
+  const list = within(panel).getByRole("group", { name: box === "Connection" ? "Connections" : "Schemas" });
+  const name = typeof option === "string" ? new RegExp(`^${option}`) : option;
+  fireEvent.click(await within(list).findByRole("button", { name }, { timeout: 3000 }));
 }
 
 /**
@@ -329,7 +354,7 @@ describe("who is allowed to run anything here", () => {
     expect(
       screen.getByText(
         "This connection is marked read-only on Connections, so nothing here will run " +
-          "against it — not a deploy and not a dry run"
+          "against it, not a deploy and not a dry run"
       )
     ).toBeInTheDocument();
     expect(screen.queryByText(/limited to admins|may run deployments/)).not.toBeInTheDocument();
@@ -365,7 +390,7 @@ describe("the warnings in front of a run", () => {
     expect(await deployButton()).toBeDisabled();
     expect(await dryRunButton()).toBeDisabled();
     expect(
-      screen.getByText("Checking the target for drift first — these unlock when the check finishes")
+      screen.getByText("Checking the target for drift first. These unlock when the check finishes")
     ).toBeInTheDocument();
 
     releaseDrift();
@@ -667,7 +692,7 @@ describe("the run itself", () => {
 
     expect(screen.getByText(/0 of 2 applied/)).toBeInTheDocument();
     expect(screen.queryByText(/applied · committed with the run/)).not.toBeInTheDocument();
-    expect(screen.getByText("Deploy failed — nothing was applied")).toBeInTheDocument();
+    expect(screen.getByText("Deploy failed, nothing was applied")).toBeInTheDocument();
   });
 });
 
@@ -744,8 +769,8 @@ describe("arriving from a link on the Requests page", () => {
     setSearchParams("connection=2&schema=public&script=invoices");
     render(<DeployPage />);
 
-    await waitFor(() => expect(box("Connection")).toHaveTextContent("Prod box"));
-    await waitFor(() => expect(box("Schema")).toHaveTextContent("public"));
+    await waitFor(() => expect(targetField()).toHaveTextContent("Prod box"));
+    await waitFor(() => expect(targetField()).toHaveTextContent("public"));
     await waitFor(() => expect(box("Script group")).toHaveTextContent("invoices"));
     await waitFor(() => expect(reads()).toHaveLength(1));
     expect(reads()[0].body).toContain("invoices");
@@ -780,9 +805,11 @@ describe("arriving from a link on the Requests page", () => {
     setSearchParams("connection=99&schema=public&script=invoices");
     render(<DeployPage />);
 
-    await waitFor(() => expect(box("Connection")).toBeEnabled());
+    // Nothing chosen, so the whole field is still the button that opens the picker.
+    const unpicked = () => screen.getByRole("button", { name: /Choose a connection and schema/ });
+    await waitFor(() => expect(unpicked()).toBeEnabled());
     await flushAsync();
-    expect(box("Connection")).not.toHaveTextContent(/box/);
+    expect(unpicked()).toBeInTheDocument();
     expect(reads()).toHaveLength(0);
   });
 
@@ -791,9 +818,10 @@ describe("arriving from a link on the Requests page", () => {
     setSearchParams("connection=1&schema=gone&script=invoices");
     render(<DeployPage />);
 
-    await waitFor(() => expect(box("Connection")).toHaveTextContent("Dev box"));
+    await waitFor(() => expect(targetField()).toHaveTextContent("Dev box"));
     await flushAsync();
-    expect(box("Schema")).not.toHaveTextContent(/gone|public|archive/);
+    expect(targetField()).toHaveTextContent("No schema chosen");
+    expect(targetField()).not.toHaveTextContent(/gone|public|archive/);
     expect(reads()).toHaveLength(0);
   });
 
@@ -804,13 +832,13 @@ describe("arriving from a link on the Requests page", () => {
     const release = holdNext("/api/scripts/schemas");
     render(<DeployPage />);
 
-    await waitFor(() => expect(box("Connection")).toHaveTextContent("Dev box"));
+    await waitFor(() => expect(targetField()).toHaveTextContent("Dev box"));
     await pick("Connection", /Prod box/);
     release();
     await flushAsync();
 
-    expect(box("Connection")).toHaveTextContent("Prod box");
-    expect(box("Schema")).not.toHaveTextContent("public");
+    expect(targetField()).toHaveTextContent("Prod box");
+    expect(targetField()).not.toHaveTextContent("public");
     expect(reads()).toHaveLength(0);
   });
 });
@@ -1001,5 +1029,79 @@ describe("the timeline of what has run", () => {
       await screen.findByText("Nothing has been run on this schema from here yet.")
     ).toBeInTheDocument();
     expect(screen.queryByText(/Every attempt as a list/)).not.toBeInTheDocument();
+  });
+});
+
+describe("a Deploy that is not set up yet", () => {
+  /** The pull's answer when the organization has no GitHub repository saved. */
+  const noGitHub: FetchRoute = {
+    match: "/api/github/pull",
+    status: 500,
+    body: {
+      ok: false,
+      code: "github_unconfigured",
+      error: "GitHub is not set up for this organization yet. Nothing was read from or written to GitHub.",
+    },
+  };
+  const checklist = () => screen.findByRole("region", { name: "Deploy needs a few things first" });
+
+  it("shows an Admin the checklist, with a button to set up GitHub", async () => {
+    setUser("admin");
+    setRoutes([noGitHub, ...baseRoutes()]);
+    render(<DeployPage />);
+
+    const list = await checklist();
+    expect(list).toHaveTextContent("1 of 3 done");
+    expect(list).toHaveTextContent("GitHub is not set up for this organization yet.");
+    expect(within(list).getByRole("link", { name: "Set up GitHub" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("/admin?tab=github")
+    );
+    // The steps it opens up are shown, and the controls that can't be used are not.
+    expect(list).toHaveTextContent("Unlocks after setup");
+    expect(screen.queryByRole("button", { name: "Check database" })).not.toBeInTheDocument();
+    // The pull's refusal is a step on the list, not an error banner.
+    expect(screen.queryByText(/Nothing was read from or written to GitHub/)).not.toBeInTheDocument();
+  });
+
+  it("tells an Editor that an Admin sets up GitHub, and where to ask", async () => {
+    setUser("editor");
+    setRoutes([noGitHub, ...baseRoutes()]);
+    render(<DeployPage />);
+
+    const list = await checklist();
+    expect(list).toHaveTextContent("Deploys need GitHub, which an Admin sets up.");
+    expect(within(list).getByRole("link", { name: "Ask an Admin" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("/requests")
+    );
+    expect(within(list).queryByRole("link", { name: "Set up GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("gives a Viewer one plain line and no checklist", async () => {
+    setUser("viewer");
+    setRoutes([noGitHub, ...baseRoutes()]);
+    render(<DeployPage />);
+
+    expect(
+      await screen.findByText(/Viewers can't start deploys, so there is nothing to set up here\./)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Deploy needs a few things first" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Ask an Admin" })).not.toBeInTheDocument();
+    // What has run before is still theirs to read, for the target they pick.
+    expect(screen.getByRole("heading", { name: "Run history" })).toBeInTheDocument();
+  });
+
+  it("asks for a saved migration when GitHub is set up but holds none", async () => {
+    setUser("admin");
+    setRoutes([
+      { match: "/api/github/pull", body: { ok: true, scripts: [], warnings: [] } },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+
+    const list = await checklist();
+    expect(list).toHaveTextContent("2 of 3 done");
+    expect(within(list).getByRole("link", { name: "Open Script Editor" })).toBeInTheDocument();
   });
 });

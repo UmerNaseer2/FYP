@@ -1,4 +1,4 @@
-/* Your activity page. Every class starts with hi- so nothing here can touch
+/* History page. Every class starts with hi- so nothing here can touch
    another page. Colours come only from the tokens in app/globals.css, so the
    light and dark themes both work without extra rules. */
 
@@ -47,13 +47,16 @@ button.hi-day:hover { background: var(--surface-2); }
   content: ""; position: absolute; left: 3px; right: 3px; bottom: 19px; height: 1.5px;
   border-radius: 1px; background: var(--line);
 }
+/* One check: a square in the state's colour with the state's glyph on it.
+   The st--<tone> class on the mark supplies the colours (atelier-system.css). */
 .hi-mark {
-  width: min(14px, 70%); aspect-ratio: 1; border-radius: 4px; background: var(--ink-2); flex: none;
+  width: min(14px, 70%); aspect-ratio: 1; border-radius: 4px; flex: none;
+  display: grid; place-items: center;
+  background: var(--st-roof); color: var(--st-roof-glyph);
   transition: opacity var(--dur-2);
   animation: hi-pop var(--dur-3) var(--ease-spring) backwards;
 }
-.hi-mark[data-status="drifted"] { background: var(--drift); }
-.hi-mark[data-status="unreachable"] { background: var(--remove); border-radius: 50%; }
+.hi-mark svg { width: 72%; height: 72%; }
 .hi-mark[data-off="true"] { opacity: .16; }
 .hi-more { font: 600 10.5px/12px var(--sans); color: var(--ink-3); }
 .hi-day b {
@@ -64,8 +67,7 @@ button.hi-day:hover { background: var(--surface-2); }
 @keyframes hi-pop { from { transform: scale(0); } }
 .hi-key { display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
 .hi-key span { display: inline-flex; align-items: center; gap: 6px; }
-.hi-key .hi-mark { width: 10px; border-radius: 3px; animation: none; }
-.hi-key .hi-mark[data-status="unreachable"] { border-radius: 50%; }
+.hi-key .hi-mark { width: 14px; animation: none; }
 
 /* ----- filters ----- */
 .hi-f { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
@@ -97,20 +99,17 @@ button.hi-day:hover { background: var(--surface-2); }
 .hi-list { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
 .hi-row {
   /* 68px holds a time like "04:45 PM" on one line. */
-  display: grid; grid-template-columns: 68px 34px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
-  width: 100%; min-height: 44px; text-align: left; padding: 12px 14px; border-radius: 18px; cursor: pointer;
-  background: var(--surface); color: var(--ink); box-shadow: var(--lift, none); border: 1.5px solid transparent;
+  display: grid; grid-template-columns: 68px minmax(0, 1fr) auto; gap: 0 12px; align-items: center;
+  width: 100%; min-height: 44px; text-align: left; padding: 12px 14px 12px 18px; border-radius: 18px; cursor: pointer;
+  /* The left edge is the state's colour, the same edge the Drift list uses.
+     The chip at the end of the row says the state in a glyph and a word. */
+  background: var(--surface); color: var(--ink); border: 1.5px solid transparent;
+  box-shadow: inset 4px 0 0 var(--st-ink), var(--lift, 0 0 transparent);
   transition: transform var(--dur-2) var(--ease-out), border-color var(--dur-2);
 }
 .hi-row:hover { transform: translateX(3px); }
 .hi-row[aria-current="true"] { border-color: var(--ink); }
 .hi-row time { font: 500 12.5px/18px var(--mono); color: var(--ink-3); white-space: nowrap; }
-.hi-ic {
-  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--surface-2); color: var(--ink); flex: none;
-}
-.hi-row[data-status="drifted"] .hi-ic { background: var(--drift-soft); color: var(--drift); }
-.hi-row[data-status="unreachable"] .hi-ic { background: var(--remove-soft); color: var(--remove); }
 .hi-tx { min-width: 0; }
 .hi-tx-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hi-tx-main b { font-weight: 600; }
@@ -121,6 +120,9 @@ button.hi-day:hover { background: var(--surface-2); }
 .hi-none .hi-link, .hi-none .btn { margin-top: 10px; }
 .hi-cap { margin: 4px 4px 0; font-size: 12.5px; color: var(--ink-3); }
 .hi-skel { display: grid; gap: 6px; margin-top: 10px; }
+/* The list could not be read: a heading and an error notice with Try again. */
+.hi-failed { display: grid; gap: 10px; margin-top: 18px; max-width: 640px; }
+.hi-failed h2 { font: 700 17px/24px var(--display); color: var(--ink); }
 
 .hi-det {
   position: sticky; top: 16px; padding: 22px; border-radius: var(--r-lg);
@@ -132,7 +134,7 @@ button.hi-day:hover { background: var(--surface-2); }
   display: flex; align-items: center; gap: 10px; justify-content: space-between;
   font: 700 12px/16px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
 }
-.hi-dk .pill { text-transform: none; letter-spacing: 0; }
+.hi-dk .st-chip { text-transform: none; letter-spacing: 0; }
 .hi-det h2 {
   margin-top: 14px; font: 700 21px/27px var(--display); letter-spacing: -.02em; color: var(--ink);
   text-wrap: balance; overflow-wrap: anywhere;
@@ -181,10 +183,10 @@ button.hi-day:hover { background: var(--surface-2); }
   .hi-kind { min-height: 44px; }
   .hi-f2 .ds-select { width: 100%; }
   .hi-search { flex: 1 1 100%; max-width: none; min-height: 44px; }
-  .hi-row { grid-template-columns: 34px minmax(0, 1fr); gap: 2px 12px; }
-  .hi-row time { grid-column: 2; grid-row: 2; }
-  .hi-row .hi-ic { grid-row: 1 / 4; }
-  .hi-row > .pill { grid-column: 2; justify-self: start; margin-top: 4px; }
+  /* One column: the sentence, then the time, then the state chip. */
+  .hi-row { grid-template-columns: minmax(0, 1fr); gap: 2px 12px; }
+  .hi-row time { grid-row: 2; }
+  .hi-row > .st-chip { justify-self: start; margin-top: 4px; }
   .hi-tx-main { white-space: normal; overflow-wrap: anywhere; }
   .hi-det { padding: 18px; }
   .hi-go { width: 100%; justify-content: center; }
@@ -215,6 +217,5 @@ button.hi-day:hover { background: var(--surface-2); }
   }
   .hi-row time, .hi-tx small, .hi-dh small { color: #333; }
   .hi-tx-main, .hi-tx small { white-space: normal; }
-  .hi-ic { display: none; }
   .hi-row { grid-template-columns: 68px minmax(0, 1fr) auto; }
 }

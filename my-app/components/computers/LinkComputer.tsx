@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ErrorNote, JSON_HEADERS, Meta, errorFrom } from "@/components/phone/parts";
+import { HelpButton } from "@/components/help/HelpPanel";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { Button, Card, Input } from "@/components/ui";
 import { AlertCircleIcon, CheckIcon } from "@/components/ui/icons";
@@ -158,7 +159,7 @@ export default function LinkComputer() {
   return (
     <div className="dv-link">
       <main className="dv-link__main">
-        <PageHeader page="/link-computer" />
+        <PageHeader page="/link-computer" actions={<HelpButton />} />
 
         {finished === "linked" && (
           <Card className="dv-card dv-done">

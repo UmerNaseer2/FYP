@@ -9,7 +9,7 @@ import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
-import { BellIcon, ClockIcon, MoonIcon, PhoneIcon, SunIcon } from "@/components/ui/icons";
+import { BellIcon, HelpIcon, MoonIcon, PhoneIcon, SparkIcon, SunIcon } from "@/components/ui/icons";
 import { ADMIN_ROLE, DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { HelpButton, HelpProvider, useHelp } from "@/components/help/HelpPanel";
@@ -23,7 +23,9 @@ import { useAiFeature } from "./AiPanel";
 import LogoIntro from "./LogoIntro";
 import { AppTour } from "./AppTour";
 import { TrialBar } from "./TrialBar";
-import { NAV_ITEMS, activeScreen, type NavItem } from "./nav";
+import { NAV_ITEMS, activeScreen, isKnownScreen, type NavItem } from "./nav";
+import { recordRecent } from "@/lib/recents";
+import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
 
 // What the rail offers while it cannot ask what the role may do: what a new
 // Viewer can read.
@@ -54,8 +56,11 @@ type StudioShellProps = {
 /**
  * The frame every studio page lives inside: the floating rail on the left
  * (the drawer on a phone), the top bar with the search pill, Ask AI, Help,
- * Needs you, the theme and the account menu, the command bar (Ctrl K or
- * Cmd K) and the logo intro.
+ * Needs you (only when something waits), the theme and the account menu, the
+ * command bar (Ctrl K or Cmd K) and the logo intro.
+ *
+ * On a phone the top bar keeps three buttons only: menu, search and account.
+ * Help, the theme switch and Ask AI move into the drawer.
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
@@ -151,11 +156,23 @@ export function StudioShell({ children, user }: StudioShellProps) {
   );
 
   const active = activeScreen(pathname);
+  const activeHref = orgPath(active.href);
+
+  // Remember this page for the command bar's "Recent" list (lib/recents.ts).
+  // Only a real, named page this person's menu offers: not the Dashboard
+  // fallback for an unknown address, and nothing before the role is known.
+  const onMenu = navItems.some((item) => item.href === activeHref) || active.href === "/devices";
+  const knownPage = isKnownScreen(pathname);
+  const orgSlug = org?.slug ?? null;
+  useEffect(() => {
+    if (!roleKnown || !knownPage || !onMenu) return;
+    recordRecent({ kind: "page", label: active.screen, href: activeHref }, orgSlug);
+  }, [roleKnown, knownPage, onMenu, active.screen, activeHref, orgSlug]);
 
   const sidebar = (
     <StudioSidebar
       items={navItems}
-      activeHref={orgPath(active.href)}
+      activeHref={activeHref}
       // In the mobile drawer the sidebar is always expanded; its collapse chevron
       // closes the drawer instead (chevron-left = "tuck the panel away").
       collapsed={isMobile ? false : collapsed}
@@ -169,6 +186,12 @@ export function StudioShell({ children, user }: StudioShellProps) {
       // Which organization this is, and the others this person belongs to.
       // Drawn on every server; it hides itself when there is nothing to pick.
       orgSwitcher={<OrgSwitcher />}
+      // Phone only: what the three-button top bar has no room for.
+      tools={
+        isMobile ? (
+          <DrawerTools theme={theme} onToggleTheme={toggleTheme} onDone={() => setMobileNavOpen(false)} />
+        ) : undefined
+      }
       className={isMobile ? "side-in-drawer" : ""}
     />
   );
@@ -176,15 +199,11 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // Where "Your requests" and the Needs you button go. Not for someone who is
   // not a member (there is nothing of theirs to see) or nobody signed in.
   const requestsHref = !notMember && authUser ? orgPath("/requests") : undefined;
-  // The two pages only the account menu (and the command bar) lead to: what
-  // you did lately (History) and your phone and desktop links (Devices).
-  const activityHref = !notMember && authUser ? orgPath("/history") : undefined;
+  // The one page only the account menu (and the command bar) leads to: your
+  // phone and desktop links (Devices). History is on the menu, under Watch.
   const devicesHref = !notMember && authUser ? orgPath("/devices") : undefined;
   const commandPages: NavItem[] = [
     ...navItems,
-    ...(activityHref
-      ? [{ screen: "Your activity", label: "Your activity", href: activityHref, icon: <ClockIcon size={16} /> }]
-      : []),
     ...(devicesHref
       ? [{ screen: "Phone and desktop", label: "Phone and desktop", href: devicesHref, icon: <PhoneIcon size={16} /> }]
       : []),
@@ -192,20 +211,23 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const signOut = () => void signOutEverywhere();
 
   // The round buttons at the right end of the top bar. Ask AI first (it only
-  // shows where AI is switched on), then Help, which every page has.
+  // shows where AI is switched on), then Help, which every page has. Needs
+  // you is drawn only while something waits on this person.
+  //
+  // On a phone only the account button is left. Ask AI stays mounted but
+  // hidden, because its button also holds the chat panel and the conversation;
+  // the drawer's Ask AI row opens that same panel.
   const topActions = (
     <>
-      <SchemaChatButton />
-      <HelpButton className="tb" />
-      {roleKnown && requestsHref && (
+      <span style={{ display: isMobile ? "none" : "contents" }}>
+        <SchemaChatButton />
+      </span>
+      {!isMobile && <HelpButton className="tb" />}
+      {roleKnown && requestsHref && waitingRequests > 0 && !isMobile && (
         <Link
           href={requestsHref}
-          className={`tb ny ${waitingRequests > 0 ? "ny-hot" : ""}`}
-          title={
-            waitingRequests > 0
-              ? `${waitingRequests} ${waitingRequests === 1 ? "request is" : "requests are"} waiting on you`
-              : "Nothing is waiting on you"
-          }
+          className="tb ny ny-hot"
+          title={`${waitingRequests} ${waitingRequests === 1 ? "request is" : "requests are"} waiting on you`}
         >
           <BellIcon size={15} />
           <span className="ny-t">Needs you</span>
@@ -215,15 +237,17 @@ export function StudioShell({ children, user }: StudioShellProps) {
           </em>
         </Link>
       )}
-      <button
-        type="button"
-        className="tb"
-        onClick={toggleTheme}
-        aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-      >
-        {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
-      </button>
+      {!isMobile && (
+        <button
+          type="button"
+          className="tb"
+          onClick={toggleTheme}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+        </button>
+      )}
       <AccountMenu
         user={studioUser}
         // Straight from useUser, never from the `user` override above: what
@@ -239,7 +263,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
         roleLabel={roleKnown ? roleLabel : undefined}
         orgName={orgName}
         requestsHref={requestsHref}
-        activityHref={activityHref}
         devicesHref={devicesHref}
         onSignOut={signOut}
       />
@@ -247,8 +270,8 @@ export function StudioShell({ children, user }: StudioShellProps) {
   );
 
   return (
-    // HelpProvider holds the Help panel, so the top bar's Help button and the
-    // one in each page's header open the same panel.
+    // HelpProvider holds the Help panel, so the top bar's Help button, the
+    // phone drawer's Help row and the command bar open the same panel.
     <HelpProvider>
     <div
       className="studio grid"
@@ -292,8 +315,11 @@ export function StudioShell({ children, user }: StudioShellProps) {
       <div className="flex flex-col min-w-0 min-h-0">
         <StudioTopbar
           breadcrumbScreen={active.screen}
+          breadcrumbGroup={active.group}
           showMenu={isMobile}
           onMenuClick={() => setMobileNavOpen(true)}
+          // The dot on the menu button: the count itself is on Requests in the drawer.
+          menuWaiting={roleKnown ? waitingRequests : 0}
           onOpenCommand={() => setCommandOpen(true)}
           action={topActions}
         />
@@ -326,7 +352,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
       <ShellCommandBar
         onClose={() => setCommandOpen(false)}
         pages={commandPages}
-        activeHref={orgPath(active.href)}
+        activeHref={activeHref}
         waiting={roleKnown ? waitingRequests : 0}
         requestsHref={requestsHref}
         theme={theme}
@@ -367,4 +393,61 @@ function ShellCommandBar(props: ShellCommandBarProps) {
   const help = useHelp();
   const askAi = useAiFeature("schema-chat") === true;
   return <CommandBar open {...props} onHelp={help?.open} askAi={askAi} />;
+}
+type DrawerToolsProps = {
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+  /** Closes the drawer, so the panel a row opens is not hidden behind it. */
+  onDone: () => void;
+};
+
+/**
+ * The phone drawer's extra rows: Help, the theme switch and Ask AI. On a
+ * wider screen these are round buttons in the top bar. Help opens the same
+ * Help panel, and Ask AI the same chat panel, as those buttons do.
+ */
+function DrawerTools({ theme, onToggleTheme, onDone }: DrawerToolsProps) {
+  const help = useHelp();
+  const askAi = useAiFeature("schema-chat") === true;
+  // The row pressed goes away with the drawer, so the panel it opens hands
+  // focus back to the menu button when it closes instead of to nothing.
+  const focusMenuButton = () => document.querySelector<HTMLButtonElement>(".tb-menu")?.focus();
+  return (
+    <>
+      {help && (
+        <button
+          type="button"
+          className="nav-item"
+          aria-haspopup="dialog"
+          onClick={() => {
+            onDone();
+            focusMenuButton();
+            help.open();
+          }}
+        >
+          <HelpIcon className="ico" />
+          <span>Help</span>
+        </button>
+      )}
+      {askAi && (
+        <button
+          type="button"
+          className="nav-item"
+          aria-haspopup="dialog"
+          onClick={() => {
+            onDone();
+            focusMenuButton();
+            window.dispatchEvent(new Event(OPEN_ASK_AI_EVENT));
+          }}
+        >
+          <SparkIcon className="ico" />
+          <span>Ask AI</span>
+        </button>
+      )}
+      <button type="button" className="nav-item" onClick={onToggleTheme}>
+        {theme === "dark" ? <SunIcon className="ico" /> : <MoonIcon className="ico" />}
+        <span>{theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}</span>
+      </button>
+    </>
+  );
 }

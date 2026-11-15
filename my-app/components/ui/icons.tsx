@@ -356,7 +356,7 @@ export function MonitorIcon(props: IconProps) {
   );
 }
 
-/** Your activity: a clock face with its hands. */
+/** History: a clock face with its hands. */
 export function ClockIcon(props: IconProps) {
   return (
     <Svg {...props}>

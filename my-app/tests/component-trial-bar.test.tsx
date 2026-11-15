@@ -1,13 +1,15 @@
 /** @jest-environment jsdom */
 
-// The Reset trial button (components/studio/TrialBar.tsx): it asks first,
-// then posts to /api/trial/reset, and says so plainly when that fails. Which
-// people see the strip and the button is in tests/component-studio-shell.test.tsx.
+// The trial notice (components/studio/TrialBar.tsx): one line and a "Trial
+// options" menu. Reset trial asks first, then posts to /api/trial/reset, and
+// says so plainly when that fails. Which people see the strip and the Reset
+// item is in tests/component-studio-shell.test.tsx.
 
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { TrialBar } from "@/components/studio/TrialBar";
+import { START_TOUR_EVENT } from "@/lib/tour";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; method?: string }[] = [];
@@ -37,8 +39,14 @@ afterEach(() => {
   consoleError.mockRestore();
 });
 
+/** Open the "Trial options" menu and pick Reset trial from it. */
+function pickReset() {
+  fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Reset trial" }));
+}
+
 function pressReset() {
-  fireEvent.click(screen.getByRole("button", { name: "Reset trial" }));
+  pickReset();
   const dialog = screen.getByRole("dialog");
   expect(dialog).toHaveTextContent("The GitHub token and AI settings stay.");
   fireEvent.click(within(dialog).getByRole("button", { name: "Reset trial" }));
@@ -47,7 +55,7 @@ function pressReset() {
 test("asks before it resets anything", () => {
   answer(200, { reset: true });
   render(<TrialBar isAdmin />);
-  fireEvent.click(screen.getByRole("button", { name: "Reset trial" }));
+  pickReset();
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   expect(calls).toEqual([]);
 });
@@ -77,7 +85,42 @@ test("says so when the server cannot be reached", async () => {
   expect(await screen.findByText("Could not reach the server. Try again.")).toBeInTheDocument();
 });
 
-test("has no button for anyone but the Admin", () => {
+test("has no Reset trial for anyone but the Admin", () => {
   render(<TrialBar isAdmin={false} />);
-  expect(screen.queryByRole("button", { name: "Reset trial" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
+  expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual(["Take the tour"]);
+});
+
+test("says it in one line", () => {
+  render(<TrialBar isAdmin={false} />);
+  expect(screen.getByRole("note")).toHaveTextContent("Shared trial. Others see what you change.");
+});
+
+test("keeps its menu shut until it is asked for, and Escape shuts it again", () => {
+  render(<TrialBar isAdmin />);
+  const button = screen.getByRole("button", { name: "Trial options" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.click(button);
+  const menu = screen.getByRole("menu", { name: "Trial options" });
+  expect(within(menu).getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
+    "Take the tour",
+    "Reset trial",
+  ]);
+  fireEvent.keyDown(menu, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(button).toHaveFocus();
+});
+
+test("Take the tour asks the tour to start", () => {
+  const heard = jest.fn();
+  window.addEventListener(START_TOUR_EVENT, heard);
+  try {
+    render(<TrialBar isAdmin={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Take the tour" }));
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    window.removeEventListener(START_TOUR_EVENT, heard);
+  }
 });

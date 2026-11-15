@@ -1,20 +1,21 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Drift. Shown in the Help panel; the blurb is the page header's one line. */
 export const driftHelp: HelpTopic = {
   title: "Drift",
-  blurb: "Find changes made to a database outside this app, then undo or accept them.",
+  blurb: "Changes nobody shipped. See what changed outside a deploy, then decide what to do.",
   purpose:
     "Drift watches a tracked schema for changes nobody planned. When you track a schema, the app saves a snapshot of its structure. " +
     "Drift compares the live database against that snapshot and shows what no longer matches, so every change can be explained.",
   steps: [
     "Track a schema on the Dashboard first. That saves the snapshot Drift compares against.",
-    "Open Drift and pick the schema under Tracked schema.",
-    "Read the status at the top: in sync, drifted, unreachable or no baseline.",
-    "If it has drifted, read Expected and Actual to see which tables and columns changed.",
-    "Choose how to deal with it: Author a migration, Re-baseline to live, or Acknowledge.",
+    { text: "Open Drift and pick the schema under Tracked schema.", target: anchor("drift-schemas", ".dr-watch") },
+    { text: "Read the status at the top: in sync, drifted, can't be reached or not checked yet.", target: anchor("drift-status", ".dr-case__head") },
+    { text: "If it has drifted, read Expected and Actual to see which tables and columns changed.", target: anchor("drift-changes", ".dr-diff") },
+    { text: "Choose how to deal with it: Author a migration, Re-baseline to live, or Acknowledge.", target: anchor("drift-actions", ".dr-actions") },
     "Press Check drift now to run the check again and record the result.",
-    "Open the Schedule tab and pick a time under How often, so the schema is checked without anyone asking.",
+    { text: "Open the Schedule tab and pick a time under How often, so the schema is checked without anyone asking.", target: anchor("drift-tabs", ".dr-tabs") },
     "Open the Audit log tab to look back over every recorded check.",
   ],
   terms: [
@@ -50,7 +51,7 @@ export const driftHelp: HelpTopic = {
         "A check that was saved to the audit log. The diff on the page is read live, so it can be newer than the last recorded check.",
     },
     {
-      term: "Unreachable",
+      term: "Can't be reached",
       meaning: "The app could not connect to the schema's database, so it could not compare anything.",
     },
     {
@@ -69,7 +70,7 @@ export const driftHelp: HelpTopic = {
         "The diff is read live each time the page loads. The status badge is the last saved result. Press Check drift now to save one.",
     },
     {
-      problem: "The schema's database is unreachable.",
+      problem: "The schema's database can't be reached.",
       fix: "Open Connections and test the connection. It may have been removed, or its server may be down.",
     },
     {

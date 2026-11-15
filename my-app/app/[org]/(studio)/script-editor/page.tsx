@@ -50,6 +50,8 @@ import { displayVersion } from "@/lib/version-timeline";
 import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
 import { Pill } from "@/components/ui/Pill";
 import { HelpHint } from "@/components/ui/HelpHint";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
@@ -57,10 +59,23 @@ import { useUser } from "@/hooks/useUser";
 import { SqlGeneratePanel, type GeneratedScript } from "@/components/studio/SqlGeneratePanel";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
-import { refusalMessage } from "@/lib/permissions";
+import { DEFAULT_ROLE, refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
 import { SqlEditor, type EditorStatus } from "./SqlEditor";
 import "@/app/styles/atelier-script-editor.css";
+
+// ── "GitHub is not set up", worded for whoever is reading ───────────────────
+type GitHubReader = "admin" | "viewer" | "other";
+
+/** The whole message for each reader. "other" is an Editor or a custom role. */
+const GITHUB_MISSING: Record<GitHubReader, string> = {
+  admin:
+    "GitHub is not set up for this organization yet. Set it up once and every deploy saves its script there first.",
+  viewer:
+    "Saving a script needs GitHub, which an Admin sets up. Viewers can't save scripts, so there is nothing to set up or ask for.",
+  other:
+    "Deploys need GitHub, which an Admin sets up. Your ask lands in Requests, where any Admin can act on it.",
+};
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -137,29 +152,29 @@ const BUMP_LEVELS: BumpLevel[] = ["patch", "minor", "major"];
 // Shown on each button, so the person picking a level does not have to already
 // know what semver means.
 const BUMP_DESC: Record<BumpLevel, string> = {
-  patch: "fixes and data — nothing changes shape",
-  minor: "adds things — existing queries still work",
-  major: "changes or removes things — existing queries can break",
+  patch: "fixes and data, nothing changes shape",
+  minor: "adds things, existing queries still work",
+  major: "changes or removes things, existing queries can break",
 };
 
-// Name the keywords the guard actually rejects (lib/sql-guard.ts) — the old
+// Name the keywords the guard actually rejects (lib/sql-guard.ts). The old
 // wording named BEGIN, which it ignores, and left out END and ABORT, which it
 // blocks.
 const TXN_IN_MIGRATION =
-  "Remove the transaction statement — COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION. Deploy runs the whole script in one transaction of its own, so the script must not open or close one.";
+  "Remove the transaction statement (COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION). Deploy runs the whole script in one transaction of its own, so the script must not open or close one.";
 const TXN_IN_ROLLBACK =
-  "Remove the transaction statement — COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION. The revert runs the whole script in one transaction of its own, so the script must not open or close one.";
+  "Remove the transaction statement (COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION). The revert runs the whole script in one transaction of its own, so the script must not open or close one.";
 
 /**
- * The suggestion pill's text, e.g. "SQL reads as breaking (ALTER COLUMN … TYPE)
- * — unless it only widens the column". The statement words and the "unless"
+ * The suggestion pill's text, e.g. "SQL reads as breaking (ALTER COLUMN … TYPE),
+ * unless it only widens the column". The statement words and the "unless"
  * sentence come straight from gradeSql, so the pill names exactly what drove
  * the suggestion, and says so when the SQL alone cannot settle it.
  */
 function gradeSentence(grade: SqlGrade): string {
   let text = `SQL reads as ${grade.level}`;
   if (grade.because) text += ` (${grade.because})`;
-  if (grade.unless) text += ` — unless ${grade.unless}`;
+  if (grade.unless) text += `, unless ${grade.unless}`;
   return text;
 }
 
@@ -320,7 +335,10 @@ export default function ScriptEditorPage() {
   // anyway; this says why before a button is pressed. Nothing is said while
   // the session loads, so a role that may save is not told for a moment that
   // it can't.
-  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const { roleLabel, loading: sessionLoading, can, isAdmin, role, viewingAs } = useUser();
+  // Who is reading the "GitHub is not set up" message. An Admin can set it
+  // up, a Viewer can do nothing about it, and everyone else can ask an Admin.
+  const githubReader: GitHubReader = isAdmin ? "admin" : role === DEFAULT_ROLE ? "viewer" : "other";
   const saveRefusal =
     sessionLoading || can("scripts:create") ? null : refusalMessage(roleLabel, "scripts:create");
 
@@ -372,7 +390,7 @@ export default function ScriptEditorPage() {
       try {
         const res = await apiFetch("/api/connections", { cache: "no-store" });
         // An unreadable list is not an empty one, and the two need different
-        // advice — one is fixed by adding a connection, the other is not.
+        // advice: one is fixed by adding a connection, the other is not.
         const data = res.ok ? await res.json() : null;
         if (!active) return;
         if (Array.isArray(data)) setConnections(data);
@@ -600,7 +618,7 @@ export default function ScriptEditorPage() {
   const quieterAcked = quieterText !== null && quieterAck === ackKey;
 
   // The apply and revert routes both reject a script that opens or closes its
-  // own transaction — they run one themselves. Catch it here so the user finds
+  // own transaction; they run one themselves. Catch it here so the user finds
   // out while they can still edit, not at deploy time.
   const txnInUp = containsTransactionControl(sql);
   const txnInDown = containsTransactionControl(rollbackSql);
@@ -1105,13 +1123,25 @@ export default function ScriptEditorPage() {
                   ? ""
                   : desktop
                     ? " Saving also needs the GitHub registry, which is not set up yet: add it in Settings."
-                    : " Saving also needs the GitHub registry, which is not set up for this organization yet: an admin adds it on the Admin screen, under GitHub.")
+                    : ` ${GITHUB_MISSING[githubReader]}`)
               }
               actions={
-                <Link href={orgPath("/connections")} className="btn btn-primary btn-sm">
-                  <ConnectionsIcon size={14} />
-                  Go to Connections
-                </Link>
+                <>
+                  <Link href={orgPath("/connections")} className="btn btn-primary btn-sm">
+                    <ConnectionsIcon size={14} />
+                    Go to Connections
+                  </Link>
+                  {githubUnconfigured && !desktop && githubReader === "admin" && (
+                    <Link href={orgPath("/admin?tab=github")} className="btn btn-secondary btn-sm">
+                      Set up GitHub
+                    </Link>
+                  )}
+                  {githubUnconfigured && !desktop && githubReader === "other" && !viewingAs && (
+                    <Link href={orgPath("/requests")} className="btn btn-secondary btn-sm">
+                      Ask an Admin
+                    </Link>
+                  )}
+                </>
               }
             />
           )}
@@ -1162,7 +1192,7 @@ export default function ScriptEditorPage() {
 
           <div className="se-grid">
             {/* ── Target ───────────────────────────────────────────────────── */}
-            <div className="card se-card se-place">
+            <div className="card se-card se-place" data-tour="script-place">
               <h2>
                 Where this script belongs
                 <HelpHint label="Where this script belongs">
@@ -1181,7 +1211,7 @@ export default function ScriptEditorPage() {
                   placeholder="Select a connection…"
                   options={connections.map((c) => ({
                     value: String(c.id),
-                    label: `${c.name} — ${c.host}/${c.database_name}`,
+                    label: `${c.name} · ${c.host}/${c.database_name}`,
                   }))}
                   onChange={(value) => {
                     setConnectionId(value);
@@ -1216,7 +1246,14 @@ export default function ScriptEditorPage() {
                     setSaveResult(null);
                   }}
                 />
-                {schemasError && <p className="se-hint se-bad">{schemasError}</p>}
+                {/* Says what to do about it, such as entering the password again. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="se-notice"
+                  error={schemasError}
+                  connectionName={selectedConnection?.name}
+                  connectionId={connectionId}
+                />
               </div>
 
               <div className="se-field">
@@ -1296,12 +1333,23 @@ export default function ScriptEditorPage() {
                       </button>
                     </>
                   ) : githubUnconfigured ? (
-                    <>
-                      The GitHub registry is not set up for this organization, so nothing
-                      can be listed and nothing can be saved. An admin can add the
-                      repository and an access token on the Admin screen, under GitHub,
-                      then reload this page.
-                    </>
+                    // What is missing, who can fix it and what to press, worded
+                    // for whoever is reading.
+                    githubReader === "admin" ? (
+                      <>
+                        {GITHUB_MISSING.admin}{" "}
+                        <Link href={orgPath("/admin?tab=github")} className="btn btn-secondary btn-sm">
+                          Set up GitHub
+                        </Link>
+                      </>
+                    ) : githubReader === "viewer" ? (
+                      <>{GITHUB_MISSING.viewer}</>
+                    ) : (
+                      <>
+                        Deploys need GitHub, which an Admin sets up.
+                        <AskAdmin />
+                      </>
+                    )
                   ) : (
                     <>
                       {githubError}{" "}
@@ -1381,7 +1429,7 @@ export default function ScriptEditorPage() {
                         clearStaleError();
                       }}
                     />
-                    <span>Save without a rollback — Deploy will not be able to undo this version</span>
+                    <span>Save without a rollback (Deploy will not be able to undo this version)</span>
                   </label>
                 )}
               </div>
@@ -1423,8 +1471,8 @@ export default function ScriptEditorPage() {
                             value: r.version,
                             label:
                               r.rollback_state === "none"
-                                ? `v${bare(r.version)} — no rollback`
-                                : `v${bare(r.version)} — rollback has no statements`,
+                                ? `v${bare(r.version)} (no rollback)`
+                                : `v${bare(r.version)} (rollback has no statements)`,
                           }))}
                           onChange={(value) => {
                             setFix((current) => ({
@@ -1508,7 +1556,7 @@ export default function ScriptEditorPage() {
 
             <div className="se-rest">
               {/* ── Version ──────────────────────────────────────────────────── */}
-              <div className="card se-card">
+              <div className="card se-card" data-tour="script-version">
                 <div className="se-rh">
                   <h2>Version</h2>
                   {/* Keyed on the number, so a new one rolls in. */}
@@ -1563,7 +1611,7 @@ export default function ScriptEditorPage() {
                       )}
                       {appliedUnreadable && (
                         <span className="pill pill-drift">
-                          {"couldn't read the applied version — only GitHub is checked"}
+                          {"couldn't read the applied version, so only GitHub is checked"}
                         </span>
                       )}
                     </div>
@@ -1634,10 +1682,10 @@ export default function ScriptEditorPage() {
                     {version !== null && (
                       <p className="se-hint">
                         {effectiveChoice !== "custom"
-                          ? `Recorded as ${levelWithArticle(changeLevel)} change — the level Deploy shows for this version.`
+                          ? `Recorded as ${levelWithArticle(changeLevel)} change, the level Deploy shows for this version.`
                           : floor !== null
                             ? `Recorded as ${levelWithArticle(changeLevel)} change: the step from v${floor} to v${version} is a ${levelToBump(changeLevel)} bump.`
-                            : `Recorded as ${levelWithArticle(changeLevel)} change, read from the SQL — a first version has no step to take a level from.`}
+                            : `Recorded as ${levelWithArticle(changeLevel)} change, read from the SQL, since a first version has no step to take a level from.`}
                       </p>
                     )}
 
@@ -1716,6 +1764,7 @@ export default function ScriptEditorPage() {
                       disabled={saving || blocker !== null}
                       title={blocker ?? undefined}
                       onClick={handleSave}
+                      data-tour="script-save"
                     >
                       {saving ? <RefreshIcon size={14} className="spin-icon" /> : <CheckIcon size={14} />}
                       {saving ? "Saving…" : version !== null ? `Save v${version} to GitHub` : "Save to GitHub"}

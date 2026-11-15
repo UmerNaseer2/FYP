@@ -2,13 +2,14 @@
 
 import "@/app/styles/atelier-admin.css";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { Skeleton } from "@/components/ui";
 import { LockIcon } from "@/components/ui/icons";
 import { PageHeader } from "@/components/studio/PageHeader";
-import { PillTabs } from "@/components/studio/PillTabs";
+import { PageTabs } from "@/components/studio/PillTabs";
 import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
@@ -45,6 +46,10 @@ export default function AdminPage() {
   // The tab the person clicked. Null until they click one, which shows the
   // first tab they may open.
   const [picked, setPicked] = useState<Tab | null>(null);
+  // A link can open a tab by name: /admin?tab=roles opens Roles & permissions.
+  // A tab the person clicks afterwards wins over the address.
+  const asked = useSearchParams().get("tab");
+  const fromAddress = TABS.find((t) => t.key === asked)?.key ?? null;
 
   if (loading) {
     return (
@@ -71,7 +76,8 @@ export default function AdminPage() {
   const tabs = TABS.filter((t) => allowed[t.key]);
   // A tab that was picked and then taken away (the role changed while the
   // page was open) falls back to the first one still allowed.
-  const tab = picked && allowed[picked] ? picked : (tabs[0]?.key ?? null);
+  const wanted = picked ?? fromAddress;
+  const tab = wanted && allowed[wanted] ? wanted : (tabs[0]?.key ?? null);
 
   // "See them on the Users tab" on the Roles tab. Focus goes to the Users tab
   // itself, so keyboard and screen reader users land where the list starts.
@@ -82,16 +88,20 @@ export default function AdminPage() {
 
   return (
     <div className="ad-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
-      <PageHeader page="/admin" title="Who can do what.">
+      <PageHeader page="/admin">
         {tab !== null && (
-          <PillTabs
-            label="Admin sections"
-            tabs={tabs}
-            value={tab}
-            onChange={(key) => setPicked(key as Tab)}
-            idPrefix="admin-tab-"
-            panelPrefix="admin-panel-"
-          />
+          // Help's "Show me" lights up this row by its data-tour name. On a
+          // phone the row scrolls sideways and its right edge fades.
+          <div data-tour="admin-tabs">
+            <PageTabs
+              label="Admin sections"
+              tabs={tabs}
+              value={tab}
+              onChange={(key) => setPicked(key as Tab)}
+              idPrefix="admin-tab-"
+              panelPrefix="admin-panel-"
+            />
+          </div>
         )}
       </PageHeader>
 

@@ -1,7 +1,14 @@
 "use client";
 
 import "@/app/styles/atelier-dashboard.css";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import {
@@ -13,44 +20,43 @@ import {
   ConfirmDialog,
   Label,
   Input,
-  type PillTone,
 } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
 import { HelpHint } from "@/components/ui/HelpHint";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { SetupChecklist, type SetupStep } from "@/components/ui/SetupChecklist";
+import { StatusChip, StatusGlyph, StatusGlyphPaths } from "@/components/ui/StatusChip";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { useDriftCheckRefusal } from "@/components/studio/RecheckDriftButton";
 import { useNow } from "@/hooks/useNow";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
-import { describeCadence } from "@/lib/drift-schedule";
 import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
+import { STATUS_ORDER, statusLook, type StatusKey } from "@/lib/status-look";
 import { displayVersion } from "@/lib/version-timeline";
-import {
-  CheckIcon,
-  AlertTriangleIcon,
-  AlertCircleIcon,
-  RefreshIcon,
-  PlusIcon,
-  TrashIcon,
-  InfoIcon,
-} from "@/components/ui/icons";
+import { CheckIcon, AlertCircleIcon, RefreshIcon, PlusIcon, InfoIcon } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
+import { statusLine } from "./status-line";
 
 /**
  * Dashboard: "The Skyline".
  *
  * Every tracked schema (GET /api/lineage) is drawn as one building in a small
- * city. The roof colour is what the last drift check found, and the height is
- * a real number about the schema: how many versions it has recorded, or how
- * many tables its latest recorded version had. Press a building to read about
- * it and to act on it. Drifted schemas stand at the front. Real data only.
+ * city. The roof says what the last drift check found, with a colour and a
+ * glyph from the one status system (lib/status-look), and the height is a real
+ * number about the schema: how many versions it has recorded, or how many
+ * tables its latest recorded version had. Press a building to read about it
+ * and to act on it. Drifted schemas stand at the front. Real data only.
+ *
+ * Above the city sits "Getting started": four steps for a new organization.
+ * It goes away once every step is done, or when somebody presses Hide.
  *
  * Tracking, checking and untracking each have their own box on the Roles tab
  * (Drift tracking: Create, Run and Delete). A button the role may not use
  * stays on screen but off, and the page says why once, under the header.
  */
 
-// ── Types — mirror of GET /api/lineage (TrackedSchemaListItem) ───────────────
+// ── Types: mirror of GET /api/lineage (TrackedSchemaListItem) ───────────────
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
 type TrackedSchema = {
@@ -92,36 +98,27 @@ type ConnPhase = { kind: "idle" } | { kind: "loading" } | { kind: "ready" } | { 
 
 // ── Small pure helpers ───────────────────────────────────────────────────────
 
-/** Compact "3m ago" style relative time. Client-only, so no SSR mismatch. */
-function timeAgo(iso: string | null): string {
-  if (!iso) return "";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (secs < 60) return "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+/** Read a yes/no note this browser keeps. Private windows can refuse, so it never throws. */
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
 }
 
-/** How each drift status reads on a card: pill tone, label, and hero flag. */
-function driftMeta(status: DriftStatus | null): {
-  tone: PillTone;
-  label: string;
-  hero: boolean;
-} {
-  switch (status) {
-    case "drifted":
-      return { tone: "drift", label: "Drifted", hero: true };
-    case "in_sync":
-      return { tone: "sync", label: "In sync", hero: false };
-    case "unreachable":
-      return { tone: "break", label: "Unreachable", hero: false };
-    default:
-      return { tone: "neutral", label: "Not checked", hero: false };
+/** Keep a yes/no note in this browser. Quietly does nothing when it is refused. */
+function writeFlag(key: string) {
+  try {
+    window.localStorage.setItem(key, "1");
+  } catch {
+    // Nothing to do: the note is a convenience, not something the page needs.
   }
+}
+
+/** "1 schema is tracked", "4 schemas are tracked". */
+function countPhrase(count: number, one: string, many: string, verb: string): string {
+  return count === 1 ? `1 ${one} is ${verb}` : `${count} ${many} are ${verb}`;
 }
 
 /** Drifted first (hero), then unreachable, then never-checked, then in-sync. */
@@ -134,7 +131,7 @@ function sortPriority(status: DriftStatus | null): number {
     case "in_sync":
       return 3;
     default:
-      return 2; // null — tracked but never drift-checked
+      return 2; // null, tracked but never drift-checked
   }
 }
 
@@ -144,6 +141,7 @@ export default function DashboardPage() {
   const orgPath = useOrgHref();
   // What this role may do here, one box per write.
   const { roleLabel, loading: sessionLoading, can } = useUser();
+  const orgSlug = useOrg()?.slug ?? "";
   const trackRefusal =
     sessionLoading || can("drift:create") ? null : refusalMessage(roleLabel, "drift:create");
   const checkRefusal = useDriftCheckRefusal();
@@ -154,7 +152,12 @@ export default function DashboardPage() {
   const [items, setItems] = useState<TrackedSchema[]>([]);
   const [listPhase, setListPhase] = useState<"loading" | "ready" | "error">("loading");
   const [checkingId, setCheckingId] = useState<number | null>(null);
-  const [cardError, setCardError] = useState<{ id: number; msg: string } | null>(null);
+  // What went wrong on the picked card, and whether a new check could fix it.
+  const [cardError, setCardError] = useState<{
+    id: number;
+    msg: string;
+    from: "check" | "untrack";
+  } | null>(null);
   // The building whose details are on screen. Null means the first one.
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [heightBy, setHeightBy] = useState<HeightBy>("versions");
@@ -167,6 +170,8 @@ export default function DashboardPage() {
   // Track-a-schema drawer.
   const [trackOpen, setTrackOpen] = useState(false);
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
+  // Every saved connection, whatever its type. Getting started counts them.
+  const [savedConnections, setSavedConnections] = useState<{ name: string }[]>([]);
   const [connPhase, setConnPhase] = useState<ConnPhase>({ kind: "idle" });
   const [trackConnId, setTrackConnId] = useState("");
   const [schemaOptions, setSchemaOptions] = useState<string[]>([]);
@@ -175,7 +180,7 @@ export default function DashboardPage() {
   // Which schema-list request is the current one. Picking a second connection
   // while the first is still loading used to let the SLOWER answer land last
   // and overwrite the newer list, so the box offered schemas that live on a
-  // connection nobody had selected any more — and tracking one of them failed
+  // connection nobody had selected any more, and tracking one of them failed
   // with "schema not found" naming a schema this screen had just offered.
   // Same guard the compare screen's slot pickers take.
   const latestSchemaRequest = useRef(0);
@@ -184,7 +189,7 @@ export default function DashboardPage() {
   const [trackSubmitting, setTrackSubmitting] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
 
-  // Untrack confirm. No "removing" flag — ConfirmDialog closes on confirm, so
+  // Untrack confirm. No "removing" flag, ConfirmDialog closes on confirm, so
   // a busy label on its button could never be seen.
   const [untrackTarget, setUntrackTarget] = useState<TrackedSchema | null>(null);
 
@@ -252,13 +257,16 @@ export default function DashboardPage() {
       const data = res.ok ? await res.json() : null;
       if (!Array.isArray(data)) {
         setConnections([]);
+        setSavedConnections([]);
         setConnPhase({ kind: "error" });
         return;
       }
+      setSavedConnections(data);
       setConnections(data.filter((c: ConnectionRow) => c.type === "PostgreSQL"));
       setConnPhase({ kind: "ready" });
     } catch {
       setConnections([]);
+      setSavedConnections([]);
       setConnPhase({ kind: "error" });
     }
   }, []);
@@ -266,6 +274,71 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadConnections();
   }, [loadConnections]);
+
+  // ── Getting started ────────────────────────────────────────────────────────
+  // Two of the four steps are about things this page does not load anyway, so
+  // they are asked for here: has anybody compared (a saved comparison set, or
+  // the note the Compare page leaves in this browser), and is GitHub set up
+  // (GET /api/admin/github, for roles that may see it). Both fail quietly: a
+  // step we cannot read just stays "to do".
+  const hideKey = `schema-studio:setup-hidden:${orgSlug}`;
+  const comparedKey = `schema-studio:first-compare:${orgSlug}`;
+  const maySeeSets = !sessionLoading && can("comparison_sets:read");
+  const maySeeGitHub = !sessionLoading && can("github:read");
+  // Null until this browser's note has been read, so the list never flashes.
+  const [setupHidden, setSetupHidden] = useState<boolean | null>(null);
+  // Null until the two reads have finished.
+  const [setupFacts, setSetupFacts] = useState<{
+    compared: boolean;
+    github: "done" | "todo" | "unknown";
+  } | null>(null);
+
+  useEffect(() => {
+    if (sessionLoading) return;
+    let stale = false;
+
+    async function readSetup() {
+      const hidden = readFlag(hideKey);
+      if (!stale) setSetupHidden(hidden);
+      if (hidden) return;
+
+      let compared = readFlag(comparedKey);
+      if (!compared && maySeeSets) {
+        try {
+          const res = await apiFetch("/api/comparison-sets", { cache: "no-store" });
+          const data = res.ok ? await res.json() : null;
+          compared = Array.isArray(data?.sets) && data.sets.length > 0;
+        } catch {
+          compared = false;
+        }
+      }
+
+      let github: "done" | "todo" | "unknown" = "unknown";
+      if (maySeeGitHub) {
+        try {
+          const res = await apiFetch("/api/admin/github", { cache: "no-store" });
+          const data = res.ok ? await res.json() : null;
+          if (data && typeof data.source === "string") {
+            github = data.source !== "none" && !data.tokenUnreadable ? "done" : "todo";
+          }
+        } catch {
+          github = "unknown";
+        }
+      }
+
+      if (!stale) setSetupFacts({ compared, github });
+    }
+
+    void readSetup();
+    return () => {
+      stale = true;
+    };
+  }, [sessionLoading, hideKey, comparedKey, maySeeSets, maySeeGitHub]);
+
+  function hideSetup() {
+    writeFlag(hideKey);
+    setSetupHidden(true);
+  }
 
   // ── Track flow ─────────────────────────────────────────────────────────────
   function resetTrackForm() {
@@ -283,7 +356,7 @@ export default function DashboardPage() {
     if (trackRefusal !== null) return;
     resetTrackForm();
     setTrackOpen(true);
-    // Pull the connection list fresh each time the drawer opens — one may have
+    // Pull the connection list fresh each time the drawer opens, one may have
     // been saved on the Connections page since this dashboard loaded. It also
     // clears a previous failure, so reopening the drawer is the retry.
     void loadConnections();
@@ -369,13 +442,13 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.status) {
-        setCardError({ id: item.id, msg: data.error ?? "Drift check failed." });
+        setCardError({ id: item.id, msg: data.error ?? "Drift check failed.", from: "check" });
         return;
       }
       // The check wrote a drift_event; reload so the card + summary reflect it.
       await loadList();
     } catch {
-      setCardError({ id: item.id, msg: "Network error during the drift check." });
+      setCardError({ id: item.id, msg: "Network error during the drift check.", from: "check" });
     } finally {
       setCheckingId(null);
     }
@@ -384,7 +457,7 @@ export default function DashboardPage() {
   async function confirmUntrack() {
     if (!untrackTarget || untrackRefusal !== null) return;
     // ConfirmDialog closes itself the moment you press confirm, so the failure
-    // has to land on the card — the dialog is gone before the fetch resolves,
+    // has to land on the card, the dialog is gone before the fetch resolves,
     // and a schema that is still tracked looks exactly like one that was
     // removed.
     const target = untrackTarget;
@@ -399,6 +472,7 @@ export default function DashboardPage() {
         setCardError({
           id: target.id,
           msg: data?.error ?? "Could not stop tracking this schema.",
+          from: "untrack",
         });
         setUntrackTarget(null);
         return;
@@ -407,7 +481,11 @@ export default function DashboardPage() {
       setUntrackTarget(null);
       await loadList();
     } catch {
-      setCardError({ id: target.id, msg: "Network error while untracking the schema." });
+      setCardError({
+        id: target.id,
+        msg: "Network error while untracking the schema.",
+        from: "untrack",
+      });
       setUntrackTarget(null);
     }
   }
@@ -422,7 +500,7 @@ export default function DashboardPage() {
   const unreachable = visible.filter((i) => i.driftStatus === "unreachable").length;
   // The fourth state, and the one every schema starts in. Without a tile of its
   // own a freshly tracked schema showed as "Tracked 1" over "Drifted 0 · In
-  // sync 0 · Unreachable 0" — three zeros that do not add up to one, which
+  // sync 0 · Unreachable 0", three zeros that do not add up to one, which
   // reads as the dashboard having lost it. Counting it here makes the strip
   // account for every row: drifted + in sync + unreachable + not checked
   // is always the tracked count.
@@ -454,20 +532,100 @@ export default function DashboardPage() {
       value: heightBy === "versions" ? item.migrationCount : (tables ?? null),
       label:
         `${item.schemaName}, ` +
-        `${driftMeta(item.driftStatus).label}, ${amount}`,
+        `${statusLook(item.driftStatus).label}, ${amount}`,
     };
   });
+
+  // The connection picked in the drawer, so an error there can name it.
+  const pickedConnection = connections.find((c) => String(c.id) === trackConnId);
 
   const trackButton = (
     <Button
       variant="primary"
       onClick={openTrack}
+      data-tour="track-schema"
       disabled={trackRefusal !== null}
       title={trackRefusal ?? undefined}
     >
       <PlusIcon size={14} /> Track a schema
     </Button>
   );
+
+  // Getting started: the four steps, each worked out from what is loaded.
+  const connectDone = savedConnections.length > 0 || total > 0;
+  const trackDone = total > 0;
+  const connReadFailed = connPhase.kind === "error";
+  // Tracking reads PostgreSQL, so only those connections open the drawer's picker.
+  const canTrackSomewhere = connections.length > 0;
+  const mayEditGitHub = can("github:update");
+  const githubState = setupFacts?.github ?? "unknown";
+  const setupSteps: SetupStep[] = [
+    {
+      key: "connect",
+      label: "Connect a database",
+      done: connectDone,
+      detail: !connectDone
+        ? connReadFailed
+          ? "Your connections couldn't be read just now. Reload the page to try again."
+          : "Save the details of a database you want to look after."
+        : savedConnections.length === 1
+          ? `Done. ${savedConnections[0].name} is connected.`
+          : savedConnections.length > 1
+            ? `Done. ${savedConnections.length} databases are connected.`
+            : "Done.",
+      action: { label: "Open Connections", href: orgPath("/connections") },
+    },
+    {
+      key: "track",
+      label: "Track a schema",
+      done: trackDone,
+      detail: trackDone
+        ? `Done. ${countPhrase(total, "schema", "schemas", "tracked")}.`
+        : trackRefusal
+          ? "Your role can't track a schema. An Admin can turn this on."
+          : connReadFailed
+            ? "This opens once your connections can be read."
+            : canTrackSomewhere
+              ? "Record what a schema looks like today and hear when it changes."
+              : connectDone
+                ? "Tracking reads PostgreSQL. Add a PostgreSQL connection first."
+                : "Connect a database first.",
+      action:
+        trackRefusal || !canTrackSomewhere ? undefined : { label: "Start tracking", onClick: openTrack },
+    },
+    {
+      key: "compare",
+      label: "Run your first compare",
+      done: setupFacts?.compared ?? false,
+      detail: setupFacts?.compared ? "Done." : "See what differs between two schemas.",
+      action: { label: "Start", href: orgPath("/compare") },
+    },
+    {
+      key: "github",
+      label: "Set up GitHub for deploys",
+      done: githubState === "done",
+      detail:
+        githubState === "done"
+          ? "Done. GitHub is connected."
+          : mayEditGitHub
+            ? "Deploy scripts are kept in a GitHub repository."
+            : "An Admin sets this up.",
+      // Offered only to a role that may change the GitHub settings. Everyone
+      // else reads that an Admin does it.
+      action: mayEditGitHub ? { label: "Set up GitHub", href: orgPath("/admin?tab=github") } : undefined,
+    },
+  ];
+  // A step this person's role cannot read (GitHub, for most roles) must not
+  // keep the list on screen for ever, so it does not count against "all done".
+  const setupAllDone = setupSteps.every(
+    (step) => step.done || (step.key === "github" && githubState === "unknown")
+  );
+  const showSetup =
+    listPhase === "ready" &&
+    setupHidden === false &&
+    setupFacts !== null &&
+    (connPhase.kind === "ready" || connPhase.kind === "error") &&
+    !setupAllDone;
 
   // Why buttons on this page are off for this role, in one sentence rather
   // than a paragraph per button. The card buttons only count once there are
@@ -481,7 +639,7 @@ export default function DashboardPage() {
   const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
 
   return (
-    <div className="sk-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-6">
+    <div className="sk-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
       {/* Header. The title and its one line come from lib/help/studio.ts. */}
       <PageHeader
         page="/studio"
@@ -511,6 +669,16 @@ export default function DashboardPage() {
             </p>
           </div>
         </div>
+      )}
+
+      {showSetup && (
+        <SetupChecklist
+          className="sk-setup"
+          title="Getting started"
+          lead="Four steps from an empty organization to a schema you can deploy to."
+          steps={setupSteps}
+          onHide={hideSetup}
+        />
       )}
 
       {listPhase === "loading" && (
@@ -561,9 +729,10 @@ export default function DashboardPage() {
 
       {listPhase === "ready" && total > 0 && (
         <>
-          <section className="sk-stage" aria-label="The skyline">
+          <section className="sk-stage" data-tour="city" aria-label="Your schemas">
             <div className="sk-top">
-              <div className="sk-seg" role="radiogroup" aria-label="Height shows">
+              <h2>Your schemas</h2>
+              <div className="sk-seg" data-tour="height-shows" role="radiogroup" aria-label="Height shows">
                 <span aria-hidden="true">Height shows</span>
                 <button
                   type="button"
@@ -584,6 +753,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            {/* What the roofs mean, right above the city: a glyph and a word
+                for each of the four states, never a colour on its own. */}
+            <ul className="sk-leg" aria-label="What the roofs mean">
+              {STATUS_ORDER.map((key) => (
+                <li key={key} data-s={key} title={statusLook(key).meaning}>
+                  <i aria-hidden="true">
+                    <StatusGlyph status={key} size={11} />
+                  </i>
+                  {statusLook(key).label}
+                </li>
+              ))}
+            </ul>
+
             {sorted.length > 0 && selected && (
               <>
                 <div className="sk-mid">
@@ -601,6 +783,7 @@ export default function DashboardPage() {
                     heightBy={heightBy}
                     checking={checkingId === selected.id}
                     error={cardError?.id === selected.id ? cardError.msg : null}
+                    errorFromCheck={cardError?.from === "check"}
                     checkRefusal={checkRefusal}
                     untrackRefusal={untrackRefusal}
                     onCheckDrift={() => void checkDrift(selected)}
@@ -608,27 +791,11 @@ export default function DashboardPage() {
                   />
                 </div>
 
-                <div className="sk-bot">
-                  <span>
-                    {heightBy === "versions"
-                      ? "Each building is one tracked schema. A taller one has more recorded versions."
-                      : "Each building is one tracked schema. A taller one had more tables in its latest recorded version."}
-                  </span>
-                  <span className="sk-leg">
-                    <span data-s="drifted">
-                      <i /> Drifted
-                    </span>
-                    <span data-s="unreachable">
-                      <i /> Unreachable
-                    </span>
-                    <span data-s="unchecked">
-                      <i /> Not checked
-                    </span>
-                    <span data-s="in_sync">
-                      <i /> In sync
-                    </span>
-                  </span>
-                </div>
+                <p className="sk-bot">
+                  {heightBy === "versions"
+                    ? "Each building is one tracked schema. A taller one has more recorded versions."
+                    : "Each building is one tracked schema. A taller one had more tables in its latest recorded version."}
+                </p>
 
                 <details className="sk-tb">
                   <summary>Show as a table</summary>
@@ -654,7 +821,9 @@ export default function DashboardPage() {
                                 {item.schemaName}
                               </button>
                             </td>
-                            <td>{driftMeta(item.driftStatus).label}</td>
+                            <td>
+                              <StatusChip status={item.driftStatus} variant="mark" size="sm" />
+                            </td>
                             <td>{item.migrationCount}</td>
                             {heightBy === "tables" && <td>{tablesText(tableCounts[item.id])}</td>}
                           </tr>
@@ -670,16 +839,12 @@ export default function DashboardPage() {
           {/* Every number counts what is on screen, so the numbers and the
               city can never disagree. Drifted, in sync, unreachable and not
               checked always add up to the first one. */}
-          <div className="sk-vit">
+          <div className="sk-vit" data-tour="schema-counts">
             <Vital label="Tracked" value={visible.length} />
-            <Vital label="Drifted" value={drifted} tone={drifted > 0 ? "drift" : undefined} />
-            <Vital label="In sync" value={inSync} tone={inSync > 0 ? "sync" : undefined} />
-            <Vital
-              label="Unreachable"
-              value={unreachable}
-              tone={unreachable > 0 ? "break" : undefined}
-            />
-            <Vital label="Not checked" value={notChecked} />
+            <Vital status="in_sync" value={inSync} />
+            <Vital status="drifted" value={drifted} />
+            <Vital status="unreachable" value={unreachable} />
+            <Vital status="unchecked" value={notChecked} />
           </div>
 
           <Card className="sk-need">
@@ -697,15 +862,13 @@ export default function DashboardPage() {
                 key={item.id}
                 type="button"
                 className="sk-nr"
-                data-s={item.driftStatus ?? undefined}
                 aria-pressed={selected?.id === item.id}
                 onClick={() => setSelectedId(item.id)}
               >
-                <i aria-hidden="true" />
-                <span>
-                  <b>{item.schemaName}</b>
-                  <em>{driftMeta(item.driftStatus).label}</em>
-                  <span>{item.driftSummary ?? "No details were recorded."}</span>
+                <span className="sk-nr-main">
+                  <b title={item.schemaName}>{item.schemaName}</b>
+                  <StatusChip status={item.driftStatus} variant="mark" size="sm" />
+                  <span className="sk-nr-sum">{item.driftSummary ?? "No details were recorded."}</span>
                 </span>
                 <span className="sk-nr-go">Show in the skyline</span>
               </button>
@@ -752,17 +915,19 @@ export default function DashboardPage() {
             }
             options={connections.map((c) => ({
               value: String(c.id),
-              label: `${c.name} — ${c.host}/${c.database_name}`,
+              label: `${c.name} · ${c.host}/${c.database_name}`,
             }))}
             onChange={(value) => void onPickConnection(value)}
           />
-          {/* Only once the fetch has settled — while it is in flight the Select
+          {/* Only once the fetch has settled, while it is in flight the Select
               is disabled and says so, and an empty list means nothing yet. */}
           {connPhase.kind === "error" && (
-            <p className="help mt-1" style={{ color: "var(--break)" }}>
-              Could not read your saved connections. Close this and press “Track a
-              schema” again.
-            </p>
+            <ErrorNotice
+              variant="inline"
+              className="mt-2"
+              error="Your saved connections could not be read."
+              onRetry={() => void loadConnections()}
+            />
           )}
           {connPhase.kind === "ready" && connections.length === 0 && (
             <p className="help mt-1">
@@ -792,10 +957,15 @@ export default function DashboardPage() {
             options={schemaOptions.map((s) => ({ value: s, label: s }))}
             onChange={(value) => setTrackSchema(value)}
           />
-          {schemaPhase === "error" && schemaError && (
-            <p className="help mt-1" style={{ color: "var(--break)" }}>
-              {schemaError}
-            </p>
+          {schemaPhase === "error" && (
+            <ErrorNotice
+              variant="inline"
+              className="mt-2"
+              error={schemaError}
+              connectionName={pickedConnection?.name}
+              connectionId={trackConnId}
+              onRetry={() => void onPickConnection(trackConnId)}
+            />
           )}
           {schemaPhase === "ready" && schemaOptions.length === 0 && (
             <p className="help mt-1">This connection has no user schemas to track.</p>
@@ -816,20 +986,12 @@ export default function DashboardPage() {
           />
         </div>
 
-        {trackError && (
-          <div
-            className="flex items-start gap-2 p-2.5 rounded-lg"
-            style={{
-              background: "color-mix(in oklab, var(--break) 10%, transparent)",
-              border: "1px solid color-mix(in oklab, var(--break) 30%, transparent)",
-            }}
-          >
-            <AlertTriangleIcon size={14} style={{ color: "var(--break)", marginTop: 1 }} />
-            <span className="text-[12.5px]" style={{ color: "var(--break)" }}>
-              {trackError}
-            </span>
-          </div>
-        )}
+        <ErrorNotice
+          variant="inline"
+          error={trackError}
+          connectionName={pickedConnection?.name}
+          connectionId={trackConnId}
+        />
       </Drawer>
 
       {/* Untrack confirm */}
@@ -854,19 +1016,14 @@ export default function DashboardPage() {
 
 // ── Presentational pieces ────────────────────────────────────────────────────
 
-/** One big number above the "Needs you" list. */
-function Vital({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone?: "drift" | "sync" | "break";
-}) {
+/**
+ * One big number above the "Needs you" list. A tile that counts a state shows
+ * that state's glyph and word, the same as everywhere else.
+ */
+function Vital({ label, status, value }: { label?: string; status?: StatusKey; value: number }) {
   return (
-    <Card className="sk-v" data-tone={tone}>
-      <small>{label}</small>
+    <Card className="sk-v">
+      {status ? <StatusChip status={status} variant="mark" size="sm" /> : <small>{label}</small>}
       <b>{value}</b>
     </Card>
   );
@@ -963,7 +1120,7 @@ function FirstRun({
 type Building = {
   id: number;
   name: string;
-  /** Sets the roof colour. "unchecked" is a schema nobody has checked yet. */
+  /** Sets the roof's colour and glyph. "unchecked" is a schema nobody has checked yet. */
   status: DriftStatus | "unchecked";
   /** What the height stands for, or null when the number is not known. */
   value: number | null;
@@ -971,12 +1128,18 @@ type Building = {
   label: string;
 };
 
-// The size of one plot of land, and how tall the tallest building is drawn.
+// The size of one plot of land, and how much of it a building covers.
 const CELL_W = 116;
 const CELL_H = 58;
-const FOOTPRINT = 0.72; // a building covers this much of its plot
+const FOOTPRINT = 0.72;
 const MIN_HEIGHT = 10;
-const EXTRA_HEIGHT = 168;
+
+/** How tall the tallest building is drawn. A crowded city gets shorter rows. */
+function tallestFor(count: number): number {
+  if (count > 12) return 84;
+  if (count > 6) return 120;
+  return 168;
+}
 
 /** The four corners of a diamond around (cx, cy), as an SVG points string. */
 function diamond(cx: number, cy: number, halfWidth: number, halfHeight: number): string {
@@ -989,9 +1152,11 @@ function diamond(cx: number, cy: number, halfWidth: number, halfHeight: number):
 }
 
 /**
- * The city: one building per tracked schema, on a square grid seen from above
- * and to the side. A building's height is its value against the largest value
- * on screen, so the tallest building always has the most.
+ * The city: one building per tracked schema, standing side by side in rows.
+ * Each building is its own button, with its name on one line underneath (a
+ * long name ends in an ellipsis; the full one is in the tooltip). A building's
+ * height is its value against the largest value on screen, so the tallest
+ * building always has the most. The roof carries the state's colour and glyph.
  */
 function Skyline({
   buildings,
@@ -1002,86 +1167,55 @@ function Skyline({
   selectedId: number;
   onSelect: (id: number) => void;
 }) {
-  const columns = Math.ceil(Math.sqrt(buildings.length));
   const largest = Math.max(1, ...buildings.map((b) => b.value ?? 0));
+  const tallest = tallestFor(buildings.length);
   const halfW = (CELL_W / 2) * FOOTPRINT;
   const halfH = (CELL_H / 2) * FOOTPRINT;
 
-  // Where each building stands and how tall it is.
-  const placed = buildings.map((building, i) => {
-    const x = i % columns;
-    const y = Math.floor(i / columns);
-    return {
-      building,
-      depth: x + y,
-      cx: ((x - y) * CELL_W) / 2,
-      cy: ((x + y) * CELL_H) / 2,
-      height: MIN_HEIGHT + (EXTRA_HEIGHT * (building.value ?? 0)) / largest,
-    };
-  });
-  // Back to front, so a building in front is drawn over the one behind it.
-  placed.sort((a, b) => a.depth - b.depth);
-
-  // A frame just big enough for every building and its name.
-  const left = Math.min(...placed.map((p) => p.cx)) - CELL_W / 2 - 12;
-  const right = Math.max(...placed.map((p) => p.cx)) + CELL_W / 2 + 12;
-  const top = Math.min(...placed.map((p) => p.cy - halfH - p.height)) - 30;
-  const bottom = Math.max(...placed.map((p) => p.cy)) + CELL_H / 2 + 12;
+  // Every drawing is the same size, so the buildings stand on one line.
+  const viewHeight = tallest + MIN_HEIGHT + CELL_H + 8;
+  const cx = CELL_W / 2;
+  const cy = viewHeight - CELL_H / 2 - 2;
 
   return (
-    <svg
-      viewBox={`${left} ${top} ${right - left} ${bottom - top}`}
-      role="group"
-      aria-label="Tracked schemas, drawn as buildings"
-    >
-      {placed.map(({ building, cx, cy }) => (
-        <polygon
-          key={building.id}
-          className="sk-tile"
-          points={diamond(cx, cy, CELL_W / 2, CELL_H / 2)}
-        />
-      ))}
-      {placed.map(({ building, cx, cy, height }, i) => {
+    <ul className="sk-row" aria-label="Tracked schemas, drawn as buildings">
+      {buildings.map((building, i) => {
+        const height = MIN_HEIGHT + (tallest * (building.value ?? 0)) / largest;
         const roofY = cy - height;
         return (
-          <g
-            key={building.id}
-            className="sk-b"
-            data-s={building.status}
-            role="button"
-            tabIndex={0}
-            aria-pressed={building.id === selectedId}
-            aria-label={building.label}
-            style={{ animationDelay: `${i * 40}ms` }}
-            onClick={() => onSelect(building.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSelect(building.id);
-              }
-            }}
-          >
-            <title>{building.label}</title>
-            <polygon className="sk-gd" points={diamond(cx, cy, CELL_W / 2, CELL_H / 2)} />
-            <polygon
-              className="sk-fl"
-              points={`${cx - halfW},${cy} ${cx},${cy + halfH} ${cx},${roofY + halfH} ${cx - halfW},${roofY}`}
-            />
-            <polygon
-              className="sk-fr"
-              points={`${cx},${cy + halfH} ${cx + halfW},${cy} ${cx + halfW},${roofY} ${cx},${roofY + halfH}`}
-            />
-            <polygon className="sk-ft" points={diamond(cx, roofY, halfW, halfH)} />
-          </g>
+          <li key={building.id}>
+            <button
+              type="button"
+              className="sk-b"
+              data-s={building.status}
+              aria-pressed={building.id === selectedId}
+              aria-label={building.label}
+              title={building.label}
+              style={{ animationDelay: `${i * 40}ms` }}
+              onClick={() => onSelect(building.id)}
+            >
+              <svg viewBox={`0 0 ${CELL_W} ${viewHeight}`} aria-hidden="true">
+                <polygon className="sk-gd" points={diamond(cx, cy, CELL_W / 2 - 2, CELL_H / 2 - 1)} />
+                <polygon
+                  className="sk-fl"
+                  points={`${cx - halfW},${cy} ${cx},${cy + halfH} ${cx},${roofY + halfH} ${cx - halfW},${roofY}`}
+                />
+                <polygon
+                  className="sk-fr"
+                  points={`${cx},${cy + halfH} ${cx + halfW},${cy} ${cx + halfW},${roofY} ${cx},${roofY + halfH}`}
+                />
+                <polygon className="sk-ft" points={diamond(cx, roofY, halfW, halfH)} />
+                {/* The state's glyph on the roof, so the colour never stands alone. */}
+                <g className="sk-glyph" transform={`translate(${cx - 11} ${roofY - 11}) scale(0.92)`}>
+                  <StatusGlyphPaths glyph={statusLook(building.status).glyph} />
+                </g>
+              </svg>
+              <span className="sk-name">{building.name}</span>
+            </button>
+          </li>
         );
       })}
-      {/* Names last, so a taller building in front never hides one. */}
-      {placed.map(({ building, cx, cy, height }) => (
-        <text key={building.id} className="sk-name" x={cx} y={cy - height - halfH - 8}>
-          {building.name.length > 16 ? `${building.name.slice(0, 15)}…` : building.name}
-        </text>
-      ))}
-    </svg>
+    </ul>
   );
 }
 
@@ -1092,44 +1226,182 @@ function tablesText(count: number | null | undefined): string {
   return String(count);
 }
 
-/**
- * "Checked 3m ago · every 15m" for the picked schema.
- *
- * Two facts, deliberately together. The age on its own reads as the last thing
- * that happened and says nothing about whether anything will happen next; the
- * cadence on its own is a promise with no evidence. Side by side they answer
- * the only question a watched schema raises: is this still being looked at?
- *
- * The age ticks (useNow) because a dashboard is a screen people leave open.
- */
-function CheckedLine({
-  lastCheckedAt,
-  intervalMinutes,
-}: {
-  lastCheckedAt: string | null;
-  intervalMinutes: number;
-}) {
-  // Subscribing to the clock keeps timeAgo honest on a page nobody is clicking.
-  const now = useNow(30_000);
-  const cadence = intervalMinutes > 0 ? describeCadence(intervalMinutes) : null;
+// ── The picked building's card ───────────────────────────────────────────────
 
-  if (!lastCheckedAt) {
-    return <p>{cadence ? `Not checked yet. Due ${cadence}.` : "Automatic checking is off."}</p>;
+/**
+ * What ran the check behind the picked schema's state: the scheduler, a
+ * person, a deploy. The list does not say, so the newest drift event is read
+ * (GET /api/lineage/audit, one row). Null while reading, when the role may not
+ * read events, or when the read fails; the status line then leaves it out.
+ */
+function useFoundBy(item: TrackedSchema): string | null {
+  const { can, loading } = useUser();
+  const mayRead = !loading && can("drift:read");
+  // Kept with the state it was read for, so another schema or a newer check
+  // never shows the old answer while the new one is read.
+  const key = `${item.id}:${item.driftStatus}:${item.driftCheckedAt}`;
+  const [found, setFound] = useState<{ key: string; source: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!mayRead || item.driftStatus === null) return;
+    let stale = false;
+
+    async function read() {
+      let source: string | null = null;
+      try {
+        const res = await apiFetch(`/api/lineage/audit?trackedSchemaId=${item.id}&limit=1`, {
+          cache: "no-store",
+        });
+        const data = res.ok ? await res.json() : null;
+        const newest = Array.isArray(data) ? data[0] : null;
+        // Only believed when it is about the state on screen.
+        if (newest && newest.status === item.driftStatus && typeof newest.source === "string") {
+          source = newest.source;
+        }
+      } catch {
+        source = null;
+      }
+      if (!stale) setFound({ key, source });
+    }
+
+    void read();
+    return () => {
+      stale = true;
+    };
+  }, [mayRead, item.id, item.driftStatus, item.driftCheckedAt, key]);
+
+  return mayRead && item.driftStatus !== null && found?.key === key ? found.source : null;
+}
+
+/** One line of the More menu: a link when it has an address, a button otherwise. */
+type MenuItem = {
+  key: string;
+  label: string;
+  /** The full name for a screen reader, such as "Stop tracking shop". */
+  ariaLabel?: string;
+  href?: string;
+  onSelect?: () => void;
+  disabled?: boolean;
+  /** Why it is off, as a tooltip. */
+  title?: string;
+};
+
+/**
+ * The round "More" button and its menu: everything you can do with the picked
+ * schema besides the card's one main action. Works from the keyboard: Enter or
+ * Space opens it, the arrow keys move, Escape closes it and goes back to the
+ * button. It opens upward because the stage clips whatever hangs below it.
+ */
+function MoreMenu({ name, items }: { name: string; items: MenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+
+  /** The menu lines a key press can land on (the switched-off ones are skipped). */
+  function reachable(): HTMLElement[] {
+    const found = wrap.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])');
+    return Array.from(found ?? []);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    // Start on the first line, so the arrow keys work straight away.
+    const first = wrap.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])');
+    first?.focus();
+    // A press anywhere else closes it.
+    function onPressOutside(event: MouseEvent) {
+      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onPressOutside);
+    return () => document.removeEventListener("mousedown", onPressOutside);
+  }, [open]);
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!open) return;
+    if (event.key === "Escape") {
+      // Kept from reaching anything behind the menu that also listens for it.
+      event.stopPropagation();
+      setOpen(false);
+      button.current?.focus();
+      return;
+    }
+    if (event.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    const lines = reachable();
+    if (lines.length === 0) return;
+    const at = lines.indexOf(document.activeElement as HTMLElement);
+    let next = -1;
+    if (event.key === "ArrowDown") next = (at + 1) % lines.length;
+    if (event.key === "ArrowUp") next = (at - 1 + lines.length) % lines.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = lines.length - 1;
+    if (next >= 0) {
+      event.preventDefault();
+      lines[next].focus();
+    }
   }
 
   return (
-    <p>
-      {/* now === null is the pre-hydration frame; showing nothing for it beats
-          showing a relative age the browser then has to correct. */}
-      {now === null ? " " : `Checked ${timeAgo(lastCheckedAt)}`}
-      {cadence ? ` · ${cadence}` : " · manual only"}
-    </p>
+    <div className="sk-more" ref={wrap} onKeyDown={onKeyDown}>
+      <button
+        ref={button}
+        type="button"
+        className="btn btn-secondary btn-sm sk-more-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`More actions for ${name}`}
+        title="More actions"
+        onClick={() => setOpen((was) => !was)}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.9" />
+          <circle cx="12" cy="12" r="1.9" />
+          <circle cx="19" cy="12" r="1.9" />
+        </svg>
+      </button>
+      {open && (
+        <div className="sk-menu" role="menu" aria-label={`More actions for ${name}`}>
+          {items.map((item) =>
+            item.href ? (
+              <Link
+                key={item.key}
+                href={item.href}
+                role="menuitem"
+                aria-label={item.ariaLabel}
+                onClick={() => setOpen(false)}
+              >
+                {item.label}
+              </Link>
+            ) : (
+              <button
+                key={item.key}
+                type="button"
+                role="menuitem"
+                aria-label={item.ariaLabel}
+                disabled={item.disabled}
+                title={item.title}
+                onClick={() => {
+                  setOpen(false);
+                  button.current?.focus();
+                  item.onSelect?.();
+                }}
+              >
+                {item.label}
+              </button>
+            )
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
 /**
- * The picked building in words: what it is, what the last drift check found,
- * and everything you can do with it.
+ * The picked building in words: its state as a chip, its name, two numbers,
+ * ONE status line (the state, who found it, when, and how often it is
+ * checked), one main button, and a More menu for everything else.
  */
 function Inspector({
   item,
@@ -1137,6 +1409,7 @@ function Inspector({
   heightBy,
   checking,
   error,
+  errorFromCheck,
   checkRefusal,
   untrackRefusal,
   onCheckDrift,
@@ -1148,6 +1421,8 @@ function Inspector({
   heightBy: HeightBy;
   checking: boolean;
   error: string | null;
+  /** True when the error came from a drift check, which "Try again" can repeat. */
+  errorFromCheck: boolean;
   /** Why this role may not check drift, or null. The page says it once. */
   checkRefusal: string | null;
   /** Why this role may not stop tracking, or null. */
@@ -1156,42 +1431,95 @@ function Inspector({
   onUntrack: () => void;
 }) {
   const orgPath = useOrgHref();
-  const meta = driftMeta(item.driftStatus);
+  // The age in the status line ticks, because a dashboard is left open.
+  const now = useNow(30_000);
+  const foundBy = useFoundBy(item);
+  const name = item.schemaName;
   const connectionGone = item.connectionName === null;
-  // Where the schema lives. Shown under the label rather than replaced by it,
-  // because a label says nothing about which database this is.
+  // Where the schema lives. Shown under the name rather than replaced by a
+  // label, because a label says nothing about which database this is.
   const source = item.connectionName
     ? `${item.connectionName} · ${item.connectionDatabase ?? "?"}`
     : "Connection removed";
 
+  // now === null is the frame before the browser takes over; an empty line
+  // for it beats an age that then has to be corrected.
+  const line = checking
+    ? "Checking now…"
+    : now === null
+      ? " "
+      : statusLine(
+          {
+            status: item.driftStatus,
+            foundAt: item.driftCheckedAt,
+            lastRanAt: item.lastCheckedAt,
+            source: foundBy,
+            intervalMinutes: item.driftIntervalMinutes,
+          },
+          now
+        );
+
+  // One main action. A drifted schema needs the drift detail (what changed,
+  // and the ways to resolve it) more than another check; one that is in sync
+  // is most useful opened; anything else wants a check.
+  const main =
+    item.driftStatus === "drifted" ? "review" : item.driftStatus === "in_sync" ? "open" : "check";
+
+  // The rest goes in the More menu.
+  const more: MenuItem[] = [];
+  if (main !== "open") {
+    more.push({ key: "open", label: "Open", href: orgPath(`/schemas/${item.id}`) });
+  }
+  if (main !== "check") {
+    more.push({
+      key: "check",
+      label: "Check drift",
+      onSelect: onCheckDrift,
+      disabled: checking || checkRefusal !== null,
+      title: checkRefusal ?? undefined,
+    });
+  }
+  if (!connectionGone) {
+    more.push({
+      key: "compare",
+      label: "Compare",
+      href: orgPath(
+        `/compare?targetConnection=${item.connectionId}&targetSchema=${encodeURIComponent(name)}`
+      ),
+    });
+  }
+  more.push({
+    key: "stop",
+    label: "Stop tracking",
+    ariaLabel: `Stop tracking ${name}`,
+    onSelect: onUntrack,
+    disabled: untrackRefusal !== null,
+    title: untrackRefusal ?? undefined,
+  });
+
   return (
-    <div className="sk-ins" aria-live="polite">
-      <div className="sk-chips">
-        <span className="sk-chip" data-s={item.driftStatus ?? "unchecked"}>
-          <i aria-hidden="true" />
-          {meta.label}
-        </span>
-        {connectionGone && <span className="sk-chip">no connection</span>}
+    <div className="sk-ins">
+      <StatusChip status={item.driftStatus} />
+
+      <div className="sk-id">
+        <h2 title={name}>{name}</h2>
+        {item.label && (
+          <p className="sk-label" title={item.label}>
+            {item.label}
+          </p>
+        )}
+        <p className="sk-src mono" title={source}>
+          {source}
+        </p>
       </div>
 
-      <h2>{item.schemaName}</h2>
-      <p>
-        {item.label && (
-          <>
-            <b>{item.label}</b>
-            <br />
-          </>
-        )}
-        <span className="mono">{source}</span>
-      </p>
-
       <dl className="sk-st">
-        <div className={heightBy === "versions" ? "sk-on" : undefined}>
+        <div>
           <dt>Versions</dt>
           <dd>{item.migrationCount}</dd>
         </div>
         {heightBy === "tables" && (
-          <div className="sk-on">
+          <div>
             <dt>Tables</dt>
             <dd>{tablesText(tables)}</dd>
           </div>
@@ -1211,73 +1539,56 @@ function Inspector({
         )}
       </dl>
 
-      <p>{item.driftSummary ?? "No drift check yet."}</p>
-      <CheckedLine
-        lastCheckedAt={item.lastCheckedAt ?? item.driftCheckedAt}
-        intervalMinutes={item.driftIntervalMinutes ?? 0}
+      {/* The one status line. Read out when it changes, such as after a check. */}
+      <p className="sk-line" aria-live="polite">
+        {line}
+      </p>
+
+      <ErrorNotice
+        variant="inline"
+        error={error}
+        connectionName={item.connectionName}
+        connectionId={connectionGone ? null : item.connectionId}
+        onRetry={errorFromCheck && checkRefusal === null ? onCheckDrift : undefined}
       />
 
-      {error && (
-        <p className="sk-err" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="sk-acts">
-        {/* A drifted schema needs the drift detail (what changed, and the
-            ways to resolve it) more than another check, so that is the
-            loud button when it has drifted. */}
-        {item.driftStatus === "drifted" && (
+      <div className="sk-acts" data-tour="schema-actions">
+        {main === "review" && (
           <Link
             href={orgPath(`/drift?tab=detail&schema=${item.id}`)}
             className="btn btn-primary btn-sm"
-            aria-label={`Review drift on ${item.schemaName}`}
+            aria-label={`Review drift on ${name}`}
           >
             Review drift
           </Link>
         )}
-        <Link
-          href={orgPath(`/schemas/${item.id}`)}
-          className="btn btn-secondary btn-sm"
-          aria-label={`Open ${item.schemaName}`}
-        >
-          Open
-        </Link>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onCheckDrift}
-          disabled={checking || checkRefusal !== null}
-          title={checkRefusal ?? undefined}
-        >
-          {checking ? (
-            "Checking…"
-          ) : (
-            <>
-              <RefreshIcon size={13} /> Check drift
-            </>
-          )}
-        </Button>
-        {!connectionGone && (
+        {main === "open" && (
           <Link
-            href={orgPath(
-              `/compare?targetConnection=${item.connectionId}&targetSchema=${encodeURIComponent(item.schemaName)}`
-            )}
-            className="btn btn-ghost btn-sm"
+            href={orgPath(`/schemas/${item.id}`)}
+            className="btn btn-secondary btn-sm"
+            aria-label={`Open ${name}`}
           >
-            Compare
+            Open
           </Link>
         )}
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm sk-stop"
-          aria-label={`Stop tracking ${item.schemaName}`}
-          onClick={onUntrack}
-          disabled={untrackRefusal !== null}
-          title={untrackRefusal ?? undefined}
-        >
-          <TrashIcon size={14} />
-        </button>
+        {main === "check" && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onCheckDrift}
+            disabled={checking || checkRefusal !== null}
+            title={checkRefusal ?? undefined}
+          >
+            {checking ? (
+              "Checking…"
+            ) : (
+              <>
+                <RefreshIcon size={13} /> Check drift
+              </>
+            )}
+          </Button>
+        )}
+        <MoreMenu name={name} items={more} />
       </div>
     </div>
   );

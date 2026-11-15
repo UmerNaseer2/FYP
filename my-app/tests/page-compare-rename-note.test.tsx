@@ -131,7 +131,7 @@ async function show(report: CompareReport) {
   setSearchParams("run=1");
   render(<ComparePage />);
   // The header of the one target's section: the report is on screen.
-  await screen.findByRole("heading", { name: "Diff" });
+  await screen.findByRole("heading", { name: "Differences" });
 }
 
 beforeEach(() => resetPageState());

@@ -103,14 +103,14 @@ export function CriticalChanges({
             Counted from the differences, not from the script.{" "}
             {allowDataLoss
               ? "The migration is set to allow data loss, so the destructive statements among these are armed."
-              : "The migration is not allowed to lose data, so the destructive statements among these are written out but commented off — the difference is still here, the script just will not act on it."}
+              : "The migration is not allowed to lose data, so the destructive statements among these are written out but commented off. The difference is still here, but the script will not act on it."}
           </p>
         )}
 
         {manual.length > 0 && (
           <p className="help critical__note">
             {manual.length} of the differences below cannot be carried out by any
-            generated statement — the script writes a note and runs nothing. Look
+            generated statement, so the script writes a note and runs nothing. Look
             for them in the diff, marked as manual work.
           </p>
         )}
@@ -130,7 +130,7 @@ function CriticalRow({ row }: { row: ChangeRow }) {
         {/* The detail is the engine's own sentence about the change — the same
             text the export carries. Repeating it here rather than writing a
             second description keeps one wording for one fact. */}
-        {row.detail && <span className="muted"> — {row.detail}</span>}
+        {row.detail && <span className="muted">: {row.detail}</span>}
         {row.manual && <span className="tag critical__manual">needs a person</span>}
       </span>
     </div>

@@ -1,23 +1,24 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Requests. Shown in the Help panel; the blurb is the page header's one line. */
 export const requestsHelp: HelpTopic = {
   title: "Requests",
-  blurb: "Ask for what your role can't do, and answer what is waiting on you.",
+  blurb: "What needs you and what you asked for. Ask for what your role can't do.",
   purpose:
     "Requests is where you ask for something your role can't do yet, and where the people who can answer see what is waiting. " +
     "Runs that need an approval, or are ready to run, show here too. " +
     "The app does not send email, so a number beside Requests in the sidebar is how people find out.",
   steps: [
-    "Under What do you need?, choose the thing your role can't do yet, or Something else.",
+    { text: "Under What do you need?, choose the thing your role can't do yet, or Something else.", target: anchor("request-form", ".rq-ask") },
     "Say why if you like. A sentence helps whoever answers. For Something else, you have to say what you need.",
     "Click Send request. It goes to the people here who can change roles or users.",
     "Find it under You asked while it waits. Withdraw takes it back. Once it is answered it moves to Done.",
     "Once it is allowed, reload the page you need it on, and you can use it.",
-    "If you answer requests, look under Needs you. Allow just the asker for 24 hours, allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.",
+    { text: "If you answer requests, look under Needs you. Allow just the asker for 24 hours, allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.", target: anchor("requests-waiting", ".rq-main") },
     "What you allowed for 24 hours is listed under Allowed for 24 hours until it ends. End now stops it early.",
     "For a run, follow Review it on Deploy to approve it, or Open it on Deploy to run one of yours that was approved.",
-    "Away from a computer? Use Phone app at the top of this page. The phone app can alert you when something here needs you.",
+    { text: "Away from a computer? Use Phone app at the top of this page. The phone app can alert you when something here needs you.", target: anchor("phone-app", ".rq-page .page-head__actions") },
   ],
   terms: [
     {

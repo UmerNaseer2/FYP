@@ -14,7 +14,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
@@ -26,8 +26,11 @@ const CONNECTIONS = [
   { id: 2, name: "Warehouse", host: "dw.internal", database_name: "dw" },
 ];
 
-/** How many panes are on screen: each one owns its own connection picker. */
-const paneCount = () => screen.getAllByRole("combobox", { name: "Connection" }).length;
+/** The button that opens a pane's picker, whether or not it has a choice yet. */
+const PICKER = /connection and schema$/;
+
+/** How many panes are on screen: each one owns its own picker. */
+const paneCount = () => screen.getAllByRole("button", { name: PICKER }).length;
 
 /**
  * Wait for a pane to have its pickers.
@@ -36,7 +39,7 @@ const paneCount = () => screen.getAllByRole("combobox", { name: "Connection" }).
  * been read — only the panes wait — so waiting on the toggle would leave the
  * panes as skeletons and count none of them.
  */
-const firstPane = () => screen.findByRole("combobox", { name: "Connection" });
+const firstPane = () => screen.findAllByRole("button", { name: PICKER });
 
 const divider = () => screen.getByRole("separator", { name: "Resize panes" });
 
@@ -65,7 +68,7 @@ describe("the visualizer with nothing to draw", () => {
       "/test-org/connections"
     );
     // Nothing to view, so neither the mode toggle nor the way onward is offered.
-    expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "View mode" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Open in Compare/ })).not.toBeInTheDocument();
   });
 });
@@ -81,23 +84,22 @@ describe("the visualizer with connections", () => {
   it("names the page in its heading and marks the picked view on the switch", async () => {
     render(<VisualizerPage />);
     await firstPane();
-    expect(
-      screen.getByRole("heading", { level: 1, name: "See the shape of your data." })
-    ).toBeInTheDocument();
-    const group = screen.getByRole("group", { name: "View mode" });
-    expect(group.querySelectorAll('button[aria-pressed="true"]')).toHaveLength(1);
+    // The heading is the name the menu uses, so the reader knows where they are.
+    expect(screen.getByRole("heading", { level: 1, name: "Visualizer" })).toBeInTheDocument();
+    const tabs = screen.getByRole("tablist", { name: "View mode" });
+    expect(tabs.querySelectorAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
   });
 
   it("opens on one pane and splits into two", async () => {
     render(<VisualizerPage />);
     await firstPane();
     expect(paneCount()).toBe(1);
-    expect(screen.getByRole("button", { name: /Single/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: /Single/ })).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.click(screen.getByRole("button", { name: /Side by side/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Side by side/ }));
     expect(paneCount()).toBe(2);
-    expect(screen.getByRole("button", { name: /Side by side/ })).toHaveAttribute(
-      "aria-pressed",
+    expect(screen.getByRole("tab", { name: /Side by side/ })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
   });
@@ -128,8 +130,11 @@ describe("the visualizer with connections", () => {
 
     /** Pick a connection in one pane. Its only schema is then picked for it. */
     function pickConnection(pane: number, name: RegExp) {
-      fireEvent.click(screen.getAllByRole("combobox", { name: "Connection" })[pane]);
-      fireEvent.click(screen.getByRole("option", { name }));
+      fireEvent.click(screen.getAllByRole("button", { name: PICKER })[pane]);
+      const list = within(screen.getByRole("dialog")).getByRole("group", { name: "Connections" });
+      fireEvent.click(within(list).getByRole("button", { name }));
+      // A press outside shuts the panel, so the next pane's panel is the only one open.
+      fireEvent.mouseDown(document.body);
     }
 
     it("fills in the source from a single pane", async () => {
@@ -148,7 +153,7 @@ describe("the visualizer with connections", () => {
       render(<VisualizerPage />);
       await firstPane();
       pickConnection(0, /Local Postgres/);
-      fireEvent.click(screen.getByRole("button", { name: /Side by side/ }));
+      fireEvent.click(screen.getByRole("tab", { name: /Side by side/ }));
       pickConnection(1, /Warehouse/);
       await waitFor(() =>
         expect(compareLink()).toHaveAttribute(
@@ -161,7 +166,7 @@ describe("the visualizer with connections", () => {
       expect(compareLink().getAttribute("href")).not.toContain("run=");
 
       // Back to one pane, the second schema is no longer on screen.
-      fireEvent.click(screen.getByRole("button", { name: /Single/ }));
+      fireEvent.click(screen.getByRole("tab", { name: /Single/ }));
       expect(compareLink()).toHaveAttribute(
         "href",
         "/test-org/compare?sourceConnection=1&sourceSchema=public"
@@ -173,7 +178,7 @@ describe("the visualizer with connections", () => {
       // which can land on the very schema the target already names.
       render(<VisualizerPage />);
       await firstPane();
-      fireEvent.click(screen.getByRole("button", { name: /Side by side/ }));
+      fireEvent.click(screen.getByRole("tab", { name: /Side by side/ }));
       pickConnection(1, /Warehouse/);
       await waitFor(() =>
         expect(compareLink()).toHaveAttribute(
@@ -189,7 +194,7 @@ describe("the visualizer with connections", () => {
     // reader as decoration and cannot be operated without a mouse at all.
     render(<VisualizerPage />);
     await firstPane();
-    fireEvent.click(screen.getByRole("button", { name: /Side by side/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Side by side/ }));
 
     expect(divider()).toHaveAttribute("aria-valuenow", "50");
     fireEvent.keyDown(divider(), { key: "ArrowRight" });
@@ -227,7 +232,7 @@ describe("the visualizer with connections", () => {
       // Two diagrams and a draggable divider do not fit on a phone.
       await firstPane();
       expect(screen.getByRole("link", { name: /Open in Compare/ })).toBeInTheDocument();
-      expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("tablist", { name: "View mode" })).not.toBeInTheDocument();
       expect(paneCount()).toBe(1);
       // And the reason the link sits outside that guard: the reader with the
       // least room to compare two diagrams by eye is the one who most needs

@@ -69,7 +69,6 @@ body {
   .scrim,
   .drawer,
   .source-bar,
-  .set-bar,
   .btn,
   .no-print {
     display: none !important;
@@ -701,25 +700,6 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
    .diff-row/.seg primitives; adds only the screen-specific structures.
    =================================================================== */
 
-/* saved comparison sets — the strip above the pickers. Deliberately lighter
-   than .source-bar: it is a bookmark bar, not part of the selection, and the
-   two sitting on top of each other with the same weight read as one confusing
-   double-height control. */
-.set-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px;
-           padding:9px 12px; margin-bottom:10px; border:1px solid var(--border);
-           border-radius:10px; background:var(--surface-2); }
-.set-bar__side { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
-/* The save half is pushed to the right edge. An explicit modifier rather than
-   :last-of-type, which would land on a note line whenever one is showing. */
-.set-bar__side--end { margin-left:auto; }
-.set-bar__label { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
-                  color:var(--text-3); }
-/* Notes take the whole width so they sit under both halves rather than
-   squeezing the controls when the message is long. */
-.set-bar__note { flex:1 0 100%; display:flex; align-items:center; gap:6px; font-size:12px; }
-.set-bar .input { padding:5px 9px; font-size:12.5px; width:200px; }
-.set-bar .ds-select { min-width:220px; }
-
 /* source picker bar — one source, then as many targets as were added. The
    targets auto-fill into columns so two of them read like the old side-by-side
    layout and six of them still fit on one screen. */
@@ -1279,10 +1259,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
 }
 
 @media (max-width: 640px) {
-  /* Compare saved-set bar, source bar + summary strip stack. */
-  .set-bar__side--end { margin-left:0; }
-  .set-bar__side { width:100%; }
-  .set-bar .ds-select, .set-bar .input { flex:1; min-width:0; width:auto; }
+  /* Compare source bar + summary strip stack. */
   .source-bar { gap:12px; }
   .source-bar .picker { min-width:0; }
 
@@ -1545,7 +1522,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
      fixed-size circles. */
   .pill, .btn-xs, .help, .nav-item .badge, .section-title,
   .banner pre, .test-banner pre, .onb-org .slug, .inv-org .slug, .local-finder__where,
-  .set-bar__label, .source-bar__label, .picker .kind, .ds-select__trigger--sub, .delta, .diff-row .tag, .history__row .mono,
+  .source-bar__label, .picker .kind, .ds-select__trigger--sub, .delta, .diff-row .tag, .history__row .mono,
   .sample-rows, .sample-rows__note, .table-picker__item span,
   .matrix th, .matrix th .sub, .matrix .matrix-na,
   .verdet__title, .verdet__verdict, .verdet__role, .verdet__from, .verdet__more > summary,
@@ -1601,6 +1578,22 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .sb-expand svg { transition:transform var(--dur-2) var(--ease-out); }
 
 .nav { display:contents; }
+/* One group of pages under its heading (Connect, Compare, Script, Ship,
+   Watch, People). Dashboard's own section has no heading. */
+.nav-sec { display:flex; flex-direction:column; gap:2px; }
+.nav-group { margin:0; padding:12px 12px 4px; font:600 12px/16px var(--sans); letter-spacing:.08em;
+             text-transform:uppercase; color:var(--ink-3); white-space:nowrap; }
+/* Folded to icons there is no room for the word, so a short line parts the groups. */
+.side-folded .nav-group { position:relative; height:13px; padding:0; }
+.side-folded .nav-group::before { content:""; position:absolute; left:14px; right:14px; top:6px; height:1px; background:var(--line-strong); }
+/* The phone drawer's extra rows (Help, Ask AI, theme): the same pills as the
+   pages, set apart by a line. They are buttons, so they need the pill's
+   look spelled out. */
+.side-tools { display:flex; flex-direction:column; gap:2px; margin-top:auto; padding-top:10px; border-top:1px solid var(--line); }
+.side-tools .nav-item { width:100%; border:0; background:none; font-family:var(--sans); text-align:left; }
+.side-tools .nav-item:hover { background:var(--surface); }
+.side-tools + .side-foot { margin-top:0; }
+.side-in-drawer .nav-sec:last-child { padding-bottom:12px; }
 .side-foot { margin-top:auto; padding:12px 2px 2px; display:flex; flex-direction:column; gap:8px; font-size:12px; color:var(--ink-3); }
 .side-folded .side-foot { align-items:center; }
 .side-bypass { align-self:flex-start; }
@@ -1614,8 +1607,15 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .top { display:flex; align-items:center; gap:8px; min-height:44px; padding:12px 24px 10px; }
 .top .org { flex:0 1 auto; min-width:0; margin-right:12px; font-size:13px; color:var(--ink-3);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.top .org b { color:var(--ink-2); font-weight:600; }
+.top .crumb-group { color:var(--ink-2); font-weight:500; }
+.top .crumb-sep { display:inline-block; margin:0 6px; vertical-align:-2px; color:var(--ink-3); }
 .top .crumb-screen { color:var(--ink); font-weight:600; }
+/* The phone's menu button, with a dot on its corner while requests wait.
+   The dot is ink, not orange: it is a state, and the count on Requests in
+   the drawer says what it is. */
+.tb-menu { position:relative; }
+.tb-dot { position:absolute; top:7px; right:7px; width:9px; height:9px; border-radius:999px;
+          background:var(--ink); box-shadow:0 0 0 2px var(--surface); }
 
 /* The round buttons. Everything in the bar is 38px tall, 44px on a phone. */
 .tb { height:38px; min-width:38px; padding:0 12px; flex:none; display:inline-flex; align-items:center; justify-content:center; gap:8px;
@@ -1638,17 +1638,43 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
 .ck-b span { flex:1; min-width:0; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ck-b kbd { background:var(--surface-2); border-color:var(--line); color:var(--ink-2); }
 
-/* Needs you: quiet when nothing waits, solid ink when something does. */
+/* Needs you: drawn only while something waits, as a solid ink pill. */
 .ny { padding:0 14px 0 12px; }
 .ny .ny-t { font-weight:600; }
 .ny em { font-style:normal; min-width:20px; padding:2px 7px; border-radius:var(--r-pill); background:var(--surface-2); font-size:12px; text-align:center; }
 .ny-hot { background:var(--pill); color:var(--on-pill); }
 .ny-hot em { background:var(--accent); color:var(--on-accent); }
 
-/* The shared trial's strip under the top bar (components/studio/TrialBar.tsx). */
-.trial-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; margin:0 16px 8px; padding:8px 12px 8px 14px; border-radius:12px; background:var(--accent-soft); color:var(--ink); font-size:13px; line-height:19px; }
-.trial-bar > span:first-child { flex:1; min-width:200px; }
-.trial-bar-error { color:var(--drift); font-weight:600; }
+/* The shared trial's one-line notice under the top bar
+   (components/studio/TrialBar.tsx). The text never wraps; it ends with an
+   ellipsis if the window is very narrow. "Trial options" opens a small menu
+   that borrows the account menu's look (.who-m). */
+.trial-bar { display:flex; align-items:center; flex-wrap:wrap; gap:0 12px; min-height:44px; margin:0 16px 8px; padding:0 6px 0 14px;
+             border-radius:14px; background:var(--accent-soft); color:var(--ink); font-size:13.5px; line-height:20px; }
+.trial-bar-text { flex:1 1 0; min-width:0; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.trial-bar-error { order:3; flex:1 0 100%; padding:0 0 10px; color:var(--drift); font-weight:600; }
+.trial-opt { position:relative; flex:none; }
+.trial-opt-b { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:36px; min-width:36px; padding:0 10px 0 12px;
+               border:0; border-radius:var(--r-pill); background:none; color:var(--accent-ink);
+               font:600 13.5px/1 var(--sans); white-space:nowrap; cursor:pointer; transition:background var(--dur-1) ease; }
+.trial-opt-b:hover, .trial-opt-b[aria-expanded="true"] { background:color-mix(in oklab, var(--ink) 8%, transparent); }
+.trial-opt-b:disabled { opacity:.7; cursor:default; }
+.trial-opt-dots { display:none; }
+.trial-opt-chev { transition:transform var(--dur-2) var(--ease-out); }
+.trial-opt-b[aria-expanded="true"] .trial-opt-chev { transform:rotate(180deg); }
+.who-m.trial-opt-m { top:42px; width:min(220px, calc(100vw - 32px)); }
+/* On a phone the button is three dots, a full 44px to press. */
+@media (max-width: 480px) {
+  .trial-bar { margin:0 12px 8px; padding:0 0 0 14px; }
+  .trial-opt-b { width:44px; height:44px; padding:0; }
+  .trial-opt-b .trial-opt-chev { display:none; }
+  .trial-opt-dots { display:block; }
+  /* Still read out by screen readers through the button's aria-label. */
+  .trial-opt-b:not(:disabled) .trial-opt-t { display:none; }
+  .trial-opt-b:disabled { width:auto; padding:0 12px; }
+  .trial-opt-b:disabled .trial-opt-dots { display:none; }
+  .who-m.trial-opt-m { top:46px; }
+}
 
 /* ——— The account menu ——— */
 .who-wrap { position:relative; flex:none; }
@@ -1728,7 +1754,7 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
 
 /* ——— Narrower windows ——— */
 @media (max-width: 1180px) {
-  .top .crumb-org { display:none; }
+  .top .crumb-group { display:none; }
 }
 @media (max-width: 980px) {
   .ny .ny-t, .ck-b kbd { display:none; }
@@ -1746,27 +1772,18 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
   .who { padding:0 4px; }
   .who .av { width:36px; height:36px; }
   .who .who-t, .who > svg { display:none; }
-  /* The search pill sits next to the menu button, so the screen name goes. */
+  /* The screen name takes the room that is left and ends with an ellipsis. */
   .top .org { flex:1 1 0; }
 }
 @media (max-width: 480px) {
   .top { gap:6px; }
-  .top .org { display:none; }
+  /* A phone's bar is menu, the screen name, search and account, so the name fits. */
+  .top .org { margin-right:4px; padding-left:4px; font-size:14.5px; }
   .tb-ai span, .top-actions .tb > span:not(.sr-only) { display:none; }
   .tb { padding:0; width:44px; }
   .ny em { position:absolute; top:-4px; right:-4px; min-width:18px; padding:1px 5px; font-size:11px; }
   .ny { position:relative; }
 }
-/* The narrowest phones. With AI on, the bar holds seven round buttons, which
-   need 377px at full size. Below 400px each one shrinks a little (never under
-   34px) and the gaps close up, so the bar never runs off the screen. */
-@media (max-width: 400px) {
-  .top { --tb:clamp(34px, calc((100vw - 48px) / 7), 44px); padding:8px 8px 6px; gap:4px; }
-  .top-actions { gap:4px; }
-  .top .tb, .top .ck-b, .top .who { width:var(--tb); min-width:var(--tb); height:var(--tb); flex:0 0 var(--tb); }
-  .top .who .av { width:calc(var(--tb) - 8px); height:calc(var(--tb) - 8px); }
-}
-
 /* ——— The logo reveal (components/studio/LogoIntro, lib/intro.ts) ——— */
 .boot { position:fixed; inset:0; z-index:200; display:grid; place-items:center; cursor:pointer; overflow:hidden; }
 .bt-bg { position:absolute; inset:0; background:var(--bg); }
@@ -1871,7 +1888,7 @@ html[data-intro="landing"] #main-content { animation:bt-rise 640ms var(--ease-ou
   .tr-hole { border-radius: 16px; }
   .tr-hole::after { border-radius: 19px; }
   /* The trial note is dimmed and can't be used during the tour; on a phone
-     its three lines are better spent on the part being shown. */
+     its line is better spent on the part being shown. */
   :root:has(.tr-hole) .trial-bar { display: none; }
   /* Room under a short page while the sheet is up, so the part the card is
      about can scroll up above the sheet instead of hiding behind it. */

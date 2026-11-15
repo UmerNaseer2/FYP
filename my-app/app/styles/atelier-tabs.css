@@ -1,6 +1,65 @@
-/* The pill tabs used on Requests, Admin and Performance
-   (components/studio/PillTabs.tsx). A dark thumb slides behind the picked
-   tab. Every class here starts with atabs so nothing leaks onto another page. */
+/* The two kinds of tabs in components/studio/PillTabs.tsx.
+
+   PageTabs (.ptabs): underline tabs for the sections of a page. The one tab
+   style for pages, modelled on Drift's.
+   PillTabs (.atabs): pill tabs with a dark thumb that slides behind the
+   picked one. Pills are for filters.
+
+   Every class here starts with ptabs or atabs so nothing leaks onto a page. */
+
+/* ── Underline tabs ───────────────────────────────────────────────────── */
+
+/* The wrapper draws the long line under the row, so the line stays whole
+   while the row inside it scrolls and fades. */
+.ptabs {
+  position: relative; margin-top: 18px; min-width: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.ptabs__list {
+  position: relative; display: flex; gap: 4px;
+  overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.ptabs__list::-webkit-scrollbar { display: none; }
+.ptabs__tab {
+  flex: none; display: inline-flex; align-items: center; gap: 8px;
+  min-height: 44px; padding: 0 14px;
+  border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+  font: inherit; font-size: 13.5px; font-weight: 500; color: var(--text-3); white-space: nowrap;
+  text-decoration: none;
+  transition: color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.ptabs__tab:hover { color: var(--text); }
+.ptabs__tab[data-picked] { color: var(--text); font-weight: 650; border-bottom-color: var(--brand); }
+.ptabs__tab:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; border-radius: 8px; }
+.ptabs__count {
+  font-size: 11.5px; font-weight: 700; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--r-pill); display: grid; place-items: center;
+  background: var(--change-soft); color: var(--change);
+}
+
+/* More tabs hidden to the right, or to the left once scrolled: that edge of
+   the row fades out. PageTabs sets the two attributes as the row scrolls. */
+.ptabs[data-more-right] .ptabs__list {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 44px);
+  mask-image: linear-gradient(to left, transparent, #000 44px);
+}
+.ptabs[data-more-left] .ptabs__list {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 44px);
+  mask-image: linear-gradient(to right, transparent, #000 44px);
+}
+.ptabs[data-more-left][data-more-right] .ptabs__list {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ptabs__tab { transition: none; }
+}
+@media print {
+  .ptabs { display: none; }
+}
+
+/* ── Pill tabs ────────────────────────────────────────────────────────── */
 
 .atabs {
   position: relative; display: inline-flex; max-width: 100%;

@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { Select } from "@/components/ui/Select";
+import { TargetPicker } from "@/components/studio/TargetPicker";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { Skeleton } from "@/components/ui";
-import { SchemaMapIcon, AlertTriangleIcon, RefreshIcon } from "@/components/ui/icons";
+import { SchemaMapIcon } from "@/components/ui/icons";
 import type { SchemaSnapshot } from "@/lib/postgres";
 import { apiFetch } from "@/lib/api-fetch";
 
-// One self-contained visualizer pane: its own connection + schema pickers, its
+// One self-contained visualizer pane: its own connection and schema picker, its
 // own on-demand introspection, and its own React Flow canvas. The page renders
-// one of these (Single) or two side by side (Side-by-side), and each pane is
-// fully independent — different databases, different schemas, even the same
+// one of these (Single) or two side by side (Side by side), and each pane is
+// fully independent: different databases, different schemas, even the same
 // schema twice. The canvas is client-only, so it's code-split and SSR-skipped.
 
 const SchemaFlow = dynamic(() => import("./SchemaFlow"), {
@@ -45,22 +46,22 @@ function CanvasLoading({ label }: { label: string }) {
 export function VisualizerPane({
   connections,
   connectionsLoaded,
+  label = "Connection and schema",
   onPick,
 }: {
   connections: VizConnection[];
   connectionsLoaded: boolean;
+  /** The words above the picker. Side by side names its two panes. */
+  label?: string;
   /** Told what the pane draws, each time the pick changes. */
   onPick?: (pick: VizPick) => void;
 }) {
-  // Unique ids so two panes' labels never collide (htmlFor / aria).
-  const uid = useId();
-  const connId = `${uid}-conn`;
-  const schemaId = `${uid}-schema`;
-
   const [connectionId, setConnectionId] = useState("");
   const [schemas, setSchemas] = useState<string[]>([]);
   const [schemasLoading, setSchemasLoading] = useState(false);
   const [schemasError, setSchemasError] = useState("");
+  // Counts presses of Try again on the schema list, so the list loads again.
+  const [schemasRetry, setSchemasRetry] = useState(0);
   const [schema, setSchema] = useState("");
 
   const [snapshot, setSnapshot] = useState<SchemaSnapshot | null>(null);
@@ -68,7 +69,7 @@ export function VisualizerPane({
   const [snapError, setSnapError] = useState("");
   const [retry, setRetry] = useState(0);
 
-  // ── Schemas for the chosen connection ──────────────────────────────────---
+  // ---- Schemas for the chosen connection ----
   useEffect(() => {
     setSchemas([]); // never leave the previous connection's list selectable
     if (!connectionId) return;
@@ -97,7 +98,7 @@ export function VisualizerPane({
     return () => {
       active = false;
     };
-  }, [connectionId]);
+  }, [connectionId, schemasRetry]);
 
   // The page builds its "Open in Compare" link from what each pane draws, so
   // the schemas somebody was looking at arrive in Compare already picked
@@ -106,7 +107,7 @@ export function VisualizerPane({
     onPick?.({ connectionId, schema });
   }, [connectionId, schema, onPick]);
 
-  // ── Snapshot for the chosen schema ─────────────────────────────────────---
+  // ---- Snapshot for the chosen schema ----
   useEffect(() => {
     setSnapshot(null);
     setSnapError("");
@@ -143,61 +144,31 @@ export function VisualizerPane({
     };
   }, [connectionId, schema, retry]);
 
+  const picked = connections.find((c) => String(c.id) === connectionId);
+
   return (
     <div className="viz-pane">
-      {/* Picker bar */}
-      <div className="viz-pane__bar">
-        <div className="viz-pane__field viz-pane__field--conn">
-          <label className="label" htmlFor={connId}>Connection</label>
-          {!connectionsLoaded ? (
-            <Skeleton className="mt-1" width="100%" height={36} radius={8} />
-          ) : (
-            <Select
-              variant="input"
-              id={connId}
-              className="mt-1"
-              ariaLabel="Connection"
-              value={connectionId}
-              placeholder="Select a connection…"
-              options={connections.map((c) => ({
-                value: String(c.id),
-                label: `${c.name} — ${c.host}/${c.database_name}`,
-              }))}
-              onChange={(value) => {
-                setConnectionId(value);
-                setSchema("");
-              }}
-            />
-          )}
-        </div>
-        <div className="viz-pane__field viz-pane__field--schema">
-          <label className="label" htmlFor={schemaId}>Schema</label>
-          {!connectionsLoaded ? (
-            <Skeleton className="mt-1" width="100%" height={36} radius={8} />
-          ) : (
-            <Select
-              variant="input"
-              id={schemaId}
-              className="mt-1"
-              mono
-              ariaLabel="Schema"
-              value={schema}
-              disabled={schemasLoading || !connectionId}
-              placeholder={
-                !connectionId
-                  ? "Pick a connection first"
-                  : schemasLoading
-                    ? "Loading schemas…"
-                    : "Select a schema…"
-              }
-              options={schemas.map((s) => ({ value: s, label: s }))}
-              onChange={(value) => setSchema(value)}
-            />
-          )}
-          {schemasError && (
-            <p className="help mt-1" style={{ color: "var(--break)" }}>{schemasError}</p>
-          )}
-        </div>
+      {/* Picker bar: the same picker as on Compare and Deploy. */}
+      <div className="viz-pane__bar" data-tour="visualizer-target">
+        {!connectionsLoaded ? (
+          <Skeleton width="100%" height={56} radius={12} />
+        ) : (
+          <TargetPicker
+            className="viz-pane__picker"
+            label={label}
+            connections={connections.map((c) => ({ id: c.id, name: c.name, detail: c.database_name }))}
+            connectionId={connectionId}
+            schema={schema}
+            schemas={schemas}
+            loading={schemasLoading}
+            error={schemasError || null}
+            onRetry={() => setSchemasRetry((n) => n + 1)}
+            onChange={(next) => {
+              setConnectionId(next.connectionId);
+              setSchema(next.schema);
+            }}
+          />
+        )}
       </div>
 
       {/* Stage */}
@@ -206,22 +177,20 @@ export function VisualizerPane({
           <EmptyState
             icon={<SchemaMapIcon size={22} />}
             title="Pick a connection and a schema"
-            description="Choose what to map above — the diagram is drawn live from the database, nothing is stored."
+            description="Choose what to map above. The diagram is drawn live from the database and nothing is stored."
           />
         ) : snapPhase === "loading" ? (
           <CanvasLoading label={`Reading ${schema} and laying out the diagram…`} />
         ) : snapPhase === "error" ? (
-          <EmptyState
-            icon={<AlertTriangleIcon size={22} />}
-            title="Couldn't read the schema"
-            description={snapError}
-            actions={
-              <button className="btn btn-secondary btn-sm" onClick={() => setRetry((n) => n + 1)}>
-                <RefreshIcon size={14} />
-                Try again
-              </button>
-            }
-          />
+          // ErrorNotice says what to press: enter the password again, or try again.
+          <div className="viz-pane__error">
+            <ErrorNotice
+              error={snapError}
+              connectionName={picked?.name}
+              connectionId={connectionId}
+              onRetry={() => setRetry((n) => n + 1)}
+            />
+          </div>
         ) : snapshot && snapshot.tables.length === 0 ? (
           <EmptyState
             icon={<SchemaMapIcon size={22} />}

@@ -308,7 +308,7 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
                   onChange={setRole}
                 />
               </div>
-              <Button variant="primary" type="submit" disabled={making !== null}>
+              <Button variant="primary" type="submit" disabled={making !== null} data-tour="invite-people">
                 {making === "email" ? (
                   "Making…"
                 ) : (

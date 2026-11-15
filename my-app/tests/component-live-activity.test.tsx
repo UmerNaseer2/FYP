@@ -625,11 +625,9 @@ describe("when the reading cannot be taken", () => {
     show();
 
     expect(
-      await screen.findByText("Could not read this server's activity")
+      await screen.findByText(/That connection is not a PostgreSQL database\./)
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/That connection is not a PostgreSQL database\./)
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("says something when the server cannot be reached at all", async () => {
@@ -644,7 +642,7 @@ describe("when the reading cannot be taken", () => {
   it("actually tries again when asked, rather than only redrawing", async () => {
     setRoutes(answers({ error: "The server was busy." }, 500));
     show();
-    await screen.findByText("Could not read this server's activity");
+    await screen.findByText(/The server was busy\./);
 
     setRoutes(answers(activity({ summary: { total: 2, blocked: 0, idleInTransaction: 0, longRunning: 0, anyHidden: false } })));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));

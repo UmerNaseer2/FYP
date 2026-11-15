@@ -7,6 +7,10 @@
 // StudioShell draws <AppTour /> once, outside `.studio`, so while the tour is
 // up the page behind it can be made inert (no clicks, no Tab stops) and the
 // tour moves from page to page itself.
+//
+// The light itself (finding a part of the page, scrolling to it, placing the
+// hole and the card) lives in lib/tour.ts, so the Help panel's "Show me" links
+// can use the same one (components/help/Spotlight.tsx).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -17,6 +21,9 @@ import type { PermissionKey } from "@/lib/permissions";
 import {
   START_TOUR_EVENT,
   TRIAL_CONNECTION_NAME,
+  boxAround,
+  firstOnScreen,
+  lightUp,
   readTourMemory,
   readTourParam,
   stopCountWords,
@@ -25,6 +32,7 @@ import {
   trialCompareHref,
   withoutTourParam,
   writeTourMemory,
+  type Box,
   type TourAudience,
   type TourIcon,
   type TourPick,
@@ -262,15 +270,7 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
       const found = findTarget(stop);
       // An empty page shows its first-run card, and the words change to match.
       setShowsEmpty(Boolean(stop.empty && found?.element.matches(stop.empty.target)));
-      const room = roomFor(card, found?.element ?? null);
-      if (found) {
-        const spot = scrollSpot(found.element, room);
-        if (spot !== null && (aimed === null || Math.abs(spot - aimed) > 8)) {
-          aimed = spot;
-          scrollPage(spot);
-        }
-      }
-      place(hole, card, found ? measure(stop, found.element) : null, room);
+      aimed = lightUp(hole, card, found?.element ?? null, found ? measure(stop, found.element) : null, aimed);
     }
     tick();
     const timer = window.setInterval(tick, 240);
@@ -455,156 +455,25 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
   );
 }
 
-// ---------------------------------------------------------------- finding and placing
-
-type Box = { l: number; t: number; r: number; b: number };
-
-function visible(element: Element): boolean {
-  return element.getClientRects().length > 0 && element.getBoundingClientRect().width > 0;
-}
+// ---------------------------------------------------------------- finding
 
 /** The first thing on screen the stop names, or the page's heading when none is. */
 function findTarget(stop: TourStop): { element: Element } | null {
   for (const selector of stop.targets) {
-    const element = Array.from(document.querySelectorAll(selector)).find(visible);
+    const element = firstOnScreen(selector);
     if (element) return { element };
   }
   if (stop.page === null) return null;
-  const heading = Array.from(document.querySelectorAll(".page-header")).find(visible);
+  const heading = firstOnScreen(".page-header");
   return heading ? { element: heading } : null;
 }
 
 /** The box to light up: the target, or with `union` every target together. */
 function measure(stop: TourStop, first: Element): Box {
   const elements = stop.union
-    ? stop.targets
-        .map((selector) => Array.from(document.querySelectorAll(selector)).find(visible))
-        .filter((element): element is Element => element !== undefined)
+    ? stop.targets.map(firstOnScreen).filter((element): element is Element => element !== null)
     : [first];
-  const rects = elements.map((element) => element.getBoundingClientRect());
-  return {
-    l: Math.min(...rects.map((rect) => rect.left)),
-    t: Math.min(...rects.map((rect) => rect.top)),
-    r: Math.max(...rects.map((rect) => rect.right)),
-    b: Math.max(...rects.map((rect) => rect.bottom)),
-  };
-}
-
-/** The page's scrolling area (everything under the top bars). */
-function pageScroller(): HTMLElement | null {
-  return document.getElementById("main-content");
-}
-
-function isPhone(): boolean {
-  return window.innerWidth <= 640;
-}
-
-/** The band of screen the light may use, top to bottom. */
-type Room = { top: number; bottom: number };
-
-/**
- * Where the light may go: below the bars at the top when the part is in the
- * page (so the bars are never lit), and on a phone above the sheet.
- */
-function roomFor(card: HTMLElement, element: Element | null): Room {
-  const scroller = pageScroller();
-  const inPage = scroller !== null && element !== null && scroller.contains(element);
-  const top = inPage ? scroller.getBoundingClientRect().top + 6 : 6;
-  // offsetTop, not getBoundingClientRect: the card's pop-in animation scales it.
-  const bottom = isPhone() ? card.offsetTop - 12 : window.innerHeight - 6;
-  return { top, bottom };
-}
-
-/**
- * The scroll position that shows the part in the room: in the middle when it
- * fits, else with its top at the top. Null when the part is not in the page
- * (the top bar), which never scrolls.
- */
-function scrollSpot(element: Element, room: Room): number | null {
-  const scroller = pageScroller();
-  if (!scroller || !scroller.contains(element)) return null;
-  const rect = element.getBoundingClientRect();
-  const space = room.bottom - room.top - 16;
-  const want = rect.height <= space ? room.top + 8 + (space - rect.height) / 2 : room.top + 8;
-  const most = scroller.scrollHeight - scroller.clientHeight;
-  return Math.round(clamp(scroller.scrollTop + rect.top - want, 0, Math.max(0, most)));
-}
-
-function scrollPage(spot: number) {
-  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  pageScroller()?.scrollTo({ top: spot, behavior: still ? "auto" : "smooth" });
-}
-
-function clamp(value: number, low: number, high: number): number {
-  return Math.min(Math.max(value, low), high);
-}
-
-function px(value: number): string {
-  return `${Math.round(value)}px`;
-}
-
-/**
- * Moves the light (the hole) over the box and the card beside it: to the
- * right if there is room, else the left, else below, else above. On a phone
- * the card is a sheet along the bottom (globals.css). The light stays in the
- * room, so it never lights the bars at the top or slips under the sheet.
- */
-function place(hole: HTMLElement, card: HTMLElement, box: Box | null, room: Room) {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const phone = isPhone();
-  const cw = card.offsetWidth;
-  const ch = card.offsetHeight;
-  const gap = 16;
-
-  if (!box) {
-    hole.style.left = px(vw / 2);
-    hole.style.top = px(vh / 2);
-    hole.style.width = "0px";
-    hole.style.height = "0px";
-    card.style.left = phone ? "" : px((vw - cw) / 2);
-    card.style.top = phone ? "" : px((vh - ch) / 2);
-    return;
-  }
-
-  let left = Math.max(6, box.l - 8);
-  let top = Math.max(room.top, box.t - 8);
-  const right = Math.min(vw - 6, box.r + 8);
-  let bottom = Math.min(room.bottom, box.b + 8);
-  let x = 12;
-  let y = 12;
-
-  if (phone) {
-    // The card is the sheet; CSS places it.
-  } else if (right + gap + cw <= vw - 12) {
-    x = right + gap;
-    y = clamp(top, 12, vh - ch - 12);
-  } else if (left - gap - cw >= 12) {
-    x = left - gap - cw;
-    y = clamp(top, 12, vh - ch - 12);
-  } else {
-    if (bottom + gap + ch <= vh - 12) y = bottom + gap;
-    else if (top - gap - ch >= 12) y = top - gap - ch;
-    else {
-      bottom = vh - ch - gap - 12;
-      y = bottom + gap;
-    }
-    x = clamp(left, 12, vw - cw - 12);
-  }
-  // Out of the room for a moment (the page is still scrolling to it): a thin
-  // light at the room's edge it will come in from, rather than none.
-  if (bottom < top + 40) {
-    if (box.t - 8 < room.top) bottom = top + 40;
-    else top = Math.max(6, bottom - 40);
-  }
-  left = Math.min(left, right);
-
-  hole.style.left = px(left);
-  hole.style.top = px(top);
-  hole.style.width = px(right - left);
-  hole.style.height = px(bottom - top);
-  card.style.left = phone ? "" : px(x);
-  card.style.top = phone ? "" : px(y);
+  return boxAround(elements);
 }
 
 // ---------------------------------------------------------------- the drawings

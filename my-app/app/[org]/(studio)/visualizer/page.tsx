@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { PageTabs } from "@/components/studio/PillTabs";
 import { SchemaMapIcon, ConnectionsIcon, CompareIcon } from "@/components/ui/icons";
 import {
   VisualizerPane,
@@ -15,10 +16,10 @@ import { useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-visualizer.css";
 
 // The Schema Visualizer. "Single" draws one schema; "Side by side" draws two
-// independent panes (e.g. dev vs prod) with a draggable divider between them.
+// independent panes with a draggable divider between them.
 //
 // Connections are fetched once here and shared with both panes; each pane owns
-// its own schema selection + introspection. The LEFT pane sits at a stable spot
+// its own schema selection and introspection. The LEFT pane sits at a stable spot
 // in the tree across modes, so toggling Single and Side by side keeps its diagram;
 // the RIGHT pane mounts only in side-by-side.
 
@@ -29,42 +30,11 @@ const MAX_PCT = 74;
 
 const NO_PICK: VizPick = { connectionId: "", schema: "" };
 
-function PanelSingleIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-    </svg>
-  );
-}
-function PanelSplitIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M12 4v16" />
-    </svg>
-  );
-}
-
-function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
-  return (
-    <div className="vz-seg" role="group" aria-label="View mode">
-      <button
-        type="button"
-        aria-pressed={mode === "single"}
-        onClick={() => onChange("single")}
-      >
-        <PanelSingleIcon /> Single
-      </button>
-      <button
-        type="button"
-        aria-pressed={mode === "split"}
-        onClick={() => onChange("split")}
-      >
-        <PanelSplitIcon /> Side by side
-      </button>
-    </div>
-  );
-}
+// The two views, drawn with the shared PageTabs like every other page's tabs.
+const MODE_TABS: { key: Mode; label: string }[] = [
+  { key: "single", label: "Single" },
+  { key: "split", label: "Side by side" },
+];
 
 export default function VisualizerPage() {
   const orgPath = useOrgHref();
@@ -168,11 +138,20 @@ export default function VisualizerPage() {
   return (
     <div className="viz-page vz-page">
       {/* The one line under the title comes from lib/help/visualizer.ts. */}
-      <div className="vz-head px-4 sm:px-8 pt-8">
-        <PageHeader page="/visualizer" title="See the shape of your data.">
+      <div className="vz-head">
+        <PageHeader page="/visualizer">
           {!noConnections && (
             <div className="vz-bar">
-              {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
+              {!narrow && (
+                <div className="vz-bar__tabs" data-tour="visualizer-mode">
+                  <PageTabs
+                    label="View mode"
+                    tabs={MODE_TABS}
+                    value={mode}
+                    onChange={(key) => setMode(key === "split" ? "split" : "single")}
+                  />
+                </div>
+              )}
               <span className="vz-bar__gap" />
               {/* The way onward. Side by side is somebody looking for a
                   difference by eye: the diagram can show them one, but only
@@ -219,6 +198,7 @@ export default function VisualizerPage() {
       ) : (
         <div
           className={`viz-body vz-stage${effectiveMode === "split" ? " viz-split" : ""}`}
+          data-tour="visualizer-diagram"
           ref={splitRef}
         >
           {/* Left pane: stable position across modes, so its diagram survives a toggle. */}
@@ -226,7 +206,12 @@ export default function VisualizerPage() {
             className="viz-split__pane"
             style={effectiveMode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
           >
-            <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} onPick={setLeftPick} />
+            <VisualizerPane
+              connections={connections}
+              connectionsLoaded={connectionsLoaded}
+              label={effectiveMode === "split" ? "Left pane" : "Connection and schema"}
+              onPick={setLeftPick}
+            />
           </div>
 
           {effectiveMode === "split" && (
@@ -260,7 +245,12 @@ export default function VisualizerPage() {
                 <span className="viz-divider__grip" />
               </div>
               <div className="viz-split__pane" style={{ flex: 1 }}>
-                <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} onPick={setRightPick} />
+                <VisualizerPane
+                  connections={connections}
+                  connectionsLoaded={connectionsLoaded}
+                  label="Right pane"
+                  onPick={setRightPick}
+                />
               </div>
             </>
           )}

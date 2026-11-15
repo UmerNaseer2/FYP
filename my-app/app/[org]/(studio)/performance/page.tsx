@@ -1,7 +1,6 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Card, Skeleton } from "@/components/ui";
 import { PerfTargetPicker, type PerfTarget } from "@/components/studio/PerfTargetPicker";
@@ -12,6 +11,7 @@ import { QueryHistoryPanel } from "@/components/studio/QueryHistoryPanel";
 import { LiveActivity } from "@/components/studio/LiveActivity";
 import { AlertThresholds } from "@/components/studio/AlertThresholds";
 import { PageHeader } from "@/components/studio/PageHeader";
+import { PageTabs } from "@/components/studio/PillTabs";
 import { useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-performance.css";
 
@@ -45,14 +45,16 @@ import "@/app/styles/atelier-performance.css";
 
 type PerfTab = "suggestions" | "analyse" | "history" | "activity" | "trends" | "alerts";
 
-const TAB_TITLES: Record<PerfTab, string> = {
-  suggestions: "Performance suggestions",
-  analyse: "Query analysis",
-  history: "Query history",
-  activity: "Live activity",
-  trends: "Schema trends",
-  alerts: "Alert thresholds",
-};
+// The six tabs, in the order they are drawn. The page title is always the
+// menu name ("Performance"); the tab strip says which part is open.
+const TABS: { key: PerfTab; label: string }[] = [
+  { key: "suggestions", label: "Suggestions" },
+  { key: "analyse", label: "Analyse a query" },
+  { key: "history", label: "History" },
+  { key: "activity", label: "Live activity" },
+  { key: "trends", label: "Trends" },
+  { key: "alerts", label: "Alerts" },
+];
 
 // One short line per tab for the page header. The longer explanation of each
 // tab lives in the help file (lib/help/performance.ts), under its sections.
@@ -86,29 +88,20 @@ function PerformanceScreen() {
   return (
     <div className="pf-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
       {/* The tabs are links, not buttons, so each one has its own address and
-          the browser's Back button moves between them. Six pills do not fit a
+          the browser's Back button moves between them. Six tabs do not fit a
           phone, so the strip scrolls sideways inside itself. */}
-      <PageHeader page="/performance" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]}>
-        <nav className="pf-tabs" aria-label="Performance sections">
-          <Tab href={orgPath("/performance?tab=suggestions")} active={tab === "suggestions"}>
-            Suggestions
-          </Tab>
-          <Tab href={orgPath("/performance?tab=analyse")} active={tab === "analyse"}>
-            Analyse a query
-          </Tab>
-          <Tab href={orgPath("/performance?tab=history")} active={tab === "history"}>
-            History
-          </Tab>
-          <Tab href={orgPath("/performance?tab=activity")} active={tab === "activity"}>
-            Live activity
-          </Tab>
-          <Tab href={orgPath("/performance?tab=trends")} active={tab === "trends"}>
-            Trends
-          </Tab>
-          <Tab href={orgPath("/performance?tab=alerts")} active={tab === "alerts"}>
-            Alerts
-          </Tab>
-        </nav>
+      <PageHeader page="/performance" blurb={TAB_BLURBS[tab]}>
+        <div data-tour="performance-tabs">
+          <PageTabs
+            label="Performance sections"
+            tabs={TABS.map((item) => ({
+              key: item.key,
+              label: item.label,
+              href: orgPath(`/performance?tab=${item.key}`),
+            }))}
+            value={tab}
+          />
+        </div>
       </PageHeader>
 
       {/* setTarget is a useState setter, so it is stable, which is what the
@@ -157,24 +150,6 @@ function readTab(raw: string | null): PerfTab {
   return "suggestions";
 }
 
-function Tab({
-  href,
-  active,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    // The look alone would not tell a screen reader which tab is open, so
-    // aria-current carries it, and the stylesheet draws the pill from that.
-    <Link href={href} aria-current={active ? "page" : undefined} className="pf-tab">
-      {children}
-    </Link>
-  );
-}
-
 /**
  * Shown for the instant before the query string is readable. It draws the
  * header for the default tab rather than a blank page, so the screen does not
@@ -183,11 +158,7 @@ function Tab({
 function PerformanceFallback() {
   return (
     <div className="pf-page max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
-      <PageHeader
-        page="/performance"
-        title={TAB_TITLES.suggestions}
-        blurb={TAB_BLURBS.suggestions}
-      />
+      <PageHeader page="/performance" blurb={TAB_BLURBS.suggestions} />
       <Card className="p-4">
         <Skeleton width={320} height={18} />
       </Card>

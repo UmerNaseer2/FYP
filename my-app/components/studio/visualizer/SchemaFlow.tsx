@@ -58,7 +58,7 @@ function toFlowEdges(graph: VizGraph): Edge[] {
 }
 
 function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
-  // Built exactly once per mount — the page remounts us per schema selection.
+  // Built exactly once per mount, the page remounts us per schema selection.
   const [graph] = useState<VizGraph>(() => buildGraph(snapshot));
   const [nodes, , onNodesChange] = useNodesState<FlowNode>(toFlowNodes(graph));
   const [edges, , onEdgesChange] = useEdgesState<Edge>(toFlowEdges(graph));
@@ -175,7 +175,7 @@ function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
         {graph.stats.externalForeignKeys > 0 && (
           <span
             className="pill pill-drift"
-            title="Foreign keys that reference tables outside this schema — marked ↗ on their columns, no edge drawn."
+            title="Foreign keys that reference tables outside this schema, marked ↗ on their columns, no edge drawn."
           >
             {graph.stats.externalForeignKeys} external ↗
           </span>

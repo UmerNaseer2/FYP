@@ -34,30 +34,33 @@ import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
 import { ComparisonSetBar } from "@/components/studio/ComparisonSetBar";
 import { PageHeader } from "@/components/studio/PageHeader";
-import { Button } from "@/components/ui/Button";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { Select } from "@/components/ui/Select";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import {
+  TargetPicker,
+  TargetPickerPair,
+  type TargetChoice,
+} from "@/components/studio/TargetPicker";
 import {
   CompareIcon,
   AlertTriangleIcon,
   ConnectionsIcon,
   PlusIcon,
   RefreshIcon,
-  SchemaMapIcon,
   XIcon,
 } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-compare.css";
 
 // ---------------------------------------------------------------------------
 // Compare & Author.
 //
 // The screen only draws. Every connection, snapshot and diff on it is computed
-// by POST /api/compare, which is the only thing here that touches a database ,
-// the browser never sees a host or a password, and the page can be rendered
+// by POST /api/compare, which is the only thing here that touches a database.
+// The browser never sees a host or a password, and the page can be rendered
 // before any of that work has finished.
 //
 // It reads its whole selection out of the query string, which is what keeps a
@@ -66,24 +69,16 @@ import "@/app/styles/atelier-compare.css";
 // parallel lists. The one thing a picker does on its own is fetch the schema
 // list when its connection changes, so the schema box never offers the last
 // database's schemas for the new one.
+//
+// Top to bottom the page reads: Saved comparisons (in the header), the two
+// pickers, the differences, the script, and last of all "Save this
+// comparison". Saving comes after a result, never before it.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Small presentational pieces
 // ---------------------------------------------------------------------------
 
-/**
- * One LIVE selector (connection + schema) inside the picker bar.
- *
- * All the target pickers share the field names `targetConnection` and
- * `targetSchema`, so the browser submits them as two parallel lists, that is
- * what makes "add another target" work with a plain <form>.
- *
- * Changing the connection fetches that database's schemas straight away. The
- * schema box used to keep offering the OLD connection's list until Compare was
- * pressed, so the usual move, dev.public to staging.public, took two
- * submits, and the first one compared a schema the new database might not have.
- */
 /**
  * The options bar's form id.
  *
@@ -95,8 +90,23 @@ import "@/app/styles/atelier-compare.css";
  */
 const COMPARE_FORM_ID = "compare-options";
 
+/** What one picker shows right now, and whether it differs from the screen. */
+type SlotPick = { connectionId: string; schema: string; dirty: boolean };
+
+/**
+ * One side of the comparison: a TargetPicker (connection, then schema) that
+ * also writes its choice into the form.
+ *
+ * All the target pickers share the field names `targetConnection` and
+ * `targetSchema`, so the browser submits them as two parallel lists. That is
+ * what makes "add another target" work with a plain <form>.
+ *
+ * Changing the connection fetches that database's schemas straight away, so
+ * the list never offers the old connection's schemas for the new one.
+ */
 function SlotPicker({
-  role,
+  label,
+  hint,
   fieldPrefix,
   slotKey,
   connections,
@@ -104,11 +114,13 @@ function SlotPicker({
   schemaOptions,
   selectedSchema,
   missingMessage,
-  onDirtyChange,
+  onReport,
 }: {
-  role: string;
+  /** "Source", "Target" or "Target 2". */
+  label: string;
+  hint: string;
   fieldPrefix: "source" | "target";
-  /** Names this picker when it reports to onDirtyChange. */
+  /** Names this picker when it reports to onReport. */
   slotKey: string;
   connections: ConnectionView[];
   /** What the comparison on screen used; "" when this side has no connection. */
@@ -117,8 +129,8 @@ function SlotPicker({
   selectedSchema: string;
   /** Why this side has no connection to read, or null when it has one. */
   missingMessage: string | null;
-  /** Told whether the picks now differ from what the comparison on screen used. */
-  onDirtyChange: (slotKey: string, dirty: boolean) => void;
+  /** Told what is picked now, and whether it differs from what the screen used. */
+  onReport: (slotKey: string, pick: SlotPick) => void;
 }) {
   const [connectionId, setConnectionId] = useState(selectedConnectionId);
   const [options, setOptions] = useState(schemaOptions);
@@ -132,13 +144,14 @@ function SlotPicker({
   // Compared with what the screen used, not with "has anything been touched":
   // picking another connection and then the first one again is back to clean.
   const dirty = connectionId !== selectedConnectionId || schema !== selectedSchema;
+  // Blank while loading, so a Compare pressed mid-load sends no schema and the
+  // server picks the default rather than the old database's.
+  const sentSchema = loading ? "" : schema;
   useEffect(() => {
-    onDirtyChange(slotKey, dirty);
-  }, [slotKey, dirty, onDirtyChange]);
+    onReport(slotKey, { connectionId, schema: sentSchema, dirty });
+  }, [slotKey, connectionId, sentSchema, dirty, onReport]);
 
-  async function changeConnection(next: string) {
-    if (next === connectionId) return;
-    setConnectionId(next);
+  async function loadSchemas(next: string) {
     setListError(null);
     setLoading(true);
     const request = ++latestRequest.current;
@@ -154,7 +167,7 @@ function SlotPicker({
         setOptions(list);
         setSchema((previous) => pickSchemaAfterConnectionChange(previous, list));
       } else {
-        // The schema already in the box stays. Compare still tries it, and the
+        // The schema already chosen stays. Compare still tries it, and the
         // result says whether that database could be read at all.
         setOptions([]);
         setListError(data?.error ?? "Could not list the schemas on that connection.");
@@ -168,72 +181,54 @@ function SlotPicker({
     }
   }
 
-  // A schema the list does not contain, typed into a URL, or kept after a
-  // listing failed, still shows, so the box never looks empty while it
-  // would submit something.
-  const schemaChoices = options.length > 0 ? options : schema.length > 0 ? [schema] : [];
+  function change(next: TargetChoice) {
+    if (next.connectionId !== connectionId) {
+      setConnectionId(next.connectionId);
+      void loadSchemas(next.connectionId);
+    } else {
+      setSchema(next.schema);
+    }
+  }
+
+  // One problem at a time: a list that could not be read comes first, then
+  // the reason this side has no connection (until another one is picked).
+  const problem =
+    listError ?? (missingMessage && connectionId === selectedConnectionId ? missingMessage : null);
 
   return (
-    <div className="cp-pick">
-      <div className="cp-pick__role">
-        <span>{role}</span>
-        {/* The pill is one word of jargon. A title alone reaches neither a
-            screen reader nor a touch device, so the name goes on the element. */}
-        <span
-          className="cp-live"
-          title="Read live from the server, not from a saved snapshot"
-          aria-label="Read live from the server, not from a saved snapshot"
-        >
-          live
-        </span>
-      </div>
-      <Select
-        name={`${fieldPrefix}Connection`}
-        value={connectionId}
-        onChange={(next) => void changeConnection(next)}
-        ariaLabel={`${role} connection`}
-        placeholder="Pick a connection…"
-        options={connections.map((connection) => ({
-          value: String(connection.id),
-          label: `${connection.name} (${connection.database_name})`,
+    <>
+      {/* What the form submits for this side. */}
+      <input type="hidden" name={`${fieldPrefix}Connection`} value={connectionId} />
+      <input type="hidden" name={`${fieldPrefix}Schema`} value={sentSchema} />
+      <TargetPicker
+        label={label}
+        hint={hint}
+        connections={connections.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          detail: connection.database_name,
         }))}
+        connectionId={connectionId}
+        schema={schema}
+        schemas={options}
+        loading={loading}
+        error={problem}
+        onRetry={listError ? () => void loadSchemas(connectionId) : undefined}
+        onChange={change}
       />
-      {/* Blank while loading, so a Compare pressed mid-load sends no schema
-          and the server picks the default rather than the old database's. */}
-      <Select
-        name={`${fieldPrefix}Schema`}
-        value={loading ? "" : schema}
-        onChange={setSchema}
-        ariaLabel={`${role} schema`}
-        variant="sub"
-        mono
-        disabled={loading || schemaChoices.length === 0}
-        placeholder={
-          loading
-            ? "Loading schemas…"
-            : connectionId === ""
-              ? "Pick a connection first"
-              : "No schemas on this connection"
-        }
-        options={schemaChoices.map((name) => ({ value: name, label: name }))}
-      />
-      {listError ? (
-        <span className="cp-pick__problem" role="alert">
-          {listError}
-        </span>
-      ) : missingMessage && connectionId === selectedConnectionId ? (
-        <span className="cp-pick__problem">{missingMessage}</span>
-      ) : null}
-    </div>
+    </>
   );
 }
 
 /** What one tile filters the diff to, and the words on it. */
-const TILES: { filter: DiffFilter; tone: string; label: string; hint: string }[] = [
-  { filter: "add", tone: "add", label: "Added", hint: "+ to create" },
-  { filter: "chg", tone: "chg", label: "Changed", hint: "~ to alter" },
-  { filter: "rem", tone: "rem", label: "Removed", hint: "\u2212 to drop" },
-  { filter: "same", tone: "same", label: "In sync", hint: "= tables left alone" },
+// Every change reads with its glyph: + added, ~ changed, − removed (a real
+// minus sign, not a hyphen). The glyph and the word go together, so the
+// colour is never the only thing telling them apart.
+const TILES: { filter: DiffFilter; tone: string; glyph: string; label: string; hint: string }[] = [
+  { filter: "add", tone: "add", glyph: "+", label: "Added", hint: "to create" },
+  { filter: "chg", tone: "chg", glyph: "~", label: "Changed", hint: "to alter" },
+  { filter: "rem", tone: "rem", glyph: "\u2212", label: "Removed", hint: "to drop" },
+  { filter: "same", tone: "same", glyph: "=", label: "In sync", hint: "tables left alone" },
 ];
 
 /**
@@ -265,6 +260,9 @@ function ChangeTiles({
           aria-pressed={active === tile.filter}
           onClick={() => onPick(active === tile.filter ? null : tile.filter)}
         >
+          <span className="cp-tile__glyph" aria-hidden="true">
+            {tile.glyph}
+          </span>
           <b>{counts[tile.filter]}</b>
           <span>
             {tile.label}
@@ -357,15 +355,14 @@ function LoadingScreen() {
     <div className="cp-page" aria-busy="true">
       <PageHeader page="/compare" />
       <div className="card cp-form">
-        <div className="cp-pair">
-          <div className="cp-db">
-            <Skeleton width={180} height={11} />
-            <Skeleton height={64} radius={12} className="mt-2" />
+        <div className="cp-skel">
+          <div>
+            <Skeleton width={120} height={11} />
+            <Skeleton height={56} radius={16} className="mt-2" />
           </div>
-          <div className="cp-flow" aria-hidden="true" />
-          <div className="cp-db">
-            <Skeleton width={220} height={11} />
-            <Skeleton height={64} radius={12} className="mt-2" />
+          <div>
+            <Skeleton width={120} height={11} />
+            <Skeleton height={56} radius={16} className="mt-2" />
           </div>
         </div>
       </div>
@@ -397,6 +394,7 @@ function CompareRoute() {
 
 function CompareScreenView({ query }: { query: string }) {
   const orgPath = useOrgHref();
+  const orgSlug = useOrg()?.slug ?? "";
   const [screen, setScreen] = useState<CompareScreen | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -430,16 +428,24 @@ function CompareScreenView({ query }: { query: string }) {
   // The same idea for the pickers: which of them now differ from what the
   // comparison on screen used. Keyed by picker, because one picker going back
   // to clean must not hide another that is still changed.
-  const [dirtyPickers, setDirtyPickers] = useState<Record<string, boolean>>({});
+  // Each one also says what it shows right now, for the one line under the
+  // pair that catches "source and target are the same schema".
+  const [picks, setPicks] = useState<Record<string, SlotPick>>({});
   // Which kind of change each target's diff is narrowed to, by target number.
   // Nothing in here means "show everything". A new comparison remounts this
   // component, so the tiles start unpressed again on their own.
   const [filters, setFilters] = useState<Record<number, DiffFilter | null>>({});
 
-  const reportDirty = useCallback((slotKey: string, dirty: boolean) => {
-    setDirtyPickers((previous) =>
-      Boolean(previous[slotKey]) === dirty ? previous : { ...previous, [slotKey]: dirty },
-    );
+  const reportPick = useCallback((slotKey: string, pick: SlotPick) => {
+    setPicks((previous) => {
+      const old = previous[slotKey];
+      const same =
+        old !== undefined &&
+        old.connectionId === pick.connectionId &&
+        old.schema === pick.schema &&
+        old.dirty === pick.dirty;
+      return same ? previous : { ...previous, [slotKey]: pick };
+    });
   }, []);
 
   // One run of the comparison. Everything it needs is in the query string, so
@@ -462,6 +468,16 @@ function CompareScreenView({ query }: { query: string }) {
         setScreen(data as CompareScreen);
         setError(null);
         setRunSerial((serial) => serial + 1);
+        // Leaves a note for the Dashboard's Getting started list: this browser
+        // has run a compare in this organization. A blocked browser store just
+        // means the step waits for a saved comparison instead.
+        if (new URLSearchParams(query).get("run") === "1") {
+          try {
+            window.localStorage.setItem(`schema-studio:first-compare:${orgSlug}`, "1");
+          } catch {
+            /* storage is off; nothing to do */
+          }
+        }
       } else {
         setError(data?.error ?? "Could not run this comparison.");
       }
@@ -470,7 +486,7 @@ function CompareScreenView({ query }: { query: string }) {
     } finally {
       setLoading(false);
     }
-  }, [query]);
+  }, [query, orgSlug]);
 
   useEffect(() => {
     void load();
@@ -484,27 +500,22 @@ function CompareScreenView({ query }: { query: string }) {
     };
   }, [load]);
 
-  // A comparison that never arrived at all, there is nothing else to draw.
+  // A comparison that never arrived at all: there is nothing else to draw.
   if (error && !screen) {
     return (
       <div className="cp-page">
         <PageHeader page="/compare" />
-        <div className="card cp-state">
-          <span className="cp-state__icon" aria-hidden="true">
-            <AlertTriangleIcon size={24} />
-          </span>
-          <small>Compare</small>
-          <h2>This comparison did not run</h2>
-          <p role="alert">{error}</p>
-          <div className="cp-state__actions">
-            <Button variant="primary" onClick={() => void load()} disabled={loading}>
-              <RefreshIcon size={14} />
-              {loading ? "Trying again" : "Try again"}
-            </Button>
-            <Link href={orgPath("/connections")} className="btn btn-ghost">
-              Check connections
-            </Link>
-          </div>
+        <div className="cp-problem">
+          <h2 className="cp-h2">This comparison did not run</h2>
+          <ErrorNotice
+            error={error}
+            onRetry={() => void load()}
+            actions={
+              <Link href={orgPath("/connections")} className="btn btn-ghost btn-sm">
+                Check connections
+              </Link>
+            }
+          />
         </div>
       </div>
     );
@@ -575,7 +586,7 @@ function CompareScreenView({ query }: { query: string }) {
   const dataLossBox = pendingDataLoss ?? allowDataLoss;
   const rowDataBox = pendingRowData ?? compareData;
   const optionsPending = dataLossBox !== allowDataLoss || rowDataBox !== compareData;
-  const picksChanged = Object.values(dirtyPickers).some(Boolean);
+  const picksChanged = Object.values(picks).some((pick) => pick.dirty);
   const unapplied = optionsPending || picksChanged;
 
   // The line under the page title. With one compared target it says what was
@@ -590,6 +601,46 @@ function CompareScreenView({ query }: { query: string }) {
         }.${onlyOutcome.schema} match ${source.displayName}.${source.schema}.`
       : undefined;
 
+  // The one line under the pickers. The same connection and schema on both
+  // sides always matches itself, so it is said before Compare is pressed.
+  const sourcePick = picks.source ?? {
+    connectionId: source.connectionId === null ? "" : String(source.connectionId),
+    schema: source.schema,
+  };
+  const sameAsSourceIndex = resolvedTargets.findIndex((slot, index) => {
+    const pick = picks[`target-${index}`] ?? {
+      connectionId: slot.connectionId === null ? "" : String(slot.connectionId),
+      schema: slot.schema,
+    };
+    return (
+      pick.connectionId !== "" &&
+      pick.schema !== "" &&
+      pick.connectionId === sourcePick.connectionId &&
+      pick.schema === sourcePick.schema
+    );
+  });
+  const pairError =
+    sameAsSourceIndex === -1
+      ? null
+      : resolvedTargets.length === 1
+        ? "Source and target are the same schema. Pick a different target."
+        : `Target ${sameAsSourceIndex + 1} is the same schema as the source. Pick a different schema for it.`;
+
+  // After a result with nothing changed since, the button offers the same run
+  // again. Otherwise it is the page's main action.
+  const compareAgain = asked && !unapplied;
+
+  // The props both parts of the saved comparisons share.
+  const savedProps = {
+    sets: setOptions,
+    activeSetId,
+    modified: setModified,
+    selection,
+    hasUnappliedChanges: unapplied,
+    asked,
+    onDone: () => void load(),
+  };
+
   return (
     <div
       className={loading ? "cp-page cp-page--busy" : "cp-page"}
@@ -599,34 +650,18 @@ function CompareScreenView({ query }: { query: string }) {
       // of that, so the strip under the form says it in words too.
       aria-busy={loading}
     >
-      <PageHeader page="/compare" blurb={blurb} />
+      {/* "Saved comparisons" sits at the top because opening one changes what
+          the pickers show. It is its own island, not part of the form below:
+          this page's form is a GET that has to stay safe to reload and share. */}
+      <PageHeader
+        page="/compare"
+        blurb={blurb}
+        actions={<ComparisonSetBar part="open" {...savedProps} />}
+      />
 
       {/* A re-run that failed. The comparison below is the previous one, so it
           stays, but it is no longer what the screen was asked for. */}
-      {error && (
-        <div className="warn-inline" role="alert">
-          <span className="ico">
-            <AlertTriangleIcon size={14} />
-          </span>
-          <span>{error}</span>
-        </div>
-      )}
-
-      {/* Saved sets sit above the pickers because they change what the pickers
-          show. Its own island, not part of the form below: saving writes to
-          the database, and this page's form is a GET that has to stay safe to
-          reload and share. */}
-      <div className="cp-sets">
-        <ComparisonSetBar
-          sets={setOptions}
-          activeSetId={activeSetId}
-          modified={setModified}
-          selection={selection}
-          hasUnappliedChanges={unapplied}
-          asked={asked}
-          onDone={() => void load()}
-        />
-      </div>
+      {error && <ErrorNotice error={error} onRetry={() => void load()} />}
 
       {/* Selection, a plain form GET. The target pickers repeat one pair of
           field names, so the browser submits them as parallel lists and "add
@@ -652,37 +687,33 @@ function CompareScreenView({ query }: { query: string }) {
           <input type="hidden" name="set" value={String(activeSetId)} />
         )}
 
-        <div className="cp-pair">
-          <div className="cp-db">
-            <span className="cp-db__icon" aria-hidden="true">
-              <SchemaMapIcon size={18} />
-            </span>
-            <div className="cp-db__body">
-              <div className="cp-db__label">Source, the schema you want</div>
-              {/* Keyed by what the server resolved, so a reload that answers
-                  differently starts the picker again from that answer. */}
-              <SlotPicker
-                key={`${source.connectionId}:${source.schema}`}
-                role="Source · desired"
-                fieldPrefix="source"
-                slotKey="source"
-                connections={savedConnections}
-                selectedConnectionId={
-                  source.connectionId === null ? "" : String(source.connectionId)
-                }
-                schemaOptions={source.schemaOptions}
-                selectedSchema={source.schema}
-                missingMessage={source.missingMessage}
-                onDirtyChange={reportDirty}
-              />
-            </div>
-          </div>
+        <h2 className="cp-h2 cp-form__title">Choose two schemas</h2>
 
-          {/* The dashed line runs from the source to the target. Swap is only
-              offered when the server built a link for it: one target, and a
-              saved connection on both sides. It runs the swapped comparison. */}
-          <div className="cp-flow">
-            {screen.swapHref && (
+        <TargetPickerPair
+          className="cp-pair"
+          error={pairError}
+          source={
+            // Keyed by what the server resolved, so a reload that answers
+            // differently starts the picker again from that answer.
+            <SlotPicker
+              key={`${source.connectionId}:${source.schema}`}
+              label="Source"
+              hint="the schema you want"
+              fieldPrefix="source"
+              slotKey="source"
+              connections={savedConnections}
+              selectedConnectionId={source.connectionId === null ? "" : String(source.connectionId)}
+              schemaOptions={source.schemaOptions}
+              selectedSchema={source.schema}
+              missingMessage={source.missingMessage}
+              onReport={reportPick}
+            />
+          }
+          between={
+            // Swap is only offered when the server built a link for it: one
+            // target, and a saved connection on both sides. It runs the
+            // swapped comparison.
+            screen.swapHref ? (
               <Link
                 href={orgPath(screen.swapHref)}
                 className="cp-swap"
@@ -691,58 +722,46 @@ function CompareScreenView({ query }: { query: string }) {
                 <RefreshIcon size={13} />
                 Swap
               </Link>
-            )}
-          </div>
-
-          <div className="cp-targets">
-            {resolvedTargets.map((slot, index) => (
-              <div className="cp-db cp-db--target" key={`target-${index}`}>
-                <span className="cp-db__icon" aria-hidden="true">
-                  <SchemaMapIcon size={18} />
-                </span>
-                <div className="cp-db__body">
-                  <div className="cp-db__label">
-                    {resolvedTargets.length === 1
-                      ? "Target, this one gets updated"
-                      : `Target ${index + 1} of ${resolvedTargets.length}, gets its own migration`}
-                  </div>
-                  <SlotPicker
-                    key={`${slot.connectionId}:${slot.schema}`}
-                    role={
-                      resolvedTargets.length === 1
-                        ? "Target · updated"
-                        : `Target ${index + 1} · updated`
-                    }
-                    fieldPrefix="target"
-                    slotKey={`target-${index}`}
-                    connections={savedConnections}
-                    selectedConnectionId={
-                      slot.connectionId === null ? "" : String(slot.connectionId)
-                    }
-                    schemaOptions={slot.schemaOptions}
-                    selectedSchema={slot.schema}
-                    missingMessage={slot.missingMessage}
-                    onDirtyChange={reportDirty}
-                  />
-                </div>
-                {resolvedTargets.length > 1 && (
-                  <button
-                    type="submit"
-                    name="removeTarget"
-                    value={String(index)}
-                    className="btn btn-ghost btn-icon cp-db__remove"
-                    title={`Remove target ${index + 1}`}
-                    aria-label={`Remove target ${index + 1}`}
-                  >
-                    <XIcon size={14} />
-                  </button>
-                )}
+            ) : null
+          }
+          target={resolvedTargets.map((slot, index) => (
+            <div className="cp-target" key={`target-${index}`}>
+              <div className="cp-target__picker">
+                <SlotPicker
+                  key={`${slot.connectionId}:${slot.schema}`}
+                  label={resolvedTargets.length === 1 ? "Target" : `Target ${index + 1}`}
+                  hint={
+                    resolvedTargets.length === 1
+                      ? "this one gets updated"
+                      : "gets its own migration"
+                  }
+                  fieldPrefix="target"
+                  slotKey={`target-${index}`}
+                  connections={savedConnections}
+                  selectedConnectionId={slot.connectionId === null ? "" : String(slot.connectionId)}
+                  schemaOptions={slot.schemaOptions}
+                  selectedSchema={slot.schema}
+                  missingMessage={slot.missingMessage}
+                  onReport={reportPick}
+                />
               </div>
-            ))}
-          </div>
-        </div>
+              {resolvedTargets.length > 1 && (
+                <button
+                  type="submit"
+                  name="removeTarget"
+                  value={String(index)}
+                  className="btn btn-ghost btn-icon cp-target__remove"
+                  title={`Remove target ${index + 1}`}
+                  aria-label={`Remove target ${index + 1}`}
+                >
+                  <XIcon size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        />
 
-        <div className="cp-opts">
+        <div className="cp-opts" data-tour="compare-options">
           {/* These two decide whether the generated script destroys data and
               whether the run reads table contents at all. What each one does
               is in the "?" beside it, which opens on a click, so it works on a
@@ -799,7 +818,7 @@ function CompareScreenView({ query }: { query: string }) {
               moment the reader is deciding whether anything more is needed.
               The line keeps its room while hidden, so its arrival never moves
               the button away from where the reader was about to press. */}
-          <div className="cp-run">
+          <div className="cp-run" data-tour="compare-run">
             <span
               className="cp-run__note"
               style={{ visibility: unapplied ? "visible" : "hidden" }}
@@ -807,9 +826,14 @@ function CompareScreenView({ query }: { query: string }) {
               <AlertTriangleIcon size={13} />
               Not applied yet. Press Compare.
             </span>
-            <button type="submit" name="run" value="1" className="btn btn-primary">
+            <button
+              type="submit"
+              name="run"
+              value="1"
+              className={compareAgain ? "btn btn-secondary" : "btn btn-primary"}
+            >
               <CompareIcon size={14} />
-              Compare
+              {compareAgain ? "Compare again" : "Compare"}
             </button>
           </div>
         </div>
@@ -835,7 +859,7 @@ function CompareScreenView({ query }: { query: string }) {
       )}
 
       {/* A link to a saved set that has since been deleted. Said whether or
-          not anything ran, because the bar above now shows no set open and
+          not anything ran, because the page now shows no set open and
           would otherwise leave the reader wondering where it went. A role that
           may not open saved sets is told that instead: the set may be fine. */}
       {setNotFound && (
@@ -870,16 +894,17 @@ function CompareScreenView({ query }: { query: string }) {
         </div>
       )}
 
-      <div className="cp-results">
+      <div className="cp-results" data-tour="compare-results">
         {/* A source we cannot read blocks every target, so it is reported once. */}
         {sourceError && (
-          <div className="card cp-state cp-state--inline">
-            <span className="cp-state__icon" aria-hidden="true">
-              <AlertTriangleIcon size={24} />
-            </span>
-            <small>Source</small>
-            <h2>Unable to read the source schema</h2>
-            <p>{sourceError}</p>
+          <div className="cp-problem">
+            <h2 className="cp-h2">Unable to read the source schema</h2>
+            <ErrorNotice
+              error={sourceError}
+              connectionName={source.displayName}
+              connectionId={source.connectionId}
+              onRetry={() => void load()}
+            />
           </div>
         )}
 
@@ -901,7 +926,7 @@ function CompareScreenView({ query }: { query: string }) {
                 {/* A heading rather than a span: with several targets this is
                     the only way to jump between their sections. */}
                 <h2 className="cp-h2">
-                  {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
+                  {outcomes.length === 1 ? "Differences" : `Target ${outcome.index + 1}`}
                 </h2>
                 {outcome.delta ? (
                   <span className="cp-outcome__count">
@@ -959,12 +984,12 @@ function CompareScreenView({ query }: { query: string }) {
                   </span>
                 </div>
               ) : outcome.error ? (
-                <div className="warn-inline">
-                  <span className="ico">
-                    <AlertTriangleIcon size={14} />
-                  </span>
-                  <span>{outcome.error}</span>
-                </div>
+                <ErrorNotice
+                  error={outcome.error}
+                  connectionName={outcome.displayName}
+                  connectionId={outcome.connectionId}
+                  onRetry={() => void load()}
+                />
               ) : outcome.report && diffDoc ? (
                 <>
 
@@ -1140,6 +1165,11 @@ function CompareScreenView({ query }: { query: string }) {
           );
         })}
       </div>
+
+      {/* Saving comes last, after the result it saves. With a saved one open
+          the row also shows before a run, so it can still be renamed, updated
+          or deleted. */}
+      {(asked || activeSetId !== null) && <ComparisonSetBar part="save" {...savedProps} />}
     </div>
   );
 }

@@ -215,7 +215,8 @@ describe("a window with room for the rail", () => {
   test("puts the rail, the bar and the page on screen together", () => {
     renderShell({}, "acme");
     expect(rail()).toBeInTheDocument();
-    expect(breadcrumb()).toHaveTextContent("acme");
+    // The organization is named in the breadcrumb's tooltip (and in the rail).
+    expect(breadcrumb()).toHaveAttribute("title", expect.stringContaining("acme"));
     expect(screen.getByRole("main")).toHaveTextContent("The page itself");
   });
 
@@ -739,25 +740,28 @@ describe("the shared trial's strip", () => {
   test("tells everyone in the trial that it is shared", () => {
     signInAs("viewer");
     renderTrial(true);
-    expect(screen.getByText(/Everyone trying Schema Studio sees the same organization/)).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent("Shared trial. Others see what you change.");
   });
 
   test("is not there in any other organization", () => {
     renderTrial(false);
     expect(screen.queryByText(/Shared trial/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reset trial" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Trial options" })).not.toBeInTheDocument();
   });
 
   test("offers Reset trial to the Trial Admin", () => {
     signInAs("admin");
     renderTrial(true);
-    expect(screen.getByRole("button", { name: "Reset trial" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
+    expect(screen.getByRole("menuitem", { name: "Reset trial" })).toBeInTheDocument();
   });
 
   test("and to nobody else", () => {
     signInAs("editor");
     renderTrial(true);
     expect(screen.getByText(/Shared trial/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reset trial" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
+    expect(screen.getByRole("menuitem", { name: "Take the tour" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Reset trial" })).not.toBeInTheDocument();
   });
 });

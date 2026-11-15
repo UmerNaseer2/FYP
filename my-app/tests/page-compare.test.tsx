@@ -88,7 +88,19 @@ function serve(view: CompareScreen) {
 }
 
 /** Wait for the form itself, which only exists once a screen has arrived. */
-const compareButton = () => screen.findByRole("button", { name: /^Compare$/ });
+const compareButton = () => screen.findByRole("button", { name: /^Compare( again)?$/ });
+
+/** Opens the target picker's panel, where its connections and schemas are listed. */
+const openTargetPicker = () =>
+  fireEvent.click(screen.getByRole("button", { name: "Change target connection and schema" }));
+/** One of the two lists in the open panel: "Connections" or "Schemas". */
+const pickerList = (name: "Connections" | "Schemas") =>
+  within(screen.getByRole("dialog", { name: /^Choose target/ })).getByRole("group", { name });
+/** Picks a schema, which also closes the panel. */
+function pickTargetSchema(schema: string) {
+  openTargetPicker();
+  fireEvent.click(within(pickerList("Schemas")).getByRole("button", { name: schema }));
+}
 
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
@@ -125,7 +137,7 @@ describe("a screen with nothing to compare on", () => {
     // Nothing else is drawn: a picker bar over a comparison that does not
     // exist would invite a Compare that cannot be told from the one that
     // failed.
-    expect(screen.queryByRole("button", { name: /^Compare$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Compare( again)?$/ })).not.toBeInTheDocument();
   });
 
   it("lets a failed first run be tried again", async () => {
@@ -222,8 +234,7 @@ describe("changes that have not been applied yet", () => {
     render(<ComparePage />);
     await compareButton();
 
-    fireEvent.click(screen.getByRole("combobox", { name: "Target · updated schema" }));
-    fireEvent.click(screen.getByRole("option", { name: "public" }));
+    pickTargetSchema("public");
 
     expect(screen.getByText(/Not applied yet/)).toBeVisible();
   });
@@ -237,13 +248,55 @@ describe("changes that have not been applied yet", () => {
     render(<ComparePage />);
     await compareButton();
 
-    const schemaBox = screen.getByRole("combobox", { name: "Target · updated schema" });
-    fireEvent.click(schemaBox);
-    fireEvent.click(screen.getByRole("option", { name: "public" }));
-    fireEvent.click(schemaBox);
-    fireEvent.click(screen.getByRole("option", { name: "shop_dev" }));
+    pickTargetSchema("public");
+    pickTargetSchema("shop_dev");
 
     expect(screen.getByText(/Not applied yet/)).not.toBeVisible();
+  });
+});
+
+describe("the order of the page", () => {
+  it("offers Compare again after a result, and Compare once something changed", async () => {
+    serve(ready({ asked: true }));
+    render(<ComparePage />);
+
+    expect(await screen.findByRole("button", { name: "Compare again" })).toBeInTheDocument();
+    pickTargetSchema("public");
+    expect(screen.getByRole("button", { name: "Compare" })).toBeInTheDocument();
+  });
+
+  it("keeps Save this comparison for after a result", async () => {
+    serve(ready({ asked: false }));
+    render(<ComparePage />);
+    await compareButton();
+
+    // Saved comparisons can be opened from the top at any time.
+    expect(screen.getByRole("button", { name: /^Saved comparisons/ })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Save this comparison" })).not.toBeInTheDocument();
+  });
+
+  it("shows Save this comparison under the results once there is one", async () => {
+    serve(ready({ asked: true }));
+    render(<ComparePage />);
+    await compareButton();
+
+    const save = screen.getByRole("group", { name: "Save this comparison" });
+    const results = document.querySelector(".cp-results");
+    expect(results).not.toBeNull();
+    // After the results in the page, never before them.
+    expect(results!.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says once, under both pickers, that the two sides are the same schema", async () => {
+    serve(ready({ asked: false }));
+    render(<ComparePage />);
+    await compareButton();
+
+    pickTargetSchema("public");
+
+    expect(
+      screen.getByText("Source and target are the same schema. Pick a different target.")
+    ).toBeInTheDocument();
   });
 });
 
@@ -264,27 +317,27 @@ describe("the picker's schema list", () => {
 
     // Pick the second connection and hold its answer; then pick the first back,
     // which answers at once. Two requests, and the held one is the older.
-    const connectionBox = screen.getByRole("combobox", { name: "Target · updated connection" });
+    // The panel stays open after a connection is picked, so both picks happen
+    // in the one panel.
     const releaseWarehouse = holdNext("connectionId=2");
-    fireEvent.click(connectionBox);
-    fireEvent.click(screen.getByRole("option", { name: "Warehouse (warehouse)" }));
-    fireEvent.click(connectionBox);
-    fireEvent.click(screen.getByRole("option", { name: "Local Postgres (shop)" }));
+    openTargetPicker();
+    fireEvent.click(within(pickerList("Connections")).getByRole("button", { name: /^Warehouse/ }));
+    fireEvent.click(
+      within(pickerList("Connections")).getByRole("button", { name: /^Local Postgres/ })
+    );
 
-    const schemaBox = screen.getByRole("combobox", { name: "Target · updated schema" });
-    await waitFor(() => expect(schemaBox).toBeEnabled());
+    const schemaNames = () =>
+      within(pickerList("Schemas"))
+        .getAllByRole("button")
+        .map((row) => row.textContent);
+    await waitFor(() => expect(schemaNames()).toEqual(["slow_a", "slow_b"]));
 
     releaseWarehouse();
     await flushAsync();
 
     // The released answer is true about a connection nobody has selected, and
-    // this box is the only place the reader would ever see it.
-    fireEvent.click(schemaBox);
-    expect(
-      within(screen.getByRole("listbox"))
-        .getAllByRole("option")
-        .map((option) => option.textContent)
-    ).toEqual(["slow_a", "slow_b"]);
+    // this list is the only place the reader would ever see it.
+    expect(schemaNames()).toEqual(["slow_a", "slow_b"]);
   });
 
   it("keeps the schema already in the box when the list cannot be read", async () => {
@@ -299,8 +352,8 @@ describe("the picker's schema list", () => {
     render(<ComparePage />);
     await compareButton();
 
-    fireEvent.click(screen.getByRole("combobox", { name: "Target · updated connection" }));
-    fireEvent.click(screen.getByRole("option", { name: "Warehouse (warehouse)" }));
+    openTargetPicker();
+    fireEvent.click(within(pickerList("Connections")).getByRole("button", { name: /^Warehouse/ }));
 
     expect(
       await screen.findByText("Could not reach warehouse.internal.")
@@ -311,10 +364,8 @@ describe("the picker's schema list", () => {
     // away: the box is blanked for the duration of the load and only refills
     // from the schema state on the commit after the failure lands.
     await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Target · updated schema" })
-      ).toHaveTextContent("shop_dev")
+      expect(document.querySelector('input[name="targetSchema"]')).toHaveValue("shop_dev")
     );
-    expect(document.querySelector('input[name="targetSchema"]')).toHaveValue("shop_dev");
+    expect(screen.getByRole("group", { name: /^Target/ })).toHaveTextContent("shop_dev");
   });
 });

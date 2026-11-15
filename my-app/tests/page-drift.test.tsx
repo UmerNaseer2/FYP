@@ -413,9 +413,7 @@ describe("the schema picker after a fix", () => {
     // The watch list marks the schema on screen, and now calls it in sync.
     const watchList = within(screen.getByRole("navigation", { name: "Tracked schemas" }));
     await waitFor(() =>
-      expect(watchList.getByRole("link", { current: true }).textContent).toContain(
-        "Matches its baseline"
-      )
+      expect(watchList.getByRole("link", { current: true }).textContent).toContain("In sync")
     );
     expect(watchList.getByRole("link", { current: true }).textContent).toContain("schema_1");
     expect(watchList.getByText("1 of 2 drifted")).toBeInTheDocument();

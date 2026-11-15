@@ -227,12 +227,13 @@ describe("an answer's label (U30)", () => {
 });
 
 describe("why AI is off (U31)", () => {
-  test("a role without AI is told so, with a way to ask for it", async () => {
+  test("a role without AI is told so, and a Viewer gets a sentence, not a link", async () => {
     setUser("viewer");
     setRoutes([statusRoute(ON)]);
     render(<Panel />);
     expect(await screen.findByText(/can't use AI assistance/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Ask for it" })).toBeInTheDocument();
+    // Viewers are told who decides. Other roles get an "Ask an Admin" link.
+    expect(screen.queryByRole("link", { name: /Ask/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Ask" })).not.toBeInTheDocument();
     // The role alone decides it, so the status is not asked for.
     expect(statusCalls()).toBe(0);
@@ -262,7 +263,7 @@ describe("why AI is off (U31)", () => {
     render(<Panel />);
     expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Ask" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Ask for it" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Ask an Admin" })).not.toBeInTheDocument();
   });
 });
 

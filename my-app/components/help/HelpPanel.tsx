@@ -1,17 +1,26 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import "./help.css";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import { Drawer } from "@/components/ui/Drawer";
 import { HelpIcon } from "@/components/ui/icons";
-import { helpForPath, type HelpTopic } from "@/lib/help";
+import { helpForPath, stepTarget, stepText, type HelpTopic } from "@/lib/help";
+import { firstOnScreen } from "@/lib/tour";
+import { Spotlight } from "./Spotlight";
 
 // The Help panel: one side panel for the whole studio, showing the help for
 // the page you are on. The text lives in lib/help, one file per page.
 //
 // HelpProvider holds the panel and whether it is open. Anything inside it can
-// open the panel with useHelp(): the Help button in the top bar and the one in
-// each page's header both do.
+// open the panel with useHelp(). The one Help button is in the top bar.
+//
+// Show me: a step that names a control on the page gets a "Show me" link.
+// Pressing it closes Help and lights that control up (Spotlight.tsx).
+
+/** A step someone asked to be shown: its words and the control's selector. */
+type ShownStep = { text: string; target: string };
 
 type HelpControls = { open: () => void };
 
@@ -27,15 +36,31 @@ export function HelpProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "/";
   const topic = helpForPath(pathname);
 
+  const [shown, setShown] = useState<ShownStep | null>(null);
+
   const open = useCallback(() => setIsOpen(true), []);
   const controls = useMemo(() => ({ open }), [open]);
+
+  // Show me: Help gets out of the way, then the control is lit up.
+  const showMe = useCallback((step: ShownStep) => {
+    setIsOpen(false);
+    setShown(step);
+  }, []);
+  const endShow = useCallback(() => setShown(null), []);
 
   return (
     <HelpContext.Provider value={controls}>
       {children}
       <Drawer open={isOpen} onClose={() => setIsOpen(false)} title={`Help: ${topic.title}`} width={440}>
-        <HelpTopicView topic={topic} />
+        <HelpTopicView topic={topic} onShowMe={showMe} />
       </Drawer>
+      {shown &&
+        createPortal(
+          <Spotlight target={shown.target} onDone={endShow}>
+            {shown.text}
+          </Spotlight>,
+          document.body
+        )}
     </HelpContext.Provider>
   );
 }
@@ -45,15 +70,37 @@ export function HelpButton({ className = "btn btn-ghost btn-sm" }: { className?:
   const help = useHelp();
   if (!help) return null;
   return (
-    <button type="button" className={className} onClick={help.open} aria-haspopup="dialog">
+    <button type="button" className={className} onClick={help.open} aria-haspopup="dialog" data-help-button="">
       <HelpIcon size={15} />
       <span>Help</span>
     </button>
   );
 }
 
+type HelpTopicViewProps = {
+  topic: HelpTopic;
+  /** Called by a step's Show me link. Leave it out and no step gets a link. */
+  onShowMe?: (step: ShownStep) => void;
+};
+
 /** One page's help, laid out in the same four parts on every page. */
-export function HelpTopicView({ topic }: { topic: HelpTopic }) {
+export function HelpTopicView({ topic, onShowMe }: HelpTopicViewProps) {
+  // The controls that are on the page right now, by selector. Looked up once,
+  // when the panel opens, so a step about a control that is not there (another
+  // tab, or a button this role does not get) has no link to nowhere.
+  const [onPage, setOnPage] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!onShowMe) return;
+    const found = new Set<string>();
+    for (const step of topic.steps) {
+      const target = stepTarget(step);
+      if (target && firstOnScreen(target)) found.add(target);
+    }
+    // The page is only readable here, after the panel has been drawn.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOnPage(found);
+  }, [topic, onShowMe]);
+
   return (
     <div className="help-topic">
       <section>
@@ -65,9 +112,25 @@ export function HelpTopicView({ topic }: { topic: HelpTopic }) {
         <section>
           <h5>Steps</h5>
           <ol>
-            {topic.steps.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
+            {topic.steps.map((step, index) => {
+              const text = stepText(step);
+              const target = stepTarget(step);
+              return (
+                <li key={text}>
+                  {text}
+                  {onShowMe && target && onPage.has(target) && (
+                    <button
+                      type="button"
+                      className="help-step__show"
+                      aria-label={`Show me step ${index + 1}`}
+                      onClick={() => onShowMe({ text, target })}
+                    >
+                      Show me <span aria-hidden="true">→</span>
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ol>
         </section>
       )}

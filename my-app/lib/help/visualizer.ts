@@ -1,18 +1,19 @@
+import { anchor } from "./steps";
 import type { HelpTopic } from "./types";
 
 /** Help for Visualizer. Shown in the Help panel; the blurb is the page header's one line. */
 export const visualizerHelp: HelpTopic = {
   title: "Visualizer",
-  blurb: "See a schema as a map of tables and the links between them.",
+  blurb: "See the shape of your data: a map of tables and the links between them.",
   purpose:
     "Visualizer draws a live map of any schema: its tables, columns and keys, and the foreign key paths between them. Side by side draws two schemas at once, so you can look for differences by eye before you compare them.",
   steps: [
     "Open Visualizer from the menu.",
-    "Pick a connection, then one of its schemas. The diagram draws by itself.",
-    "Drag to move around and scroll to zoom. The small map in the corner shows where you are.",
+    { text: "Pick a connection, then one of its schemas. The diagram draws by itself.", target: anchor("visualizer-target") },
+    { text: "Drag to move around and scroll to zoom. The small map in the corner shows where you are.", target: anchor("visualizer-diagram", ".vz-stage") },
     "Click a table to keep it and the tables linked to it lit while the rest fade. Click the background to clear it.",
     "Type in the search box on the diagram to find a table by name.",
-    "Switch to Side by side to draw a second schema next to the first. Drag the divider to resize the panes, or double-click it to reset them.",
+    { text: "Switch to Side by side to draw a second schema next to the first. Drag the divider to resize the panes, or double-click it to reset them.", target: anchor("visualizer-mode") },
     "Press Open in Compare to carry the picked schemas over to Compare. Check the order there, then press Compare yourself.",
   ],
   terms: [
@@ -35,7 +36,7 @@ export const visualizerHelp: HelpTopic = {
     },
     {
       term: "Side by side",
-      meaning: "Two schemas in two panes, for example dev and production. Each pane has its own connection and schema.",
+      meaning: "Two schemas in two panes, for example a test copy and the live one. Each pane has its own connection and schema.",
     },
     {
       term: "Divider",

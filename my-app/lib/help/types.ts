@@ -10,15 +10,22 @@ export type HelpProblem = { problem: string; fix: string };
 /** An extra part of the help, such as one tab of a page with tabs. */
 export type HelpSection = { title: string; body: string[] };
 
+/**
+ * One step. Plain words, or words plus `target`: a CSS selector for the
+ * control the step is about, which gives the step a "Show me" link in the
+ * Help panel. Write targets with anchor() from ./steps.
+ */
+export type HelpStep = string | { text: string; target: string };
+
 export type HelpTopic = {
-  /** The page's name, as the menu shows it. */
+  /** The page's name, as the menu shows it. The page header's big title is this. */
   title: string;
-  /** One line for the page header: 15 words or fewer. */
+  /** The page's tagline, shown under the title: 15 words or fewer. */
   blurb: string;
   /** What the page is for, in two or three sentences. */
   purpose: string;
   /** How to use the page, one step per entry, in order. */
-  steps: string[];
+  steps: HelpStep[];
   /** What the page's words mean. */
   terms: HelpTerm[];
   /** Common problems and their fixes. */

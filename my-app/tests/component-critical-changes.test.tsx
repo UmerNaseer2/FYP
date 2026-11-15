@@ -336,7 +336,7 @@ describe("the list", () => {
   test("carries the engine's own sentence about the change", () => {
     renderPanel([breaking({ detail: "Column total exists only in shop_prod." })]);
     expect(words(rows()[0].querySelector(".muted"))).toBe(
-      "— Column total exists only in shop_prod."
+      ": Column total exists only in shop_prod."
     );
   });
 

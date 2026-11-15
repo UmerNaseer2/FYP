@@ -390,10 +390,10 @@ export function UsersTab({ active }: { active: boolean }) {
                   </span>
                   <div className="ad-p__who">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <b className="truncate">{u.name || u.email}</b>
+                      <b className="truncate" title={u.name || u.email}>{u.name || u.email}</b>
                       {isYou && <span className="ad-tag">You</span>}
                     </div>
-                    {u.name && u.name !== u.email && <small>{u.email}</small>}
+                    {u.name && u.name !== u.email && <small title={u.email}>{u.email}</small>}
                     <div className="mt-1">
                       <Pill tone={roleTone(u.role)} dot={u.role === "admin"}>
                         {labelOf(u.role)}

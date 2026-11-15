@@ -7,7 +7,7 @@ export const generalHelp: HelpTopic = {
   purpose:
     "Schema Studio is a tool for managing PostgreSQL schemas. It compares two databases, writes the SQL that brings them into line, runs it safely and keeps a record of every version. All work belongs to an organization, and your role in it decides what you may do.",
   steps: [
-    "Connect: save a connection for each database on the Connections page, for example dev, staging and production.",
+    "Connect: on the Connections page, save a connection for each database your team works with.",
     "Track: on the Dashboard, track the schemas you care about. Each one gets a baseline snapshot.",
     "Compare: on Compare, pick the schema you want as the source and the schema to update as the target. The app lists the differences and writes a migration. Comparing changes nothing in either database.",
     "Edit the script: in the Script Editor, write or adjust the SQL and its rollback, then save it to GitHub as a version. Nothing runs from that page.",

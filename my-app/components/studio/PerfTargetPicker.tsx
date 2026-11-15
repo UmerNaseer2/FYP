@@ -2,29 +2,28 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Select } from "@/components/ui/Select";
+import { TargetPicker } from "@/components/studio/TargetPicker";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { AlertCircleIcon } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
- * "Which database, which schema" — the two questions every Performance tab has
+ * "Which database, which schema": the two questions every Performance tab has
  * to ask before it can say anything at all.
  *
- * Kept out of the page because all of the performance work asks them: the
- * advice list reads one schema's structure, and the query analyser needs a
- * connection to send an EXPLAIN to. One component means the answer looks the
- * same on every tab and survives a switch between them.
+ * What is drawn is the shared TargetPicker, the same picker as on Compare and
+ * Deploy. This file only does the loading around it: the saved PostgreSQL
+ * connections, the schemas on the chosen one, and a sensible first choice.
  *
- * The picker owns the selection and reports it upward, rather than being driven
- * from above. That is deliberate: the two lists it fetches are the only thing
- * that knows which pairs are even valid, so letting it choose the first sensible
- * pair — the first PostgreSQL connection and its `public` schema — is what stops
- * the screen opening as two empty dropdowns and nothing else.
+ * It owns the selection and reports it upward, because the two lists it
+ * fetches are the only thing that knows which pairs are valid. It starts on
+ * the first PostgreSQL connection and its `public` schema, so the page never
+ * opens on an empty picker.
  */
 
 export type PerfTarget = {
-  /** Connection id as a string, because that is what a <Select> value is. */
+  /** Connection id as a string, because that is what the picker hands back. */
   connectionId: string;
   connectionName: string;
   schema: string;
@@ -47,12 +46,12 @@ export function PerfTargetPicker({
 }: {
   /**
    * Called with the chosen pair, and with null while there isn't a whole one.
-   * Must be stable across renders — a plain `useState` setter, or wrapped in
-   * `useCallback` — because it is what the report effect below watches.
+   * Must be stable across renders (a plain `useState` setter, or wrapped in
+   * `useCallback`) because it is what the report effect below watches.
    */
   onChange: (next: PerfTarget | null) => void;
   /**
-   * A target carried in from another screen — a Suggestions finding, or the
+   * A target carried in from another screen: a Suggestions finding, or the
    * analyser's link to one query's history. Without these a deep link lands on
    * the right tab looking at the wrong database, which is worse than landing
    * nowhere: the reader has no reason to doubt what they are shown.
@@ -120,7 +119,7 @@ export function PerfTargetPicker({
     };
   }, [connectionsReload]);
 
-  // Whenever the connection changes, the schema list has to be fetched again —
+  // Whenever the connection changes, the schema list has to be fetched again,
   // and the schema that was chosen on the old server means nothing on this one.
   useEffect(() => {
     if (!connectionId) return;
@@ -143,7 +142,7 @@ export function PerfTargetPicker({
         const list: string[] = Array.isArray(data.schemas) ? data.schemas : [];
         setSchemas(list);
         // A schema carried in from another screen wins, but only if this server
-        // really has it — a name from a link to a different database must not
+        // really has it. A name from a link to a different database must not
         // be shown as selected when nothing here answers to it.
         // `public` otherwise, because it almost always is the one being asked
         // about.
@@ -171,7 +170,7 @@ export function PerfTargetPicker({
   const picked = connections.find((c) => String(c.id) === connectionId);
   const connectionName = picked ? picked.name : "";
 
-  // Tell the page what is selected — but only once both halves are real, so a
+  // Tell the page what is selected, but only once both halves are real, so a
   // tab never fires a request at half a target while the lists are still moving.
   useEffect(() => {
     onChange(connectionId && schema ? { connectionId, connectionName, schema } : null);
@@ -179,23 +178,31 @@ export function PerfTargetPicker({
 
   if (connPhase === "error") {
     return (
-      <div className="pf-note pf-note--warn">
+      <div data-tour="performance-target">
+        <ErrorNotice
+          error="Could not load your saved connections."
+          onRetry={() => {
+            setConnPhase("loading");
+            setConnectionsReload((n) => n + 1);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (connPhase === "ready" && connections.length === 0) {
+    return (
+      <div className="pf-note pf-note--warn" data-tour="performance-target">
         <AlertCircleIcon size={15} className="ico" />
         <div>
-          <div className="title">Could not load your saved connections</div>
+          <div className="title">No PostgreSQL connections saved</div>
           <div className="body">
-            The list could not be read just now.{" "}
-            <button
-              type="button"
-              className="underline"
-              onClick={() => {
-                setConnPhase("loading");
-                setConnectionsReload((n) => n + 1);
-              }}
-            >
-              Try again
-            </button>
-            .
+            Performance reads a live PostgreSQL server, so there is nothing to
+            read yet.{" "}
+            <Link href={orgPath("/connections")} className="underline">
+              Open Connections
+            </Link>{" "}
+            and add one. This page will find it.
           </div>
         </div>
       </div>
@@ -203,114 +210,36 @@ export function PerfTargetPicker({
   }
 
   return (
-    <div className="source-bar pf-pick">
-      <div className="source-bar__group">
-        <span className="source-bar__label">Looking at</span>
-        {/* One picker, not the Compare screen's grid of them — so the
-            connection name gets the width it needs instead of being truncated
-            into a 300px track with nothing beside it. */}
-        <div className="picker" style={{ maxWidth: 560 }}>
-          {/* The pill is two letters of jargon, so the name goes on the
-              element itself and not only in a title a touch device
-              never shows. */}
-          <span
-            className="kind live"
-            title="Read live from the server, not from a saved snapshot"
-            aria-label="Read live from the server, not from a saved snapshot"
-          >
-            live
-          </span>
-          <div className="body">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
-                Connection
-              </span>
-            </div>
-            <Select
-              value={connectionId}
-              ariaLabel="Connection to analyse"
-              placeholder={
-                connPhase === "loading" ? "Loading connections…" : "Select a connection"
-              }
-              disabled={connPhase === "loading" || connections.length === 0}
-              options={connections.map((c) => ({
-                value: String(c.id),
-                label: `${c.name} (${c.database_name})`,
-              }))}
-              onChange={(next) => {
-                setSchema("");
-                setSchemaError(null);
-                setSchemaPhase("loading");
-                setConnectionId(next);
-              }}
-            />
-            <Select
-              value={schema}
-              ariaLabel="Schema to analyse"
-              variant="sub"
-              mono
-              placeholder={schemaPhase === "loading" ? "Loading schemas…" : "Select a schema"}
-              disabled={schemaPhase !== "ready" || schemas.length === 0}
-              options={schemas.map((s) => ({ value: s, label: s }))}
-              onChange={setSchema}
-            />
-          </div>
-        </div>
-      </div>
-
-      {connPhase === "ready" && connections.length === 0 && (
-        <div className="pf-note pf-note--warn">
-          <AlertCircleIcon size={15} className="ico" />
-          <div>
-            <div className="title">No PostgreSQL connections saved</div>
-            <div className="body">
-              Performance advice is read from a live server, so there is nothing
-              to read yet.{" "}
-              {/* "then come back" is an instruction with no way to follow it.
-                  The link is the come-back. */}
-              <Link href={orgPath("/connections")} className="underline">
-                Save a PostgreSQL connection
-              </Link>{" "}
-              and this picker will find it.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {schemaPhase === "error" && (
-        <div className="pf-note pf-note--warn">
-          <AlertCircleIcon size={15} className="ico" />
-          <div>
-            <div className="title">Could not list schemas</div>
-            <div className="body">
-              {schemaError}{" "}
-              <button
-                type="button"
-                className="underline"
-                onClick={() => {
-                  setSchemaPhase("loading");
-                  setSchemasReload((n) => n + 1);
-                }}
-              >
-                Try again
-              </button>
-              .
-            </div>
-          </div>
-        </div>
-      )}
-
-      {schemaPhase === "ready" && connectionId !== "" && schemas.length === 0 && (
-        <div className="pf-note pf-note--warn">
-          <AlertCircleIcon size={15} className="ico" />
-          <div>
-            <div className="title">This server has no readable schemas</div>
-            <div className="body">
-              The connection worked, but this user cannot see any schema on it.
-            </div>
-          </div>
-        </div>
-      )}
+    <div className="pf-pick" data-tour="performance-target">
+      {/* The shared picker draws the field, the list of schemas and its own
+          notice when the schemas cannot be read. */}
+      <TargetPicker
+        label="Looking at"
+        hint="read live from the server"
+        connections={connections.map((c) => ({ id: c.id, name: c.name, detail: c.database_name }))}
+        connectionId={connectionId}
+        schema={schema}
+        schemas={schemas}
+        loading={connPhase === "loading" || (connectionId !== "" && schemaPhase === "loading")}
+        error={schemaPhase === "error" ? schemaError : null}
+        onRetry={() => {
+          setSchemaPhase("loading");
+          setSchemasReload((n) => n + 1);
+        }}
+        disabled={connPhase === "loading"}
+        onChange={(next) => {
+          if (next.connectionId !== connectionId) {
+            // Another connection: its schemas load next, and the old schema
+            // means nothing there.
+            setSchema("");
+            setSchemaError(null);
+            setSchemaPhase("loading");
+            setConnectionId(next.connectionId);
+            return;
+          }
+          setSchema(next.schema);
+        }}
+      />
     </div>
   );
 }

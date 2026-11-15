@@ -24,7 +24,8 @@ import { PageHeader } from "@/components/studio/PageHeader";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { utcStamp } from "@/lib/format-date";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { recordRecent } from "@/lib/recents";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -129,6 +130,14 @@ export default function SchemaDetailPage({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A schema you opened shows under Recent in the command bar (Cmd K).
+  const orgSlug = useOrg()?.slug ?? null;
+  const recentName = detail?.schemaName ?? null;
+  useEffect(() => {
+    if (!recentName || !orgSlug) return;
+    recordRecent({ kind: "schema", label: recentName, href: `/${orgSlug}/schemas/${trackedSchemaId}` }, orgSlug);
+  }, [recentName, orgSlug, trackedSchemaId]);
 
   // First paint: the shape of the page, so nothing jumps when the data lands.
   if (loading) {

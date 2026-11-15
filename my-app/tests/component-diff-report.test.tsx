@@ -116,7 +116,7 @@ describe("what the report promises about a drop", () => {
     expect(lineFor("sales_rollup")).toHaveTextContent("drop held back");
     // The plain view's is not: it stores nothing, so nothing is held back and
     // saying it was would be the same lie pointing the other way.
-    expect(lineFor("open_orders")).toHaveTextContent("only in target — dropped");
+    expect(lineFor("open_orders")).toHaveTextContent("only in target, dropped");
     expect(lineFor("open_orders")).not.toHaveTextContent("held back");
 
     // And the banner above counts exactly the drop that destroys data.
@@ -133,8 +133,8 @@ describe("what the report promises about a drop", () => {
       />
     );
 
-    expect(lineFor("sales_rollup")).toHaveTextContent("only in target — dropped");
-    expect(lineFor("open_orders")).toHaveTextContent("only in target — dropped");
+    expect(lineFor("sales_rollup")).toHaveTextContent("only in target, dropped");
+    expect(lineFor("open_orders")).toHaveTextContent("only in target, dropped");
     // Asserted on the lines rather than on the whole page: the legend above
     // them explains the words "held back" whether or not anything is.
     expect(lineFor("sales_rollup")).not.toHaveTextContent("held back");
@@ -165,8 +165,8 @@ describe("what the report promises about a drop", () => {
       />
     );
 
-    expect(lineFor("sales_rollup")).toHaveTextContent("definition changed — rebuild held back");
-    expect(lineFor("open_orders")).toHaveTextContent("definition changed — dropped and rebuilt");
+    expect(lineFor("sales_rollup")).toHaveTextContent("definition changed, rebuild held back");
+    expect(lineFor("open_orders")).toHaveTextContent("definition changed, dropped and rebuilt");
   });
 
   it("describes a drift report as history rather than as a plan", () => {
@@ -178,7 +178,7 @@ describe("what the report promises about a drop", () => {
     );
 
     expect(lineFor("sales_rollup")).toHaveTextContent(
-      "only in the live database — added since the baseline"
+      "only in the live database, added since the baseline"
     );
     expect(
       screen.getByText("Going back to the baseline would drop 1 thing")
@@ -208,7 +208,7 @@ describe("the rest of the object lines", () => {
     const group = screen.getByText("Views").closest(".obj-group") as HTMLElement;
     expect(within(group).getByText("sales_rollup")).toBeInTheDocument();
     expect(within(group).queryByText("recalc(integer)")).not.toBeInTheDocument();
-    expect(lineFor("recalc(integer)")).toHaveTextContent("only in source — created");
+    expect(lineFor("recalc(integer)")).toHaveTextContent("only in source, created");
   });
 
   it("says a sequence, enum or domain is altered in place, and how a routine goes", () => {
@@ -243,11 +243,11 @@ describe("the rest of the object lines", () => {
     );
 
     for (const name of ["order_seq", "order_status", "email_address"]) {
-      expect(lineFor(name)).toHaveTextContent("definition changed — altered in place");
+      expect(lineFor(name)).toHaveTextContent("definition changed, altered in place");
     }
-    expect(lineFor("recalc(integer)")).toHaveTextContent("definition changed — replaced");
+    expect(lineFor("recalc(integer)")).toHaveTextContent("definition changed, replaced");
     expect(lineFor("total(integer)")).toHaveTextContent(
-      "definition changed — dropped and recreated"
+      "definition changed, dropped and recreated"
     );
   });
 

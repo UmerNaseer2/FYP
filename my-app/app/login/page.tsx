@@ -133,6 +133,12 @@ export default function LoginPage() {
   const desktop = useDesktopBridge();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /** The raw wording behind an error, shown only under "Technical details". */
+  const [errorTech, setErrorTech] = useState<string | null>(null);
+  /** True when this server offers the shared trial (lib/trial-rules.ts). */
+  const [trialOffered, setTrialOffered] = useState(false);
+  /** True when "Try it now" just failed and sent the visitor back here. */
+  const [trialFailed, setTrialFailed] = useState(false);
   /** Whether "Trouble signing in?" is showing its help. */
   const [helpOpen, setHelpOpen] = useState(false);
   /** null while we are still asking the server which providers it has. */
@@ -158,6 +164,9 @@ export default function LoginPage() {
       const code = new URLSearchParams(window.location.search).get("error");
 
       let next: Offered = { microsoft: false, github: false };
+      // The trial has a provider of its own in the same list (auth.config.ts),
+      // there only when the server offers it. The desktop app never does.
+      let trial = false;
       try {
         const res = await fetch("/api/auth/providers");
         const providers: Record<string, unknown> = res.ok ? await res.json() : {};
@@ -172,12 +181,15 @@ export default function LoginPage() {
               microsoft: Boolean(providers[BROWSER_PROVIDER.microsoft]),
               github: Boolean(providers[BROWSER_PROVIDER.github]),
             };
+        trial = !getDesktopBridge() && Boolean(providers.trial);
       } catch {
         // Unreadable counts as none: see the test of the same name.
       }
 
       if (cancelled) return;
       setOffered(next);
+      setTrialOffered(trial);
+      setTrialFailed(code === "TrialUnavailable");
       if (code) {
         setErrorMsg(errorMessage(code));
         setStatus("error");
@@ -235,6 +247,7 @@ export default function LoginPage() {
 
   async function handleLogin(chosen: Via) {
     setErrorMsg(null);
+    setErrorTech(null);
     // Signing in plays the logo reveal again when the studio opens.
     resetIntro();
     const callbackUrl = safeCallbackUrl(window.location.search, window.location.origin);
@@ -256,8 +269,11 @@ export default function LoginPage() {
         await signIn(BROWSER_PROVIDER[chosen], { callbackUrl });
       }
     } catch (error: unknown) {
+      // The error's own wording is written for developers, so it goes under
+      // "Technical details" and the headline says what to do.
       console.error(error);
-      setErrorMsg(error instanceof Error ? error.message : "Sign-in failed.");
+      setErrorMsg("Could not start the sign-in. Try again in a moment.");
+      setErrorTech(error instanceof Error ? error.message : null);
       setStatus("error");
     }
   }
@@ -268,7 +284,7 @@ export default function LoginPage() {
   return (
     <div className="si-page">
       <div className="si">
-        {/* ——— left: what the product is, drawn rather than told ——— */}
+        {/* Left: what the product is, drawn rather than told. */}
         <section className="si-art" aria-labelledby="si-tagline">
           <svg className="si-sq" viewBox="0 0 300 300" aria-hidden="true">
             <rect x="40" y="40" width="150" height="150" rx="36" fill="var(--accent)" />
@@ -279,7 +295,7 @@ export default function LoginPage() {
               height="150"
               rx="36"
               fill="none"
-              stroke="var(--on-pill)"
+              stroke="currentColor"
               strokeWidth="3"
             />
           </svg>
@@ -303,7 +319,7 @@ export default function LoginPage() {
           </ul>
         </section>
 
-        {/* ——— right: the sign-in card ——— */}
+        {/* Right: the sign-in card. */}
         <main className="si-main">
           {/* Back to the front page. The desktop app has none ("/" forwards it
               to the studio), so only a browser gets the link. */}
@@ -333,36 +349,14 @@ export default function LoginPage() {
                 : "Sign in with the account your team uses. There is no separate password to remember."}
             </p>
 
-            {/* state-swappable region — `key` remounts it so the fade replays */}
+            {/* state-swappable region: `key` remounts it so the fade replays */}
             <div className="swap" key={ssoReady === false ? "unconfigured" : status}>
               {ssoReady === false && (
+                // Nothing to sign in against. The greyed out button never
+                // stands alone: the note under it says why and what to do
+                // next. Setting names stay under "Technical details", for
+                // whoever runs the server.
                 <div>
-                  <div className="banner mb-3" role="alert">
-                    <AlertCircleIcon size={16} className="ico" />
-                    <div className="body">
-                      <div className="title">Single sign-on is not set up.</div>
-                      {desktop ? (
-                        <div style={{ color: "var(--text-2)" }}>
-                          This copy of the desktop app was built without its
-                          Microsoft sign-in IDs, so there is nothing to sign in
-                          against. Whoever built it needs to add
-                          AZURE_AD_CLIENT_ID and AZURE_AD_TENANT_ID to
-                          desktop/.env.desktop, then build it again.
-                        </div>
-                      ) : (
-                        <div style={{ color: "var(--text-2)" }}>
-                          This server has no sign-in credentials, so there is
-                          nothing to sign in against. Whoever runs it needs to
-                          set NEXTAUTH_SECRET to a random value of its own
-                          (the example in docker-compose.yml does not count),
-                          plus AZURE_AD_CLIENT_ID,
-                          AZURE_AD_CLIENT_SECRET and AZURE_AD_TENANT_ID for
-                          Microsoft or GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET
-                          for GitHub, then restart.
-                        </div>
-                      )}
-                    </div>
-                  </div>
                   <button
                     type="button"
                     className="si-ms"
@@ -372,6 +366,59 @@ export default function LoginPage() {
                     <MsMark />
                     <span>Continue with Microsoft</span>
                   </button>
+                  <div className="notice notice--warn si-notice" role="alert">
+                    <span className="notice__icon" aria-hidden="true">
+                      <AlertCircleIcon size={18} />
+                    </span>
+                    <div className="notice__main">
+                      <p className="notice__title">
+                        {desktop
+                          ? "Microsoft sign-in isn't set up in this copy of the app."
+                          : trialOffered
+                            ? "Microsoft sign-in isn't set up here yet."
+                            : "Sign-in isn't set up on this server yet."}
+                      </p>
+                      <p className="notice__body">
+                        {desktop
+                          ? "Nothing is wrong with your account. Ask whoever gave you the app for a copy with sign-in set up."
+                          : trialOffered
+                            ? trialFailed
+                              ? "The trial could not be opened just now. Try again in a moment."
+                              : "You can still try the shared trial. No account needed."
+                            : "Nothing is wrong with your account. Whoever runs this server needs to finish setting up sign-in."}
+                      </p>
+                      {trialOffered && (
+                        // The same trial entry the front page uses
+                        // (app/api/trial/route.ts), as the Trial Admin.
+                        <form action="/api/trial" method="post" className="notice__actions">
+                          <button type="submit" name="role" value="admin" className="btn btn-primary btn-sm">
+                            Try it now
+                          </button>
+                        </form>
+                      )}
+                      <details className="notice__tech">
+                        <summary>Technical details</summary>
+                        {desktop ? (
+                          <p>
+                            This copy of the desktop app was built without its
+                            Microsoft sign-in IDs. Add AZURE_AD_CLIENT_ID and
+                            AZURE_AD_TENANT_ID to desktop/.env.desktop, then
+                            build it again.
+                          </p>
+                        ) : (
+                          <p>
+                            This server has no sign-in credentials. Set
+                            NEXTAUTH_SECRET to a random value of its own (the
+                            example in docker-compose.yml does not count),
+                            plus AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET
+                            and AZURE_AD_TENANT_ID for Microsoft or
+                            GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET for
+                            GitHub, then restart.
+                          </p>
+                        )}
+                      </details>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -449,15 +496,23 @@ export default function LoginPage() {
 
               {ssoReady !== false && status === "error" && (
                 <div>
-                  <div className="banner mb-3" role="alert">
-                    <AlertCircleIcon size={16} className="ico" />
-                    <div className="body">
-                      <div className="title">
+                  <div className="notice si-notice si-notice--first" role="alert">
+                    <span className="notice__icon" aria-hidden="true">
+                      <AlertCircleIcon size={18} />
+                    </span>
+                    <div className="notice__main">
+                      <p className="notice__title">
                         {errorMsg ?? "Sign-in failed or was cancelled."}
-                      </div>
-                      <div style={{ color: "var(--text-2)" }}>
-                        Try again, or contact your administrator if the problem persists.
-                      </div>
+                      </p>
+                      <p className="notice__body">
+                        Try again. If it keeps happening, ask whoever runs this server.
+                      </p>
+                      {errorTech && (
+                        <details className="notice__tech">
+                          <summary>Technical details</summary>
+                          <p>{errorTech}</p>
+                        </details>
+                      )}
                     </div>
                   </div>
                   <div className="si-ways">

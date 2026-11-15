@@ -1,7 +1,8 @@
 // The app tour: a short walk through the studio's pages, one card at a time,
 // with the part of the page it talks about lit up. components/studio/AppTour
 // draws it. This file holds what it says and the rules for when it is offered,
-// with no React in it, so the tests can read it directly.
+// with no React in it, so the tests can read it directly. The last part, "the
+// light", finds a part of the page and lights it up.
 //
 // When it is offered: right after someone arrives by one of three doors, each
 // of which adds `?tour=` to the first studio address it opens.
@@ -239,9 +240,10 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     kicker: "Help",
     title: askAi ? "Stuck? Three ways out" : "Stuck? Two ways out",
     body: askAi
-      ? "Search jumps to any page. Ask AI answers questions about your schemas in plain words. Help explains the page you are on."
-      : "Search jumps to any page, and Help explains the page you are on.",
-    targets: [".ck-b", ".top-actions"],
+      ? "Search jumps to any page. Ask AI answers questions about your schemas in plain words. Help explains the page you are on. On a phone, Help and Ask AI are in the menu at the top."
+      : "Search jumps to any page, and Help explains the page you are on. On a phone, Help is in the menu at the top.",
+    // On a phone the top bar's buttons fold into its menu button, so that is lit too.
+    targets: [".ck-b", ".top-actions", ".tb-menu"],
     union: true,
   });
 
@@ -334,4 +336,185 @@ export function tourPicks(audience: TourAudience, can: TourInput["can"], pages: 
     picks = audience === "new" && mayAdd ? [addDatabase, compare, lookAround] : [compare, ...(mayAdd ? [addDatabase] : []), lookAround];
   }
   return picks.filter((pick) => pick.page === null || pages.includes(pick.page));
+}
+
+// ---------------------------------------------------------------- the light
+//
+// Finding a part of the page and putting the light (the hole) and the card on
+// it. The tour uses these for each stop, and Spotlight (AppTour.tsx) uses them
+// for the Help panel's "Show me" links. They only touch the page, so they
+// live here with no React.
+
+/** A rectangle on screen: left, top, right, bottom. */
+export type Box = { l: number; t: number; r: number; b: number };
+
+/** The band of screen the light may use, top to bottom. */
+type Room = { top: number; bottom: number };
+
+function onScreen(element: Element): boolean {
+  return element.getClientRects().length > 0 && element.getBoundingClientRect().width > 0;
+}
+
+/**
+ * The first element matching the selector that is drawn on the page right
+ * now, or null. A selector the browser cannot read counts as no match.
+ */
+export function firstOnScreen(selector: string): Element | null {
+  try {
+    return Array.from(document.querySelectorAll(selector)).find(onScreen) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The smallest box around all of these elements. */
+export function boxAround(elements: Element[]): Box {
+  const rects = elements.map((element) => element.getBoundingClientRect());
+  return {
+    l: Math.min(...rects.map((rect) => rect.left)),
+    t: Math.min(...rects.map((rect) => rect.top)),
+    r: Math.max(...rects.map((rect) => rect.right)),
+    b: Math.max(...rects.map((rect) => rect.bottom)),
+  };
+}
+
+/**
+ * Lights up `box` and puts the card beside it, scrolling the page so the
+ * element shows. Call it again as the page loads or changes size, passing back
+ * the number it returned last time (null the first time): that is where the
+ * page was last scrolled to, so it is scrolled again only when that spot
+ * moves, never while it is already on its way there.
+ */
+export function lightUp(
+  hole: HTMLElement,
+  card: HTMLElement,
+  element: Element | null,
+  box: Box | null,
+  aimed: number | null
+): number | null {
+  const room = roomFor(card, element);
+  if (element) {
+    const spot = scrollSpot(element, room);
+    if (spot !== null && (aimed === null || Math.abs(spot - aimed) > 8)) {
+      aimed = spot;
+      scrollPage(spot);
+    }
+  }
+  place(hole, card, box, room);
+  return aimed;
+}
+
+/** The page's scrolling area (everything under the top bars). */
+function pageScroller(): HTMLElement | null {
+  return document.getElementById("main-content");
+}
+
+function isPhone(): boolean {
+  return window.innerWidth <= 640;
+}
+
+/**
+ * Where the light may go: below the bars at the top when the part is in the
+ * page (so the bars are never lit), and on a phone above the sheet.
+ */
+function roomFor(card: HTMLElement, element: Element | null): Room {
+  const scroller = pageScroller();
+  const inPage = scroller !== null && element !== null && scroller.contains(element);
+  const top = inPage ? scroller.getBoundingClientRect().top + 6 : 6;
+  // offsetTop, not getBoundingClientRect: the card's pop-in animation scales it.
+  const bottom = isPhone() ? card.offsetTop - 12 : window.innerHeight - 6;
+  return { top, bottom };
+}
+
+/**
+ * The scroll position that shows the part in the room: in the middle when it
+ * fits, else with its top at the top. Null when the part is not in the page
+ * (the top bar), which never scrolls.
+ */
+function scrollSpot(element: Element, room: Room): number | null {
+  const scroller = pageScroller();
+  if (!scroller || !scroller.contains(element)) return null;
+  const rect = element.getBoundingClientRect();
+  const space = room.bottom - room.top - 16;
+  const want = rect.height <= space ? room.top + 8 + (space - rect.height) / 2 : room.top + 8;
+  const most = scroller.scrollHeight - scroller.clientHeight;
+  return Math.round(clamp(scroller.scrollTop + rect.top - want, 0, Math.max(0, most)));
+}
+
+/** Scrolls the page there: a glide, or a jump for someone who asked for less motion. */
+function scrollPage(spot: number) {
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  pageScroller()?.scrollTo({ top: spot, behavior: still ? "auto" : "smooth" });
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(Math.max(value, low), high);
+}
+
+function px(value: number): string {
+  return `${Math.round(value)}px`;
+}
+
+/**
+ * Moves the light (the hole) over the box and the card beside it: to the
+ * right if there is room, else the left, else below, else above. On a phone
+ * the card is a sheet along the bottom (globals.css). The light stays in the
+ * room, so it never lights the bars at the top or slips under the sheet.
+ */
+function place(hole: HTMLElement, card: HTMLElement, box: Box | null, room: Room) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const phone = isPhone();
+  const cw = card.offsetWidth;
+  const ch = card.offsetHeight;
+  const gap = 16;
+
+  if (!box) {
+    hole.style.left = px(vw / 2);
+    hole.style.top = px(vh / 2);
+    hole.style.width = "0px";
+    hole.style.height = "0px";
+    card.style.left = phone ? "" : px((vw - cw) / 2);
+    card.style.top = phone ? "" : px((vh - ch) / 2);
+    return;
+  }
+
+  let left = Math.max(6, box.l - 8);
+  let top = Math.max(room.top, box.t - 8);
+  const right = Math.min(vw - 6, box.r + 8);
+  let bottom = Math.min(room.bottom, box.b + 8);
+  let x = 12;
+  let y = 12;
+
+  if (phone) {
+    // The card is the sheet; CSS places it.
+  } else if (right + gap + cw <= vw - 12) {
+    x = right + gap;
+    y = clamp(top, 12, vh - ch - 12);
+  } else if (left - gap - cw >= 12) {
+    x = left - gap - cw;
+    y = clamp(top, 12, vh - ch - 12);
+  } else {
+    if (bottom + gap + ch <= vh - 12) y = bottom + gap;
+    else if (top - gap - ch >= 12) y = top - gap - ch;
+    else {
+      bottom = vh - ch - gap - 12;
+      y = bottom + gap;
+    }
+    x = clamp(left, 12, vw - cw - 12);
+  }
+  // Out of the room for a moment (the page is still scrolling to it): a thin
+  // light at the room's edge it will come in from, rather than none.
+  if (bottom < top + 40) {
+    if (box.t - 8 < room.top) bottom = top + 40;
+    else top = Math.max(6, bottom - 40);
+  }
+  left = Math.min(left, right);
+
+  hole.style.left = px(left);
+  hole.style.top = px(top);
+  hole.style.width = px(right - left);
+  hole.style.height = px(bottom - top);
+  card.style.left = phone ? "" : px(x);
+  card.style.top = phone ? "" : px(y);
 }

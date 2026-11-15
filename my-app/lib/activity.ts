@@ -1,4 +1,4 @@
-// Helpers for the "Your activity" page. They are plain functions with no
+// Helpers for the History page. They are plain functions with no
 // React in them, so the page stays short and the tests can call them directly.
 //
 // The page lists the organization's recorded drift checks, which is what
@@ -44,15 +44,15 @@ export const ACTIVITY_KINDS: { key: ActivityKind; label: string }[] = [
   { key: "all", label: "All" },
   { key: "drifted", label: "Drifted" },
   { key: "in_sync", label: "In sync" },
-  { key: "unreachable", label: "Unreachable" },
+  { key: "unreachable", label: "Can't be reached" },
   { key: "acknowledged", label: "Acknowledged" },
 ];
 
-/** "Drifted", "In sync" or "Unreachable". */
+/** "Drifted", "In sync" or "Can't be reached", the same words the status chips use. */
 export function statusLabel(status: DriftStatus): string {
   if (status === "drifted") return "Drifted";
   if (status === "in_sync") return "In sync";
-  return "Unreachable";
+  return "Can't be reached";
 }
 
 /** The day a moment falls on, in the reader's own time zone: "2026-11-12". */
@@ -97,6 +97,8 @@ export function matchesFilters(event: DriftEventFeedItem, filters: ActivityFilte
     event.connectionName ?? "",
     event.summary ?? "",
     statusLabel(event.status),
+    // The raw word too, so "drifted" or "in sync" finds what the chip calls it.
+    String(event.status ?? "").replace(/_/g, " "),
     driftSourceLabel(event.source),
   ]
     .join(" ")

@@ -82,11 +82,28 @@ const TRACKED: TrackedSchemaListItem = {
  * with too — a plain substring would answer the schema read with an empty
  * tracked list and the drawer would quietly offer nothing.
  */
+/**
+ * The small reads beside the list: who found the picked schema's state, and
+ * the two facts the Getting started list asks about (a saved comparison set,
+ * a GitHub token). Nothing has happened yet unless a test says otherwise.
+ */
+const SIDE_ROUTES = [
+  { match: "/api/lineage/audit", body: [] },
+  { match: "/api/comparison-sets", body: { sets: [] } },
+  { match: "/api/admin/github", body: { source: "none", tokenUnreadable: false } },
+];
+
 function baseRoutes(tracked: TrackedSchemaListItem[] = []) {
   return [
     { match: "/api/connections", body: CONNECTIONS },
     { match: /\/api\/lineage$/, body: tracked },
+    ...SIDE_ROUTES,
   ];
+}
+
+/** Open the card's More menu, where everything but the main action lives. */
+async function openMore(schema: string) {
+  fireEvent.click(await screen.findByRole("button", { name: `More actions for ${schema}` }));
 }
 
 /** Why each button is off, in the words the page uses. */
@@ -221,14 +238,17 @@ describe("a drifted schema's card", () => {
     const review = await screen.findByRole("link", { name: "Review drift on shop" });
     expect(review).toHaveAttribute("href", "/test-org/drift?tab=detail&schema=7");
     expect(review).toHaveClass("btn-primary");
-    expect(screen.getByRole("button", { name: /Check drift/ })).not.toHaveClass("btn-primary");
+    // One main action. Another check is still there, in the More menu.
+    expect(screen.queryByRole("button", { name: /Check drift/ })).toBeNull();
+    await openMore("shop");
+    expect(screen.getByRole("menuitem", { name: "Check drift" })).toBeEnabled();
   });
 
   it("is not offered on a card that has not drifted", async () => {
     setRoutes(baseRoutes([TRACKED]));
     render(<StudioPage />);
 
-    await screen.findByRole("button", { name: "Stop tracking shop" });
+    await screen.findByRole("button", { name: "More actions for shop" });
     expect(screen.queryByRole("link", { name: /Review drift/ })).toBeNull();
   });
 });
@@ -239,7 +259,8 @@ describe("for a role that may not track, check or stop tracking", () => {
     setRoutes(baseRoutes([TRACKED]));
     render(<StudioPage />);
 
-    const untrack = await screen.findByRole("button", { name: "Stop tracking shop" });
+    await openMore("shop");
+    const untrack = screen.getByRole("menuitem", { name: "Stop tracking shop" });
     const track = screen.getByRole("button", { name: /Track a schema/ });
     const check = screen.getByRole("button", { name: /Check drift/ });
 
@@ -350,7 +371,7 @@ describe("the skyline", () => {
       name: "billing, Drifted, 4 recorded versions",
     });
     const shop = screen.getByRole("button", {
-      name: "shop, Not checked, 0 recorded versions",
+      name: "shop, Not checked yet, 0 recorded versions",
     });
     expect(billing).toHaveAttribute("aria-pressed", "true");
     expect(shop).toHaveAttribute("aria-pressed", "false");
@@ -365,13 +386,15 @@ describe("the skyline", () => {
     const shop = await screen.findByRole("button", { name: /^shop, / });
     fireEvent.click(shop);
     expect(shop).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Stop tracking shop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "More actions for shop" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Review drift/ })).toBeNull();
 
-    fireEvent.keyDown(screen.getByRole("button", { name: /^billing, / }), {
-      key: "Enter",
-    });
-    expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
+    // A building is a real button, so Enter and Space press it without any
+    // key handling of the page's own.
+    const billing = screen.getByRole("button", { name: /^billing, / });
+    expect(billing.tagName).toBe("BUTTON");
+    fireEvent.click(billing);
+    expect(screen.getByRole("button", { name: "More actions for billing" })).toBeInTheDocument();
   });
 
   it("lists what has drifted under Needs you, and picks it from there", async () => {
@@ -381,7 +404,7 @@ describe("the skyline", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^shop, / }));
     const row = screen.getByRole("button", { name: /billing.*1 table removed/ });
     fireEvent.click(row);
-    expect(screen.getByRole("button", { name: "Stop tracking billing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "More actions for billing" })).toBeInTheDocument();
   });
 
   it("reads the table counts only when Tables is picked as the height", async () => {
@@ -396,7 +419,7 @@ describe("the skyline", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
     expect(
-      await screen.findByRole("button", { name: "shop, Not checked, 12 tables" })
+      await screen.findByRole("button", { name: "shop, Not checked yet, 12 tables" })
     ).toBeInTheDocument();
     expect(screen.getByText(/had more tables in its latest recorded version/)).toBeInTheDocument();
   });
@@ -411,7 +434,7 @@ describe("the skyline", () => {
     await screen.findByRole("button", { name: /^shop, / });
     fireEvent.click(screen.getByRole("radio", { name: "Tables" }));
     expect(
-      await screen.findByRole("button", { name: "shop, Not checked, table count not known" })
+      await screen.findByRole("button", { name: "shop, Not checked yet, table count not known" })
     ).toBeInTheDocument();
     expect((await screen.findAllByText("Couldn't read")).length).toBeGreaterThan(0);
   });
@@ -422,6 +445,7 @@ describe("before anything is tracked", () => {
     setRoutes([
       { match: "/api/connections", body: [] },
       { match: /\/api\/lineage$/, body: [] },
+      ...SIDE_ROUTES,
     ]);
     render(<StudioPage />);
 
@@ -437,11 +461,132 @@ describe("before anything is tracked", () => {
     setRoutes([
       { match: "/api/connections", body: CONNECTIONS },
       { match: /\/api\/lineage$/, status: 500, body: { error: "down" } },
+      ...SIDE_ROUTES,
     ]);
     render(<StudioPage />);
 
     expect(await screen.findByText("Couldn't load tracked schemas")).toBeInTheDocument();
     expect(screen.queryByText("Nothing tracked yet")).toBeNull();
     expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+  });
+});
+
+describe("the picked schema's card", () => {
+  it("says the state in one line, with how often it is checked", async () => {
+    setRoutes(baseRoutes([{ ...TRACKED, driftIntervalMinutes: 15 }]));
+    render(<StudioPage />);
+
+    expect(
+      await screen.findByText("Not checked yet. Checks every 15 minutes.")
+    ).toBeInTheDocument();
+  });
+
+  it("says who found the drift when the newest event tells it", async () => {
+    const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    setRoutes([
+      { match: "/api/lineage/audit", body: [{ source: "scheduled", status: "drifted" }] },
+      ...baseRoutes([
+        {
+          ...TRACKED,
+          driftStatus: "drifted",
+          driftCheckedAt: dayAgo,
+          lastCheckedAt: dayAgo,
+          driftIntervalMinutes: 15,
+        },
+      ]),
+    ]);
+    render(<StudioPage />);
+
+    expect(
+      await screen.findByText(
+        "Found by the scheduled check 1 day ago. Checks every 15 minutes."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the rest in a More menu that Escape closes", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    await openMore("shop");
+    const more = screen.getByRole("button", { name: "More actions for shop" });
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    const menu = screen.getByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((line) => line.textContent)
+    ).toEqual(["Open", "Compare", "Stop tracking"]);
+    // The first line has the focus, so the arrow keys work straight away.
+    expect(within(menu).getByRole("menuitem", { name: "Open" })).toHaveFocus();
+
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(within(menu).getByRole("menuitem", { name: "Compare" })).toHaveFocus();
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(more).toHaveFocus();
+  });
+});
+
+describe("the Getting started list", () => {
+  const HIDDEN_KEY = "schema-studio:setup-hidden:test-org";
+
+  beforeEach(() => window.localStorage.clear());
+
+  it("counts the steps that are done and offers the next ones", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    expect(await screen.findByText("Getting started")).toBeInTheDocument();
+    // A connection is saved and a schema is tracked; no compare, no GitHub.
+    expect(screen.getByText("2 of 4 done")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Start" })).toHaveAttribute(
+      "href",
+      "/test-org/compare"
+    );
+    expect(screen.getByRole("link", { name: "Set up GitHub" })).toHaveAttribute(
+      "href",
+      "/test-org/admin?tab=github"
+    );
+  });
+
+  it("goes away once Hide is pressed, and stays away", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    const first = render(<StudioPage />);
+
+    await screen.findByText("Getting started");
+    fireEvent.click(screen.getByRole("button", { name: /Hide/ }));
+    expect(screen.queryByText("Getting started")).toBeNull();
+    expect(window.localStorage.getItem(HIDDEN_KEY)).toBe("1");
+
+    // Opening the Dashboard again does not bring it back.
+    first.unmount();
+    render(<StudioPage />);
+    await screen.findByRole("button", { name: "More actions for shop" });
+    await flushAsync();
+    expect(screen.queryByText("Getting started")).toBeNull();
+  });
+
+  it("goes away by itself when every step is done", async () => {
+    setRoutes([
+      { match: "/api/comparison-sets", body: { sets: [{ id: 1 }] } },
+      { match: "/api/admin/github", body: { source: "organization", tokenUnreadable: false } },
+      ...baseRoutes([TRACKED]),
+    ]);
+    render(<StudioPage />);
+
+    await screen.findByRole("button", { name: "More actions for shop" });
+    await flushAsync();
+    expect(screen.queryByText("Getting started")).toBeNull();
+  });
+
+  it("tells somebody who is not an Admin that an Admin sets up GitHub", async () => {
+    setUser("viewer");
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    expect(await screen.findByText("An Admin sets this up.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Set up GitHub" })).toBeNull();
   });
 });

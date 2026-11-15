@@ -1,5 +1,5 @@
 // Pure graph-building for the Schema Visualizer: turn a SchemaSnapshot into
-// positioned React Flow nodes + edges. No React, no fetch — unit-testable.
+// positioned React Flow nodes + edges. No React, no fetch, unit-testable.
 //
 // Inspired by sqlhabit/sql_schema_visualizer (MIT), which hand-authors its
 // tables/edges/positions as JSON config. We have live introspection
@@ -20,14 +20,14 @@ export type ColumnRow = {
   isPrimaryKey: boolean;
   /** Column participates in an outgoing FK (links to another table). */
   isForeignKey: boolean;
-  /** FK points at a table outside this schema/snapshot — drawn as a badge, no edge. */
+  /** FK points at a table outside this schema/snapshot, drawn as a badge, no edge. */
   externalRef: string | null;
 };
 
 export type TableNodeData = {
   label: string;
   columns: ColumnRow[];
-  /** Index into the accent palette — deterministic per table name. */
+  /** Index into the accent palette, deterministic per table name. */
   accent: number;
   [key: string]: unknown; // satisfy React Flow's Record constraint
 };
@@ -47,7 +47,7 @@ export type VizEdge = {
   target: string;
   sourceHandle: string;
   targetHandle: string;
-  /** FK constraint name — shown on hover/selection. */
+  /** FK constraint name, shown on hover/selection. */
   label?: string;
 };
 
@@ -218,7 +218,7 @@ function layoutWithDagre(nodes: VizNode[], edges: VizEdge[]): void {
 
   for (const node of nodes) {
     const pos = g.node(node.id);
-    if (!pos) continue; // defensive — every node was registered above
+    if (!pos) continue; // defensive, every node was registered above
     rankX.set(node.id, pos.x);
     // dagre positions are centers; React Flow wants top-left corners.
     node.position = {

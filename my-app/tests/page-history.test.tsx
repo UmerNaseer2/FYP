@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 /**
- * The "Your activity" page: the organization's recorded drift checks.
+ * The History page: the organization's recorded drift checks.
  *
  * It reads GET /api/lineage/audit and nothing else. These tests cover what the
  * page shows while loading, when the list is empty, when the server fails, and
@@ -131,7 +131,7 @@ describe("loading, empty and failing", () => {
     expect(screen.getByRole("button", { name: "Export as CSV" })).toBeDisabled();
   });
 
-  test("shows the server's own words on a failure, and Retry asks again", async () => {
+  test("shows the server's own words on a failure, and Try again asks again", async () => {
     setRoutes([
       {
         match: "/api/lineage/audit",
@@ -148,7 +148,7 @@ describe("loading, empty and failing", () => {
     expect(auditCalls()).toHaveLength(1);
 
     setRoutes([{ match: "/api/lineage/audit", body: sampleEvents() }]);
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await flushAsync();
 
     expect(auditCalls()).toHaveLength(2);
@@ -249,7 +249,7 @@ describe("filters", () => {
 
     const kinds = screen.getByRole("group", { name: "Filter by result" });
     expect(within(kinds).getByRole("button", { name: /^All/ })).toHaveTextContent("3");
-    const unreachable = within(kinds).getByRole("button", { name: /^Unreachable/ });
+    const unreachable = within(kinds).getByRole("button", { name: /^Can't be reached/ });
     expect(unreachable).toHaveTextContent("1");
 
     fireEvent.click(unreachable);
@@ -287,7 +287,7 @@ describe("filters", () => {
 
     const strip = screen.getByRole("region", { name: "Checks per day, last 30 days" });
     expect(within(strip).getByText("3 checks on 2 days")).toBeInTheDocument();
-    const day = within(strip).getByRole("button", { name: /2 checks, 1 unreachable/ });
+    const day = within(strip).getByRole("button", { name: /2 checks, 1 can't be reached/ });
 
     fireEvent.click(day);
 

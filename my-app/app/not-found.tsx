@@ -54,7 +54,7 @@ export default function NotFound() {
               <DashboardIcon size={14} /> Dashboard
             </Link>
             <Link href="/compare" className="btn btn-secondary">
-              <CompareIcon size={14} /> Compare &amp; Author
+              <CompareIcon size={14} /> Compare & Author
             </Link>
           </div>
         </article>
