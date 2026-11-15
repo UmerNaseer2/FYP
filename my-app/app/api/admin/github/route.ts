@@ -24,13 +24,18 @@ import { encryptionKeySource } from "@/lib/secret-store";
  * who saved it last. It never sends the token, to anyone: only whether one
  * is saved and readable.
  *
- * PUT (github:update) saves `{ repository, token? }`. The repository may be
- * typed as owner/name or pasted as its GitHub address. Leave the token out
- * to keep the one already saved. GitHub is asked first whether the token
- * opens the repository, and nothing is saved when it does not.
+ * PUT (github:update) connects `{ repository, token }`, both required. The
+ * repository may be typed as owner/name or pasted as its GitHub address.
+ * GitHub is asked first whether the token opens the repository, and nothing
+ * is saved when it does not.
  *
- * DELETE (github:update) forgets the settings, token and all. The scripts
- * already in the repository stay there.
+ * Once saved, the repository and token are locked together: PUT refuses
+ * (409) while a pair is saved, so nobody can point the saved token at
+ * another repository or swap the token under the saved repository. To use
+ * another repository, DELETE the pair and PUT a new one with its own token.
+ *
+ * DELETE (github:update) removes the pair, repository and token together.
+ * The scripts already in the repository stay there.
  *
  * Every change goes in the change log on the Roles & permissions tab.
  *
@@ -45,11 +50,11 @@ const NO_KEY =
   "This server has no encryption key, so it can't keep an access token safe and won't save one. " +
   "Whoever runs the server can set APP_ENCRYPTION_KEY and restart it.";
 
-const NEED_TOKEN = "Paste an access token for the repository. None is saved for this organization yet.";
+const NEED_TOKEN = "Paste an access token for the repository. The repository and its token are saved together.";
 
-const UNREADABLE_SAVED =
-  "The saved access token can't be read on this server any more: the server's encryption key has " +
-  "changed since it was saved. Paste the token again.";
+const LOCKED =
+  "GitHub is already connected for this organization. A saved repository and its token stay " +
+  "together and can't be changed. Remove them first, then connect a repository with its token.";
 
 export async function GET() {
   const gate = await requirePermission("github:read");
@@ -81,50 +86,43 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: REPOSITORY_PROBLEM, field: "repository" }, { status: 400 });
   }
 
-  // A token left out, or left blank, keeps the one already saved.
+  // The repository and token come together: a token is never saved, or
+  // reused, apart from the repository it was checked against.
   if (fields.token !== undefined && fields.token !== null && typeof fields.token !== "string") {
     return NextResponse.json({ error: "Paste the access token as text.", field: "token" }, { status: 400 });
   }
-  const typed = typeof fields.token === "string" ? fields.token.trim() : "";
-  let token: string | null = null;
-  if (typed !== "") {
-    const problem = tokenProblem(typed);
-    if (problem) return NextResponse.json({ error: problem, field: "token" }, { status: 400 });
-    token = typed;
-  }
+  const token = typeof fields.token === "string" ? fields.token.trim() : "";
+  if (token === "") return NextResponse.json({ error: NEED_TOKEN, field: "token" }, { status: 400 });
+  const problem = tokenProblem(token);
+  if (problem) return NextResponse.json({ error: problem, field: "token" }, { status: 400 });
 
-  // GitHub checks the token that will be used: the new one, or the saved one.
-  let checkWith = token;
-  if (checkWith === null) {
-    let saved;
-    try {
-      saved = await readOrgGitHub(principal.orgId);
-    } catch (error) {
-      console.error("Failed to read the GitHub settings:", error);
-      return unavailable("Could not read the saved GitHub settings.");
-    }
-    if (!saved) return NextResponse.json({ error: NEED_TOKEN, field: "token" }, { status: 400 });
-    if (saved.token === null) return NextResponse.json({ error: UNREADABLE_SAVED, field: "token" }, { status: 400 });
-    checkWith = saved.token;
+  // A saved pair is locked. Refused before GitHub is asked anything, so the
+  // typed token is never tried against a locked organization's repository.
+  let saved;
+  try {
+    saved = await readOrgGitHub(principal.orgId);
+  } catch (error) {
+    console.error("Failed to read the GitHub settings:", error);
+    return unavailable("Could not read the saved GitHub settings.");
   }
+  if (saved) return locked();
 
-  const check = await checkRepositoryAccess({ ...repository, token: checkWith });
+  const check = await checkRepositoryAccess({ ...repository, token });
   if (!check.ok) return NextResponse.json({ error: check.error, field: check.field }, { status: check.status });
 
   try {
-    const saved = await saveOrgGitHub(principal.orgId, { ...repository, token }, actorOf(principal));
-    switch (saved.kind) {
+    const added = await saveOrgGitHub(principal.orgId, { ...repository, token }, actorOf(principal));
+    switch (added.kind) {
       case "not-found":
         return gone();
       case "no-key":
         return NextResponse.json({ error: NO_KEY }, { status: 503 });
-      case "no-token":
-        // The saved token went between the read above and the save.
-        return NextResponse.json({ error: NEED_TOKEN, field: "token" }, { status: 400 });
+      case "exists":
+        // Someone else connected a repository between the read above and the save.
+        return locked();
       case "ok":
         return NextResponse.json({
           saved: true,
-          changed: saved.changed || check.created,
           created: check.created,
           repository: repositoryLabel(repository),
         });
@@ -221,6 +219,11 @@ function gone(): NextResponse {
     { error: "This organization no longer exists. Someone may have just deleted it." },
     { status: 404 }
   );
+}
+
+/** A repository and token are already saved, and a saved pair is never changed. */
+function locked(): NextResponse {
+  return NextResponse.json({ error: LOCKED, locked: true }, { status: 409 });
 }
 
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */

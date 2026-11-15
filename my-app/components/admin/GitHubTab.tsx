@@ -19,8 +19,11 @@ import { timeAgo } from "@/lib/time-ago";
  * and app/api/admin/github/route.ts checks them again on every request.
  *
  * The token never comes back to the browser, not even for an Admin: the route
- * only says whether one is saved and still readable. So the token box always
- * starts empty, and leaving it empty keeps the saved token.
+ * only says whether one is saved and still readable.
+ *
+ * The repository and token are connected as a pair and then locked together:
+ * while a pair is saved there is no form, only Remove. To use another
+ * repository, remove the pair and connect the new repository with its token.
  *
  * GitHub is asked before anything is saved, so a token that can't open the
  * repository is turned down with the reason, under the box to fix.
@@ -56,7 +59,7 @@ export function GitHubTab({ active }: { active: boolean }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   // Bumped after a save or a removal, to load the settings again.
   const [loads, setLoads] = useState(0);
-  // The repository box starts as the saved repository once that has loaded.
+  // Only drawn while nothing is saved, so it starts empty, and is emptied again after a save.
   const [repository, setRepository] = useState("");
   const [token, setToken] = useState("");
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -81,7 +84,6 @@ export function GitHubTab({ active }: { active: boolean }) {
           return;
         }
         setView(body);
-        setRepository(body.repository ?? "");
         setLoadError(null);
       } catch {
         if (current) setLoadError("Network error while loading the GitHub settings.");
@@ -109,8 +111,8 @@ export function GitHubTab({ active }: { active: boolean }) {
       const response = await apiFetch("/api/admin/github", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        // No token keeps the saved one.
-        body: JSON.stringify(typedToken === "" ? { repository } : { repository, token: typedToken }),
+        // Always the pair: a saved token is never reused for another repository.
+        body: JSON.stringify({ repository, token: typedToken }),
       });
       const body = await jsonOf(response);
       if (!response.ok) {
@@ -120,15 +122,14 @@ export function GitHubTab({ active }: { active: boolean }) {
         else setActionError({ what: "save", message: reason });
         return;
       }
-      const saved = body as { changed?: unknown; created?: unknown; repository?: unknown };
+      const saved = body as { created?: unknown; repository?: unknown };
       const label = typeof saved.repository === "string" ? saved.repository : repository.trim();
       setNotice(
         saved.created === true
           ? `Saved. ${label} did not exist, so the app made it on GitHub as a private repository.`
-          : saved.changed === false
-            ? `Nothing changed. GitHub still accepts the saved token for ${label}.`
-            : `Saved. GitHub accepted the token for ${label}.`
+          : `Saved. GitHub accepted the token for ${label}.`
       );
+      setRepository("");
       setToken("");
       setLoads((n) => n + 1);
     } catch {
@@ -183,8 +184,8 @@ export function GitHubTab({ active }: { active: boolean }) {
 
   const editable = view.canUpdate && view.cannotSave === null;
   const ownSettings = view.source === "organization";
-  // An empty token box keeps the saved token, when there is one to keep.
-  const keepsToken = ownSettings && !view.tokenUnreadable;
+  // A saved pair is locked: it can be removed, never changed.
+  const canConnect = editable && !ownSettings;
   const repositoryProblem = problem?.field === "repository" ? problem.message : null;
   const tokenProblem = problem?.field === "token" ? problem.message : null;
 
@@ -216,16 +217,23 @@ export function GitHubTab({ active }: { active: boolean }) {
                 <span className="mono font-medium">{view.repository}</span>
                 {view.folder ? `, in its ${view.folder} folder.` : "."}
               </p>
+              {!view.tokenUnreadable && (
+                <p className="mt-1">{"Its access token is saved, encrypted, and never shown."}</p>
+              )}
               {view.updatedBy && view.updatedAt && (
                 <p className="text-[12.5px] mt-1" style={{ color: "var(--text-3)" }}>
                   {`Saved by ${view.updatedBy}, ${timeAgo(view.updatedAt)}.`}
                 </p>
               )}
+              <p className="text-[12.5px] mt-2" style={{ color: "var(--text-3)" }}>
+                {"The repository and token are locked together, so neither can be changed. " +
+                  "To use another repository, remove these settings and connect it with its own token."}
+              </p>
             </>
           ) : view.source === "server" ? (
             <p>
               This organization uses the GitHub settings the app was set up with. They are not shown here.
-              {editable && " Saving a repository and token below replaces them for this organization."}
+              {editable && " Connecting a repository and token below replaces them for this organization."}
             </p>
           ) : (
             <p>{"Not connected. Scripts can't be pushed to GitHub or pulled from it yet."}</p>
@@ -239,7 +247,7 @@ export function GitHubTab({ active }: { active: boolean }) {
               <div className="title">{"The saved token can't be read"}</div>
               <div className="body">
                 {"The server's encryption key has changed since the token was saved, so the app can't use it. " +
-                  "Paste the token again, or a new one, and save."}
+                  "Remove these settings, then connect the repository again with its token."}
               </div>
             </div>
           </div>
@@ -267,12 +275,26 @@ export function GitHubTab({ active }: { active: boolean }) {
             </div>
           )
         )}
+
+        {editable && ownSettings && (
+          <div className="mt-4">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={saving !== null}
+              onClick={() => setConfirmRemove(true)}
+            >
+              {saving === "remove" ? "Removing..." : "Remove"}
+            </Button>
+          </div>
+        )}
       </Card>
 
-      {editable && (
+      {canConnect && (
         <Card className="p-4 sm:p-5">
           <form onSubmit={(event) => void save(event)} noValidate>
-            <h3 className="ad-h">{ownSettings ? "Change the repository or token" : "Connect a repository"}</h3>
+            <h3 className="ad-h">Connect a repository</h3>
             <div className="mt-2 space-y-3">
               <div>
                 <div className="flex items-center mb-1">
@@ -317,7 +339,7 @@ export function GitHubTab({ active }: { active: boolean }) {
                   type="password"
                   mono
                   value={token}
-                  placeholder={keepsToken ? "Leave blank to keep the saved token" : "github_pat_..."}
+                  placeholder="github_pat_..."
                   autoComplete="off"
                   spellCheck={false}
                   readOnly={saving !== null}
@@ -339,17 +361,6 @@ export function GitHubTab({ active }: { active: boolean }) {
               <Button type="submit" size="sm" disabled={saving !== null}>
                 {saving === "save" ? "Checking with GitHub..." : "Save"}
               </Button>
-              {ownSettings && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={saving !== null}
-                  onClick={() => setConfirmRemove(true)}
-                >
-                  {saving === "remove" ? "Removing..." : "Remove"}
-                </Button>
-              )}
             </div>
           </form>
         </Card>
@@ -363,7 +374,7 @@ export function GitHubTab({ active }: { active: boolean }) {
         description={
           view.serverFallback
             ? "The app forgets this repository and its token, and this organization goes back to the GitHub settings the app was set up with. Scripts already in the repository stay there. The removal goes in the change log."
-            : "The app forgets this repository and its token, so scripts can't be pushed or pulled until new ones are saved. Scripts already in the repository stay there. The removal goes in the change log."
+            : "The app forgets this repository and its token, so scripts can't be pushed or pulled until a repository is connected again with its token. Scripts already in the repository stay there. The removal goes in the change log."
         }
         confirmLabel="Remove"
         destructive

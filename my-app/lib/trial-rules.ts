@@ -13,9 +13,11 @@
 //
 // Anyone on the internet can be these three people, so the organization is
 // locked down: nothing in it can reach a database other than its own three
-// demo ones, change who is in it or what a role may do, or be deleted. Its
-// GitHub repository and token may be set, so the Trial Admin can try pushing
-// scripts. lib/trial-sandbox.ts builds it, and puts it back to how it started
+// demo ones, change who is in it or what a role may do, or be deleted. A
+// GitHub repository can be connected with its token, so the Trial Admin can
+// try pushing scripts. Once saved, the pair is locked: it can be removed as a
+// whole but never changed, so nobody can point a saved token at another
+// repository. lib/trial-sandbox.ts builds it, and puts it back to how it started
 // when the Trial Admin presses "Reset trial".
 //
 // Pure: no database. auth-guard, the routes and the landing page import it.
@@ -79,8 +81,9 @@ export function isTrialEmail(email: string | null | undefined): boolean {
  *
  * Roles are allowed, so the Trial Admin can try the Roles & permissions page:
  * the Trial Admin can change what a role may do, and "Reset trial" puts the
- * built-in roles back. Its GitHub repository and token are allowed too, so
- * the Trial Admin can save one and try GitHub, and a reset keeps them.
+ * built-in roles back. A GitHub repository and its token can be connected
+ * too, so the Trial Admin can try GitHub. A saved pair is locked (it can be
+ * removed, never changed), and a reset keeps it.
  */
 export const TRIAL_BLOCKED_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<PermissionKey>([
   "connections:create",

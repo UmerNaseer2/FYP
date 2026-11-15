@@ -14,8 +14,10 @@
  *     in for its own;
  *   - what is refused before GitHub or the database is reached: the desktop
  *     app, a server with no encryption key, a body the rules turn down;
- *   - that GitHub is asked about the token that will really be used, the new
- *     one or the saved one, and nothing is saved when it says no;
+ *   - that a repository and token come together, and a saved pair is
+ *     locked: nothing can change it, or reuse its token, until it is removed;
+ *   - that GitHub is asked about the typed token, and nothing is saved when
+ *     it says no;
  *   - how each answer from the store is said.
  */
 import { NextRequest } from "next/server";
@@ -237,40 +239,52 @@ describe("GET", () => {
 describe("PUT", () => {
   const CHECKED = "https://api.github.com/repos/acme/registry";
 
-  test("asks for GitHub registry: Update, has GitHub check the new token, then saves it", async () => {
-    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: true });
+  test("asks for GitHub registry: Update, has GitHub check the new token, then saves the pair", async () => {
+    mockStore.readOrgGitHub.mockResolvedValue(null);
+    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok" });
     const sent = put(JSON.stringify({ repository: " https://github.com/acme/registry.git ", token: `  ${NEW_TOKEN}\n` }));
 
-    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, created: false, repository: "acme/registry" }]);
+    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, created: false, repository: "acme/registry" }]);
     expect(mockAskedFor).toEqual([["github:update"]]);
+    expect(mockStore.readOrgGitHub.mock.calls).toEqual([[TEST_ORG.id]]);
     expect(calls).toEqual([{ url: CHECKED, authorization: `Bearer ${NEW_TOKEN}` }]);
     expect(mockStore.saveOrgGitHub.mock.calls).toEqual([
       [TEST_ORG.id, { owner: "acme", repo: "registry", token: NEW_TOKEN }, ACTOR],
     ]);
-    expect(mockStore.readOrgGitHub).not.toHaveBeenCalled();
   });
 
   test.each<[string, Record<string, unknown>]>([
     ["left out", {}],
     ["left blank", { token: "   " }],
     ["null", { token: null }],
-  ])("keeps the saved token when the token is %s, once GitHub accepts it for the repository", async (_, extra) => {
+  ])("asks for the token when it is %s, before GitHub or the database is reached", async (_, extra) => {
     mockStore.readOrgGitHub.mockResolvedValue(SAVED);
-    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: true });
+    const [status, body] = await answer(await PUT(put(JSON.stringify({ repository: "acme/other", ...extra }))));
+    expect(status).toBe(400);
+    expect(body).toEqual({ error: expect.stringMatching(/Paste an access token/), field: "token" });
+    expect(calls).toEqual([]);
+    expect(mockStore.readOrgGitHub).not.toHaveBeenCalled();
+    expect(mockStore.saveOrgGitHub).not.toHaveBeenCalled();
+  });
 
-    const sent = put(JSON.stringify({ repository: "acme/other", ...extra }));
-    expect(await answer(await PUT(sent))).toEqual([200, { saved: true, changed: true, created: false, repository: "acme/other" }]);
-    expect(calls).toEqual([{ url: "https://api.github.com/repos/acme/other", authorization: `Bearer ${ORG_TOKEN}` }]);
-    expect(mockStore.saveOrgGitHub.mock.calls).toEqual([
-      [TEST_ORG.id, { owner: "acme", repo: "other", token: null }, ACTOR],
-    ]);
+  test.each<[string, unknown, string]>([
+    ["the same repository with a new token", SAVED, "acme/registry"],
+    ["another repository with a new token", SAVED, "acme/other"],
+    ["another repository when the saved token can't be read", { ...SAVED, token: null }, "acme/other"],
+  ])("refuses %s while a pair is saved, and asks GitHub nothing", async (_, saved, repository) => {
+    mockStore.readOrgGitHub.mockResolvedValue(saved);
+    const [status, body] = await answer(await PUT(put(JSON.stringify({ repository, token: NEW_TOKEN }))));
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: expect.stringMatching(/already connected.*Remove them first/), locked: true });
+    expect(calls).toEqual([]);
+    expect(mockStore.saveOrgGitHub).not.toHaveBeenCalled();
   });
 
   describe("a repository that does not exist yet", () => {
     beforeEach(() => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       github = 404;
-      mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: false });
+      mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok" });
     });
 
     test.each([
@@ -282,7 +296,7 @@ describe("PUT", () => {
       const sent = put(JSON.stringify({ repository: "acme/registry", token: NEW_TOKEN }));
       expect(await answer(await PUT(sent))).toEqual([
         200,
-        { saved: true, changed: true, created: true, repository: "acme/registry" },
+        { saved: true, created: true, repository: "acme/registry" },
       ]);
       expect(calls).toEqual([
         { url: CHECKED, authorization: `Bearer ${NEW_TOKEN}` },
@@ -313,21 +327,12 @@ describe("PUT", () => {
     });
   });
 
-  test("says when nothing changed", async () => {
-    mockStore.readOrgGitHub.mockResolvedValue(SAVED);
-    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: false });
-    expect(await answer(await PUT(put(JSON.stringify({ repository: "acme/registry" }))))).toEqual([
-      200,
-      { saved: true, changed: false, created: false, repository: "acme/registry" },
-    ]);
-  });
-
   test.each([
     ["a role an Admin let look after GitHub", principalFor("editor", { email: "lead@test", permissions: ["github:update"] }), { email: "lead@test", role: "editor" }],
     ["the demo", bypassAdminPrincipal(), { email: BYPASS_ACTOR, role: "admin" }],
   ])("logs the change for %s under the role that allowed it", async (_, principal, actor) => {
     mockGate = { ok: true, principal };
-    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok", changed: true });
+    mockStore.saveOrgGitHub.mockResolvedValue({ kind: "ok" });
     await PUT(put(JSON.stringify({ repository: "acme/registry", token: NEW_TOKEN })));
     expect(mockStore.saveOrgGitHub.mock.calls[0][2]).toEqual(actor);
   });
@@ -345,18 +350,6 @@ describe("PUT", () => {
     expect(await answer(await PUT(put(body)))).toEqual([400, expected]);
     expect(calls).toEqual([]);
     expect(mockStore.readOrgGitHub).not.toHaveBeenCalled();
-    expect(mockStore.saveOrgGitHub).not.toHaveBeenCalled();
-  });
-
-  test.each<[string, unknown, RegExp]>([
-    ["nothing is saved yet", null, /None is saved for this organization yet/],
-    ["the saved one can't be read here", { ...SAVED, token: null }, /encryption key has changed/],
-  ])("asks for a token when none is given and %s", async (_, saved, message) => {
-    mockStore.readOrgGitHub.mockResolvedValue(saved);
-    const [status, body] = await answer(await PUT(put(JSON.stringify({ repository: "acme/registry" }))));
-    expect(status).toBe(400);
-    expect(body).toEqual({ error: expect.stringMatching(message), field: "token" });
-    expect(calls).toEqual([]);
     expect(mockStore.saveOrgGitHub).not.toHaveBeenCalled();
   });
 
@@ -397,10 +390,10 @@ describe("PUT", () => {
     ],
     ["no encryption key after all", { kind: "no-key" }, 503, { error: expect.stringMatching(/no encryption key/) }],
     [
-      "the saved token gone in the meantime",
-      { kind: "no-token" },
-      400,
-      { error: expect.stringMatching(/Paste an access token/), field: "token" },
+      "a pair saved by someone else in the meantime",
+      { kind: "exists" },
+      409,
+      { error: expect.stringMatching(/already connected/), locked: true },
     ],
   ])("says so when the store finds %s", async (_, saved, status, expected) => {
     mockStore.saveOrgGitHub.mockResolvedValue(saved);
@@ -411,7 +404,7 @@ describe("PUT", () => {
   test("is 503 when the saved settings can't be read, and asks GitHub nothing", async () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
     mockStore.readOrgGitHub.mockRejectedValue(new Error("connection refused"));
-    expect(await answer(await PUT(put(JSON.stringify({ repository: "acme/registry" }))))).toEqual([
+    expect(await answer(await PUT(put(JSON.stringify({ repository: "acme/registry", token: NEW_TOKEN }))))).toEqual([
       503,
       { error: `Could not read the saved GitHub settings.${TRY_AGAIN}` },
     ]);

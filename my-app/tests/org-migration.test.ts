@@ -2694,51 +2694,49 @@ describeWithDatabase("org-migration", () => {
       expect(await logOf(id)).toEqual([]);
     }, SLOW);
 
-    test("keeps the saved token when only the repository changes, and logs only what changed", async () => {
-      const id = await made("keep-token", { ...SCRIPTS, token: TOKEN });
-      const locked = (await rowOf(id)).token;
+    test("locks a saved pair: no new repository, no new token, until it is removed", async () => {
+      const id = await made("locked-pair", { ...SCRIPTS, token: TOKEN });
+      const before = await rowOf(id);
 
-      const moved = { owner: "acme", repo: "other-scripts", token: null };
-      expect(await store.saveOrgGitHub(id, moved, FAY)).toEqual({ kind: "ok", changed: true });
-      expect(await rowOf(id)).toEqual({
-        repo_owner: "acme",
-        repo_name: "other-scripts",
-        token: locked,
-        updated_by: FAY.email,
-      });
-      // The same again changes nothing, so it logs nothing.
-      expect(await store.saveOrgGitHub(id, moved, FAY)).toEqual({ kind: "ok", changed: false });
-      // A new token for the same repository logs the token alone.
-      expect(await store.saveOrgGitHub(id, { ...moved, token: NEW_TOKEN }, FAY)).toEqual({
-        kind: "ok",
-        changed: true,
-      });
+      for (const attempt of [
+        { ...SCRIPTS, token: NEW_TOKEN },
+        { owner: "acme", repo: "other-scripts", token: TOKEN },
+        { owner: "someone-else", repo: "elsewhere", token: NEW_TOKEN },
+      ]) {
+        expect(await store.saveOrgGitHub(id, attempt, FAY)).toEqual({ kind: "exists" });
+      }
+      // Byte for byte as it was, and nothing more in the log.
+      expect(await rowOf(id)).toEqual(before);
+      expect((await store.readOrgGitHub(id))?.token).toBe(TOKEN);
+      expect(await logOf(id)).toEqual([
+        logLine(ED, "acme/schema-scripts", "repository"),
+        logLine(ED, "acme/schema-scripts", "token"),
+      ]);
+
+      // Removed as a whole, a new pair can be added, with its own token.
+      expect(await store.removeOrgGitHub(id, FAY)).toEqual({ removed: true });
+      const moved = { owner: "acme", repo: "other-scripts", token: NEW_TOKEN };
+      expect(await store.saveOrgGitHub(id, moved, FAY)).toEqual({ kind: "ok" });
+      expect(await rowOf(id)).toMatchObject({ repo_owner: "acme", repo_name: "other-scripts", updated_by: FAY.email });
       expect((await store.readOrgGitHub(id))?.token).toBe(NEW_TOKEN);
       expect((await logOf(id)).slice(2)).toEqual([
+        logLine(FAY, "acme/schema-scripts", "removed"),
         logLine(FAY, "acme/other-scripts", "repository"),
         logLine(FAY, "acme/other-scripts", "token"),
       ]);
     }, SLOW);
 
-    test("won't keep a token there is none of, or one this server can't open", async () => {
+    test("locks a pair whose token this server can't open too, until it is removed", async () => {
       const id = await made("token-trouble");
-      const keep = { ...SCRIPTS, token: null };
-      expect(await store.saveOrgGitHub(id, keep, ED)).toEqual({ kind: "no-token" });
-      expect(await rowOf(id)).toBeNull();
-
       await client.query(
         `INSERT INTO organization_github (org_id, repo_owner, repo_name, token, updated_by)
          VALUES ($1, 'acme', 'schema-scripts', $2, $3)`,
         [id, lockedWithAnotherKey(TOKEN), ED.email]
       );
       expect(await store.readOrgGitHub(id)).toMatchObject({ ...SCRIPTS, token: null });
-      expect(await store.saveOrgGitHub(id, { ...keep, repo: "other-scripts" }, ED)).toEqual({ kind: "no-token" });
+      expect(await store.saveOrgGitHub(id, { ...SCRIPTS, token: TOKEN }, ED)).toEqual({ kind: "exists" });
       expect(await rowOf(id)).toMatchObject({ repo_name: "schema-scripts" });
-
-      // Pasting the token again mends it.
-      expect(await store.saveOrgGitHub(id, { ...SCRIPTS, token: TOKEN }, ED)).toEqual({ kind: "ok", changed: true });
-      expect((await store.readOrgGitHub(id))?.token).toBe(TOKEN);
-      expect(await logOf(id)).toEqual([logLine(ED, "acme/schema-scripts", "token")]);
+      expect(await logOf(id)).toEqual([]);
     }, SLOW);
 
     test("answers not-found for an organization that is gone", async () => {

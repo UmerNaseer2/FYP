@@ -7,6 +7,11 @@
 // most (organization_github), saved on the Admin screen's GitHub tab or when
 // the organization is made.
 //
+// The repository and token are saved as a pair and locked together: once
+// saved, neither can be changed. The pair can only be removed as a whole,
+// and then a new pair added. So a saved token is only ever used with the
+// repository it was saved for.
+//
 // The token is stored encrypted with the server's key (lib/secret-store.ts)
 // and never leaves the server. Nothing here returns it to a screen or writes
 // it to a log: the screens only learn whether one is saved. A server with no
@@ -17,7 +22,7 @@
 // same transaction as the change, as kind "github-settings".
 import pool, { syncMetadataTables } from "./version-db";
 import type { MetadataClient } from "./db/sequelize";
-import { logRoleChanges, type RoleChangeEntry } from "./roles-db";
+import { logRoleChanges } from "./roles-db";
 import { decryptSecret, encryptSecret, isEncrypted } from "./secret-store";
 import { repositoryLabel, type RepositoryName } from "./github-settings";
 
@@ -77,19 +82,26 @@ export async function readOrgGitHub(orgId: number): Promise<OrgGitHub | null> {
 
 /** What a save did. Only "ok" wrote anything. */
 export type Saved =
-  | { kind: "ok"; changed: boolean }
-  /** No token was given, and there is no readable one saved to keep. */
-  | { kind: "no-token" }
+  | { kind: "ok" }
+  /**
+   * The organization already has a repository and token. They are locked
+   * together once saved: they can be removed, never changed.
+   */
+  | { kind: "exists" }
   /** The server has no encryption key, so the token would be stored as plain text. */
   | { kind: "no-key" }
   /** The organization is gone: someone deleted it a moment ago. */
   | { kind: "not-found" };
 
 /**
- * Save an organization's repository and token inside the caller's
- * transaction, with its change log rows. A token of null keeps the one
- * already saved, so an Admin can point the organization at another
- * repository without pasting the token again.
+ * Add an organization's repository and token, as a pair, inside the caller's
+ * transaction, with its change log rows.
+ *
+ * A saved pair is locked: nothing here changes the repository of a saved
+ * token, or the token of a saved repository, so a token can never be pointed
+ * at a repository other than the one it was saved with. To move to another
+ * repository, remove the pair (removeOrgGitHub) and add a new one with its
+ * own token.
  *
  * The caller has already checked with GitHub that the token opens the
  * repository (lib/github-check.ts). Nothing here talks to GitHub.
@@ -97,68 +109,43 @@ export type Saved =
 export async function saveOrgGitHubIn(
   client: Queryable,
   orgId: number,
-  settings: RepositoryName & { token: string | null },
+  settings: RepositoryName & { token: string },
   actor: GitHubActor
 ): Promise<Saved> {
   // Encrypted first, so a server without a key refuses before it locks or
   // writes anything.
-  let sealed: string | null = null;
-  if (settings.token !== null) {
-    sealed = encryptSecret(settings.token);
-    if (!sealed || !isEncrypted(sealed)) return { kind: "no-key" };
-  }
+  const sealed = encryptSecret(settings.token);
+  if (!sealed || !isEncrypted(sealed)) return { kind: "no-key" };
 
   // A share lock on the organization keeps it from being deleted until this
   // commits, and tells a deleted one apart from a database error.
   const org = await client.query(`SELECT id FROM organizations WHERE id = $1 FOR KEY SHARE`, [orgId]);
   if (org.rows.length === 0) return { kind: "not-found" };
 
-  // Locked, so two Admins saving at once are lined up and each log line says
-  // what really changed in that save.
-  const found = await client.query<Pick<Row, "repo_owner" | "repo_name" | "token">>(
-    `SELECT repo_owner, repo_name, token FROM organization_github WHERE org_id = $1 FOR UPDATE`,
-    [orgId]
-  );
-  const before = found.rows[0];
-  if (sealed === null) {
-    // Keeping the saved token is only possible when there is one this server
-    // can still read. One locked with an old key would look saved and fail
-    // on every push.
-    if (!before || openToken(before.token) === null) return { kind: "no-token" };
-  }
-
-  const repositoryChanged =
-    !before || before.repo_owner !== settings.owner || before.repo_name !== settings.repo;
-  if (!repositoryChanged && sealed === null) return { kind: "ok", changed: false };
-
-  await client.query(
+  // DO NOTHING when a pair is already saved: it stays exactly as it was. Two
+  // saves at once are lined up by the unique org_id, and the second is told
+  // the first one's pair exists.
+  const added = await client.query(
     `INSERT INTO organization_github (org_id, repo_owner, repo_name, token, updated_by, updated_at)
      VALUES ($1, $2, $3, $4, $5, now())
-     ON CONFLICT (org_id) DO UPDATE
-       SET repo_owner = EXCLUDED.repo_owner,
-           repo_name = EXCLUDED.repo_name,
-           token = EXCLUDED.token,
-           updated_by = EXCLUDED.updated_by,
-           updated_at = EXCLUDED.updated_at`,
-    [orgId, settings.owner, settings.repo, sealed ?? before!.token, actor.email]
+     ON CONFLICT (org_id) DO NOTHING
+     RETURNING org_id`,
+    [orgId, settings.owner, settings.repo, sealed, actor.email]
   );
+  if (added.rows.length === 0) return { kind: "exists" };
 
   const subject = repositoryLabel(settings);
-  const entries: RoleChangeEntry[] = [];
-  if (repositoryChanged) {
-    entries.push({ role: actor.role, kind: "github-settings", subject, detail: "repository", actor: actor.email });
-  }
-  if (sealed !== null) {
-    entries.push({ role: actor.role, kind: "github-settings", subject, detail: "token", actor: actor.email });
-  }
-  await logRoleChanges(client, orgId, entries);
-  return { kind: "ok", changed: true };
+  await logRoleChanges(client, orgId, [
+    { role: actor.role, kind: "github-settings", subject, detail: "repository", actor: actor.email },
+    { role: actor.role, kind: "github-settings", subject, detail: "token", actor: actor.email },
+  ]);
+  return { kind: "ok" };
 }
 
 /** saveOrgGitHubIn in a transaction of its own, for the Admin screen. */
 export async function saveOrgGitHub(
   orgId: number,
-  settings: RepositoryName & { token: string | null },
+  settings: RepositoryName & { token: string },
   actor: GitHubActor
 ): Promise<Saved> {
   await syncMetadataTables();

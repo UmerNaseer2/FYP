@@ -1409,13 +1409,13 @@ describe("the GitHub tab", () => {
     fireEvent.change(screen.getByLabelText("Access token"), { target: { value: token } });
   }
 
-  it("connects a repository, says GitHub accepted it, empties the token box and loads again", async () => {
+  it("connects a repository, says GitHub accepted it, loads again and shows the pair locked", async () => {
     await openGitHubTab(NOT_CONNECTED, {
       match: "/api/admin/github",
       method: "PUT",
       body: () => {
         githubView = CONNECTED;
-        return { saved: true, changed: true, repository: "acme/schema-scripts" };
+        return { saved: true, created: false, repository: "acme/schema-scripts" };
       },
     });
     expect(within(panel()).getByText(/^Not connected\./)).toBeInTheDocument();
@@ -1431,29 +1431,32 @@ describe("the GitHub tab", () => {
       repository: "https://github.com/acme/schema-scripts",
       token: TOKEN,
     });
-    expect(screen.getByLabelText("Access token")).toHaveValue("");
     expect(await within(panel()).findByText("acme/schema-scripts")).toBeInTheDocument();
     expect(githubGets()).toBe(2);
     expect(within(panel()).getByText(/^Saved by owner@example\.com, /)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Change the repository or token" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Repository")).toHaveValue("acme/schema-scripts");
+    // Locked: no form to change it, only Remove.
+    expect(screen.queryByRole("heading", { name: "Connect a repository" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Repository")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+    expect(within(panel()).getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
-  it("keeps the saved token when its box is left blank, and says when nothing changed", async () => {
-    await openGitHubTab(CONNECTED, {
-      match: "/api/admin/github",
-      method: "PUT",
-      body: { saved: true, changed: false, repository: "acme/schema-scripts" },
-    });
-    expect(screen.getByLabelText("Repository")).toHaveValue("acme/schema-scripts");
-    expect(screen.getByLabelText("Access token")).toHaveAttribute("placeholder", "Leave blank to keep the saved token");
+  it("shows a saved pair as locked: the token hidden, no form, and only Remove", async () => {
+    await openGitHubTab(CONNECTED);
+    expect(within(panel()).getByText("acme/schema-scripts")).toBeInTheDocument();
+    expect(within(panel()).getByText("Its access token is saved, encrypted, and never shown.")).toBeInTheDocument();
+    expect(within(panel()).getByText(/locked together, so neither can be changed/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Repository")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(panel()).getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    expect(panel()).not.toHaveTextContent(TOKEN);
+  });
 
-    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
-
-    expect(
-      await screen.findByText("Nothing changed. GitHub still accepts the saved token for acme/schema-scripts.")
-    ).toBeInTheDocument();
-    expect(JSON.parse(lastCall("PUT")?.body ?? "null")).toEqual({ repository: "acme/schema-scripts" });
+  it("offers no Remove to a role that may only see a saved pair", async () => {
+    await openGitHubTab({ ...CONNECTED, canUpdate: false });
+    expect(within(panel()).getByText("acme/schema-scripts")).toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });
 
   it("shows a token that was turned down under its box, until the box changes", async () => {
@@ -1538,20 +1541,27 @@ describe("the GitHub tab", () => {
     expect(lastCall("DELETE")).toBeDefined();
     expect(await within(panel()).findByText(/uses the GitHub settings the app was set up with/)).toBeInTheDocument();
     expect(within(panel()).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    // Removed as a whole, so a new pair can be connected, with an empty form.
+    expect(screen.getByRole("heading", { name: "Connect a repository" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Repository")).toHaveValue("");
+    expect(screen.getByLabelText("Access token")).toHaveValue("");
   });
 
   it("says another organization has no GitHub once its settings are removed", async () => {
     await openGitHubTab({ ...CONNECTED, serverFallback: false });
     fireEvent.click(within(panel()).getByRole("button", { name: "Remove" }));
     expect(screen.getByRole("dialog", { name: "Remove the GitHub settings?" })).toHaveTextContent(
-      /can't be pushed or pulled until new ones are saved/
+      /can't be pushed or pulled until a repository is connected again with its token/
     );
   });
 
-  it("warns when the saved token can't be read, and doesn't offer to keep it", async () => {
+  it("warns when the saved token can't be read, and points to Remove rather than a form", async () => {
     await openGitHubTab({ ...CONNECTED, tokenUnreadable: true });
     expect(within(panel()).getByText("The saved token can't be read")).toBeInTheDocument();
-    expect(screen.getByLabelText("Access token")).toHaveAttribute("placeholder", "github_pat_...");
+    expect(within(panel()).getByText(/Remove these settings, then connect the repository again/)).toBeInTheDocument();
+    expect(within(panel()).queryByText("Its access token is saved, encrypted, and never shown.")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+    expect(within(panel()).getByRole("button", { name: "Remove" })).toBeInTheDocument();
   });
 
   it("says why the settings can't be changed here, and draws no form", async () => {

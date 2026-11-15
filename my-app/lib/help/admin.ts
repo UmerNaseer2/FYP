@@ -158,8 +158,9 @@ export const adminHelp: HelpTopic = {
       title: "GitHub tab",
       body: [
         "Repository: type it as owner/name, or paste its address from GitHub.",
-        "Access token: it is stored encrypted and never shown again, here or anywhere else. Leave the box blank to keep the saved one.",
-        "Save checks the repository and the token with GitHub first. If the repository does not exist yet, the app makes it with the same token, as a private repository with a README. Remove takes the settings away, and scripts already in the repository stay there.",
+        "Access token: it is stored encrypted and never shown again, here or anywhere else.",
+        "Save checks the repository and the token with GitHub first. If the repository does not exist yet, the app makes it with the same token, as a private repository with a README.",
+        "Once saved, the repository and token are locked together. Nobody can change the repository or use the token for another one. To move to another repository, choose Remove, then connect the new repository with its own token. Scripts already in the old repository stay there.",
       ],
     },
     {
