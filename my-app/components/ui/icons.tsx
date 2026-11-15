@@ -287,6 +287,26 @@ export function EyeIcon(props: IconProps) {
   );
 }
 
+export function ShieldIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </Svg>
+  );
+}
+
+/** Two arrows, one each way: swap one thing for another. */
+export function SwapIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m8 3-4 4 4 4" />
+      <path d="M4 7h16" />
+      <path d="m16 21 4-4-4-4" />
+      <path d="M20 17H4" />
+    </Svg>
+  );
+}
+
 export function ClipboardIcon(props: IconProps) {
   return (
     <Svg {...props}>

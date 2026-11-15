@@ -47,6 +47,27 @@ export const TRIAL_PEOPLE: Record<TrialRole, { email: string; name: string }> = 
   viewer: { email: `viewer@${TRIAL_EMAIL_DOMAIN}`, name: "Trial Viewer" },
 };
 
+/**
+ * What each trial account can do, in the words of the landing page's role
+ * picker (`long`) and the account menu's role switch (`short`). Keep them in
+ * line with BUILT_IN_ROLE_INFO (lib/permissions.ts) and with what the trial
+ * switches off (TRIAL_BLOCKED_PERMISSIONS below).
+ */
+export const TRIAL_ROLE_SUMMARY: Record<TrialRole, { short: string; long: string }> = {
+  admin: {
+    short: "Sees and does the most",
+    long: "Approve requests, change what each role may do, open Admin and reset the trial.",
+  },
+  editor: {
+    short: "Compares and runs scripts",
+    long: "Compare schemas, write migration scripts and run them where a connection allows it.",
+  },
+  viewer: {
+    short: "Looks around, changes nothing",
+    long: "Open every screen except Admin and look around. Nothing you do changes anything.",
+  },
+};
+
 /** A role the landing page may ask for, or null for anything else. */
 export function toTrialRole(value: unknown): TrialRole | null {
   return (TRIAL_ROLES as readonly unknown[]).includes(value) ? (value as TrialRole) : null;

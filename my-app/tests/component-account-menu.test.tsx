@@ -14,7 +14,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { AccountMenu } from "@/components/studio/AccountMenu";
 import { BUILT_IN_ROLE_INFO } from "@/lib/permissions";
@@ -291,5 +291,77 @@ describe("the items", () => {
     fireEvent.click(item("Sign out"));
     expect(onSignOut).toHaveBeenCalledTimes(1);
     expect(menu()).toBeNull();
+  });
+});
+
+describe("in the shared trial", () => {
+  const TRIAL = { slug: "trial", name: "Schema Studio Trial", trial: true };
+
+  function renderTrial(role: string, org: { slug: string; name: string; trial?: boolean } | null = TRIAL) {
+    const menuEl = <AccountMenu user={ADA} role={role} roleLabel={role} onSignOut={onSignOut} />;
+    return render(org ? <OrgContext.Provider value={org}>{menuEl}</OrgContext.Provider> : menuEl);
+  }
+
+  test("offers the other two trial accounts, never the one signed in", () => {
+    renderTrial("admin");
+    fireEvent.click(trigger());
+    expect(item("Switch to Trial Editor")).toBeInTheDocument();
+    expect(item("Switch to Trial Viewer")).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Switch to Trial Admin" })).toBeNull();
+    expect(within(menu()!).getByRole("group", { name: "Switch role" })).toBeInTheDocument();
+  });
+
+  test("the Viewer can switch to the Admin and the Editor", () => {
+    renderTrial("viewer");
+    fireEvent.click(trigger());
+    expect(item("Switch to Trial Admin")).toHaveAccessibleDescription("Sees and does the most");
+    expect(item("Switch to Trial Editor")).toHaveAccessibleDescription("Compares and runs scripts");
+  });
+
+  test("each switch posts that role to the trial's sign-in, with the page it was pressed on", () => {
+    renderTrial("editor");
+    fireEvent.click(trigger());
+    const viewer = item("Switch to Trial Viewer");
+    expect(viewer).toHaveAttribute("type", "submit");
+    expect(viewer).toHaveAttribute("name", "role");
+    expect(viewer).toHaveAttribute("value", "viewer");
+    const form = viewer.closest("form")!;
+    expect(form).toHaveAttribute("action", "/api/trial");
+    expect(form).toHaveAttribute("method", "post");
+    expect(form.querySelector('input[type="hidden"][name="next"]')).not.toBeNull();
+  });
+
+  test("switches once, however many times it is pressed", () => {
+    renderTrial("admin");
+    fireEvent.click(trigger());
+    const editor = item("Switch to Trial Editor");
+    const first = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => {
+      editor.dispatchEvent(first);
+    });
+    expect(first.defaultPrevented).toBe(false);
+    expect(screen.getByRole("menuitem", { name: "Switching to Trial Editor" })).toHaveAttribute("aria-busy", "true");
+    const second = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => {
+      item("Switch to Trial Viewer").dispatchEvent(second);
+    });
+    expect(second.defaultPrevented).toBe(true);
+  });
+
+  test("shows no switch in any other organization, or for a role outside the three", () => {
+    renderTrial("admin", { slug: "acme", name: "Acme" });
+    fireEvent.click(trigger());
+    expect(screen.queryByRole("menuitem", { name: /^Switch to/ })).toBeNull();
+    fireEvent.click(trigger());
+  });
+
+  test("shows no switch with no organization, or for a custom role in the trial", () => {
+    const { unmount } = renderTrial("admin", null);
+    fireEvent.click(trigger());
+    expect(screen.queryByRole("menuitem", { name: /^Switch to/ })).toBeNull();
+    unmount();
+    renderTrial("auditor");
+    fireEvent.click(trigger());
+    expect(screen.queryByRole("menuitem", { name: /^Switch to/ })).toBeNull();
   });
 });

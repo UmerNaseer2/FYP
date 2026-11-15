@@ -1706,6 +1706,13 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
 .who-m [role="menuitem"] svg { color:var(--ink-3); }
 .who-m .out { margin-top:6px; border-top:1px solid var(--line); border-radius:0 0 12px 12px; color:var(--remove); }
 .who-m .out svg { color:currentColor; }
+/* The trial's role switch (AccountMenu): the other two trial accounts. */
+.who-sw { margin:0 0 6px; padding:0 0 6px; border-bottom:1px solid var(--line); }
+.who-sw-t { display:block; padding:2px 10px 4px; font:700 11px/16px var(--sans); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); }
+.who-m .who-sw [role="menuitem"] { min-height:52px; padding:6px 10px; }
+.who-sw-l { display:flex; flex-direction:column; gap:1px; min-width:0; text-align:left; }
+.who-sw-l small { font:400 12.5px/16px var(--sans); color:var(--ink-3); }
+.who-m .who-sw [role="menuitem"][aria-busy="true"] { cursor:progress; }
 
 /* ——— The command bar (Ctrl K or ⌘ K) ——— */
 .ck-wrap { position:fixed; inset:0; z-index:70; display:flex; justify-content:center; align-items:flex-start; padding:12px;

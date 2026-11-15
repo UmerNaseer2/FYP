@@ -15,6 +15,7 @@ import { BrandMark } from "@/components/ui/BrandMark";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { LandingThemeToggle } from "./LandingThemeToggle";
 import { LandingReveal, SectionButton } from "./LandingMotion";
+import { TrialRolePicker } from "./TrialRolePicker";
 import "@/app/styles/atelier-landing.css";
 
 /**
@@ -33,9 +34,11 @@ import "@/app/styles/atelier-landing.css";
  * and the header's section buttons only scroll.
  *
  * On a server that offers the shared trial, "Try it now" sits first in the
- * same row and is the one orange button. It is a form button, not a link: it
- * posts to app/api/trial/route.ts, which signs the visitor in as the Trial
- * Admin. The line under the row offers the Editor and Viewer accounts too.
+ * same row and is the one orange button. It asks first: it opens a role
+ * picker (TrialRolePicker) with the Trial Admin, Trial Editor and Trial
+ * Viewer, and the card pressed posts to app/api/trial/route.ts, which signs
+ * the visitor in as that account. Before the page's script runs, the button
+ * itself posts, as the Trial Admin.
  *
  * The Atelier design. Styles are app/styles/atelier-landing.css (every class
  * starts with lp-).
@@ -177,20 +180,7 @@ export function LandingPage({
                 and watches for changes made outside a deploy.
               </p>
               <div className="lp-cta lp-in" style={delay(540)}>
-                {trialAction && (
-                  <form action={trialAction} method="post" className="lp-try">
-                    <button
-                      type="submit"
-                      name="role"
-                      value="admin"
-                      className="btn btn-primary btn-lg lp-try__btn"
-                      aria-label="Try it now, no account needed"
-                    >
-                      <span>Try it now</span>
-                      <small>No account needed</small>
-                    </button>
-                  </form>
-                )}
+                {trialAction && <TrialRolePicker action={trialAction} />}
                 {/* With the trial on offer it is the one orange button, and
                     these two step back. */}
                 <Link
@@ -204,26 +194,13 @@ export function LandingPage({
                 </Link>
               </div>
               {trialAction && (
-                <>
-                  <p className="lp-note lp-in" style={delay(600)}>
-                    <InfoIcon size={16} />
-                    <span>
-                      Try it now opens a shared trial with example data. Everyone in it sees the
-                      same organization.
-                    </span>
-                  </p>
-                  <form action={trialAction} method="post" className="lp-roles lp-in" style={delay(640)}>
-                    You start as its Admin. Or look around as{" "}
-                    <button type="submit" name="role" value="editor" aria-label="Try as an Editor">
-                      an Editor
-                    </button>{" "}
-                    or{" "}
-                    <button type="submit" name="role" value="viewer" aria-label="Try as a Viewer">
-                      a Viewer
-                    </button>
-                    .
-                  </form>
-                </>
+                <p className="lp-note lp-in" style={delay(600)}>
+                  <InfoIcon size={16} />
+                  <span>
+                    Try it now opens a shared trial with example data. Pick Admin, Editor or Viewer,
+                    and switch any time.
+                  </span>
+                </p>
               )}
               <p className="lp-fine lp-in" style={delay(680)}>
                 {demo

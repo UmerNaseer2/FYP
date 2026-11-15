@@ -1,9 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronDownIcon, InboxIcon, PhoneIcon, PlayIcon, RouteIcon, SignOutIcon } from "@/components/ui/icons";
+import {
+  ChevronDownIcon,
+  InboxIcon,
+  PhoneIcon,
+  PlayIcon,
+  RouteIcon,
+  SignOutIcon,
+  SwapIcon,
+} from "@/components/ui/icons";
 import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
+import { TRIAL_PEOPLE, TRIAL_ROLES, TRIAL_ROLE_SUMMARY, toTrialRole, type TrialRole } from "@/lib/trial-rules";
 import { replayIntro } from "@/lib/intro";
 import { readTourMemory, startTour } from "@/lib/tour";
 import { useOrg } from "@/hooks/useOrg";
@@ -15,6 +25,12 @@ import type { StudioUser } from "./StudioSidebar";
 // part way), "Replay intro" and "Sign out". The two links show only when the
 // shell gives their address. History used to be here as "Your activity"; it
 // is in the main menu now, under Watch.
+//
+// In the shared trial the menu also switches role: "Switch to Trial Editor"
+// and "Switch to Trial Viewer" for the Trial Admin, and so on. Each is a form
+// button that posts to app/api/trial/route.ts with the page it was pressed
+// on, which signs in again as that account and opens the same page (the
+// trial's home when the new role cannot open it, such as Admin).
 //
 // Keyboard: Enter, Space or Down Arrow opens it and puts you on the first
 // item. Up and Down move (and wrap), Home and End jump to the ends, Escape
@@ -67,6 +83,24 @@ export function AccountMenu({
   // Read only while the menu is open, so the page drawn on the server (menu
   // closed) and in the browser always agree.
   const resumeTour = open && org !== null && role !== undefined && readTourMemory(org.slug, role).resume !== null;
+  const pathname = usePathname();
+  const trialRole = org?.trial ? toTrialRole(role) : null;
+  const switchId = useId();
+  const [switching, setSwitching] = useState<TrialRole | null>(null);
+  const switchingRef = useRef(false);
+
+  // Back to this page with the browser's Back button after a switch, the page
+  // comes back as it was left, so the switch can be pressed again.
+  useEffect(() => {
+    if (!trialRole) return;
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      switchingRef.current = false;
+      setSwitching(null);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, [trialRole]);
 
   const items = () =>
     Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
@@ -158,6 +192,52 @@ export function AccountMenu({
             </small>
           )}
         </div>
+        {/* The trial only: sign in again as one of the other two trial accounts. */}
+        {trialRole && (
+          <form
+            method="post"
+            action="/api/trial"
+            className="who-sw"
+            role="group"
+            aria-labelledby={switchId}
+          >
+            <input type="hidden" name="next" value={pathname ?? ""} />
+            <small id={switchId} className="who-sw-t">
+              Switch role
+            </small>
+            {TRIAL_ROLES.filter((other) => other !== trialRole).map((other) => {
+              const name = TRIAL_PEOPLE[other].name;
+              return (
+                <button
+                  key={other}
+                  type="submit"
+                  role="menuitem"
+                  tabIndex={-1}
+                  name="role"
+                  value={other}
+                  aria-label={switching === other ? `Switching to ${name}` : `Switch to ${name}`}
+                  aria-describedby={`${switchId}-${other}`}
+                  aria-busy={switching === other || undefined}
+                  onClick={(event) => {
+                    // One press switches. A second press on the way does nothing.
+                    if (switchingRef.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    switchingRef.current = true;
+                    setSwitching(other);
+                  }}
+                >
+                  <span className="who-sw-l">
+                    <span>{switching === other ? `Switching to ${name}…` : name}</span>
+                    <small id={`${switchId}-${other}`}>{TRIAL_ROLE_SUMMARY[other].short}</small>
+                  </span>
+                  <SwapIcon size={15} />
+                </button>
+              );
+            })}
+          </form>
+        )}
         {requestsHref && (
           <Link href={requestsHref} role="menuitem" tabIndex={-1} onClick={() => setOpen(false)}>
             <span>Your requests</span>

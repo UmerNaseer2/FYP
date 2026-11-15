@@ -1,5 +1,6 @@
-// POST /api/trial (app/api/trial/route.ts): the landing page's "Try as ..."
-// buttons. Signing in itself is NextAuth's, so it is mocked here.
+// POST /api/trial (app/api/trial/route.ts): the landing page's role picker
+// and the account menu's role switch inside the trial. Signing in itself is
+// NextAuth's, so it is mocked here.
 
 import { NextRequest } from "next/server";
 
@@ -22,9 +23,14 @@ afterEach(() => {
   jest.clearAllMocks();
 });
 
-function press(role: string | null, origin: string | null = `https://${SITE}`): NextRequest {
+function press(
+  role: string | null,
+  origin: string | null = `https://${SITE}`,
+  next?: string,
+): NextRequest {
   const form = new FormData();
   if (role !== null) form.set("role", role);
+  if (next !== undefined) form.set("next", next);
   const headers: Record<string, string> = { host: SITE };
   if (origin) headers.origin = origin;
   return new NextRequest(`https://${SITE}/api/trial`, { method: "POST", headers, body: form });
@@ -40,6 +46,36 @@ describe("POST /api/trial", () => {
   it("signs the visitor in as the account they picked and opens the studio", async () => {
     expect(landsOn(await POST(press("editor")))).toBe("/studio?tour=trial");
     expect(mockSignIn).toHaveBeenCalledWith("trial", { role: "editor", redirect: false });
+  });
+
+  it("a role switch opens the page it was pressed on, as the new account, with no tour offer", async () => {
+    expect(landsOn(await POST(press("editor", undefined, "/trial/compare")))).toBe("/trial/compare");
+    expect(mockSignIn).toHaveBeenCalledWith("trial", { role: "editor", redirect: false });
+    expect(landsOn(await POST(press("viewer", undefined, "/trial/drift/schedules")))).toBe("/trial/drift/schedules");
+    expect(landsOn(await POST(press("admin", undefined, "/trial/admin")))).toBe("/trial/admin");
+  });
+
+  it("a switch away from Admin opens the trial's home, since only the Admin opens Admin", async () => {
+    expect(landsOn(await POST(press("viewer", undefined, "/trial/admin")))).toBe("/trial");
+    expect(landsOn(await POST(press("editor", undefined, "/trial/admin/roles")))).toBe("/trial");
+  });
+
+  it("never sends a switch anywhere but a page of the trial", async () => {
+    const outside = [
+      "//evil.example.com",
+      "https://evil.example.com/trial",
+      "/other/compare",
+      "/trialx",
+      "/trial/../admin",
+      "/trial?x=1",
+      "/trial/compare#top",
+      "/trial//compare",
+      "",
+      `/trial/${"a".repeat(300)}`,
+    ];
+    for (const next of outside) {
+      expect(landsOn(await POST(press("editor", undefined, next)))).toBe("/trial");
+    }
   });
 
   it("refuses a form posted from another site, without signing anyone in", async () => {
