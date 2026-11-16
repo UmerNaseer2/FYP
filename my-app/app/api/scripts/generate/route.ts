@@ -10,6 +10,12 @@ import { loadPgTarget, readTargetSnapshot, type PgTargetRow } from "@/lib/ai/pg-
 import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { buildSqlGenerateTask, MAX_REQUEST_CHARS, type TrialHook } from "@/lib/ai/features/sql-generate";
 import { makeTrial } from "@/lib/ai/features/sql-generate-trial";
+import {
+  buildRollbackWriteTask,
+  MAX_ROLLBACK_SOURCE_CHARS,
+  tryScriptFirst,
+} from "@/lib/ai/features/rollback-write";
+import { hasExecutableSql } from "@/lib/sql-guard";
 
 /** The saved connection, with the columns chooseTrial reads. */
 type ConnectionRow = PgTargetRow;
@@ -37,6 +43,12 @@ async function readServerMajor(cfg: PoolConfig): Promise<number | null> {
  * back. A failed try goes back to the AI to be fixed. Nothing is saved: the
  * editor gets the script and the person decides what to do with it.
  *
+ * POST /api/scripts/generate  { mode: "rollback", connectionId, schemaName, sql }
+ *
+ * Quick run on Deploy: the person wrote the SQL, and the AI writes only its
+ * rollback (rollback-write.ts). The SQL is tried on its own first, when the
+ * role may run scripts here, so SQL that fails is reported before any AI call.
+ *
  * Needs Read on Scripts and "Use AI assistance".
  */
 export async function POST(request: NextRequest) {
@@ -52,13 +64,29 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON in request body." }, { status: 400 });
   }
+  const rollbackOnly = body.mode === "rollback";
   const words = typeof body.request === "string" ? body.request.trim() : "";
-  if (!words) return NextResponse.json({ error: "Say what the script should do." }, { status: 400 });
-  if (words.length > MAX_REQUEST_CHARS) {
-    return NextResponse.json(
-      { error: `Keep the request under ${MAX_REQUEST_CHARS.toLocaleString("en-US")} characters.` },
-      { status: 413 }
-    );
+  const sourceSql = typeof body.sql === "string" ? body.sql.trim() : "";
+  if (rollbackOnly) {
+    if (!hasExecutableSql(sourceSql)) {
+      return NextResponse.json({ error: "Type the SQL first. The AI writes the rollback for it." }, { status: 400 });
+    }
+    if (sourceSql.length > MAX_ROLLBACK_SOURCE_CHARS) {
+      return NextResponse.json(
+        {
+          error: `The AI writes rollbacks for SQL under ${MAX_ROLLBACK_SOURCE_CHARS.toLocaleString("en-US")} characters. Write this one by hand.`,
+        },
+        { status: 413 }
+      );
+    }
+  } else {
+    if (!words) return NextResponse.json({ error: "Say what the script should do." }, { status: 400 });
+    if (words.length > MAX_REQUEST_CHARS) {
+      return NextResponse.json(
+        { error: `Keep the request under ${MAX_REQUEST_CHARS.toLocaleString("en-US")} characters.` },
+        { status: 413 }
+      );
+    }
   }
   const connectionId = Number(body.connectionId);
   if (!Number.isInteger(connectionId) || connectionId <= 0) {
@@ -91,6 +119,34 @@ export async function POST(request: NextRequest) {
   try {
     const captured = await readTargetSnapshot(cfg, schemaName);
     if (!captured.ok) return captured.response;
+    if (rollbackOnly) {
+      const task = buildRollbackWriteTask({
+        sql: sourceSql,
+        schemaName,
+        snapshot: captured.snapshot,
+        serverMajor: await readServerMajor(cfg),
+        trial,
+      });
+      const failed = await tryScriptFirst(task.facts);
+      if (failed) {
+        return NextResponse.json(
+          {
+            error: `Your SQL failed when it was tried on this database, so no rollback was written. Nothing changed. ${failed}`,
+            reason: "script_failed",
+          },
+          { status: 422 }
+        );
+      }
+      const result = await runAiTask(caller, { ...task.spec, signal: request.signal, refresh: body.refresh === true }, deps);
+      if (result.kind === "failed" && result.outcome === "failed_check" && task.facts.lastProblems.length > 0) {
+        const problems = task.facts.lastProblems.slice(0, 5);
+        return NextResponse.json(
+          { error: `${result.message} The last rollback still had this problem: ${problems[0]}`, reason: result.outcome, problems },
+          { status: 502 }
+        );
+      }
+      return aiResponse(result, { checks: task.facts.last });
+    }
     const task = buildSqlGenerateTask({
       request: words,
       schemaName,
@@ -114,7 +170,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("POST scripts generate error:", error);
     return NextResponse.json(
-      { error: "Could not write a script. If this keeps happening, check that the target and the app's database are running." },
+      { error: `Could not write ${rollbackOnly ? "a rollback" : "a script"}. If this keeps happening, check that the target and the app's database are running.` },
       { status: 500 }
     );
   }

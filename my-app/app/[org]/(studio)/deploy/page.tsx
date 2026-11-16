@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { TargetPicker, type TargetChoice } from "@/components/studio/TargetPicker";
+import { QuickRun, QuickRunButton, type QuickRunTarget } from "./QuickRun";
 import {
   DeployIcon,
   RefreshIcon,
@@ -1105,6 +1106,9 @@ function DeployBody() {
   // ── Stepper + run ────────────────────────────────────────────────────────
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   const [isDeploying, setIsDeploying] = useState(false);
+  // Quick run: the side panel that runs typed (or AI-written) SQL as the next
+  // version of a script group, through the same apply route. See QuickRun.tsx.
+  const [quickOpen, setQuickOpen] = useState(false);
   // The exact ordered batch captured at run start, the run/verify lists render
   // from this, so a post-run preflight refresh can't reshuffle them.
   const [runScripts, setRunScripts] = useState<GitHubScript[]>([]);
@@ -3106,6 +3110,28 @@ function DeployBody() {
     resetDrift();
   }
 
+  // A quick run committed. What the page shows for that target is now old, so
+  // it is read again: the GitHub list (the run saved a file there) and, when
+  // the page is on the same target and not in the middle of something, the
+  // ledger and drift, the way a run from this page refreshes them.
+  function quickRunRan(target: QuickRunTarget) {
+    void handlePull();
+    if (target.connectionId !== connectionId || target.schema !== schema) return;
+    if (isDeploying || rollbackBusy !== null || stage !== 1) return;
+    void runDriftCheck(connectionId, schema);
+    if (scriptGroup) void runPreflightCheck(connectionId, schema, scriptGroup);
+  }
+
+  // After asking an Admin from Quick run: point the page at that target and
+  // group, through the same path a link from the Requests page takes, so the
+  // reader sees the version waiting for its yes.
+  function quickRunShow(target: QuickRunTarget) {
+    changeTarget({ connectionId: target.connectionId, schema: target.schema });
+    linked.current = { connection: null, schema: target.schema, script: target.group, version: null };
+    setStage(1);
+    void handlePull();
+  }
+
   // The one picker for the connection and the schema. Deploy has no status
   // for each schema, so the list shows names only.
   const targetPicker = (
@@ -3210,6 +3236,13 @@ function DeployBody() {
         <PageHeader
           page="/deploy"
           actions={
+            <div className="dp-head-actions">
+            {!historyOnly && connections.length > 0 && (
+              <QuickRunButton
+                onClick={() => setQuickOpen(true)}
+                disabled={isDeploying || rollbackBusy !== null}
+              />
+            )}
             <div className="dp-steps" role="group" aria-label="Deploy steps">
               {STEPS.map((s) => (
                 <button
@@ -3228,7 +3261,25 @@ function DeployBody() {
                 </button>
               ))}
             </div>
+            </div>
           }
+        />
+        <QuickRun
+          open={quickOpen}
+          onClose={() => setQuickOpen(false)}
+          connections={connections}
+          initialConnectionId={connectionId || (connections[0] ? String(connections[0].id) : "")}
+          initialSchema={schema}
+          githubMissing={githubMissing}
+          isAdmin={isAdmin}
+          mayDeploy={can("deploy:run")}
+          maySaveScripts={can("scripts:create")}
+          sessionLoading={sessionLoading}
+          settingsHref={orgPath("/admin?tab=github")}
+          historyHref={orgPath("/history")}
+          showToast={showToast}
+          onRan={quickRunRan}
+          onShowGroup={quickRunShow}
         />
         {/* Somebody who only looks, on a Deploy that is not set up: one plain
             line. Nothing to set up and nothing to ask for, so no button. */}

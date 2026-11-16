@@ -4,9 +4,9 @@ import type { HelpTopic } from "./types";
 /** Help for Deploy. Shown in the Help panel; the blurb is the page header's one line. */
 export const deployHelp: HelpTopic = {
   title: "Deploy",
-  blurb: "Run saved versions on a database, with a dry run first and undo after.",
+  blurb: "Run saved versions on a database, or type SQL and run it now.",
   purpose:
-    "Deploy brings one schema of a database up to a version. It runs versions saved to the registry from Compare & Author or the Script Editor, not pasted SQL. Each run goes in one transaction, so all of its migrations are applied or none are.",
+    "Deploy brings one schema of a database up to a version. It runs versions saved to the registry from Compare & Author or the Script Editor. For a small change, Quick run takes SQL you type, or SQL the AI writes from your words, and saves it as the next version as it runs. Each run goes in one transaction, so all of its migrations are applied or none are.",
   steps: [
     "Save the migration to the registry first, on Compare & Author or in the Script Editor.",
     { text: "On Pre-flight, pick the connection, the schema and the script group, then press Check database.", target: anchor("deploy-target", ".dp-fields") },
@@ -16,12 +16,18 @@ export const deployHelp: HelpTopic = {
     { text: "Press Dry run to rehearse. The scripts run on the target and are then rolled back, so nothing is written.", target: anchor("deploy-run", ".dp-zone") },
     "Press Deploy to run for real. The Run step shows how each migration went.",
     "On Verify, read what was applied, then record it on Version Sync or watch the database on Drift.",
+    { text: "For a quick change, press Quick run instead. Type the SQL, or describe it and let the AI write it, add a rollback, then press Dry run and Deploy.", target: anchor("deploy-quick-run", ".qr-open") },
   ],
   terms: [
     {
       term: "Script group",
       meaning:
         "One named set of migrations that carries a schema forward, one version at a time. It shows up here once a script is saved on Compare & Author or in the Script Editor.",
+    },
+    {
+      term: "Quick run",
+      meaning:
+        "A panel on Deploy that runs SQL you type, or SQL the AI writes, on one schema. It is saved as the next version of the quick-changes group (or a group you name): a row in the schema's script_patch table and a file in GitHub, with its rollback if you add one.",
     },
     {
       term: "Pending migration",
@@ -65,6 +71,10 @@ export const deployHelp: HelpTopic = {
   ],
   problems: [
     {
+      problem: "Quick run's Deploy button stays off.",
+      fix: "Press Dry run first. Deploy opens only for the exact SQL, rollback and group the dry run passed, so any change locks it until the next dry run. If your role has to ask, the panel offers Save to GitHub and ask an Admin instead.",
+    },
+    {
       problem: "The script group list is empty.",
       fix: "Nothing is saved for this schema yet. Make a script on Compare & Author, or write one by hand in the Script Editor, then come back.",
     },
@@ -90,6 +100,15 @@ export const deployHelp: HelpTopic = {
     },
   ],
   sections: [
+    {
+      title: "Running a quick change",
+      body: [
+        "Quick run is for a change you want on one schema now, without saving a script first. Pick the connection and schema, then type the SQL on Write SQL, or say what should change on Describe it and the AI writes the SQL, tried on the schema and rolled back.",
+        "A rollback is optional. Type it, or press Write the rollback with AI and the AI writes it from your SQL. Without one, the run can't be undone from Schema Studio. With one, Undo this run appears once it commits: dry run the rollback, then roll back.",
+        "The version is picked from the change level, above the highest version the group has in the ledger and in GitHub. When the run commits it lands in the schema's script_patch table and is saved to GitHub, with its rollback beside it. Without GitHub set up, it is kept in the scripts table only.",
+        "Roles and approvals work as everywhere else on Deploy. A role that has to ask saves the version to GitHub and an Admin gets a request for that exact SQL.",
+      ],
+    },
     {
       title: "Rolling back",
       body: [

@@ -339,23 +339,23 @@ export function alreadyThereIn(sql: string, snapshot: SchemaSnapshot): string[] 
 }
 
 /** The tables and views a script creates, for reading its rollback. */
-function createdBy(sql: string): Set<string> {
+export function createdBy(sql: string): Set<string> {
   return new Set(tableRefsInSql(sql).filter((r) => r.creates).map((r) => r.name));
 }
 
 /** Every name a SQL text uses, lower-cased, for the summary's backticked names. */
-function namesIn(sql: string): Set<string> {
+export function namesIn(sql: string): Set<string> {
   const code = maskNonCode(sql, { keepQuotedNames: true, readDollarBodies: true });
   const words = new Set<string>();
   for (const match of code.matchAll(/"([^"]+)"|([a-z_][a-z0-9_$]*)/gi)) words.add((match[1] ?? match[2]).toLowerCase());
   return words;
 }
 
-function countStatements(sql: string): number {
+export function countStatements(sql: string): number {
   return splitStatements(sql).filter((s) => hasExecutableSql(s)).length;
 }
 
-function tidy(text: string): string {
+export function tidy(text: string): string {
   return text.replace(/\r\n/g, "\n").trim();
 }
 

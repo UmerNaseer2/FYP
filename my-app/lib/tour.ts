@@ -195,7 +195,7 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     kicker: "Ship",
     title: "Rehearse first, then ship",
     body: mayRun
-      ? "A dry run rehearses a saved version and keeps nothing. A real run is one transaction, so every migration in it lands or none do, and you can undo it after."
+      ? "A dry run rehearses a saved version and keeps nothing. A real run is one transaction, so every migration in it lands or none do, and you can undo it after. Quick run does the same for SQL you type."
       : "Runs happen here: a dry run first, then the real one, all or nothing, with undo after. Your role can see every run but not start one.",
     targets: [".dp-stage", ".dp-card", ".dp-page .page-header"],
   });

@@ -63,7 +63,7 @@ export function isSqlGenerateAnswer(value: unknown): value is SqlGenerateAnswer 
   );
 }
 
-function isSqlTrial(value: unknown): value is SqlTrial {
+export function isSqlTrial(value: unknown): value is SqlTrial {
   if (!isObject(value)) return false;
   if (value.status === "passed") return typeof value.rollbackTried === "boolean";
   return value.status === "not-tried" && typeof value.reason === "string";
