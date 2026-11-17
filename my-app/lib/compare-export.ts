@@ -25,6 +25,7 @@ import {
   columnMatchSeverity,
   constraintDiffSeverity,
   droppedColumnSeverity,
+  comesWithNewObject,
   objectDiffSeverity,
 } from "./compare";
 // From compare-data-summary, not compare-data: the export bar is a client
@@ -388,16 +389,24 @@ export function buildDiffDocument(
   }
 
   // ── Objects that hang off the schema, not off a table ────────────────────
+  // The owner and grants of something new are listed but not counted: they
+  // are part of creating that object, the way the header on screen counts them
+  // (comesWithNewObject). Counting them made "3 new tables" read "8 added".
+  const notCounted = new Set<ChangeRow>();
   for (const diff of report.objectDiffs) {
-    changes.push({
+    const row: ChangeRow = {
       category: OBJECT_CATEGORY[diff.kind],
       table: diff.table ?? "",
       object: diff.name,
       change: objectVerdict(diff),
       severity: objectDiffSeverity(diff),
-      detail: diff.summary,
+      detail: comesWithNewObject(diff)
+        ? `${diff.summary} Set with the new object, not counted on its own.`
+        : diff.summary,
       manual: diff.needsManualWork === true,
-    });
+    };
+    changes.push(row);
+    if (comesWithNewObject(diff)) notCounted.add(row);
   }
 
   // ── Rename pairings the matcher offered but did not apply ────────────────
@@ -429,8 +438,9 @@ export function buildDiffDocument(
         entry.category !== undefined
     );
 
+  const counted = changes.filter((row) => !notCounted.has(row));
   const count = (verdict: ChangeVerdict) =>
-    changes.filter((row) => row.change === verdict).length;
+    counted.filter((row) => row.change === verdict).length;
 
   return {
     format: "schema-studio-diff",
@@ -438,14 +448,14 @@ export function buildDiffDocument(
     source: { database: report.left.database, schema: report.left.schema },
     target: { database: report.right.database, schema: report.right.schema },
     totals: {
-      changes: changes.length,
+      changes: counted.length,
       added: count("added"),
       dropped: count("dropped"),
       changed: count("changed"),
       renamed: count("renamed"),
       renameSuggestions: count("rename-suggested"),
-      breaking: changes.filter((row) => row.severity === "breaking").length,
-      manual: changes.filter((row) => row.manual).length,
+      breaking: counted.filter((row) => row.severity === "breaking").length,
+      manual: counted.filter((row) => row.manual).length,
     },
     notCompared,
     categories,

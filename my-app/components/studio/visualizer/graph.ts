@@ -73,10 +73,22 @@ const NODE_MIN_W = 232;
 const NODE_MAX_W = 384;
 
 export function nodeWidth(table: TableSnapshot): number {
-  let longest = table.name.length + 6; // header text + count badge
-  for (const col of table.columns) {
+  return widthFor(
+    table.name.length + 6, // header text + count badge
+    table.columns.map((col) => ({ name: col.name, type: col.typeDisplay })),
+  );
+}
+
+/**
+ * Width of a table card from what it prints: the header, in characters, and
+ * one name and type per row. The Compare page's map of changes shares it, so
+ * its cards are measured the same way as the Visualizer's.
+ */
+export function widthFor(headerChars: number, rows: ReadonlyArray<{ name: string; type: string }>): number {
+  let longest = headerChars;
+  for (const row of rows) {
     // name + gap + type + leading icon area
-    longest = Math.max(longest, col.name.length + col.typeDisplay.length + 7);
+    longest = Math.max(longest, row.name.length + row.type.length + 7);
   }
   return Math.round(Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, longest * CHAR_W + 46)));
 }
@@ -197,8 +209,18 @@ export function buildGraph(snapshot: SchemaSnapshot): VizGraph {
   };
 }
 
-/** Position nodes in-place via dagre (left→right rank flow, like an ER chart). */
-function layoutWithDagre(nodes: VizNode[], edges: VizEdge[]): void {
+/** What the layout needs of a node: its size in, its top-left corner out. */
+export type LayoutNode = { id: string; width: number; height: number; position: { x: number; y: number } };
+
+/**
+ * Position nodes in-place via dagre (left→right rank flow, like an ER chart).
+ * Exported for the Compare page's map of changes, which lays its cards out the
+ * same way.
+ */
+export function layoutWithDagre(
+  nodes: LayoutNode[],
+  edges: ReadonlyArray<{ source: string; target: string }>,
+): void {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 110, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
@@ -241,9 +263,9 @@ const ROW_GAP = 48; // same as dagre's nodesep
 const BAND_GAP = 140; // between one row of columns and the next
 
 /** One column of tables, top to bottom. */
-type LayoutColumn = { nodes: VizNode[]; width: number; height: number };
+type LayoutColumn = { nodes: LayoutNode[]; width: number; height: number };
 
-function makeColumn(nodes: VizNode[]): LayoutColumn {
+function makeColumn(nodes: LayoutNode[]): LayoutColumn {
   const width = Math.max(...nodes.map((n) => n.width));
   const height = nodes.reduce((sum, n) => sum + n.height, 0) + ROW_GAP * (nodes.length - 1);
   return { nodes, width, height };
@@ -261,7 +283,7 @@ function makeColumn(nodes: VizNode[]): LayoutColumn {
  * a band is full. A line between tables in different bands is longer, but the
  * table names can be read.
  */
-function wrapBigLayout(nodes: VizNode[], rankX: Map<string, number>): void {
+function wrapBigLayout(nodes: LayoutNode[], rankX: Map<string, number>): void {
   if (nodes.length === 0) return;
 
   const left = Math.min(...nodes.map((n) => n.position.x));
@@ -271,7 +293,7 @@ function wrapBigLayout(nodes: VizNode[], rankX: Map<string, number>): void {
   if (right - left <= READABLE_W && bottom - top <= READABLE_H) return;
 
   // 1. dagre's columns, left to right, each one top to bottom.
-  const byRank = new Map<number, VizNode[]>();
+  const byRank = new Map<number, LayoutNode[]>();
   for (const node of nodes) {
     const x = rankX.get(node.id) ?? node.position.x;
     byRank.set(x, [...(byRank.get(x) ?? []), node]);
@@ -285,7 +307,7 @@ function wrapBigLayout(nodes: VizNode[], rankX: Map<string, number>): void {
   const columnLimit = Math.max(READABLE_H, Math.sqrt(area / SCREEN_SHAPE));
   const columns: LayoutColumn[] = [];
   for (const rankNodes of ranks) {
-    let current: VizNode[] = [];
+    let current: LayoutNode[] = [];
     let height = 0;
     for (const node of rankNodes) {
       if (current.length > 0 && height + node.height > columnLimit) {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { Suspense, useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { PageTabs } from "@/components/studio/PillTabs";
@@ -36,12 +37,36 @@ const MODE_TABS: { key: Mode; label: string }[] = [
   { key: "split", label: "Side by side" },
 ];
 
+// useSearchParams has to sit under a Suspense boundary.
 export default function VisualizerPage() {
+  return (
+    <Suspense fallback={null}>
+      <VisualizerScreen />
+    </Suspense>
+  );
+}
+
+/**
+ * The Compare page's "Open in Visualizer" link says which schemas to draw:
+ * mode=split with leftConnection, leftSchema, rightConnection and rightSchema.
+ * Read once, as where the pickers start; after that they are the reader's.
+ */
+function readStart(params: URLSearchParams): { mode: Mode; left: VizPick; right: VizPick } {
+  const pick = (side: "left" | "right"): VizPick => ({
+    connectionId: params.get(`${side}Connection`) ?? "",
+    schema: params.get(`${side}Schema`) ?? "",
+  });
+  return { mode: params.get("mode") === "split" ? "split" : "single", left: pick("left"), right: pick("right") };
+}
+
+function VisualizerScreen() {
   const orgPath = useOrgHref();
+  const params = useSearchParams();
+  const [start] = useState(() => readStart(new URLSearchParams(params.toString())));
   const [connections, setConnections] = useState<VizConnection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
   const [connectionsFailed, setConnectionsFailed] = useState(false);
-  const [mode, setMode] = useState<Mode>("single");
+  const [mode, setMode] = useState<Mode>(start.mode);
   const [splitPct, setSplitPct] = useState(50);
   // What each pane draws, reported by the pane, for the "Open in Compare" link.
   const [leftPick, setLeftPick] = useState<VizPick>(NO_PICK);
@@ -211,6 +236,7 @@ export default function VisualizerPage() {
               connectionsLoaded={connectionsLoaded}
               label={effectiveMode === "split" ? "Left pane" : "Connection and schema"}
               onPick={setLeftPick}
+              initialPick={start.left}
             />
           </div>
 
@@ -250,6 +276,7 @@ export default function VisualizerPage() {
                   connectionsLoaded={connectionsLoaded}
                   label="Right pane"
                   onPick={setRightPick}
+                  initialPick={start.right}
                 />
               </div>
             </>

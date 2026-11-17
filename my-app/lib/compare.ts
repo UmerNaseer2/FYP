@@ -919,6 +919,21 @@ export function objectDiffSeverity(diff: ObjectDiff): ChangeSeverity {
   return diff.severity;
 }
 
+/**
+ * True for an owner and grants entry that exists only because its object is new.
+ *
+ * Every object has an owner, so a snapshot holds one privileges entry per
+ * table, sequence, view and function. An entry only the source has therefore
+ * belongs to an object the target does not have yet, the one the script is
+ * creating, and its OWNER and GRANT statements are part of creating it. The
+ * counts fold it into that object instead of counting it as a change of its
+ * own: three new tables used to read "8 added", the tables plus one entry for
+ * each table and each table's id sequence.
+ */
+export function comesWithNewObject(diff: ObjectDiff): boolean {
+  return diff.kind === "PRIVILEGES" && diff.status === "onlyA";
+}
+
 // The four parts of a column pair's score, before rounding. compareColumnPair
 // and columnPairScore both start here, so the two can never drift apart.
 function columnScoreParts(

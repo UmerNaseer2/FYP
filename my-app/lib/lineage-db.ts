@@ -7,7 +7,7 @@ import {
 } from "./postgres";
 import { buildPgConfig } from "./connection-config";
 import { credentialsMessage } from "./secret-store";
-import { compareSchemas } from "./compare";
+import { comesWithNewObject, compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import { summarizeStructuralSeverity, type ChangeLevel } from "./version-detection";
 import { listSetNamesUsingConnection } from "./comparison-sets";
@@ -916,7 +916,8 @@ export async function computeDriftDetail(
     tablesRemoved: s.tablesOnlyInA,
     tablesChanged: s.changedTables,
     constraintsChanged: s.changedConstraints,
-    objectsChanged: report.objectDiffs.length,
+    // A missing table's owner and grants go with the table, as on /compare.
+    objectsChanged: report.objectDiffs.filter((diff) => !comesWithNewObject(diff)).length,
   };
   // A dropped view is drift. Counting only tables and constraints let the hero
   // say "matches v3" directly above a card listing the view that went missing.

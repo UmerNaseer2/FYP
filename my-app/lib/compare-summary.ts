@@ -16,7 +16,7 @@ import type {
   ObjectKind,
   TableSnapshot,
 } from "./compare-types";
-import { isStandaloneSequence } from "./compare";
+import { comesWithNewObject, isStandaloneSequence } from "./compare";
 
 /** One line of the matrix: a category, and how its objects fared. */
 export type SummaryRow = {
@@ -408,7 +408,16 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   // leaves it out rather than reporting a revoke on something that will not be
   // there — see the privileges block in compare.ts. Access genuinely taken
   // away shows up under "changed", on the object that survives.
-  const privileges = tallyObjects(report.objectDiffs, ["PRIVILEGES"]);
+  //
+  // The "added" cell is zero for the mirror reason: an entry only the source
+  // has belongs to an object the script is creating, and is counted with that
+  // object (comesWithNewObject). It is still not "in sync", so the in-sync
+  // count takes every source-only entry off, counted or not.
+  const allPrivileges = tallyObjects(report.objectDiffs, ["PRIVILEGES"]);
+  const privileges = tallyObjects(
+    report.objectDiffs.filter((diff) => !comesWithNewObject(diff)),
+    ["PRIVILEGES"]
+  );
   rows.push({
     label: "Privileges",
     compared: categories.privileges,
@@ -423,8 +432,8 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
       (report.right.privileges?.length ?? 0) === 0,
     inSync: inSyncCount(
       report.left.privileges?.length ?? 0,
-      privileges.added,
-      privileges.changed
+      allPrivileges.added,
+      allPrivileges.changed
     ),
     ...privileges,
   });

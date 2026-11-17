@@ -48,6 +48,7 @@ export function VisualizerPane({
   connectionsLoaded,
   label = "Connection and schema",
   onPick,
+  initialPick,
 }: {
   connections: VizConnection[];
   connectionsLoaded: boolean;
@@ -55,14 +56,16 @@ export function VisualizerPane({
   label?: string;
   /** Told what the pane draws, each time the pick changes. */
   onPick?: (pick: VizPick) => void;
+  /** Where the pickers start, from a link such as Compare's "Open in Visualizer". */
+  initialPick?: VizPick;
 }) {
-  const [connectionId, setConnectionId] = useState("");
+  const [connectionId, setConnectionId] = useState(initialPick?.connectionId ?? "");
   const [schemas, setSchemas] = useState<string[]>([]);
   const [schemasLoading, setSchemasLoading] = useState(false);
   const [schemasError, setSchemasError] = useState("");
   // Counts presses of Try again on the schema list, so the list loads again.
   const [schemasRetry, setSchemasRetry] = useState(0);
-  const [schema, setSchema] = useState("");
+  const [schema, setSchema] = useState(initialPick?.schema ?? "");
 
   const [snapshot, setSnapshot] = useState<SchemaSnapshot | null>(null);
   const [snapPhase, setSnapPhase] = useState<"idle" | "loading" | "error" | "ready">("idle");

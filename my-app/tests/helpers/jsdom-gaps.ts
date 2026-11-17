@@ -1,5 +1,6 @@
 import { webcrypto } from "node:crypto";
 import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "node:util";
+import { deserialize, serialize } from "node:v8";
 
 /**
  * The browser APIs jsdom does not have, stubbed once for every suite.
@@ -17,6 +18,24 @@ import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from "
 // setupFilesAfterEnv runs for EVERY suite, and most of them are `node` — where
 // there is no DOM at all and nothing below would mean anything.
 if (typeof window !== "undefined") {
+  // Node has structuredClone but the jsdom window does not pass it through.
+  // dagre (the layout behind the Visualizer and Compare's map of changes) calls
+  // it on every layout. v8's serializer is the same structured clone algorithm.
+  if (typeof globalThis.structuredClone !== "function") {
+    globalThis.structuredClone = (<T>(value: T): T => deserialize(serialize(value))) as typeof structuredClone;
+  }
+
+  // Boxes never change size without a layout engine, so an observer that never
+  // reports is the true answer. React Flow and Compare's map of changes watch
+  // their box with one.
+  if (typeof globalThis.ResizeObserver !== "function") {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+
   // Scrolling needs a viewport and boxes, neither of which exists here.
   // components/ui/Select keeps the highlighted option in view with it, so
   // opening any dropdown in a test hits this.

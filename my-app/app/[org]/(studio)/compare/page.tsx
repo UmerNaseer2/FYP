@@ -9,7 +9,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   pickSchemaAfterConnectionChange,
   selectionToQuery,
@@ -22,13 +22,14 @@ import type {
   ConnectionView,
   OutcomeView,
 } from "@/lib/compare-run";
-import { DiffReport, type DiffFilter } from "@/components/studio/DiffReport";
+import { DiffReport, describeParts, type DeltaPart, type DiffFilter } from "@/components/studio/DiffReport";
 import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { CriticalChanges } from "@/components/studio/CriticalChanges";
 import { CompareSummaryPanel } from "@/components/studio/CompareSummaryPanel";
 import { CompareHistory } from "@/components/studio/CompareHistory";
+import { ChangeMap } from "@/components/studio/ChangeMap";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
@@ -50,8 +51,22 @@ import {
   PlusIcon,
   RefreshIcon,
   XIcon,
+  CodeIcon,
 } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
+import {
+  forgetCompare,
+  hasMemory,
+  isRestoring,
+  markRestoring,
+  recall,
+  recallQuery,
+  rememberDraft,
+  rememberFilters,
+  rememberQuery,
+  rememberScreen,
+  scriptKey,
+} from "@/lib/compare-memory";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-compare.css";
 
@@ -238,10 +253,13 @@ const TILES: { filter: DiffFilter; tone: string; glyph: string; label: string; h
  */
 function ChangeTiles({
   counts,
+  parts,
   active,
   onPick,
 }: {
   counts: Record<DiffFilter, number>;
+  /** What each count is made of, such as "3 tables". Adds up to the count. */
+  parts?: Partial<Record<DiffFilter, DeltaPart[]>>;
   active: DiffFilter | null;
   onPick: (next: DiffFilter | null) => void;
 }) {
@@ -266,7 +284,7 @@ function ChangeTiles({
           <b>{counts[tile.filter]}</b>
           <span>
             {tile.label}
-            <i>{tile.hint}</i>
+            <i>{describeParts(parts?.[tile.filter]) || tile.hint}</i>
           </span>
         </button>
       ))}
@@ -389,15 +407,76 @@ function LoadingScreen() {
  */
 function CompareRoute() {
   const query = useSearchParams().toString();
+  const orgSlug = useOrg()?.slug ?? "";
+  const orgPath = useOrgHref();
+  const router = useRouter();
+
+  // Compare opened bare (the rail, a "Compare" link) after a comparison in
+  // this tab: go back to that comparison rather than an empty form. "Start
+  // over" forgets it first. Memory is empty on a fresh page load, on the
+  // server and in the browser alike, so this reads the same in both and the
+  // first render cannot disagree; after a reload the query comes back from
+  // the tab's storage in the effect instead.
+  const goingBack = query === "" && hasMemory(orgSlug);
+  useEffect(() => {
+    if (query !== "" || !orgSlug) return;
+    const last = recallQuery(orgSlug);
+    if (!last) return;
+    markRestoring(orgSlug, last);
+    router.replace(orgPath(`/compare?${last}`), { scroll: false });
+  }, [query, orgSlug, orgPath, router]);
+
+  if (goingBack) return <LoadingScreen />;
   return <CompareScreenView key={query} query={query} />;
+}
+
+/**
+ * The card in target `index`'s list that a table on the map stands for. An
+ * unchanged table has no card of its own, so it finds the one line that lists
+ * the unchanged tables.
+ */
+function findTableCard(index: number, nodeId: string): HTMLElement | null {
+  const section = document.querySelector(`[data-outcome="${index}"]`);
+  if (!section) return null;
+  const key = nodeId.startsWith("same:") ? "same" : nodeId;
+  for (const card of section.querySelectorAll<HTMLElement>("[data-table-card]")) {
+    if (card.dataset.tableCard === key) return card;
+  }
+  return null;
+}
+
+/** Scroll to a card, open it, flash it, and put keyboard focus on it. */
+function revealTableCard(card: HTMLElement) {
+  if (card instanceof HTMLDetailsElement) card.open = true;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  card.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "start" });
+  card.classList.remove("cp-flash");
+  // Read the layout so the animation starts again when the class comes back.
+  void card.offsetWidth;
+  card.classList.add("cp-flash");
+  window.setTimeout(() => card.classList.remove("cp-flash"), 1600);
+  const summary = card.querySelector<HTMLElement>(":scope > summary");
+  const target = summary ?? card;
+  if (!summary && !card.hasAttribute("tabindex")) card.setAttribute("tabindex", "-1");
+  target.focus({ preventScroll: true });
 }
 
 function CompareScreenView({ query }: { query: string }) {
   const orgPath = useOrgHref();
   const orgSlug = useOrg()?.slug ?? "";
-  const [screen, setScreen] = useState<CompareScreen | null>(null);
+  const router = useRouter();
+  // Coming back to a comparison this tab already showed. `kept` is what was on
+  // screen then, drawn straight away and checked again quietly; `quiet` also
+  // covers a comparison sent back to after a reload, which runs as usual. A
+  // visit back is not a new run, so neither stamps a saved set's "last run".
+  const [visit] = useState(() => {
+    const kept = recall(orgSlug, query);
+    return { kept, quiet: kept !== null || isRestoring(orgSlug, query) };
+  });
+  const keptScreen = visit.kept?.screen ?? null;
+  const [screen, setScreen] = useState<CompareScreen | null>(keptScreen);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(keptScreen === null);
   // Counts the comparison's successful runs. The version timeline is keyed on
   // it: a re-run of the same query (after Save, say) keeps this component, and
   // without a new key the timeline would keep the history it loaded for the
@@ -434,7 +513,38 @@ function CompareScreenView({ query }: { query: string }) {
   // Which kind of change each target's diff is narrowed to, by target number.
   // Nothing in here means "show everything". A new comparison remounts this
   // component, so the tiles start unpressed again on their own.
-  const [filters, setFilters] = useState<Record<number, DiffFilter | null>>({});
+  const [filters, setFilters] = useState<Record<number, DiffFilter | null>>(
+    () => visit.kept?.filters ?? {},
+  );
+  // The target whose script is open over the whole window, if any.
+  const [scriptFull, setScriptFull] = useState<number | null>(null);
+
+  // A table pressed on the map: show its card in the list. If a tile has
+  // narrowed the list so the card is not there, show everything and look again
+  // once the list has drawn.
+  const jumpToTable = useCallback((index: number, nodeId: string) => {
+    const card = findTableCard(index, nodeId);
+    if (card) {
+      revealTableCard(card);
+      return;
+    }
+    setFilters((previous) => ({ ...previous, [index]: null }));
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const again = findTableCard(index, nodeId);
+        if (again) revealTableCard(again);
+      }),
+    );
+  }, []);
+
+  // Script edits kept from the last visit, for a target whose generated script
+  // is still the one they were made to. A changed script drops them.
+  const keptDraft = (index: number, up: string, down: string) => {
+    const draft = visit.kept?.drafts[index];
+    return draft && draft.base === up && draft.baseDown === down
+      ? { up: draft.up, down: draft.down }
+      : null;
+  };
 
   const reportPick = useCallback((slotKey: string, pick: SlotPick) => {
     setPicks((previous) => {
@@ -451,12 +561,17 @@ function CompareScreenView({ query }: { query: string }) {
   // One run of the comparison. Everything it needs is in the query string, so
   // it is sent verbatim and the server decides what it means, two places
   // parsing "?targetConnection=3&targetConnection=7" would eventually disagree.
-  const load = useCallback(async () => {
+  //
+  // `quietly` checks a result already on screen: no fade, and the screen only
+  // changes if the answer did.
+  const load = useCallback(async (quietly = false) => {
     const record =
-      new URLSearchParams(query).get("run") === "1" && recorded.current !== query;
+      !visit.quiet &&
+      new URLSearchParams(query).get("run") === "1" &&
+      recorded.current !== query;
     if (record) recorded.current = query;
 
-    setLoading(true);
+    if (!quietly) setLoading(true);
     try {
       const response = await apiFetch("/api/compare", {
         method: "POST",
@@ -465,9 +580,12 @@ function CompareScreenView({ query }: { query: string }) {
       });
       const data = await response.json().catch(() => null);
       if (response.ok && data) {
-        setScreen(data as CompareScreen);
+        rememberScreen(orgSlug, query, data as CompareScreen);
         setError(null);
-        setRunSerial((serial) => serial + 1);
+        if (!quietly || JSON.stringify(data) !== JSON.stringify(keptScreen)) {
+          setScreen(data as CompareScreen);
+          setRunSerial((serial) => serial + 1);
+        }
         // Leaves a note for the Dashboard's Getting started list: this browser
         // has run a compare in this organization. A blocked browser store just
         // means the step waits for a saved comparison instead.
@@ -486,10 +604,18 @@ function CompareScreenView({ query }: { query: string }) {
     } finally {
       setLoading(false);
     }
-  }, [query, orgSlug]);
+  }, [query, orgSlug, visit.quiet, keptScreen]);
 
   useEffect(() => {
-    void load();
+    rememberQuery(orgSlug, query);
+  }, [orgSlug, query]);
+
+  useEffect(() => {
+    rememberFilters(orgSlug, query, filters);
+  }, [orgSlug, query, filters]);
+
+  useEffect(() => {
+    void load(keptScreen !== null);
     // React in development runs every effect twice, and the two answers can
     // land in either order. When only the first run stamped the set, the
     // second could land last carrying the time from before the stamp, and a
@@ -498,7 +624,7 @@ function CompareScreenView({ query }: { query: string }) {
     return () => {
       recorded.current = null;
     };
-  }, [load]);
+  }, [load, keptScreen]);
 
   // A comparison that never arrived at all: there is nothing else to draw.
   if (error && !screen) {
@@ -826,6 +952,19 @@ function CompareScreenView({ query }: { query: string }) {
               <AlertTriangleIcon size={13} />
               Not applied yet. Press Compare.
             </span>
+            {asked && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                title="Clear the picks and results this tab keeps for Compare"
+                onClick={() => {
+                  forgetCompare(orgSlug);
+                  router.push(orgPath("/compare"));
+                }}
+              >
+                Start over
+              </button>
+            )}
             <button
               type="submit"
               name="run"
@@ -920,7 +1059,11 @@ function CompareScreenView({ query }: { query: string }) {
             : null;
           const filter = filters[outcome.index] ?? null;
           return (
-            <section key={`outcome-${outcome.index}`} className="cp-outcome">
+            <section
+              key={`outcome-${outcome.index}`}
+              className="cp-outcome"
+              data-outcome={outcome.index}
+            >
               {/* Per-target header: what is being compared, and how much differs. */}
               <div className="cp-outcome__head">
                 {/* A heading rather than a span: with several targets this is
@@ -952,6 +1095,18 @@ function CompareScreenView({ query }: { query: string }) {
                     source the next Compare cannot read either. No run=1: the
                     swap only fills the pickers, and the reader decides when to
                     run it. */}
+                {outcome.report && diffDoc && !outcome.sameAsSource && !outcome.error &&
+                  outcome.statementCount > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => setScriptFull(outcome.index)}
+                      title="The migration script over the whole window. Edits there are the same script as the side panel."
+                    >
+                      <CodeIcon size={14} />
+                      Open the script
+                    </button>
+                  )}
                 {outcome.report && (
                   <Link
                     href={orgPath(
@@ -1033,29 +1188,75 @@ function CompareScreenView({ query }: { query: string }) {
                       of a pair: see the note at the top of CompareHistory. */}
                   {outcome.history && <CompareHistory history={outcome.history} />}
 
+                  {/* The four counts, across the whole width so the map and
+                      the list below both sit under them. Each one narrows the
+                      list AND dims the map to that kind of change. The first
+                      three are the header's own numbers; the fourth counts the
+                      tables that match. */}
+                  {outcome.delta && (
+                    <div className="cp-counts">
+                      <ChangeTiles
+                        counts={{
+                          add: outcome.delta.adds,
+                          chg: outcome.delta.chgs,
+                          rem: outcome.delta.rems,
+                          same: outcome.report.matchedTables.filter(
+                            (match) => !match.hasChanges,
+                          ).length,
+                        }}
+                        parts={{
+                          add: outcome.delta.parts?.adds,
+                          chg: outcome.delta.parts?.chgs,
+                          rem: outcome.delta.parts?.rems,
+                        }}
+                        active={filter}
+                        onPick={(next) =>
+                          setFilters((previous) => ({ ...previous, [outcome.index]: next }))
+                        }
+                      />
+                      {/* The sum, written out, so nobody has to check that the
+                          tiles add up to the header's number. They do by
+                          construction: the header's total IS this sum. */}
+                      {outcome.delta.total > 0 && (
+                        <p className="cp-sum">
+                          {outcome.delta.adds} added + {outcome.delta.chgs} changed +{" "}
+                          {outcome.delta.rems} removed ={" "}
+                          <b>
+                            {outcome.delta.total} change{outcome.delta.total === 1 ? "" : "s"}
+                          </b>
+                          , the number in the header. Press a tile to show only that
+                          kind, in the list and on the map.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* The Visualizer, drawing this difference: which tables the
+                      script creates, alters and drops, and the links between
+                      them. Pressing a table jumps to its card in the list. */}
+                  <ChangeMap
+                    report={outcome.report}
+                    filter={filter}
+                    onJump={(nodeId) => jumpToTable(outcome.index, nodeId)}
+                    visualizerHref={
+                      selection.sourceConnectionId && outcome.connectionId
+                        ? orgPath(
+                            `/visualizer?${new URLSearchParams({
+                              mode: "split",
+                              leftConnection: String(selection.sourceConnectionId),
+                              leftSchema: source.schema,
+                              rightConnection: String(outcome.connectionId),
+                              rightSchema: outcome.schema,
+                            }).toString()}`,
+                          )
+                        : null
+                    }
+                  />
+
                   {/* Two-column body: the changes (left) and the migration
                       draft (right, sticky). Stacks on narrow screens. */}
                   <div className="cp-grid">
                     <div className="cp-col">
-                      {/* The four counts. Each one narrows the diff below to
-                          that kind of change. The first three are the header's
-                          own numbers; the fourth counts the tables that match. */}
-                      {outcome.delta && (
-                        <ChangeTiles
-                          counts={{
-                            add: outcome.delta.adds,
-                            chg: outcome.delta.chgs,
-                            rem: outcome.delta.rems,
-                            same: outcome.report.matchedTables.filter(
-                              (match) => !match.hasChanges,
-                            ).length,
-                          }}
-                          active={filter}
-                          onPick={(next) =>
-                            setFilters((previous) => ({ ...previous, [outcome.index]: next }))
-                          }
-                        />
-                      )}
                       {/* One document, three readers: the export writes it out,
                           CriticalChanges pulls the breaking rows out of it, and
                           both grade every change with the same functions the
@@ -1119,6 +1320,10 @@ function CompareScreenView({ query }: { query: string }) {
                       )}
                     </div>
                     <MigrationWorkbench
+                      // A new script (the schemas changed since this tab last
+                      // looked) starts the Workbench again; the same script
+                      // keeps whatever the reader has typed.
+                      key={scriptKey(`${outcome.sqlText}\u0000${outcome.rollbackText}`)}
                       initialSql={outcome.sqlText}
                       statementCount={outcome.statementCount}
                       heldBackCount={outcome.heldBackCount}
@@ -1157,6 +1362,17 @@ function CompareScreenView({ query }: { query: string }) {
                       sourceName={`${source.displayName}.${source.schema}`}
                       targetName={`${outcome.displayName}.${outcome.schema}`}
                       swapHref={screen.swapHref}
+                      fullScreen={scriptFull === outcome.index}
+                      onFullScreen={(open) => setScriptFull(open ? outcome.index : null)}
+                      draft={keptDraft(outcome.index, outcome.sqlText, outcome.rollbackText)}
+                      onDraftChange={(up, down) =>
+                        rememberDraft(orgSlug, query, outcome.index, {
+                          base: outcome.sqlText,
+                          baseDown: outcome.rollbackText,
+                          up,
+                          down,
+                        })
+                      }
                     />
                   </div>
                 </>

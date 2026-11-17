@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   addedColumnSeverity,
   columnMatchPercent,
+  comesWithNewObject,
   columnMatchSeverity,
   constraintDiffSeverity,
   describeConstraint,
@@ -478,7 +479,84 @@ function pickKinds(diffs: ObjectDiff[], kinds: ObjectKind[]): ObjectDiff[] {
 
 type Tally = { adds: number; chgs: number; rems: number };
 
-function matchTally(match: TableMatch): Tally {
+/** What a headline count is made of, by kind of thing. */
+type NounKey =
+  | "table"
+  | "column"
+  | "constraint"
+  | "index"
+  | "trigger"
+  | "policy"
+  | "rls"
+  | "partitioning"
+  | "view"
+  | "sequence"
+  | "type"
+  | "function"
+  | "extension"
+  | "collation"
+  | "grant";
+
+/** Singular and plural, in the order a breakdown lists them. */
+const NOUNS: [NounKey, string, string][] = [
+  ["table", "table", "tables"],
+  ["column", "column", "columns"],
+  ["constraint", "constraint", "constraints"],
+  ["index", "index", "indexes"],
+  ["trigger", "trigger", "triggers"],
+  ["policy", "policy", "policies"],
+  ["rls", "row security switch", "row security switches"],
+  ["partitioning", "partitioning", "partitionings"],
+  ["view", "view", "views"],
+  ["sequence", "sequence", "sequences"],
+  ["type", "type", "types"],
+  ["function", "function", "functions"],
+  ["extension", "extension", "extensions"],
+  ["collation", "collation", "collations"],
+  ["grant", "grant", "grants"],
+];
+
+const KIND_NOUN: Record<ObjectKind, NounKey> = {
+  INDEX: "index",
+  TRIGGER: "trigger",
+  VIEW: "view",
+  "MATERIALIZED VIEW": "view",
+  SEQUENCE: "sequence",
+  ENUM: "type",
+  DOMAIN: "type",
+  "COMPOSITE TYPE": "type",
+  "RANGE TYPE": "type",
+  FUNCTION: "function",
+  PROCEDURE: "function",
+  POLICY: "policy",
+  "ROW SECURITY": "rls",
+  PARTITIONING: "partitioning",
+  COLLATION: "collation",
+  EXTENSION: "extension",
+  PRIVILEGES: "grant",
+};
+
+type Counts = Partial<Record<NounKey, number>>;
+type Breakdown = { adds: Counts; chgs: Counts; rems: Counts };
+
+function bump(counts: Counts, key: NounKey, by = 1): void {
+  if (by > 0) counts[key] = (counts[key] ?? 0) + by;
+}
+
+function sumCounts(counts: Counts): number {
+  let total = 0;
+  for (const value of Object.values(counts)) total += value ?? 0;
+  return total;
+}
+
+function addObjectDiff(breakdown: Breakdown, diff: ObjectDiff): void {
+  const key = KIND_NOUN[diff.kind];
+  if (diff.status === "onlyA") bump(breakdown.adds, key);
+  else if (diff.status === "onlyB") bump(breakdown.rems, key);
+  else bump(breakdown.chgs, key);
+}
+
+function matchBreakdown(match: TableMatch): Breakdown {
   // One test, not two. A column can be renamed AND have its type or nullability
   // changed; it is still one column and one card row, and counting it in a
   // "changed" list and a "renamed" list made the chips read ~2 for it. This is
@@ -487,33 +565,56 @@ function matchTally(match: TableMatch): Tally {
   const changedCols = match.columnMatches.filter(
     (c) => c.changes.length > 0 || !c.exact,
   ).length;
-  const addedConstraints = match.constraintDiffs.filter((d) => d.status === "onlyA").length;
-  const droppedConstraints = match.constraintDiffs.filter((d) => d.status === "onlyB").length;
-  const changedConstraints = match.constraintDiffs.filter(
-    (d) => d.status === "changedDefinition",
-  ).length;
+  const breakdown: Breakdown = { adds: {}, chgs: {}, rems: {} };
+  bump(breakdown.adds, "column", match.columnsOnlyInA.length);
+  bump(breakdown.rems, "column", match.columnsOnlyInB.length);
+  // An accepted table rename is an ALTER TABLE ... RENAME TO in the script
+  // and a "renamed" row in the export, so it counts here too. Without it a
+  // table whose only change was its name read "~0" beside its renamed pill.
+  bump(breakdown.chgs, "table", match.exact ? 0 : 1);
+  bump(breakdown.chgs, "column", changedCols);
+  for (const diff of match.constraintDiffs) {
+    if (diff.status === "onlyA") bump(breakdown.adds, "constraint");
+    else if (diff.status === "onlyB") bump(breakdown.rems, "constraint");
+    else bump(breakdown.chgs, "constraint");
+  }
   // Indexes and triggers count too. They used to be left out, which made a
   // table whose only change was a dropped index show "+0 ~0 −0" above a card
   // that then listed the dropped index underneath.
-  const objects = match.objectDiffs;
+  for (const diff of match.objectDiffs) addObjectDiff(breakdown, diff);
+  return breakdown;
+}
+
+function matchTally(match: TableMatch): Tally {
+  const breakdown = matchBreakdown(match);
   return {
-    adds:
-      match.columnsOnlyInA.length +
-      addedConstraints +
-      objects.filter((d) => d.status === "onlyA").length,
-    chgs:
-      // An accepted table rename is an ALTER TABLE ... RENAME TO in the script
-      // and a "renamed" row in the export, so it counts here too. Without it a
-      // table whose only change was its name read "~0" beside its renamed pill.
-      (match.exact ? 0 : 1) +
-      changedCols +
-      changedConstraints +
-      objects.filter((d) => d.status === "changedDefinition").length,
-    rems:
-      match.columnsOnlyInB.length +
-      droppedConstraints +
-      objects.filter((d) => d.status === "onlyB").length,
+    adds: sumCounts(breakdown.adds),
+    chgs: sumCounts(breakdown.chgs),
+    rems: sumCounts(breakdown.rems),
   };
+}
+
+/**
+ * The owner and grants entries that come with each new table: the table's own
+ * and those of the sequences behind its id columns. Keyed by table name, for
+ * NewTableCard to list them on the table they belong to.
+ */
+function grantsOfNewTables(report: CompareReport): Map<string, ObjectDiff[]> {
+  const byTable = new Map<string, ObjectDiff[]>();
+  const sequences = report.left.sequences ?? [];
+  for (const table of report.tablesOnlyInA) {
+    const names = new Set([
+      `table ${table.name}`,
+      ...sequences
+        .filter((seq) => seq.ownedByTable === table.name)
+        .map((seq) => `sequence ${seq.name}`),
+    ]);
+    const grants = report.objectDiffs.filter(
+      (diff) => comesWithNewObject(diff) && names.has(diff.name),
+    );
+    if (grants.length > 0) byTable.set(table.name, grants);
+  }
+  return byTable;
 }
 
 /**
@@ -633,7 +734,16 @@ function ChevronDown() {
  * of CHECK constraints reported "+5" and showed five column lines while the
  * script below it ran a dozen statements.
  */
-function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSides }) {
+function NewTableCard({
+  table,
+  grants,
+  sides,
+}: {
+  table: TableSnapshot;
+  /** Owner and grants entries for this table and its id sequences, see grantsOfNewTables. */
+  grants: ObjectDiff[];
+  sides: ReportSides;
+}) {
   const drift = sides === "expected-live";
   // undefined means the snapshot has no record of the category, which is not
   // the same as the table having none, see ComparedObjectCategories.
@@ -668,7 +778,7 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
     policies.length;
 
   return (
-    <details className="table-group" open>
+    <details className="table-group" open data-table-card={`add:${table.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
@@ -810,6 +920,25 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
           </DiffLine>
         </div>
       )}
+
+      {/* Owner and grants, for the table and the sequences behind its id
+          columns. They are statements in the script but not changes of their
+          own (comesWithNewObject), so they sit with the table and stay out of
+          every count, where they used to add one each to the headline. */}
+      {grants.length > 0 && (
+        <div className="obj-group">
+          <ObjHeader
+            label="Owner and grants"
+            note={drift ? "gone with the table" : "set with the table, not counted on their own"}
+          />
+          {grants.map((diff) => (
+            <DiffLine key={diff.name} kind="add" tag={OBJECT_TAG[diff.kind]}>
+              <b>{diff.name}</b>{" "}
+              <span className="muted">· {diff.leftDefinition ?? "owner set"}</span>
+            </DiffLine>
+          ))}
+        </div>
+      )}
     </details>
   );
 }
@@ -840,7 +969,7 @@ function ExtraTableCard({
     // Open by default, like every other card in this file: this is the only one
     // whose sync deletes rows, so hiding its explanation behind a click inverts
     // the page's risk ordering.
-    <details className="table-group" open>
+    <details className="table-group" open data-table-card={`rem:${table.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
@@ -946,7 +1075,7 @@ function ChangedTableCard({
   const constraintDiffs = match.constraintDiffs;
 
   return (
-    <details className="table-group" open>
+    <details className="table-group" open data-table-card={`chg:${match.left.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">
@@ -1136,7 +1265,8 @@ function SchemaObjectsCard({
   if (sections.length === 0) return null;
 
   const tally: Tally = {
-    adds: diffs.filter((d) => d.status === "onlyA").length,
+    // Grants of a new view or function are listed but counted with the object.
+    adds: diffs.filter((d) => d.status === "onlyA" && !comesWithNewObject(d)).length,
     chgs: diffs.filter((d) => d.status === "changedDefinition").length,
     rems: diffs.filter((d) => d.status === "onlyB").length,
   };
@@ -1335,7 +1465,10 @@ export function DiffReport({
     if (only === "rem") return tally.rems > 0;
     return false;
   });
+  const grantsByTable = grantsOfNewTables(report);
+  const attachedGrants = new Set([...grantsByTable.values()].flat());
   const objectDiffs = report.objectDiffs.filter((diff) => {
+    if (attachedGrants.has(diff)) return false;
     if (only === null) return true;
     if (only === "add") return diff.status === "onlyA";
     if (only === "rem") return diff.status === "onlyB";
@@ -1467,7 +1600,12 @@ export function DiffReport({
       {/* Tables only on the left, created by the migration on /compare,
           already gone from the live database on /drift. */}
       {newTables.map((table) => (
-        <NewTableCard key={`new-${table.name}`} table={table} sides={sides} />
+        <NewTableCard
+          key={`new-${table.name}`}
+          table={table}
+          grants={grantsByTable.get(table.name) ?? []}
+          sides={sides}
+        />
       ))}
 
       {/* Matched tables with structural changes */}
@@ -1498,6 +1636,7 @@ export function DiffReport({
       {/* Unchanged tables: collapsed summary so the diff stays focused */}
       {showUnchanged && (
         <div
+          data-table-card="same"
           className="panel p-3 flex items-center gap-3 text-[12.5px]"
           style={{ color: "var(--text-3)" }}
         >
@@ -1523,6 +1662,31 @@ export function DiffReport({
   );
 }
 
+/** One kind of thing inside a headline count, such as 3 tables. */
+export type DeltaPart = { count: number; noun: string };
+
+function toParts(counts: Counts): DeltaPart[] {
+  const parts: DeltaPart[] = [];
+  for (const [key, one, many] of NOUNS) {
+    const count = counts[key] ?? 0;
+    if (count > 0) parts.push({ count, noun: count === 1 ? one : many });
+  }
+  return parts;
+}
+
+/**
+ * A breakdown in words that always adds up to its count: "3 tables", or
+ * "1 table · 1 column · 2 more" once there are more kinds than fit.
+ */
+export function describeParts(parts: DeltaPart[] | undefined, max = 3): string {
+  if (!parts || parts.length === 0) return "";
+  const shown = parts.length > max ? parts.slice(0, max - 1) : parts;
+  const words = shown.map((part) => `${part.count} ${part.noun}`);
+  const rest = parts.slice(shown.length).reduce((sum, part) => sum + part.count, 0);
+  if (rest > 0) words.push(`${rest} more`);
+  return words.join(" · ");
+}
+
 /** Headline counts for the diff summary strip above the canvas. */
 export function tallyDelta(report: CompareReport): {
   adds: number;
@@ -1530,38 +1694,57 @@ export function tallyDelta(report: CompareReport): {
   rems: number;
   tablesTouched: number;
   total: number;
+  /** What each count is made of. Each list adds up to its count. */
+  parts: { adds: DeltaPart[]; chgs: DeltaPart[]; rems: DeltaPart[] };
 } {
-  let adds = report.tablesOnlyInA.length;
-  let rems = report.tablesOnlyInB.length;
+  const breakdown: Breakdown = { adds: {}, chgs: {}, rems: {} };
+  bump(breakdown.adds, "table", report.tablesOnlyInA.length);
+  bump(breakdown.rems, "table", report.tablesOnlyInB.length);
   // Rename suggestions are deliberately NOT counted. A suggestion means the
   // matcher saw two unmatched tables that might be the same one, but it did
   // not accept the pairing, so both tables are still in the only-in-A and
   // only-in-B lists above and the migration still emits a CREATE and a DROP.
   // Adding the suggestion turned one suspected rename into three headline
   // changes above a script holding two statements.
-  let chgs = 0;
 
   for (const match of report.matchedTables) {
     if (!match.hasChanges) continue;
-    const t = matchTally(match);
-    adds += t.adds;
-    chgs += t.chgs;
-    rems += t.rems;
+    const t = matchBreakdown(match);
+    for (const side of ["adds", "chgs", "rems"] as const) {
+      for (const [key, value] of Object.entries(t[side])) {
+        bump(breakdown[side], key as NounKey, value ?? 0);
+      }
+    }
   }
 
   // Schema-scoped objects are part of the headline too. Table-scoped ones are
-  // already in matchTally above, so counting report.objectDiffs here and not
-  // every match's would be the only way to avoid counting an index twice.
+  // already in matchBreakdown above, so counting report.objectDiffs here and
+  // not every match's is the only way to avoid counting an index twice. The
+  // owner and grants of something new are part of creating it, not a change of
+  // their own (comesWithNewObject).
   for (const diff of report.objectDiffs) {
-    if (diff.status === "onlyA") adds += 1;
-    else if (diff.status === "onlyB") rems += 1;
-    else chgs += 1;
+    if (comesWithNewObject(diff)) continue;
+    addObjectDiff(breakdown, diff);
   }
 
+  const adds = sumCounts(breakdown.adds);
+  const chgs = sumCounts(breakdown.chgs);
+  const rems = sumCounts(breakdown.rems);
   const tablesTouched =
     report.tablesOnlyInA.length +
     report.tablesOnlyInB.length +
     report.matchedTables.filter((m) => m.hasChanges).length;
 
-  return { adds, chgs, rems, tablesTouched, total: adds + chgs + rems };
+  return {
+    adds,
+    chgs,
+    rems,
+    tablesTouched,
+    total: adds + chgs + rems,
+    parts: {
+      adds: toParts(breakdown.adds),
+      chgs: toParts(breakdown.chgs),
+      rems: toParts(breakdown.rems),
+    },
+  };
 }

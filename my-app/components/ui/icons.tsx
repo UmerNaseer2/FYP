@@ -252,6 +252,24 @@ export function PlusIcon(props: IconProps) {
   );
 }
 
+/** Code: a pair of angle brackets. */
+export function CodeIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m8 6-6 6 6 6M16 6l6 6-6 6" />
+    </Svg>
+  );
+}
+
+/** Full screen: two arrows pointing out to opposite corners. */
+export function ExpandIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+    </Svg>
+  );
+}
+
 export function XIcon(props: IconProps) {
   return (
     <Svg {...props}>

@@ -6,9 +6,11 @@ import { useEffect, useId, useState } from "react";
 import {
   ClipboardIcon,
   CheckIcon,
+  ExpandIcon,
   RefreshIcon,
   AlertTriangleIcon,
 } from "@/components/ui/icons";
+import { ScriptFullScreen } from "@/components/studio/ScriptFullScreen";
 import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
@@ -149,6 +151,20 @@ type Props = {
    * the server without the organization; the link puts it on the front.
    */
   swapHref: string | null;
+  /**
+   * The script over the whole window. Compare holds this so its "Open the
+   * script" button can open it too; left out, the Workbench keeps it itself.
+   */
+  fullScreen?: boolean;
+  onFullScreen?: (open: boolean) => void;
+  /**
+   * The script as the reader left it on an earlier visit to Compare, to start
+   * from instead of the generated one. Compare passes it only when it was made
+   * from this same generated script.
+   */
+  draft?: { up: string; down: string } | null;
+  /** Told the script on screen whenever either pane changes, so Compare can keep it. */
+  onDraftChange?: (up: string, down: string) => void;
 };
 
 /** What GitHub said about the family, stamped with the family and refresh it was read for. */
@@ -237,6 +253,10 @@ export function MigrationWorkbench({
   sourceName,
   targetName,
   swapHref,
+  fullScreen,
+  onFullScreen,
+  draft,
+  onDraftChange,
 }: Props) {
   const orgPath = useOrgHref();
   // Compare can show one workbench per target, so a hard-coded field id would
@@ -245,11 +265,11 @@ export function MigrationWorkbench({
   const fieldId = useId();
   const [name, setName] = useState(suggestedName);
   const [description, setDescription] = useState(suggestedDescription);
-  const [sql, setSql] = useState(initialSql);
+  const [sql, setSql] = useState(draft?.up ?? initialSql);
   // The down script is edited and copied independently of the up script. Which
   // one the editor is showing:
   const [pane, setPane] = useState<"up" | "down">("up");
-  const [rollbackSql, setRollbackSql] = useState(initialRollbackSql);
+  const [rollbackSql, setRollbackSql] = useState(draft?.down ?? initialRollbackSql);
   // null = follow the suggestion. Set once the user clicks a level, after
   // which edits to the SQL no longer move it (same idea as the Script Editor).
   const [pickedLevel, setPickedLevel] = useState<ChangeKind | null>(null);
@@ -258,6 +278,9 @@ export function MigrationWorkbench({
   const [pushWithoutRollback, setPushWithoutRollback] = useState(false);
   const [backwardsAck, setBackwardsAck] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [ownFullScreen, setOwnFullScreen] = useState(false);
+  const full = fullScreen ?? ownFullScreen;
+  const setFull = onFullScreen ?? setOwnFullScreen;
   // The two reads the next version is worked out from.
   const [family, setFamily] = useState<FamilyRead | null>(null);
   const [familyRefresh, setFamilyRefresh] = useState(0);
@@ -328,6 +351,12 @@ export function MigrationWorkbench({
   const downSql = rollbackToSend(rollbackSql, pushWithoutRollback);
   const rollbackProblem = rollbackChoiceProblem(rollbackSql, pushWithoutRollback);
   const rollbackRuns = hasExecutableSql(rollbackSql);
+
+  // Compare keeps the script as it stands, so leaving the page and coming back
+  // finds the edits still there.
+  useEffect(() => {
+    onDraftChange?.(sql, rollbackSql);
+  }, [onDraftChange, sql, rollbackSql]);
 
   // ── The two reads behind the next version ────────────────────────────────
   // Skipped when there is nothing to push, or when the name can't be used
@@ -723,6 +752,30 @@ export function MigrationWorkbench({
       ? "Retry saving the rollback"
       : `Add this rollback to v${pushedHere !== null ? pushedHere.version : ""}`;
 
+  // Under the editor, here and in full screen.
+  const tally = (
+    <>
+      {countOf(lineCount, "line")} · {countOf(activeStatementCount, "statement")}
+      {activeManualCount > 0 && (
+        <>
+          {" "}
+          <span style={{ color: "var(--drift)" }}>
+            ({activeManualCount} {activeManualCount === 1 ? "note" : "notes"}, nothing to run)
+          </span>
+        </>
+      )}
+      {!showingDown && heldBackCount > 0 && (
+        <>
+          {" "}
+          {/* "held back" is the word the diff report uses for the same fact,
+              said in both places so the two pages line up. */}
+          <span style={{ color: "var(--break)" }}>({heldBackCount} held back, commented out)</span>
+        </>
+      )}{" "}
+      · {showingDown ? "rollback SQL" : "SQL"}
+    </>
+  );
+
   return (
     <aside>
       <div className="sticky-panel space-y-4">
@@ -797,7 +850,7 @@ export function MigrationWorkbench({
             <>
               {/* SQL editor */}
               <div className="px-5 pb-2">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                   <div className="seg" role="tablist" aria-label="Script direction">
                     <button
                       type="button"
@@ -833,6 +886,15 @@ export function MigrationWorkbench({
                     <button type="button" className="btn btn-ghost btn-sm" onClick={copySql}>
                       {copied ? <CheckIcon size={12} /> : <ClipboardIcon size={12} />}
                       {copied ? "Copied" : "Copy"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setFull(true)}
+                      title="Open the script over the whole window, with its statements listed in run order"
+                    >
+                      <ExpandIcon size={12} />
+                      Full screen
                     </button>
                   </div>
                 </div>
@@ -876,30 +938,7 @@ export function MigrationWorkbench({
                   className="flex items-center justify-between mt-1.5 text-[11px]"
                   style={{ color: "var(--text-3)" }}
                 >
-                  <span>
-                    {countOf(lineCount, "line")} ·{" "}
-                    {countOf(activeStatementCount, "statement")}
-                    {activeManualCount > 0 && (
-                      <>
-                        {" "}
-                        <span style={{ color: "var(--drift)" }}>
-                          ({activeManualCount} {activeManualCount === 1 ? "note" : "notes"},
-                          nothing to run)
-                        </span>
-                      </>
-                    )}
-                    {!showingDown && heldBackCount > 0 && (
-                      <>
-                        {" "}
-                        {/* "held back" is the word the diff report uses for the
-                            same fact — say both so the two pages line up. */}
-                        <span style={{ color: "var(--break)" }}>
-                          ({heldBackCount} held back — commented out)
-                        </span>
-                      </>
-                    )}{" "}
-                    · {showingDown ? "rollback SQL" : "SQL"}
-                  </span>
+                  <span>{tally}</span>
                   <span className="flex items-center gap-1.5">
                     <span
                       className="w-1.5 h-1.5 rounded-full"
@@ -1347,6 +1386,20 @@ export function MigrationWorkbench({
           </div>
         )}
       </div>
+      {full && !inSync && (
+        <ScriptFullScreen
+          targetLabel={targetLabel}
+          showingDown={showingDown}
+          onPane={setPane}
+          sql={activeSql}
+          onEdit={editActiveSql}
+          onReset={regenerate}
+          onCopy={() => void copySql()}
+          copied={copied}
+          tally={tally}
+          onClose={() => setFull(false)}
+        />
+      )}
     </aside>
   );
 }

@@ -1160,7 +1160,7 @@ describe("what the editor reports about the script", () => {
     await versionReady();
 
     const line = screen.getByText(/statements/).closest("span");
-    expect(line).toHaveTextContent("2 lines · 4 statements (2 notes, nothing to run) (1 held back — commented out) · SQL");
+    expect(line).toHaveTextContent("2 lines · 4 statements (2 notes, nothing to run) (1 held back, commented out) · SQL");
   });
 
   it("marks the script as edited only once it differs", async () => {
