@@ -180,7 +180,7 @@ export function groupNavItems<T extends NavItem>(items: T[]): NavSection<T>[] {
 /**
  * Pick the nav item whose route matches the current path (falls back to
  * Dashboard). The organization at the front of the path is set aside first,
- * so "/acme/drift" is Drift, the same as the old address "/drift".
+ * so "/acme/drift" is Drift, the same as a bare "/drift".
  */
 export function activeNavItem(pathname: string): NavItem {
   const route = routeOf(pathname);

@@ -28,9 +28,10 @@ export const ORG_HEADER = "x-schema-studio-org";
  * folder with a fixed name before a dynamic one, so an organization called
  * "login" would never see its own pages: /login would always be the sign-in
  * page. Every top-level folder in app/ is listed here for that reason, and
- * tests/org-slug.test.ts fails when a new one is added without it. The
- * studio's own pages are among them, because their old addresses (/studio,
- * /compare and the rest) still work and send people on to their organization.
+ * tests/org-slug.test.ts fails when a new one is added without it. The names
+ * of the studio's pages (compare, drift and the rest) are listed too, though
+ * only /studio has a folder: an organization called "compare" would make
+ * /compare look like the Compare page to anyone reading the address.
  *
  * The rest are kept back for pages that are likely to come, so that adding
  * one later never takes an address an organization already has. Anything
@@ -40,7 +41,7 @@ export const ORG_HEADER = "x-schema-studio-org";
  * this file. Change both: tests/org-slug.test.ts fails while they disagree.
  */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
-  // Folders in app/ today.
+  // Folders in app/ today, and the names of the studio's pages.
   "api",
   "login",
   "studio",

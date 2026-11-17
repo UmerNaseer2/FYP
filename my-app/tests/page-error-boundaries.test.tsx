@@ -152,10 +152,12 @@ describe("a page outside the studio that stopped working", () => {
 });
 
 describe("an address that matches no screen", () => {
-  test("names the two places the reader was most likely heading", () => {
+  test("offers the way back in, the dashboard", () => {
     render(<NotFound />);
     expect(screen.getByRole("link", { name: /Dashboard/ })).toHaveAttribute("href", "/studio");
-    expect(screen.getByRole("link", { name: /Compare/ })).toHaveAttribute("href", "/compare");
+    // /compare has no folder of its own any more (only /studio does), so a
+    // link to it would be a 404 of its own.
+    expect(screen.queryByRole("link", { name: /Compare/ })).not.toBeInTheDocument();
   });
 
   test("offers nothing to retry, because nothing failed", () => {

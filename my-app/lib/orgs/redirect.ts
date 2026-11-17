@@ -5,22 +5,27 @@ import { orgHref } from "./slug";
 import { findDefaultOrganization, findLastOrganization } from "./orgs-db";
 import { sessionProfileId } from "../auth/session-profile";
 
-/** What Next.js hands a page at app/<segment>/[[...rest]]/page.tsx. */
+/** What Next.js hands app/studio/[[...rest]]/page.tsx. */
 export type OldAddressProps = {
   params: Promise<{ rest?: string[] }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
 /**
- * Sends an address from before organizations (/compare?left=1, /schemas/12)
- * on to the same page in an organization (/acme/compare?left=1).
+ * Sends an address that names no organization (/studio, /studio?tour=1) on to
+ * the same page in one (/acme/studio?tour=1).
  *
- * Those addresses are everywhere: bookmarks, links in GitHub pull requests
- * and change logs, the landing page's buttons, and the sign-in page, which
- * goes back to whatever address sent someone there. Each studio page has an old address at
- * app/<segment>/[[...rest]]/page.tsx that calls this. Next.js serves a folder
- * with a fixed name before app/[org], so /studio comes here and /acme/studio
- * goes to the organization.
+ * /studio is the way into the app: sign-in lands there when nothing asked
+ * for another page (DEFAULT_CALLBACK_URL), and the landing page, the error
+ * pages and the 404 page link to it, because none of them knows which
+ * organization the person is in. app/studio/[[...rest]]/page.tsx calls this.
+ * The optional catch-all [[...rest]] makes that one file answer /studio and
+ * every address under it. Next.js serves a folder with a fixed name before
+ * app/[org], so /studio comes here and /acme/studio goes to the organization.
+ *
+ * Before organizations, every studio page had an address like this
+ * (/compare, /drift). Those folders were removed for the handover build; the
+ * function still takes the page as `segment` so the tests can cover any page.
  *
  * Which organization:
  *   - With sign-in switched off, the default one. The bypass is an admin of
@@ -29,7 +34,7 @@ export type OldAddressProps = {
  *   - Signed in, the one they opened last (findLastOrganization). Someone in
  *     no organization at all is sent to make one (/onboarding), since
  *     nobody joins an organization without being asked.
- *   - Signed out, the sign-in page, which comes back to this same old address
+ *   - Signed out, the sign-in page, which comes back to this same address
  *     and so through here again. With real sign-in proxy.ts has already done
  *     that, so this is for a session with no profile ID in it.
  *

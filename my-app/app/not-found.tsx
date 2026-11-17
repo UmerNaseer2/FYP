@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { LandingThemeToggle } from "@/components/landing/LandingThemeToggle";
 import { BrandMark } from "@/components/ui/BrandMark";
-import { CompareIcon, DashboardIcon } from "@/components/ui/icons";
+import { DashboardIcon } from "@/components/ui/icons";
 import "@/app/styles/atelier-onboarding.css";
 
 // ---------------------------------------------------------------------------
@@ -10,8 +10,8 @@ import "@/app/styles/atelier-onboarding.css";
 //
 // Next's built-in version is the words "404" and "This page could not be
 // found", with nothing to click. That is a dead end in an application whose
-// screens are only reachable from the sidebar, so this one names the two places
-// somebody is most likely to have been heading.
+// screens are only reachable from the sidebar, so this one offers the way back
+// in: /studio, which opens the dashboard of the organization last used.
 //
 // A tracked schema that has been deleted does NOT come through here: the
 // dashboard's detail screen loads it over the API and says so in place, which
@@ -52,9 +52,6 @@ export default function NotFound() {
           <div className="flex flex-wrap items-center gap-2">
             <Link href="/studio" className="btn btn-primary">
               <DashboardIcon size={14} /> Dashboard
-            </Link>
-            <Link href="/compare" className="btn btn-secondary">
-              <CompareIcon size={14} /> Compare & Author
             </Link>
           </div>
         </article>

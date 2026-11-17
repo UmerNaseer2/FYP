@@ -5,7 +5,7 @@ export const DEFAULT_CALLBACK_URL = "/studio";
  * Where to go once signed in: the page that sent the person to the sign-in
  * page, or the studio when nothing did.
  *
- * The proxy and the old addresses (lib/orgs/redirect.ts) send a signed-out
+ * The proxy and the /studio door (lib/orgs/redirect.ts) send a signed-out
  * person to /login?callbackUrl=<the page they asked for>, and so do the
  * landing page's "Create account" and an invitation link, so that signing in
  * carries on to that page. Anybody can write a link with any callbackUrl in

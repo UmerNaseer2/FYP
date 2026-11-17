@@ -1,11 +1,10 @@
-// org-redirect: an address from before organizations (/compare?left=1) goes
-// on to the same page in an organization (/acme/compare?left=1), and an
-// organization's own address (/acme) opens its dashboard.
+// org-redirect: an address that names no organization (/studio?tour=1) goes
+// on to the same page in one (/acme/studio?tour=1), and an organization's own
+// address (/acme) opens its dashboard.
 //
-// The old addresses are in bookmarks, pull requests and the sign-in page's
-// way back, so a studio page without one is a link that used
-// to work and now says "There is no page here". The last tests here fail when
-// a page is added under app/[org]/(studio) without its old address.
+// /studio is the way into the app (sign-in, the landing page and the error
+// pages all link there), so it is the one address of this kind left. The last
+// tests here fail if it goes, or if another one comes back.
 import fs from "fs";
 import path from "path";
 import { redirectToLastOrg, type OldAddressProps } from "@/lib/orgs/redirect";
@@ -170,29 +169,22 @@ describe("an organization's own address", () => {
   });
 });
 
-describe("the old addresses", () => {
-  const studioPages = fs
-    .readdirSync(STUDIO, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
-
-  test("every studio page has one, and it sends people to that page", async () => {
-    // A guard on the guard: a walk that found nothing would pass below.
-    expect(studioPages).toEqual(expect.arrayContaining(["studio", "compare", "schemas"]));
-    for (const name of studioPages) {
-      const file = path.join(APP, name, "[[...rest]]", "page.tsx");
-      expect({ name, exists: fs.existsSync(file) }).toEqual({ name, exists: true });
-      const { default: OldAddress } = await import(file);
-      mockRedirect.mockClear();
-      expect(await whereTo(OldAddress(props()))).toBe(`/acme/${name}`);
-    }
+describe("the /studio door", () => {
+  test("is there, and sends people to their organization's dashboard", async () => {
+    // A guard on the guard: the studio page it leads to must exist.
+    expect(fs.existsSync(path.join(STUDIO, "studio"))).toBe(true);
+    const file = path.join(APP, "studio", "[[...rest]]", "page.tsx");
+    expect(fs.existsSync(file)).toBe(true);
+    const { default: Door } = await import(file);
+    mockRedirect.mockClear();
+    expect(await whereTo(Door(props()))).toBe("/acme/studio");
   });
 
-  test("none is left behind for a page that is gone", () => {
-    const oldAddresses = fs
+  test("is the only address of its kind", () => {
+    const doors = fs
       .readdirSync(APP, { withFileTypes: true })
       .filter((entry) => fs.existsSync(path.join(APP, entry.name, "[[...rest]]", "page.tsx")))
       .map((entry) => entry.name);
-    expect(oldAddresses.sort()).toEqual([...studioPages].sort());
+    expect(doors).toEqual(["studio"]);
   });
 });
