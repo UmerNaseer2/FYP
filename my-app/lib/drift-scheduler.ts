@@ -3,10 +3,8 @@ import { after } from "next/server";
 import pool, { syncMetadataTables } from "./version-db";
 import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
-import { alertDriftChange } from "./push-alerts";
 import { driftAlertLine } from "./ai/drift-alert-line";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
-import { sweepAgentRows } from "./agent-db";
 import { holdsLocalSecret } from "./local-secrets";
 import type { DriftSource } from "./drift-source";
 import {
@@ -28,7 +26,7 @@ import {
  * What wakes it depends on where the app runs (see schedulerMode):
  *
  *   • A timer in the server itself, started from instrumentation.ts, wherever a
- *     process stays up: Docker, the desktop app, `npm run dev`. No cron and no
+ *     process stays up: Docker, `npm run dev`. No cron and no
  *     queue there, because this has to be runnable with `npm run dev` and
  *     nothing else.
  *   • A scheduled call to /api/internal/drift-tick on a serverless host, where a
@@ -328,12 +326,7 @@ async function loadEntries(): Promise<ScheduledSchema[]> {
             (SELECT substring(c.password from '^local:v1:([^:]*):')
                FROM connections c WHERE c.id = t.connection_id) AS local_key
        FROM tracked_schemas t
-      WHERE t.drift_check_interval_minutes > 0
-        -- a desktop's copy of a website connection is checked by the website
-        -- (docs/two-way-sync-plan.md, step 2), so nothing is checked twice
-        AND NOT EXISTS (
-          SELECT 1 FROM connections c WHERE c.id = t.connection_id AND c.site_id IS NOT NULL
-        )`
+      WHERE t.drift_check_interval_minutes > 0`
   );
   // A local connection is checked only by the machine that keeps its password
   // (lib/local-secrets). Another copy leaves it alone, so it stays due until
@@ -445,11 +438,6 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
   await pruneIfDue().catch((error) => {
     console.error("Drift scheduler — prune failed:", error);
   });
-  // Every tick rather than once a day: a linked computer's answers are meant to
-  // leave this database soon after they are read.
-  await sweepAgentRows().catch((error) => {
-    console.error("Drift scheduler — agent sweep failed:", error instanceof Error ? error.name : "unknown error");
-  });
 
   const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, (entry) =>
     withinCheckLimit(entry, checkOne(entry))
@@ -474,17 +462,15 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
   return { kind: "by_org", byOrg };
 }
 
-/** One scheduled check and its phone alert, as the outcome a tick line counts. */
+/** One scheduled check, as the outcome a tick line counts. */
 async function checkOne(entry: ScheduledSchema): Promise<string> {
   // "on_change" so a quarter-hourly "still fine" does not push a day of
   // real events out of the audit feed. The check is still stamped.
-  // A new drift gets the AI's one line for its alert, when the organization
-  // has AI on. It never stops the check: no line, and the alert goes out bare.
+  // A new drift gets the AI's one line kept on its row, when the organization
+  // has AI on. It never stops the check: no line, and the row goes without.
   const result = await runDriftCheck(entry.orgId, entry.trackedSchemaId, "scheduled", "on_change", {
     describe: (driftReport) => driftAlertLine(entry.orgId, driftReport),
   });
-  // Only scheduled checks alert: someone who presses Check now is looking at the answer.
-  if (result.ok) await alertDriftChange(entry.orgId, result.run);
   return result.ok ? result.run.status : `problem:${result.problem.kind}`;
 }
 
@@ -493,7 +479,7 @@ async function checkOne(entry: ScheduledSchema): Promise<string> {
  *
  * When the limit passes the check is not cancelled, because nothing can cancel
  * a query that is waiting on a socket. It carries on by itself: if it does
- * finish, it still stamps and records what it found and sends its alert, and
+ * finish, it still stamps and records what it found, and
  * only this tick's line misses it. A failure that late has no tick left to
  * fail, so it goes to the server's log instead of becoming an unhandled
  * rejection.

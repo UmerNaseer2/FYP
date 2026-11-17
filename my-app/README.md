@@ -161,12 +161,9 @@ my-app/
     login/                    sign-in page: Continue with Microsoft, Continue with GitHub
     onboarding/               "Your organizations": the list, and a form to make a new one
     invite/[token]/           the page an invitation link opens, with a Join button
-    demo/                     a public placeholder page for the live demo
     [org]/                    one organization's pages: /acme/studio, /acme/compare, and so on
       layout.tsx              checks the visitor is a member, tells the pages which organization
       page.tsx                /acme opens /acme/studio
-      phone/                  the phone app: drift, history, approvals and alerts
-      link-computer/          approve a computer that asks to be linked to your account
       (studio)/               the app shell; every page below shares it
         studio/               dashboard: tracked schemas and their drift status
         connections/          connection CRUD + test
@@ -246,37 +243,29 @@ my-app/
 
 ### API routes
 
-The 83 `route.ts` files under `app/api/`, read down each column:
+The 59 `route.ts` files under `app/api/`, read down each column:
 
 ```
-admin/ai                    computers/jobs/[id]           lineage/schemas
-admin/ai/key                computers/link                lineage/track
-admin/github                connections                   me
-admin/invites               connections/computers         me/approver
-admin/organization          connections/machine           me/view-as
-admin/roles                 connections/phone             organizations
-admin/users                 connections/test              performance/activity
-agent/connections           connections/test-saved        performance/advice
-agent/jobs/[id]             deploy/approvals              performance/analyze
-agent/jobs/next             deploy/approvals/[id]         performance/cancel
-agent/link                  deploy/approvals/[id]/phone   performance/history
-agent/link/claim            deploy/approvals/phone        performance/metrics
-agent/self                  deploy/phone                  performance/thresholds
-agent/sync                  desktop/sync                  phone/push
-agent/sync/connections      github/family                 phone/push/test
-agent/sync/drift            github/pull                   requests
-ai/chat                     github/push                   requests/[id]
-ai/rate                     internal/drift-tick           requests/seen
-ai/status                   invites/accept                schema/snapshot
-auth/[...nextauth]          lineage                       scripts/apply
-compare                     lineage/[id]                  scripts/attempts
-compare/phone               lineage/acknowledge           scripts/generate
-compare/summary             lineage/audit                 scripts/preflight
-compare/version-history     lineage/drift                 scripts/revert
-comparison-sets             lineage/drift/explain         scripts/review
-computers                   lineage/lookup                scripts/schemas
-computers/[id]              lineage/rebaseline            versionsync/ledger
-computers/jobs              lineage/schedule
+admin/ai                    deploy/approvals/[id]         performance/activity
+admin/ai/key                github/family                 performance/advice
+admin/github                github/pull                   performance/analyze
+admin/invites               github/push                   performance/history
+admin/organization          internal/drift-tick           performance/metrics
+admin/roles                 invites/accept                performance/thresholds
+admin/users                 lineage                       requests
+ai/chat                     lineage/[id]                  requests/[id]
+ai/rate                     lineage/acknowledge           requests/seen
+ai/status                   lineage/audit                 schema/snapshot
+auth/[...nextauth]          lineage/drift                 scripts/apply
+compare                     lineage/drift/explain         scripts/attempts
+compare/summary             lineage/lookup                scripts/cancel
+compare/version-history     lineage/rebaseline            scripts/generate
+comparison-sets             lineage/schedule              scripts/preflight
+connections                 lineage/schemas               scripts/revert
+connections/machine         lineage/track                 scripts/review
+connections/test            me                            scripts/schemas
+connections/test-saved      me/view-as                    versionsync/ledger
+deploy/approvals            organizations
 ```
 
 Most of them open with a gate from `lib/auth-guard.ts`. The usual one is
@@ -291,18 +280,15 @@ once, in `lib/permissions.ts`. Approval is not a role either, but a second
 Three smaller groups use a different check, and
 `tests/permissions-coverage.test.ts` names every route in each group:
 
-- **Any member of the organization** (`requireMember()`): `me`, `me/approver`,
-  `me/view-as`, `requests`, `requests/[id]`, `requests/seen`, `phone/push` and
-  `phone/push/test`. These are about the person asking, not about a feature.
+- **Any member of the organization** (`requireMember()`): `me`, `me/view-as`,
+  `requests`, `requests/[id]` and `requests/seen`. These are about the person
+  asking, not about a feature.
 - **Anyone signed in** (`requireSignedIn()`): `organizations` and
   `invites/accept`, because they must answer people who are not in any
   organization yet.
-- **No person's session at all**, twelve routes: `auth/[...nextauth]` is the
-  sign-in endpoint itself; `internal/drift-tick` is a scheduled call checked
-  against `CRON_SECRET`; `agent/link` and `agent/link/claim` are a computer
-  asking to be linked, before anyone is known; the other seven `agent/` routes
-  are checked against the linked computer's own token; and `desktop/sync` is
-  checked against the desktop app's own token and answers 404 on a website.
+- **No person's session at all**, two routes: `auth/[...nextauth]` is the
+  sign-in endpoint itself, and `internal/drift-tick` is a scheduled call
+  checked against `CRON_SECRET`.
 
 Two suites keep this honest. `tests/permissions-coverage.test.ts` fails when a
 route has no gate, or when a permission an admin can turn on is checked by no
@@ -357,12 +343,6 @@ trusting this table to be complete. At commit `e1a4d0c` it declares 34 tables:
 | `organization_ai` | Whether AI is switched on for an organization, which features, and its own key if it saved one. No row means off |
 | `ai_calls` | One row per AI call, for counting and the daily limit. Never the prompt or the answer |
 | `ai_results` | Cached AI answers, deleted after a week |
-| `agents` | A computer linked to a person's account. Its token is kept only as a hash |
-| `agent_links` | A computer waiting to be approved, for ten minutes at most |
-| `agent_connections` | The connections a linked computer shares: a name, never the host, user or password |
-| `agent_jobs` | A question waiting for a linked computer, and its answer |
-| `push_subscriptions` | Where to send phone and browser alerts |
-| `push_keys` | The server's own push key, one row |
 | `drift_scheduler_state` | One row: who holds the drift checker's tick, and what the last tick did |
 | `metadata_boot_stamps` | One row per deployment that finished setting up these tables |
 | `deploy_attempts` | Every deploy attempt, whether or not it landed |
@@ -441,8 +421,7 @@ organizations, each with its own members, roles, connections and GitHub
 registry · making an organization on first sign-in, and joining one through an
 invitation link · the Requests page · sign-in with GitHub beside Microsoft ·
 the AI features (see *AI assistance* below) · a record of every deploy attempt
-(`deploy_attempts`) · the phone app and linking a computer to an account, which
-have their own guides in `relay/` and `desktop/`.
+(`deploy_attempts`).
 
 The **Print / PDF** button is the browser's own print dialog (`window.print()`
 in `components/studio/ExportBar.tsx`), with print styles applied. Save-as-PDF is
@@ -485,10 +464,8 @@ Some of those are new enough to say where they live:
   whose role may run deployments (the default), the Admin role only, or nobody.
   `lib/connection-access.ts` holds the rule, the setting is a `<select>` on
   Connections, and both executing routes (`scripts/apply`, `scripts/revert`)
-  check it before opening a connection. Three more routes read the same
-  setting: `scripts/generate` before it tries AI-written SQL on the database,
-  `performance/cancel` before it stops a running query, and `deploy/phone`
-  when it tells the phone app what the person may do next. Dry runs are included, because a
+  check it before opening a connection. One more route reads the same
+  setting: `scripts/generate`, before it tries AI-written SQL on the database. Dry runs are included, because a
   rehearsal really executes the script and only then rolls back. `none` is
   read-only and refuses everybody including admins, which is the point for a
   reference schema others are compared against: it is a fact about the
@@ -674,7 +651,7 @@ against a running copy of the app and grades the answers.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met: Tailwind v4 utilities for layout and spacing, plus hand-written classes in `globals.css` (§6) |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met. **The test numbers are written in this row only; update them here.** With the review fixes of 2026-11-10 and the Help feature of 2026-11-11 on top of commit `e1a4d0c`: 7,067 tests in 266 suites, all passing when a test database is set (`TEST_DATABASE_URL`). Without one, 11 suites holding 293 tests skip themselves. Coverage as configured is measured on the `lib/` folder only (`collectCoverageFrom` in `jest.config.mjs`): lines 92.63%, statements 90.51%, branches 83%, functions 93.81% (measured with the test database set). The sheet asks for "unit testing for all the webpages". There are 34 `page.tsx` files. The 19 that show something each have a suite of their own in `tests/page-*.test.tsx` (23 files): the 12 studio pages, the phone app, the link-a-computer page, login, onboarding, the invitation page, the demo page and the landing page. They sit alongside 42 component suites (`tests/component-*.test.tsx`), with `lib/` and the route handlers covered as before. The landing page at `app/page.tsx` has two: `tests/page-root.test.ts` for whom it shows the page to and whom it sends on, and `tests/component-landing-page.test.tsx` for what the page says and where its buttons go. The other 15 pages only redirect: `/acme` and the 14 addresses from before organizations, covered by `tests/org-redirect.test.ts`. jsdom is asked for per file: `/** @jest-environment jsdom */` on the first line: rather than switched on globally, so the logic suites keep a node environment and their start-up time |
+| Jest unit tests | met. **The test numbers are written in this row only; update them here.** In the web-only copy, measured 2026-11-17: 6,575 tests in 252 suites, all passing when a test database is set (`TEST_DATABASE_URL`). Without one, 9 suites holding 235 tests skip themselves. Coverage as configured is measured on the `lib/` folder only (`collectCoverageFrom` in `jest.config.mjs`): lines 92.19%, statements 90.03%, branches 81.92%, functions 93.41% (measured with the test database set). The sheet asks for "unit testing for all the webpages". There are 31 `page.tsx` files. The 17 that show something each have a suite of their own in `tests/page-*.test.tsx` (21 files): the 13 studio pages, login, onboarding, the invitation page and the landing page. They sit alongside 45 component suites (`tests/component-*.test.tsx`), with `lib/` and the route handlers covered as before. The landing page at `app/page.tsx` has two: `tests/page-root.test.ts` for whom it shows the page to and whom it sends on, and `tests/component-landing-page.test.tsx` for what the page says and where its buttons go. The other 14 pages only redirect: `/acme` and the 13 addresses from before organizations, covered by `tests/org-redirect.test.ts`. jsdom is asked for per file: `/** @jest-environment jsdom */` on the first line: rather than switched on globally, so the logic suites keep a node environment and their start-up time |
 
 ---
 
@@ -713,9 +690,8 @@ Fonts are Geist Sans and Geist Mono via `next/font`, exposed as
   compare one with `main` before working from it.
 - This README describes the web app. The other tracked guides sit beside what
   they cover: `deploy/` (running it on a server, the container and disk images,
-  hardening, and Supabase with Vercel), `desktop/` (the Ubuntu app, its security
-  notes and a demo script) and `relay/` (the phone relay and the phone app). The
-  root `README.md` points to each of them, and `docs/` holds the coursework
+  hardening, and Supabase with Vercel). The root `README.md` points to each of
+  them, and `docs/` holds the coursework
   documents, the project context, a demo script and the user manual.
 - Working notes, reviews and generated reports go in `my-app/docs/`, which git
   ignores, so they stay on the machine that wrote them. The FYP-B review

@@ -90,9 +90,8 @@ export type RequestsPayload = {
 
 /**
  * Who may answer a request. Allowing one means changing a role or moving someone
- * to another, so these are the rights that can do that. An Admin always may:
- * in the shared trial, where changing roles is switched off, an Admin can still
- * answer, and allow somebody for a day (grantProblem), which needs neither.
+ * to another, so these are the rights that can do that. An Admin always may,
+ * and can allow somebody for a day (grantProblem), which needs neither.
  */
 export function canAnswerRequests(holder: PermissionHolder & { role?: string }): boolean {
   return hasPermission(holder, "users:update", "roles:update") || holder?.role === ADMIN_ROLE;

@@ -196,14 +196,6 @@ function routeOf(pathname: string): string {
   return slug === null ? pathname : pathname.slice(slug.length + 1);
 }
 
-/**
- * Pages that open from the account menu rather than the rail. They have no
- * row to light up, but the breadcrumb still names them.
- */
-export const ACCOUNT_SCREENS: { screen: string; href: string }[] = [
-  { screen: "Phone and desktop", href: "/devices" },
-];
-
 /** What the shell shows for the current path. */
 export type ActiveScreen = {
   /** The page's name, the last part of the breadcrumb. */
@@ -216,15 +208,9 @@ export type ActiveScreen = {
 
 /**
  * What the shell shows for the current path: the names in the breadcrumb and
- * the address of the rail row to light up. On an account page that address
- * matches no row, so nothing in the rail looks chosen.
+ * the address of the rail row to light up.
  */
 export function activeScreen(pathname: string): ActiveScreen {
-  const route = routeOf(pathname);
-  const account = ACCOUNT_SCREENS.find(
-    (page) => route === page.href || route.startsWith(page.href + "/")
-  );
-  if (account) return account;
   const item = activeNavItem(pathname);
   return { screen: item.screen, href: item.href, group: item.group };
 }

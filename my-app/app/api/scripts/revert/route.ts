@@ -27,14 +27,10 @@ import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import type { ChangeLevel } from "@/lib/change-level";
-import { isTrialOrg } from "@/lib/trial-rules";
-import { trialSqlProblem, trialSqlRefusal } from "@/lib/trial-sql-guard";
 import { randomUUID } from "node:crypto";
 import { isRunId } from "@/lib/run-id";
 import {
   beginCommit,
-  BUSY_CHECK_FAILED_MESSAGE,
-  countOtherRuns,
   DUPLICATE_RUN_MESSAGE,
   keepFirstClientError,
   prepareRunTransaction,
@@ -42,8 +38,6 @@ import {
   runLimits,
   runStopMessage,
   throwIfStopped,
-  TRIAL_BUSY_MESSAGE,
-  TRIAL_MAX_CONCURRENT_RUNS,
   unregisterRun,
   type RunEntry,
 } from "@/lib/run-limits";
@@ -302,9 +296,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   attempt.action = "revert";
   attempt.orgId = gate.principal.orgId;
   attempt.actor = actorFor(gate.principal);
-  // In the trial every rollback is read before it runs (step 8), as every
-  // script is in the apply route: all visitors share one database user.
-  const trialOrg = isTrialOrg(gate.principal.orgSlug);
 
   // ─── 2. Parse and validate the body ──────────────────────────────────────
   let body: RevertBody;
@@ -319,7 +310,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
 
   const { connectionId, schemaName, scriptName: name, versions, dryRun, runId } = parsed;
   // The time limits this run goes by: see lib/run-limits.ts.
-  const limits = runLimits({ trial: trialOrg, dryRun });
+  const limits = runLimits({ dryRun });
   attempt.connectionId = connectionId;
   attempt.schemaName = schemaName;
   attempt.dryRun = dryRun;
@@ -479,10 +470,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
 
   try {
     // ─── 4c. Note the run, so Stop and its time limit can reach it ─────────
-    //
-    // The trial's demo database is shared by every visitor, so it takes only
-    // a few runs at once: counted here in this server, then on the database
-    // itself, which also sees the runs going on other instances of the app.
     const entry = registerRun(
       {
         runId,
@@ -490,7 +477,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
         connectionId,
         actor: actorFor(gate.principal),
         kind: "rollback",
-        trial: trialOrg,
         pool: targetPool,
       },
       limits
@@ -498,25 +484,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     if (entry === "duplicate") {
       return failBeforeRun(409, { code: "duplicate_run", error: DUPLICATE_RUN_MESSAGE });
     }
-    if (entry === "busy") {
-      return failBeforeRun(429, { code: "trial_busy", error: TRIAL_BUSY_MESSAGE });
-    }
     run = entry;
-    if (trialOrg) {
-      let others: number;
-      try {
-        others = await countOtherRuns(client);
-      } catch (error) {
-        console.error(
-          "Revert: could not count the trial's runs:",
-          error instanceof Error ? error.message : String(error)
-        );
-        return failBeforeRun(503, { error: BUSY_CHECK_FAILED_MESSAGE });
-      }
-      if (others >= TRIAL_MAX_CONCURRENT_RUNS) {
-        return failBeforeRun(429, { code: "trial_busy", error: TRIAL_BUSY_MESSAGE });
-      }
-    }
 
     // ─── 5. The schema has to exist ────────────────────────────────────────
     // Checked before BEGIN so the "no ledger" message below is only ever about
@@ -681,16 +649,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
             `registry, add one in the Script Editor (Add a missing rollback), then reload ` +
             `Deploy. If it was replayed here by Version Sync without one, undo it by hand or ` +
             `fix it forward with a new version.`,
-        });
-      }
-      // Whichever copy runs, the stored one or the registry's, in the trial it
-      // runs as the one database user every visitor shares (lib/trial-sql-guard.ts).
-      const trialProblem = trialOrg ? trialSqlProblem(resolved.sql) : null;
-      if (trialProblem) {
-        return await refuse(400, {
-          code: "trial_refused",
-          version: row.version,
-          error: trialSqlRefusal(`The rollback for ${vLabel(row.version)}`, trialProblem),
         });
       }
       plan.push({ row, sql: resolved.sql, source: resolved.source });
@@ -973,8 +931,8 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     }
     transactionStarted = false;
     runCommitted = true;
-    // The run no longer holds a transaction, so it stops counting towards the
-    // trial's limit and a late Stop hears that it has finished.
+    // The run no longer holds a transaction, so a late Stop hears that it has
+    // finished.
     unregisterRun(entry);
 
     // ─── 14. Release the client, then advance lineage ──────────────────────
@@ -1076,7 +1034,6 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     const stopped = runStopMessage([error, clientError()], run, {
       kind: "rollback",
       dryRun,
-      trial: trialOrg,
       limits,
       subject: runningVersion ? `The rollback of ${vLabel(runningVersion)} of "${name}"` : null,
     });

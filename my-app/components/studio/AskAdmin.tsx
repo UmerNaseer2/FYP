@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import { DEFAULT_ROLE, isAdminOnly, type PermissionKey } from "@/lib/permissions";
-import { TRIAL_BLOCKED_PERMISSIONS, TRIAL_ORG_SLUG } from "@/lib/trial-rules";
 
 type AskAdminProps = {
   /** The permission the sentence before this is about. Requests opens with it picked. */
@@ -36,7 +35,6 @@ type AskAdminProps = {
  */
 export function AskAdmin({ permission, viewerNote, short = false }: AskAdminProps) {
   const { viewingAs, isAdmin, role } = useUser();
-  const org = useOrg();
   const orgPath = useOrgHref();
   if (viewingAs) return null;
 
@@ -45,11 +43,6 @@ export function AskAdmin({ permission, viewerNote, short = false }: AskAdminProp
   // own words) stays a separate piece of text.
 
   if (isAdmin) {
-    // The shared trial switches a few things off for every role, Admin
-    // included, and no setting brings them back.
-    if (permission && org?.slug === TRIAL_ORG_SLUG && TRIAL_BLOCKED_PERMISSIONS.has(permission)) {
-      return null;
-    }
     return (
       <>
         {" "}

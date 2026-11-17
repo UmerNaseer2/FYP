@@ -16,11 +16,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
-import { apiFetch } from "@/lib/api-fetch";
 import type { PermissionKey } from "@/lib/permissions";
 import {
   START_TOUR_EVENT,
-  TRIAL_CONNECTION_NAME,
   boxAround,
   firstOnScreen,
   lightUp,
@@ -29,7 +27,6 @@ import {
   stopCountWords,
   tourPicks,
   tourStops,
-  trialCompareHref,
   withoutTourParam,
   writeTourMemory,
   type Box,
@@ -46,9 +43,7 @@ type AppTourProps = {
   /** Whether useUser has finished, so role and can are this person's own. */
   roleKnown: boolean;
   role: string;
-  roleLabel: string;
   can: (key: PermissionKey) => boolean;
-  isAdmin: boolean;
 };
 
 /** One tour from start to end: who it is for, and where it starts (null: the welcome card). */
@@ -57,7 +52,7 @@ type Session = { audience: TourAudience; startAt: number | null };
 /** How long the logo animation may hold the welcome card back, at most. */
 const INTRO_WAIT_MS = 8000;
 
-export function AppTour({ pages, roleKnown, role, roleLabel, can, isAdmin }: AppTourProps) {
+export function AppTour({ pages, roleKnown, role, can }: AppTourProps) {
   const org = useOrg();
   const pathname = usePathname();
   const [arrived, setArrived] = useState<TourAudience | null>(null);
@@ -65,7 +60,7 @@ export function AppTour({ pages, roleKnown, role, roleLabel, can, isAdmin }: App
   const [toastText, setToastText] = useState("");
   const [toastShown, setToastShown] = useState(false);
 
-  // 1. Someone came in by one of the three doors (?tour=trial, new or member).
+  // 1. Someone came in by one of the two doors (?tour=new or member).
   //    Take the word out of the address so a reload does not offer it again.
   useEffect(() => {
     const audience = readTourParam(window.location.search);
@@ -98,13 +93,13 @@ export function AppTour({ pages, roleKnown, role, roleLabel, can, isAdmin }: App
     return () => window.clearInterval(timer);
   }, [arrived, roleKnown, org, role, session]);
 
-  // 3. "Take the tour" from the account menu, the command bar or the trial bar.
+  // 3. "Take the tour" from the account menu, or the command bar.
   //    It goes straight to the first card, or back to where it was closed.
   useEffect(() => {
     function onStart() {
       if (!org) return;
       const { resume } = readTourMemory(org.slug, role);
-      setSession({ audience: org.trial ? "trial" : "member", startAt: resume ?? 0 });
+      setSession({ audience: "member", startAt: resume ?? 0 });
     }
     window.addEventListener(START_TOUR_EVENT, onStart);
     return () => window.removeEventListener(START_TOUR_EVENT, onStart);
@@ -136,10 +131,8 @@ export function AppTour({ pages, roleKnown, role, roleLabel, can, isAdmin }: App
           orgSlug={org.slug}
           pages={pages}
           role={role}
-          roleLabel={roleLabel}
           orgName={org.name}
           can={can}
-          isAdmin={isAdmin}
           onClose={close}
         />
       )}
@@ -156,9 +149,7 @@ type TourLayerProps = {
   orgName: string;
   pages: readonly string[];
   role: string;
-  roleLabel: string;
   can: (key: PermissionKey) => boolean;
-  isAdmin: boolean;
   onClose: (message?: string) => void;
 };
 
@@ -177,7 +168,7 @@ const PATH: { icon: TourIcon; word: string }[] = [
  * Everything on screen while a tour is up. Drawn only then, so the Ask AI
  * check (for the last stop's words) waits until someone takes the tour.
  */
-function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isAdmin, onClose }: TourLayerProps) {
+function TourLayer({ session, orgSlug, orgName, pages, role, can, onClose }: TourLayerProps) {
   const { audience, startAt } = session;
   const orgPath = useOrgHref();
   const router = useRouter();
@@ -186,7 +177,6 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
   const picks = useMemo(() => tourPicks(audience, can, pages), [audience, can, pages]);
   const [phase, setPhase] = useState<Phase>(startAt === null ? "offer" : "touring");
   const [index, setIndex] = useState(() => Math.min(startAt ?? 0, stops.length - 1));
-  const [trialCompare, setTrialCompare] = useState("/compare");
   const [showsEmpty, setShowsEmpty] = useState(false);
   const holeRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -233,8 +223,7 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
   function choose(pick: TourPick) {
     onClose();
     if (pick.page === null) return;
-    const page = audience === "trial" && pick.id === "compare" ? trialCompare : pick.page;
-    router.push(orgPath(page));
+    router.push(orgPath(pick.page));
   }
 
   // The page behind can't be clicked or tabbed into while the tour is up.
@@ -318,33 +307,9 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
     button?.focus({ preventScroll: true });
   }, [phase, index]);
 
-  // The last card's compare goes straight to the demo's two students schemas.
-  useEffect(() => {
-    if (phase !== "finish" || audience !== "trial") return;
-    let live = true;
-    apiFetch("/api/connections")
-      .then((response) => (response.ok ? response.json() : []))
-      .then((rows: unknown) => {
-        if (!live || !Array.isArray(rows)) return;
-        const demo = rows.find((row) => row && row.name === TRIAL_CONNECTION_NAME);
-        const id = Number(demo?.id);
-        if (Number.isInteger(id) && id > 0) setTrialCompare(trialCompareHref(id));
-      })
-      .catch(() => {
-        // Plain Compare, then.
-      });
-    return () => {
-      live = false;
-    };
-  }, [phase, audience]);
-
   if (phase === "offer") {
     const eyebrow =
-      audience === "trial"
-        ? `Shared trial · you are in as ${roleLabel}`
-        : audience === "new"
-          ? "Your workspace is ready"
-          : `Welcome to ${orgName}`;
+      audience === "new" ? "Your workspace is ready" : `Welcome to ${orgName}`;
     // Each phase has its own key, so React builds fresh elements instead of
     // reusing the stops' ones, which still carry the light's inline size.
     return (
@@ -401,9 +366,7 @@ function TourLayer({ session, orgSlug, orgName, pages, role, roleLabel, can, isA
             ))}
           </div>
           <p className="tr-fine">
-            {audience === "trial" && isAdmin
-              ? "Made a mess? Reset trial, at the top of every page, puts it back as it started."
-              : "You can take the tour again any time from your profile menu."}
+            You can take the tour again any time from your profile menu.
           </p>
         </div>
       </div>

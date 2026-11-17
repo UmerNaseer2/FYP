@@ -106,14 +106,6 @@
 .cn-foot p, .cn-foot__next span { margin:0; font-size:13px; color:var(--ink-3); }
 .cn-foot__next { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
 
-/* On linked computers */
-.cn-linked { margin-top:40px; }
-.cn-linked__head { display:flex; align-items:center; gap:8px; color:var(--ink); }
-.cn-linked__head h2 { margin:0; font:700 20px/1.2 var(--display); letter-spacing:-.02em; }
-.cn-linked__sub { max-width:70ch; margin:4px 0 14px; font-size:13.5px; }
-.cn-linked__list { display:flex; flex-wrap:wrap; gap:6px 16px; margin:0; padding:0; list-style:none; font-size:13px; color:var(--ink); }
-.cn-linked__list li { display:flex; align-items:center; gap:6px; }
-.cn-card--computer:hover { transform:none; box-shadow:var(--lift); }
 
 /* The add and edit drawer
    The markup keeps the shared .drawer classes. These rules only change how
@@ -137,8 +129,6 @@
 .cn-page .drawer .ssl-card,
 .cn-page .drawer .test-banner,
 .cn-page .drawer .warn-inline { border-radius:var(--r-lg); }
-.cn-page .local-finder__pick { border-radius:var(--r-md); min-height:48px; }
-.cn-page .local-finder__pick:focus-visible { outline:3px solid var(--accent); }
 
 /* Dialogs and the toast */
 .cn-page .modal { border:0; border-radius:var(--r-xl); box-shadow:var(--shadow-lg); padding:26px 28px;

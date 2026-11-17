@@ -103,20 +103,12 @@ export class Organization extends Model<
   declare slug: string;
   /** What the screens show: "Acme Labs". */
   declare name: string;
-  /** The desktop app's own organization, kept on that one computer. */
-  declare personal: CreationOptional<boolean>;
   /**
    * The organization that everything from before organizations existed was
    * moved into, and the one a person joins when they first sign in. Exactly
    * one row has it, which the partial unique index below enforces.
    */
   declare is_default: CreationOptional<boolean>;
-  /**
-   * On a linked desktop, the role its person holds on the website, which
-   * caps what they may do here until the link ends (SiteRole in
-   * lib/site-role.ts). Null everywhere else.
-   */
-  declare site_role: CreationOptional<unknown | null>;
   declare created_at: CreationOptional<Date>;
 }
 
@@ -125,9 +117,7 @@ Organization.init(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     slug: { type: DataTypes.TEXT, allowNull: false, unique: true },
     name: { type: DataTypes.TEXT, allowNull: false },
-    personal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     is_default: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-    site_role: { type: DataTypes.JSONB, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
   },
   {
@@ -214,13 +204,6 @@ export class Connection extends Model<
   /** When and by whom the row was last saved, for the "someone changed this" message. */
   declare updated_at: CreationOptional<Date | null>;
   declare updated_by: CreationOptional<string | null>;
-  /**
-   * Desktop only: the website's number for this connection when it is a copy of
-   * one the linked website owns, and the website's version of it. Null for a
-   * connection this computer owns, and always null on a website.
-   */
-  declare site_id: CreationOptional<number | null>;
-  declare site_version: CreationOptional<number | null>;
 }
 
 Connection.init(
@@ -258,8 +241,6 @@ Connection.init(
     version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
     updated_at: { type: DataTypes.DATE, allowNull: true },
     updated_by: { type: DataTypes.TEXT, allowNull: true },
-    site_id: { type: DataTypes.INTEGER, allowNull: true },
-    site_version: { type: DataTypes.INTEGER, allowNull: true },
   },
   {
     sequelize,
@@ -561,115 +542,6 @@ DriftSchedulerState.init(
 );
 
 /**
- * A device that asked for alerts, as its browser's push service knows it, for
- * the person who turned them on (lib/push-db.ts). It belongs to a person, not
- * an organization: which organization's alerts reach it is worked out when one
- * is sent, from the person's memberships at that moment, so someone removed
- * from an organization stops hearing from it with nothing to clean up here.
- */
-export class PushSubscriptionRow extends Model<
-  InferAttributes<PushSubscriptionRow>,
-  InferCreationAttributes<PushSubscriptionRow>
-> {
-  declare id: CreationOptional<number>;
-  declare profile_id: number;
-  declare endpoint: string;
-  declare p256dh: string;
-  declare auth: string;
-  /** Send nothing to this device before then, because its push service asked for a wait. */
-  declare hold_until: Date | null;
-  declare created_at: CreationOptional<Date>;
-}
-
-PushSubscriptionRow.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    profile_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: "profiles", key: "id" },
-      onDelete: "CASCADE",
-    },
-    endpoint: { type: DataTypes.TEXT, allowNull: false, unique: "push_subscriptions_endpoint_key" },
-    p256dh: { type: DataTypes.TEXT, allowNull: false },
-    auth: { type: DataTypes.TEXT, allowNull: false },
-    hold_until: { type: DataTypes.DATE, allowNull: true },
-    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
-  },
-  {
-    sequelize,
-    tableName: "push_subscriptions",
-    indexes: [{ name: "push_subscriptions_profile_id_idx", fields: ["profile_id"] }],
-  }
-);
-
-/**
- * The server's push key, one row, made the first time it is needed so that
- * alerts need no setup (lib/push-db.ts). Browsers subscribe with its public
- * half, so the server cannot change it without every device subscribing again.
- */
-export class PushKeyRow extends Model<InferAttributes<PushKeyRow>, InferCreationAttributes<PushKeyRow>> {
-  declare name: string;
-  /** Encrypted like a saved database password (lib/secret-store.ts). */
-  declare private_key: string;
-  /** The site's https address, which push services get as a contact. Null until someone subscribes over https. */
-  declare site_origin: string | null;
-  declare created_at: CreationOptional<Date>;
-}
-
-PushKeyRow.init(
-  {
-    name: { type: DataTypes.TEXT, primaryKey: true },
-    private_key: { type: DataTypes.TEXT, allowNull: false },
-    site_origin: { type: DataTypes.TEXT, allowNull: true },
-    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
-  },
-  { sequelize, tableName: "push_keys" }
-);
-
-/**
- * A computer linked to a person's account, so that the site can ask it about
- * databases only it can reach (lib/agent-db.ts). Its token is kept only as a
- * hash, and leaving the organization ends the link (lib/agent-auth.ts).
- */
-export class AgentRow extends Model<InferAttributes<AgentRow>, InferCreationAttributes<AgentRow>> {
-  declare id: CreationOptional<number>;
-  declare org_id: number;
-  declare profile_id: number;
-  declare name: string;
-  declare token_hash: string;
-  declare last_seen_at: Date | null;
-  declare created_at: CreationOptional<Date>;
-}
-
-AgentRow.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    org_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: "organizations", key: "id" },
-      onDelete: "CASCADE",
-    },
-    profile_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: "profiles", key: "id" },
-      onDelete: "CASCADE",
-    },
-    name: { type: DataTypes.TEXT, allowNull: false },
-    token_hash: { type: DataTypes.TEXT, allowNull: false, unique: "agents_token_hash_key" },
-    last_seen_at: { type: DataTypes.DATE, allowNull: true },
-    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
-  },
-  {
-    sequelize,
-    tableName: "agents",
-    indexes: [{ name: "agents_org_id_profile_id_idx", fields: ["org_id", "profile_id"] }],
-  }
-);
-
-/**
  * The GitHub repository an organization keeps its scripts in, and the access
  * token the app uses for it (lib/org-github-store.ts). One row per
  * organization at most, set on the Admin screen or when the organization is
@@ -882,142 +754,6 @@ AiResultRow.init(
         fields: ["org_id", "feature", "cache_key"],
       },
     ],
-  }
-);
-
-/**
- * A computer waiting for someone to approve it, for ten minutes at most. Its
- * organization and person are plain numbers rather than foreign keys, because
- * the row only lives that long and the claim checks them again.
- */
-export class AgentLinkRow extends Model<
-  InferAttributes<AgentLinkRow>,
-  InferCreationAttributes<AgentLinkRow>
-> {
-  declare id: CreationOptional<number>;
-  declare device_code_hash: string;
-  declare user_code: string;
-  declare computer_name: string;
-  declare expires_at: Date;
-  declare approved_org_id: number | null;
-  declare approved_profile_id: number | null;
-  declare approved_at: Date | null;
-  declare caller_hash: string | null;
-}
-
-AgentLinkRow.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    device_code_hash: {
-      type: DataTypes.TEXT,
-      allowNull: false,
-      unique: "agent_links_device_code_hash_key",
-    },
-    user_code: { type: DataTypes.TEXT, allowNull: false, unique: "agent_links_user_code_key" },
-    computer_name: { type: DataTypes.TEXT, allowNull: false },
-    expires_at: { type: DataTypes.DATE, allowNull: false },
-    approved_org_id: { type: DataTypes.INTEGER, allowNull: true },
-    approved_profile_id: { type: DataTypes.INTEGER, allowNull: true },
-    approved_at: { type: DataTypes.DATE, allowNull: true },
-    // Who asked, as a hash of their network address, so that one caller
-    // cannot take every waiting place (lib/agent-db.ts openLink). Null where
-    // the address is not known.
-    caller_hash: { type: DataTypes.TEXT, allowNull: true },
-  },
-  { sequelize, tableName: "agent_links" }
-);
-
-/**
- * The connections a linked computer shares: only a name, because that is all
- * a person needs to pick one. Never a host, a user or a password,
- * which stay on the computer. local_id is the computer's own number for it.
- */
-export class AgentConnectionRow extends Model<
-  InferAttributes<AgentConnectionRow>,
-  InferCreationAttributes<AgentConnectionRow>
-> {
-  declare id: CreationOptional<number>;
-  declare agent_id: number;
-  declare local_id: number;
-  declare name: string;
-  /**
-   * Whether its person picked it for the phone. Only shared ones can be asked
-   * about; the rest are listed on the website's Connections page for their owner.
-   */
-  declare shared: CreationOptional<boolean>;
-  /**
-   * The schemas the computer watches for drift on it and their newest results
-   * (SyncedDriftSchema[] in lib/agent-rules.ts). Null from an older desktop.
-   */
-  declare drift: CreationOptional<unknown[] | null>;
-}
-
-AgentConnectionRow.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    agent_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: "agents", key: "id" },
-      onDelete: "CASCADE",
-    },
-    local_id: { type: DataTypes.INTEGER, allowNull: false },
-    name: { type: DataTypes.TEXT, allowNull: false },
-    shared: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
-    drift: { type: DataTypes.JSONB, allowNull: true },
-  },
-  {
-    sequelize,
-    tableName: "agent_connections",
-    indexes: [
-      { name: "agent_connections_agent_local_key", unique: true, fields: ["agent_id", "local_id"] },
-    ],
-  }
-);
-
-/**
- * A question waiting for a linked computer, and its answer. Short-lived: a sweep
- * removes each one within about half an hour (sweepAgentRows in lib/agent-db.ts).
- */
-export class AgentJobRow extends Model<
-  InferAttributes<AgentJobRow>,
-  InferCreationAttributes<AgentJobRow>
-> {
-  declare id: CreationOptional<number>;
-  declare agent_id: number;
-  declare method: string;
-  declare params: unknown;
-  declare status: CreationOptional<string>;
-  declare result: unknown;
-  /** Why it failed, as a word from AGENT_REFUSALS rather than text from the computer. */
-  declare refusal: string | null;
-  declare created_at: CreationOptional<Date>;
-  declare picked_at: Date | null;
-  declare finished_at: Date | null;
-}
-
-AgentJobRow.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    agent_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: "agents", key: "id" },
-      onDelete: "CASCADE",
-    },
-    method: { type: DataTypes.TEXT, allowNull: false },
-    params: { type: DataTypes.JSONB, allowNull: false },
-    status: { type: DataTypes.TEXT, allowNull: false, defaultValue: "queued" },
-    result: { type: DataTypes.JSONB, allowNull: true },
-    refusal: { type: DataTypes.TEXT, allowNull: true },
-    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
-    picked_at: { type: DataTypes.DATE, allowNull: true },
-    finished_at: { type: DataTypes.DATE, allowNull: true },
-  },
-  {
-    sequelize,
-    tableName: "agent_jobs",
-    indexes: [{ name: "agent_jobs_agent_id_status_idx", fields: ["agent_id", "status"] }],
   }
 );
 
@@ -1913,7 +1649,7 @@ export class DeployApproval extends Model<
   /** When the approval stops authorising the run. Null on a row decided before expiry existed. */
   declare expires_at: CreationOptional<Date | null>;
   /**
-   * A copy of the run's SQL, so a paired phone can show it to the approver
+   * A copy of the run's SQL, kept with the request
    * (ApprovalScript[] in lib/approval-fingerprint). Null when the run was too
    * big to keep, and on a row asked for before the copy was kept.
    */
@@ -1963,10 +1699,9 @@ DeployApproval.init(
     expires_at: { type: DataTypes.DATE, allowNull: true },
     // Written with the request by lib/approvals-db, or later from the same
     // SQL when an older open request is asked for again. Only for reading:
-    // run_fingerprint still pins what an approval covers, and the phone's
-    // route hands the copy out only when it hashes back to it. JSONB like
+    // run_fingerprint still pins what an approval covers. JSONB like
     // deploy_attempts.scripts, read and written whole. Nullable because a run
-    // too big to keep has no copy, and the phone then says so.
+    // too big to keep has no copy.
     scripts: { type: DataTypes.JSONB, allowNull: true },
     // Set when the person asking may not run the run themselves (their role,
     // or the connection's "who may run"). Such an approval is a one-off for

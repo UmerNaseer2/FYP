@@ -69,7 +69,6 @@ import {
   setUser,
   type FetchRoute,
 } from "./helpers/render-page";
-import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 
 type Profile = { id: number; email: string; role: string };
 
@@ -107,7 +106,7 @@ const invitesRoute = (listing: InviteListing = { invites: [], canInvite: true })
   body: listing,
 });
 
-/** The same, where nobody can be invited: the demo and the desktop app. */
+/** The same, where nobody can be invited: sign-in is off for testing. */
 const NO_INVITING: InviteListing = { invites: [], canInvite: false };
 
 /**
@@ -556,24 +555,6 @@ describe("the Users tab", () => {
       "They are back only if someone invites them again or they use a join link that is still open"
     );
     expect(dialog).not.toHaveTextContent("come back as a Viewer");
-  });
-
-  it("says, in the desktop app, that signing in again brings them back", async () => {
-    installDesktopBridge();
-    try {
-      setRoutes([invitesRoute(NO_INVITING), listRoute()]);
-      render(<AdminPage />);
-      await screen.findByText("grace@example.com");
-
-      fireEvent.click(screen.getByRole("button", { name: "Remove grace@example.com" }));
-      const dialog = await screen.findByRole("dialog", { name: "Remove grace@example.com?" });
-      // The desktop app lets in whoever signs in on it, as a Viewer once
-      // somebody is already there.
-      expect(dialog).toHaveTextContent("if they sign in to this app again they come back as a Viewer");
-      expect(dialog).not.toHaveTextContent("invites them again");
-    } finally {
-      removeDesktopBridge();
-    }
   });
 
   describe("with sign-in off for testing", () => {

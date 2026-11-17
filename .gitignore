@@ -41,3 +41,8 @@ docs/**/*Agreement*.pdf
 # Private notes from client and supervisor meetings, with their transcripts.
 # They name real people and this repo is public, so they stay local.
 /meeting-notes/
+
+# Build output left on disk from the desktop app and the phone relay, which
+# this branch does not carry (their own .gitignore files went with them).
+/desktop/
+/relay/

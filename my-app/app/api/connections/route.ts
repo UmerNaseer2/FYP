@@ -81,7 +81,7 @@ function send(answer: WriteAnswer): NextResponse {
 
 const NOT_JSON = { error: "Expected a JSON body." };
 
-/** Save a new connection. The work is in lib/connection-writes.ts, shared with a linked desktop. */
+/** Save a new connection. The work is in lib/connection-writes.ts. */
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("connections:create");
   if (!gate.ok) return gate.response;

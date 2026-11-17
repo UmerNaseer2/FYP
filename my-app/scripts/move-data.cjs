@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Moves one organization from one Schema Studio database into another, for
- * example from a Docker server or a desktop app into the Supabase database
+ * example from a Docker server into the Supabase database
  * behind the web site. deploy/SUPABASE-VERCEL.md has the steps.
  *
  * It only ever writes to the new database, and the old one is read in a
@@ -18,7 +18,6 @@
  * Other choices:
  *   --as <slug>                the address it gets in the new database
  *   --admin <email>            makes this person an admin of the moved one
- *   --backup <file>            reads a desktop backup instead of a database
  *   --keep-private-passwords   for a new database whose site can reach those hosts
  *   --same-directory           both sites sign in through one Microsoft directory
  *
@@ -27,7 +26,6 @@
  *   MOVE_FROM_URL, MOVE_TO_URL                the two databases
  *   MOVE_FROM_KEY or MOVE_FROM_NEXTAUTH_SECRET   what locks the old passwords
  *   MOVE_TO_KEY or MOVE_TO_NEXTAUTH_SECRET       what will lock the new ones
- *   MOVE_BACKUP_PASSPHRASE                    with --backup
  *
  * It prints counts and never a host, email address, password or key. Everything
  * being moved is held in memory, which is fine for something bound for a free
@@ -36,7 +34,6 @@
 const crypto = require("node:crypto");
 const dns = require("node:dns");
 const net = require("node:net");
-const path = require("node:path");
 const { Client } = require("pg");
 const { parse: parseConnectionString } = require("pg-connection-string");
 
@@ -56,10 +53,6 @@ class MoveError extends Error {}
  * The old number is never kept, since in the new database it could mean a
  * different row.
  *
- * `cleared` names columns emptied on the way: numbers that only meant something
- * where the row was, such as a desktop's note of which website connection a row
- * copies.
- *
  * organizations, profiles and identities need more care, so they have their own
  * code below.
  */
@@ -69,7 +62,7 @@ const ORG_TABLES = [
   { name: "memberships", renumber: false, links: { profile_id: "profiles" } },
   { name: "role_changes", renumber: true, links: {} },
   { name: "access_requests", renumber: true, links: {} },
-  { name: "connections", renumber: true, links: {}, cleared: ["site_id", "site_version"] },
+  { name: "connections", renumber: true, links: {} },
   { name: "tracked_schemas", renumber: true, links: { connection_id: "connections" } },
   { name: "snapshots", renumber: true, links: { tracked_schema_id: "tracked_schemas" } },
   {
@@ -107,9 +100,9 @@ const ORG_TABLES = [
 const SPECIAL_TABLES = ["organizations", "profiles", "identities"];
 
 /**
- * Tied to the database or the site they lived on, so they stay. Phones turn
- * alerts on again because push devices belong to that site's push key, computers
- * link again, and people are invited again.
+ * Tied to the database or the site they lived on, so they stay, and people
+ * are invited again. The push and agent tables belong to features the app no
+ * longer has; an old database may still carry them.
  */
 const LEFT_BEHIND_TABLES = [
   "metadata_boot_stamps",
@@ -153,7 +146,7 @@ const ORG_SLUG = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 const RESERVED_SLUGS = new Set([
   "api", "login", "studio", "compare", "script-editor", "deploy", "versionsync", "drift",
   "performance", "visualizer", "connections", "admin", "schemas", "onboarding", "invite",
-  "requests", "phone", "link-computer", "demo", "devices", "history", "styles", "invites", "new", "settings", "orgs",
+  "requests", "history", "styles", "invites", "new", "settings", "orgs",
   "organizations", "account", "signup", "logout", "auth", "help", "docs", "about", "pricing",
   "static", "public", "assets", "www", "app", "robots", "sitemap", "manifest",
 ]);
@@ -333,7 +326,7 @@ async function columnsOf(client, table) {
   return rows;
 }
 
-/** A source reads rows the same way whether they sit in a database or in a backup. */
+/** Where the rows are read from: the old database. */
 function databaseSource(client) {
   return {
     async columns(table) {
@@ -354,26 +347,6 @@ function databaseSource(client) {
   };
 }
 
-/**
- * `tables` maps a table's name to { columns, rows }. The desktop turns every
- * column into text before it saves a row (desktop/src/main/backup.ts), so a
- * backup's values are already the text a database would give, like
- * databaseSource's, and need no turning back.
- */
-function backupSource(tables) {
-  return {
-    async columns(table) {
-      return tables.get(table)?.columns ?? null;
-    },
-    async rows(table, column, values) {
-      const rows = tables.get(table)?.rows ?? [];
-      if (column === undefined) return rows;
-      const wanted = new Set(values);
-      return rows.filter((row) => wanted.has(row[column]));
-    },
-  };
-}
-
 /** Everything that moves, read before the new database is touched, as text. */
 async function readOrganization(source, org, memberIds) {
   const read = new Map();
@@ -389,15 +362,13 @@ async function readOrganization(source, org, memberIds) {
 }
 
 /**
- * Columns the app no longer has. An old database, or an old backup, may still
- * carry them. They are left behind, not copied and not counted as a
+ * Columns the app no longer has. An old database may still carry them. They are left behind, not copied and not counted as a
  * difference between the two databases.
  */
 const DROPPED_COLUMNS = {
-  connections: ["environment"],
+  connections: ["environment", "site_id", "site_version"],
   tracked_schemas: ["environment"],
-  agent_connections: ["environment"],
-  organizations: ["require_approvals", "two_person_rule"],
+  organizations: ["require_approvals", "two_person_rule", "personal", "site_role"],
 };
 
 /** The new database must be able to hold everything the old one has. */
@@ -519,7 +490,6 @@ async function moveTable(context, step) {
   for (const original of read.get(step.name)) {
     const row = step.rewrite ? step.rewrite({ ...original }) : { ...original };
     row.org_id = newOrgId;
-    for (const column of step.cleared ?? []) if (column in row) row[column] = null;
     let keep = true;
     for (const [column, table] of Object.entries(step.links)) {
       if (row[column] === null || row[column] === undefined) continue;
@@ -701,13 +671,11 @@ async function listOrganizations(source) {
 }
 
 /** How much of what stays behind this organization has, so the report can say. */
-async function countLeftBehind(source, org, memberIds) {
+async function countLeftBehind(source, org) {
   const count = async (table, column, values) =>
     (await source.columns(table)) ? (await source.rows(table, column, values)).length : 0;
   return {
     invites: await count("invites", "org_id", [org.id]),
-    computers: await count("agents", "org_id", [org.id]),
-    phones: await count("push_subscriptions", "profile_id", memberIds),
   };
 }
 
@@ -759,7 +727,7 @@ async function moveOrganization(options) {
     peopleAlreadyThere: 0,
     identitiesLeft: 0,
     passwordsLeft: privateConnections.size,
-    leftBehind: await countLeftBehind(source, org, memberIds),
+    leftBehind: await countLeftBehind(source, org),
   };
 
   // `id` and the two rewrites below work from the rows as they were read.
@@ -792,8 +760,7 @@ async function moveOrganization(options) {
 
     const [newOrgId] = await reserveIds(target, "organizations", 1);
     // Never the default: the new database has one of those, and only one may exist.
-    // A linked desktop's note of its website role stays behind with the link.
-    const newOrg = { ...org, id: newOrgId, slug: newSlug, is_default: "f", site_role: null };
+    const newOrg = { ...org, id: newOrgId, slug: newSlug, is_default: "f" };
     await insertRows(target, "organizations", columns.get("organizations").there, [newOrg]);
 
     const context = { read, ids: new Map(), target, columns, newOrgId, report, toKey };
@@ -843,12 +810,11 @@ function parseArguments(argv) {
     org: undefined,
     as: undefined,
     admin: undefined,
-    backup: undefined,
     apply: false,
     keepPrivate: false,
     sameDirectory: false,
   };
-  const withValue = { "--org": "org", "--as": "as", "--admin": "admin", "--backup": "backup" };
+  const withValue = { "--org": "org", "--as": "as", "--admin": "admin" };
   const switches = {
     "--apply": "apply",
     "--keep-private-passwords": "keepPrivate",
@@ -873,27 +839,6 @@ function parseArguments(argv) {
   return options;
 }
 
-/** Reads a desktop backup through the desktop's own code, which has to be built first. */
-async function openBackup(file, passphrase) {
-  if (!passphrase) throw new MoveError("Set MOVE_BACKUP_PASSPHRASE to the backup's passphrase.");
-  const desktop = path.join(__dirname, "..", "..", "desktop");
-  let reader;
-  try {
-    reader = require(path.join(desktop, "out", "core", "backup-read.js"));
-  } catch {
-    throw new MoveError("Reading a backup needs the desktop code built: run `npm run build:ts` in desktop/.");
-  }
-  const version = require(path.join(desktop, "package.json")).version;
-  const { manifest, rows } = await reader.readBackupFile(file, passphrase, version);
-  const tables = new Map(
-    manifest.tables.map((table) => [
-      table.name,
-      { columns: table.columns, rows: (rows.get(table.name) ?? []).map((row) => JSON.parse(row)) },
-    ])
-  );
-  return { source: backupSource(tables), key: keyFrom(manifest.secrets.appEncryptionKey, "") };
-}
-
 /**
  * Whether the two connections lead to one database, however their addresses are
  * written. Hosted databases keep the server's own identifier from their users, so
@@ -907,7 +852,7 @@ async function sameDatabase(first, second) {
   return a.rows[0].place === b.rows[0].place;
 }
 
-/** "1 phone" or "3 phones". */
+/** "1 row" or "3 rows". */
 function plural(count, one, many) {
   return `${count} ${count === 1 ? one : many}`;
 }
@@ -941,10 +886,8 @@ function formatReport(report, slug) {
         "someone from outside the new site's Microsoft directory needs an admin's help."
     );
   }
-  const { invites, computers, phones } = report.leftBehind;
+  const { invites } = report.leftBehind;
   if (invites > 0) lines.push(`${plural(invites, "open invite", "open invites")} stayed behind. Invite those people again.`);
-  if (computers > 0) lines.push(`${plural(computers, "linked computer", "linked computers")} stayed behind. Link them again.`);
-  if (phones > 0) lines.push(`${plural(phones, "phone", "phones")} had alerts on. Turn them on again in the phone app.`);
   return lines.join("\n");
 }
 
@@ -954,7 +897,6 @@ function formatReport(report, slug) {
  */
 function safeMessage(error) {
   if (error instanceof MoveError) return error.message;
-  if (error?.name === "BackupFileError") return error.message;
   if (typeof error?.code === "string") {
     const where = [error.table, error.constraint].filter(Boolean).join(", ");
     return `A database answered with code ${error.code}${where ? ` (${where})` : ""}.`;
@@ -973,16 +915,10 @@ async function main(argv, env, print) {
   };
 
   try {
-    let source;
-    let fromKey = keyFrom(env.MOVE_FROM_KEY, env.MOVE_FROM_NEXTAUTH_SECRET);
-    let sourceClient = null;
-    if (options.backup !== undefined) {
-      ({ source, key: fromKey } = await openBackup(options.backup, env.MOVE_BACKUP_PASSPHRASE));
-    } else {
-      sourceClient = await open(env.MOVE_FROM_URL, "MOVE_FROM_URL");
-      await sourceClient.query("BEGIN TRANSACTION READ ONLY ISOLATION LEVEL REPEATABLE READ");
-      source = databaseSource(sourceClient);
-    }
+    const fromKey = keyFrom(env.MOVE_FROM_KEY, env.MOVE_FROM_NEXTAUTH_SECRET);
+    const sourceClient = await open(env.MOVE_FROM_URL, "MOVE_FROM_URL");
+    await sourceClient.query("BEGIN TRANSACTION READ ONLY ISOLATION LEVEL REPEATABLE READ");
+    const source = databaseSource(sourceClient);
 
     if (options.org === undefined) {
       const organizations = await listOrganizations(source);
@@ -995,7 +931,7 @@ async function main(argv, env, print) {
     }
 
     const target = await open(env.MOVE_TO_URL, "MOVE_TO_URL");
-    if (sourceClient !== null && (await sameDatabase(sourceClient, target))) {
+    if (await sameDatabase(sourceClient, target)) {
       throw new MoveError("Those two addresses lead to the same database.");
     }
     const report = await moveOrganization({
@@ -1030,7 +966,6 @@ module.exports = {
   ORG_TABLES,
   RESERVED_SLUGS,
   SPECIAL_TABLES,
-  backupSource,
   columnsOf,
   connect,
   databaseSource,

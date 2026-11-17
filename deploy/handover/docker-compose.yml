@@ -1,0 +1,113 @@
+# Schema Studio for one Ubuntu machine: the app container only.
+#
+# The app's own data lives in a PostgreSQL 16 database you run yourself, on
+# this machine (SETUP-GUIDE.md, steps 3 and 4) or in your own Supabase
+# project. There is no database container here.
+#
+#   docker compose up -d --wait
+#   open http://localhost:3000
+#
+# Every value comes from the .env file beside this one (copy example.env to
+# .env and fill it in). Compose refuses to start while a required one is
+# missing, and says which.
+
+name: schema-studio
+
+services:
+  app:
+    image: ${APP_IMAGE:-schema-studio-app:handover}
+
+    # The container shares this machine's network instead of getting one of
+    # its own. That is what lets it reach PostgreSQL at 127.0.0.1:5432 with
+    # PostgreSQL's out-of-the-box settings: no listen_addresses or pg_hba.conf
+    # changes, and the databases you compare on this machine are reached as
+    # localhost too. With host networking Docker publishes no ports, so the
+    # app picks its own address below.
+    network_mode: host
+
+    environment:
+      # Where the app listens. 127.0.0.1 keeps it to this machine only, which
+      # is also what Microsoft sign-in needs for a plain http address. Set
+      # APP_BIND=0.0.0.0 only if another computer must reach it directly
+      # (SETUP-GUIDE.md, "Common problems").
+      HOSTNAME: ${APP_BIND:-127.0.0.1}
+      PORT: ${APP_PORT:-3000}
+      # The address people type into the browser, with no path. Microsoft
+      # sends people back to AUTH_URL/api/auth/callback/microsoft-entra-id,
+      # and that address must be registered on the app registration exactly.
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+
+      # The app's own database. Required.
+      DATABASE_URL_A: ${DATABASE_URL_A:?Set DATABASE_URL_A in .env (SETUP-GUIDE.md, step 5)}
+
+      # Signs the sign-in cookie. Required: openssl rand -hex 32
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env (SETUP-GUIDE.md, step 5)}
+      # Encrypts saved connection passwords and GitHub tokens. Required here,
+      # so it never falls back to one derived from NEXTAUTH_SECRET:
+      # openssl rand -hex 32. Keep a copy: without it the saved passwords
+      # cannot be read back.
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env (SETUP-GUIDE.md, step 5)}
+
+      # Microsoft Entra ID sign-in, from your own app registration
+      # (SETUP-GUIDE.md, step 6). All three are required.
+      AZURE_AD_CLIENT_ID: ${AZURE_AD_CLIENT_ID:?Set AZURE_AD_CLIENT_ID in .env (SETUP-GUIDE.md, step 6)}
+      AZURE_AD_CLIENT_SECRET: ${AZURE_AD_CLIENT_SECRET:?Set AZURE_AD_CLIENT_SECRET in .env (SETUP-GUIDE.md, step 6)}
+      AZURE_AD_TENANT_ID: ${AZURE_AD_TENANT_ID:?Set AZURE_AD_TENANT_ID in .env (SETUP-GUIDE.md, step 6)}
+      # "true" only for a registration that takes accounts from any directory.
+      AZURE_AD_ANY_ACCOUNT: ${AZURE_AD_ANY_ACCOUNT:-}
+
+      # The app refuses databases at private addresses (localhost, 10.x,
+      # 192.168.x) unless this is true. Your databases are on this machine or
+      # your own network, so it is on.
+      ALLOW_PRIVATE_DB_HOSTS: ${ALLOW_PRIVATE_DB_HOSTS:-true}
+
+      # Optional. The default organization's GitHub repository for scripts,
+      # until an Admin saves one on the Admin screen, under GitHub
+      # (SETUP-GUIDE.md, step 9).
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      GITHUB_REPO_OWNER: ${GITHUB_REPO_OWNER:-}
+      GITHUB_REPO_NAME: ${GITHUB_REPO_NAME:-}
+
+      # Optional. "off" stops the app checking tracked schemas for drift on
+      # its own timer.
+      DRIFT_SCHEDULER: ${DRIFT_SCHEDULER:-}
+
+      # Optional. AI help, off until AI_BASE_URL, AI_API_KEY and a model are
+      # all set, and then still off per organization until its Admin turns it
+      # on (SETUP-GUIDE.md, "Settings reference").
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL_FAST: ${AI_MODEL_FAST:-}
+      AI_MODEL_SMART: ${AI_MODEL_SMART:-}
+      AI_REASONING_EFFORT: ${AI_REASONING_EFFORT:-}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-}
+      AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-}
+      AI_PER_MINUTE: ${AI_PER_MINUTE:-}
+
+    restart: unless-stopped
+
+    # Confinement. The app runs as the image's own unprivileged user (uid
+    # 1001, never root), holds no Linux capabilities, cannot gain any, and
+    # cannot write to its own files: the root filesystem is read-only and the
+    # only writable places are two small in-memory folders that vanish when
+    # it stops. No folder of this machine is mounted into it.
+    user: "1001:1001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=256m,uid=1001,gid=1001,mode=0700
+    mem_limit: ${APP_MEMORY_LIMIT:-2g}
+    pids_limit: 200
+
+    # Docker keeps what the app prints. These caps keep three files of 10 MB
+    # at most, dropping the oldest first.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

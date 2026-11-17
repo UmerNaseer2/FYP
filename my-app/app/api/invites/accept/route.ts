@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSignedIn } from "@/lib/auth-guard";
-import { TRIAL_REFUSAL, trialEnabled } from "@/lib/trial-rules";
 import { acceptInvite, type InviteAcceptance } from "@/lib/invites-db";
 
 /**
@@ -25,29 +24,18 @@ import { acceptInvite, type InviteAcceptance } from "@/lib/invites-db";
  *   naming the address with most of it hidden, so they can tell which of their
  *   accounts to use.
  *
- * Refused in the desktop app, which keeps one organization of its own, and in
- * the demo, where nobody is signed in to join as.
+ * Refused in the demo, where nobody is signed in to join as.
  */
 export async function POST(request: NextRequest) {
   const gate = await requireSignedIn();
   if (!gate.ok) return gate.response;
 
   const { caller } = gate;
-  if (onDesktop()) {
-    return NextResponse.json(
-      { error: "The desktop app keeps a single organization of its own." },
-      { status: 403 }
-    );
-  }
   if (caller.bypass) {
     return NextResponse.json(
       { error: "Taking an invitation needs a real sign-in. The demo has nobody to join as." },
       { status: 403 }
     );
-  }
-  // A trial account is shared by everyone, so it may not join a real organization.
-  if (await isTrialAccount(caller.profileId).catch(() => true)) {
-    return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
   }
 
   let body: { token?: unknown };
@@ -114,16 +102,4 @@ function answer(result: InviteAcceptance): NextResponse {
       // makes them a new one.
       return NextResponse.json({ error: "Sign in again to continue." }, { status: 401 });
   }
-}
-
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
-/** Only loaded when the trial is on: lib/trial-sandbox.ts opens the database as it loads. */
-async function isTrialAccount(profileId: number): Promise<boolean> {
-  if (!trialEnabled()) return false;
-  const { isTrialProfile } = await import("@/lib/trial-sandbox");
-  return isTrialProfile(profileId);
 }

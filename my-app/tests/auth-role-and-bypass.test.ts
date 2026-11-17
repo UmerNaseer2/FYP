@@ -104,9 +104,8 @@ const freshSession = (): SessionShape => ({ user: { ...UMER }, expires: EXPIRES 
 
 describe("the role a member holds", () => {
   it("starts a person nobody has given a role as a viewer", async () => {
-    // Everyone the desktop app adds to an organization that already has
-    // members starts with this role (lib/accounts-db.ts), and an admin decides
-    // from there. Viewer is the least the app gives anyone.
+    // A person nobody has given a role starts with this one, and an admin
+    // decides from there. Viewer is the least the app gives anyone.
     expect(DEFAULT_ROLE).toBe("viewer");
   });
 

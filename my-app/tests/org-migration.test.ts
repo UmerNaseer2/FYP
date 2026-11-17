@@ -23,8 +23,6 @@
 //   - A check that lists the values a column may hold takes the values this
 //     app has added since it was made, and keeps any it does not know.
 //   - Deleting an organization deletes exactly its rows.
-//   - On the desktop the default organization is the personal one, and the
-//     tables on the bootstrap's list fill in org_id with it by default.
 //
 // It also runs the code that signs people in and looks up their roles
 // (lib/accounts-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on a booted database:
@@ -37,10 +35,9 @@
 //     for.
 //   - On the web, the first person from the home tenant to sign in to a new
 //     deployment becomes its admin, and nobody else joins anything by signing
-//     in. On the desktop the first person becomes the admin and everyone after
-//     them a viewer. Either way once each, even when several sign in at the
-//     same moment, and someone who already belongs to another organization is
-//     left out of the default one.
+//     in. Once only, even when several sign in at the same moment, and
+//     someone who already belongs to another organization is left out of the
+//     default one.
 //   - The lookups the gates make on every request, and the changes the Roles
 //     tab makes, only ever see and touch the organization they are asked about.
 //   - An organization's GitHub settings (lib/org-github-store.ts) are saved
@@ -124,14 +121,13 @@ const ORG_TABLES = [
 ];
 // Memberships belong to an organization too, but they came with
 // organizations, so they are not on the bootstrap's list of older tables to
-// move. A linked computer belongs to one organization the same way, and so do
-// its GitHub repository and access token.
+// move. An organization's GitHub repository and access token belong to it
+// the same way.
 // The AI switch, the AI usage log and the saved AI answers are each one
 // organization's too.
 const ORG_SCOPED = [
   ...ORG_TABLES,
   "memberships",
-  "agents",
   "organization_github",
   "organization_ai",
   "ai_calls",
@@ -140,19 +136,13 @@ const ORG_SCOPED = [
 // A person, and the accounts they sign in with, belong to no organization:
 // one person can be in several. The last two belong to the server: whose turn
 // the drift check is (one tick covers every organization), and which deployments
-// have finished setting up these tables. A computer's link, connections and
-// questions hang off the computer, or belong to nobody until someone approves.
+// have finished setting up these tables.
 const NOT_ORG_SCOPED = [
   "organizations",
   "profiles",
   "identities",
   "drift_scheduler_state",
   "metadata_boot_stamps",
-  "push_subscriptions",
-  "push_keys",
-  "agent_links",
-  "agent_connections",
-  "agent_jobs",
 ];
 
 const VIEWER_PRESET = presetFor("viewer") ?? [];
@@ -180,20 +170,12 @@ const LEGACY_MEMBERSHIPS: Record<string, string> = {
   "viewer@example.invalid": "viewer",
 };
 
-// The default organization, as a web server makes it and as the desktop app
-// makes it.
+// The default organization, as the server makes it.
 const SWINBURNE = {
   id: expect.any(Number),
   slug: "swinburne-fyp",
   name: "Swinburne FYP",
-  personal: false,
   is_default: true,
-};
-const PERSONAL = {
-  ...SWINBURNE,
-  slug: "personal",
-  name: "Personal",
-  personal: true,
 };
 
 // The roles, and the permissions they hold, in an organization the bootstrap
@@ -227,8 +209,6 @@ const savedEnv: Record<string, string | undefined> = {};
 // Booted once in the first beforeAll, and only read after that.
 let legacy = "";
 let fresh = "";
-let desktopLegacy = "";
-let desktopFresh = "";
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -282,23 +262,18 @@ async function legacyDatabase(suffix: string): Promise<string> {
 // their pool on globalThis so that it outlives a reload. So each boot forgets
 // that pool, points the variable at the database it is for, and loads fresh
 // copies of the modules.
-async function load(url: string, { desktop = false } = {}): Promise<App> {
+async function load(url: string): Promise<App> {
   jest.resetModules();
   globalThis.__metadataSequelize = undefined;
   process.env.DATABASE_URL_A = url;
-  if (desktop) process.env.SCHEMA_STUDIO_DESKTOP = "1";
-  else delete process.env.SCHEMA_STUDIO_DESKTOP;
   const { syncMetadataTables } = await import("@/lib/db/bootstrap");
   const { sequelize, metadataPool } = await import("@/lib/db/sequelize");
   return { syncMetadataTables, metadataPool, close: () => sequelize.close() };
 }
 
 // One server starting up against the database at url.
-async function boot(
-  url: string,
-  options?: { desktop?: boolean }
-): Promise<void> {
-  const app = await load(url, options);
+async function boot(url: string): Promise<void> {
+  const app = await load(url);
   try {
     await app.syncMetadataTables();
   } finally {
@@ -331,11 +306,8 @@ type RequestApp = App & {
   roles: typeof import("@/lib/roles-db");
 };
 
-async function loadRequestApp(
-  url: string,
-  options?: { desktop?: boolean }
-): Promise<RequestApp> {
-  const app = await load(url, options);
+async function loadRequestApp(url: string): Promise<RequestApp> {
+  const app = await load(url);
   const { resolveIdentity } = await import("@/lib/accounts-db");
   const orgs = await import("@/lib/orgs-db");
   const roles = await import("@/lib/roles-db");
@@ -449,13 +421,9 @@ async function waitForLockWaits(watcher: Client, count: number): Promise<void> {
 // find nobody there once it was free, and each become an admin. Five, because
 // the pool hands out at most five connections, so a sixth would wait for a
 // connection rather than a lock.
-async function rolesAfterFiveSignIns(options: {
-  desktop: boolean;
-}): Promise<string[]> {
-  const url = await freshDatabase(
-    options.desktop ? "signin_race_desktop" : "signin_race"
-  );
-  const race = await loadRequestApp(url, options);
+async function rolesAfterFiveSignIns(): Promise<string[]> {
+  const url = await freshDatabase("signin_race");
+  const race = await loadRequestApp(url);
   await race.syncMetadataTables();
   const holder = await connectTo(url);
   const watcher = await connectTo(url);
@@ -506,7 +474,7 @@ async function insertId(
 
 async function organizationsIn(client: Client) {
   const { rows } = await client.query(
-    `SELECT id, slug, name, personal, is_default
+    `SELECT id, slug, name, is_default
        FROM organizations ORDER BY id`
   );
   return rows;
@@ -793,11 +761,6 @@ async function fillOrganization(
     [orgId, profileId]
   );
   await client.query(
-    `INSERT INTO agents (org_id, profile_id, name, token_hash)
-     VALUES ($1, $2, 'A laptop', $3)`,
-    [orgId, profileId, `hash-of-a-token-${orgId}`]
-  );
-  await client.query(
     `INSERT INTO organization_github
        (org_id, repo_owner, repo_name, token, updated_by)
      VALUES ($1, 'probe', 'probe-scripts', 'not-a-real-token', $2)`,
@@ -933,7 +896,6 @@ async function fillOrganization(
 describeWithDatabase("org-migration", () => {
   beforeAll(async () => {
     savedEnv.DATABASE_URL_A = process.env.DATABASE_URL_A;
-    savedEnv.SCHEMA_STUDIO_DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
 
     baseName = decodeURIComponent(new URL(testUrl).pathname.slice(1));
     if (!/test/i.test(baseName)) {
@@ -955,10 +917,6 @@ describeWithDatabase("org-migration", () => {
     await boot(legacy);
     fresh = await freshDatabase("fresh");
     await boot(fresh);
-    desktopLegacy = await legacyDatabase("desktop_legacy");
-    await boot(desktopLegacy, { desktop: true });
-    desktopFresh = await freshDatabase("desktop_fresh");
-    await boot(desktopFresh, { desktop: true });
   }, BASELINES);
 
   afterAll(async () => {
@@ -1097,39 +1055,6 @@ describeWithDatabase("org-migration", () => {
     }, SLOW);
   });
 
-  describe("on the desktop", () => {
-    test("makes the personal organization the default, and moves everything into it", async () => {
-      await withClient(desktopFresh, async (client) => {
-        expect(await organizationsIn(client)).toEqual([PERSONAL]);
-      });
-      await withClient(desktopLegacy, async (client) => {
-        expect(await organizationsIn(client)).toEqual([PERSONAL]);
-        const personalId = await defaultOrgId(client);
-        expect(await rowsPerTable(client, personalId)).toEqual(
-          expectedLegacyRows()
-        );
-        expect(await membershipsOf(client, personalId)).toEqual(
-          LEGACY_MEMBERSHIPS
-        );
-      });
-    }, SLOW);
-
-    test("fills in org_id with it by default, and otherwise matches the web", async () => {
-      const personalId = await withClient(desktopFresh, defaultOrgId);
-      const desktop = await withClient(desktopFresh, shapeOf);
-      expect(await withClient(desktopLegacy, shapeOf)).toEqual(desktop);
-      const web = await withClient(fresh, shapeOf);
-      expect(web.filter((line) => !desktop.includes(line))).toEqual(
-        ORG_TABLES.map((table) => `column ${table}.org_id integer NO -`).sort()
-      );
-      expect(desktop.filter((line) => !web.includes(line))).toEqual(
-        ORG_TABLES.map(
-          (table) => `column ${table}.org_id integer NO ${personalId}`
-        ).sort()
-      );
-    }, SLOW);
-  });
-
   describe("organizations", () => {
     let client: Client;
     let defaultId = 0;
@@ -1254,7 +1179,7 @@ describeWithDatabase("org-migration", () => {
       });
     }, SLOW);
 
-    test("lose a member whose profile is deleted, their computers, and nothing else", async () => {
+    test("lose a member whose profile is deleted, and nothing else", async () => {
       const before = await rowsPerTable(client, probeId);
       await rolledBack(client, async () => {
         await client.query(`DELETE FROM profiles WHERE id = $1`, [
@@ -1265,10 +1190,6 @@ describeWithDatabase("org-migration", () => {
           memberships: {
             ...before.memberships,
             mine: before.memberships.mine - 1,
-          },
-          agents: {
-            ...before.agents,
-            mine: before.agents.mine - 1,
           },
         });
       });
@@ -1684,15 +1605,13 @@ describeWithDatabase("org-migration", () => {
       expect(await membershipsOf(client, defaultId)).toEqual({
         "first@example.invalid": "admin",
       });
-      // The lookup every request makes, and the one the desktop makes for a
-      // request that names no organization.
+      // The lookup every request makes.
       const member = {
         ...inDefault("admin"),
         email: "first@example.invalid",
         personName: "First Person",
       };
       expect(await app.orgs.findMembership(firstId, "swinburne-fyp")).toEqual(member);
-      expect(await app.orgs.findDefaultMembership(firstId)).toEqual(member);
       expect(await app.orgs.listMemberships(firstId)).toEqual([inDefault("admin")]);
     }, SLOW);
 
@@ -1707,7 +1626,6 @@ describeWithDatabase("org-migration", () => {
       for (const profileId of [secondId, octoId, guestId]) {
         expect(await app.orgs.listMemberships(profileId)).toEqual([]);
         expect(await app.orgs.findLastOrganization(profileId)).toBeNull();
-        expect(await app.orgs.findDefaultMembership(profileId)).toBeNull();
       }
       expect(await identitiesOf(client, octoId)).toEqual([
         {
@@ -1886,7 +1804,6 @@ describeWithDatabase("org-migration", () => {
         personName: null,
       });
       expect(await app.orgs.findMembership(octoId, "swinburne-fyp")).toBeNull();
-      expect(await app.orgs.findDefaultMembership(octoId)).toBeNull();
       expect(await app.orgs.listMemberships(octoId)).toEqual([inElsewhere]);
       // Nor does anyone else turn up there.
       expect(await app.orgs.findMembership(firstId, "elsewhere")).toBeNull();
@@ -2037,125 +1954,7 @@ describeWithDatabase("org-migration", () => {
     }, SLOW);
 
     test("makes exactly one admin when five people from the home tenant sign in to a new deployment at once", async () => {
-      expect(await rolesAfterFiveSignIns({ desktop: false })).toEqual(["admin"]);
-    }, SLOW);
-  });
-
-  // The desktop app signs in only accounts from the home tenant, and its
-  // default organization is the one person's own (the personal one). The
-  // first to sign in becomes its admin, and anyone after them a viewer: a
-  // restored backup already has its admin. The tests in this block run in
-  // order, each starting from where the last one left the database.
-  describe("signing in on the desktop", () => {
-    let app: RequestApp;
-    let client: Client;
-    let defaultId = 0;
-    let ownerId = 0;
-
-    beforeAll(async () => {
-      const url = await freshDatabase("signin_desktop");
-      app = await loadRequestApp(url, { desktop: true });
-      await app.syncMetadataTables();
-      client = await connectTo(url);
-      defaultId = await defaultOrgId(client);
-    }, SLOW);
-
-    afterAll(async () => {
-      await client?.end();
-      await app?.close();
-      // load() set it, and accounts-db reads it on every sign-in, so it must
-      // not outlive this block.
-      delete process.env.SCHEMA_STUDIO_DESKTOP;
-    }, SLOW);
-
-    test("makes the first person the admin and the next a viewer, and keeps a role given since", async () => {
-      ownerId = await signedIn(app, microsoft("owner@example.invalid", "oid-owner"));
-      const helperId = await signedIn(app, microsoft("helper@example.invalid", "oid-helper"));
-      expect(await membershipsOf(client, defaultId)).toEqual({
-        "owner@example.invalid": "admin",
-        "helper@example.invalid": "viewer",
-      });
-      expect(await app.orgs.findDefaultMembership(ownerId)).toMatchObject({
-        slug: PERSONAL.slug,
-        isDefault: true,
-        role: "admin",
-      });
-
-      await client.query(
-        `UPDATE memberships SET role = 'editor' WHERE org_id = $1 AND profile_id = $2`,
-        [defaultId, helperId]
-      );
-      await signedIn(app, microsoft("helper@example.invalid", "oid-helper"));
-      await signedIn(app, microsoft("owner@example.invalid", "oid-owner"));
-      expect(await membershipsOf(client, defaultId)).toEqual({
-        "owner@example.invalid": "admin",
-        "helper@example.invalid": "editor",
-      });
-    }, SLOW);
-
-    test("leaves someone who belongs to another organization where they are", async () => {
-      const elsewhere = await insertId(
-        client,
-        `INSERT INTO organizations (slug, name) VALUES ('elsewhere', 'Elsewhere') RETURNING id`
-      );
-      await client.query(
-        `INSERT INTO roles (org_id, name, label) VALUES ($1, 'viewer', 'Viewer')`,
-        [elsewhere]
-      );
-      const profileId = await insertId(
-        client,
-        `INSERT INTO profiles (email) VALUES ('elsewhere@example.invalid') RETURNING id`
-      );
-      await client.query(
-        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
-        [elsewhere, profileId]
-      );
-
-      expect(await signedIn(app, microsoft("elsewhere@example.invalid", "oid-elsewhere"))).toBe(
-        profileId
-      );
-      expect(await app.orgs.listMemberships(profileId)).toEqual([
-        {
-          orgId: elsewhere,
-          slug: "elsewhere",
-          name: "Elsewhere",
-          isDefault: false,
-          role: "viewer",
-        },
-      ]);
-    }, SLOW);
-
-    test("signs someone in when there is no default, and adds them once there is", async () => {
-      // As if somebody cleared the flag by hand. This app booted already and
-      // remembers it, so it does not boot again; a server starting now would
-      // stop instead, as the "booting" tests show.
-      await client.query(`UPDATE organizations SET is_default = false WHERE id = $1`, [defaultId]);
-      let orphanId = 0;
-      try {
-        expect(await app.orgs.findDefaultOrganization()).toBeNull();
-        orphanId = await signedIn(app, microsoft("orphan@example.invalid", "oid-orphan"));
-        expect(await app.orgs.listMemberships(orphanId)).toEqual([]);
-        // The desktop, which asks for the default, finds nobody either.
-        expect(await app.orgs.findDefaultMembership(ownerId)).toBeNull();
-      } finally {
-        await client.query(`UPDATE organizations SET is_default = true WHERE id = $1`, [defaultId]);
-      }
-
-      // Once the default is back, signing in again adds them like anyone else.
-      expect(await signedIn(app, microsoft("orphan@example.invalid", "oid-orphan"))).toBe(orphanId);
-      expect(await membershipsOf(client, defaultId)).toMatchObject({
-        "orphan@example.invalid": "viewer",
-      });
-    }, SLOW);
-
-    test("makes exactly one admin when five people sign in to a new install at once", async () => {
-      expect(await rolesAfterFiveSignIns({ desktop: true })).toEqual([
-        "admin",
-        "viewer",
-        "viewer",
-        "viewer",
-        "viewer",
-      ]);
+      expect(await rolesAfterFiveSignIns()).toEqual(["admin"]);
     }, SLOW);
   });
 
@@ -2397,7 +2196,7 @@ describeWithDatabase("org-migration", () => {
       expect(await builtInPermissionsOf(client, acmeId)).toEqual(EXPECTED_BUILT_IN_PERMISSIONS);
       expect(await membershipsOf(client, acmeId)).toEqual({ "ed@example.invalid": "admin" });
       const row = (await organizationsIn(client)).find((org) => org.id === acmeId);
-      expect(row).toMatchObject({ personal: false, is_default: false });
+      expect(row).toMatchObject({ is_default: false });
     }, SLOW);
 
     test("takes its maker there next time an address names no organization", async () => {

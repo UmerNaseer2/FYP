@@ -20,10 +20,8 @@
  *
  * Someone the server says is not a member of the organization gets none of
  * it, the pages that name no feature included, because every request behind
- * every page is answered 404 for them. In the browser they can go to the
- * organizations they are still in, or make one (/onboarding). In the desktop
- * app, which only ever has the one organization, signing out is the one way
- * on.
+ * every page is answered 404 for them. They can go to the organizations
+ * they are still in, or make one (/onboarding).
  *
  * What is NOT here:
  *  - Which permissions a role holds, and what a box brings with it:
@@ -38,9 +36,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-// Which way signing out goes (next-auth, or the desktop app) is lib/sign-out's
-// business, and tests/component-studio-shell.test.tsx follows both. Here it
-// only matters that the button asks for it.
+// How signing out goes is lib/sign-out's business, and
+// tests/component-studio-shell.test.tsx follows it. Here it only matters
+// that the button asks for it.
 const mockSignOutEverywhere = jest.fn();
 jest.mock("../lib/sign-out", () => ({ signOutEverywhere: () => mockSignOutEverywhere() }));
 
@@ -57,7 +55,6 @@ jest.mock("../lib/auth-mode", () => ({
 import AuthGuard from "@/components/AuthGuard";
 import { resetUserCache } from "@/hooks/useUser";
 import { presetFor, type FeatureKey } from "@/lib/permissions";
-import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import {
   resetPageState,
   routerCalls,
@@ -247,7 +244,7 @@ describe("someone who is not a member of the organization", () => {
     expect(mockSignOutEverywhere).toHaveBeenCalledTimes(1);
   });
 
-  it("in the browser, offers the organizations they are still in, or a new one", () => {
+  it("offers the organizations they are still in, or a new one", () => {
     setNotMember();
     show();
 
@@ -255,26 +252,6 @@ describe("someone who is not a member of the organization", () => {
       "href",
       "/onboarding"
     );
-  });
-
-  it("in the desktop app, offers only signing out", () => {
-    // The desktop app only ever has the one organization, and no page for
-    // making another.
-    installDesktopBridge();
-    try {
-      setNotMember();
-      show();
-
-      expect(
-        screen.getByText(
-          "An admin may have removed you, or you were never added. Check with an admin, or sign out."
-        )
-      ).toBeInTheDocument();
-      expect(screen.queryByRole("link", { name: "Your organizations" })).toBeNull();
-      expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
-    } finally {
-      removeDesktopBridge();
-    }
   });
 });
 

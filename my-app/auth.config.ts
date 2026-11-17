@@ -1,9 +1,7 @@
 import type { NextAuthConfig, Profile } from "next-auth";
-import type { CredentialsConfig } from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 import { isPlaceholderSecret } from "./lib/placeholder-secrets";
-import { trialEnabled } from "./lib/trial-rules";
 
 /**
  * The edge-safe half of the NextAuth configuration.
@@ -19,32 +17,16 @@ import { trialEnabled } from "./lib/trial-rules";
  */
 
 /**
- * True inside the Schema Studio desktop app (desktop/ at the root of this
- * repository), which starts this server with SCHEMA_STUDIO_DESKTOP=1.
- *
- * The desktop app signs people in its own way, with the "desktop" provider
- * below; lib/desktop-sign-in.ts explains why it cannot use the browser one.
- */
-export const desktopMode = process.env.SCHEMA_STUDIO_DESKTOP === "1";
-
-/**
  * Entra ID is only registered when it is actually configured. With the keys
  * absent, constructing the provider yields one that can never complete a
  * sign-in but still throws confusing errors on the callback route; leaving it
  * out entirely means /login simply has nothing to offer, which is the truth.
- *
- * Never inside the desktop app, even if all three keys were somehow set. The
- * desktop build carries no client secret, and Microsoft would refuse to send a
- * person back to the desktop server anyway: it listens on a port picked at
- * random on each start, which is not an address the app registration lists.
  */
-export const entraConfigured =
-  !desktopMode &&
-  Boolean(
-    process.env.AZURE_AD_CLIENT_ID &&
-      process.env.AZURE_AD_CLIENT_SECRET &&
-      process.env.AZURE_AD_TENANT_ID
-  );
+export const entraConfigured = Boolean(
+  process.env.AZURE_AD_CLIENT_ID &&
+    process.env.AZURE_AD_CLIENT_SECRET &&
+    process.env.AZURE_AD_TENANT_ID
+);
 
 /**
  * Whether the Microsoft sign-in takes accounts from outside the home tenant:
@@ -64,27 +46,11 @@ export const entraAnyAccount = process.env.AZURE_AD_ANY_ACCOUNT === "true";
 
 /**
  * GitHub sign-in, registered only when its OAuth app's two keys are set, for
- * the same reason as Entra above. Never inside the desktop app, which has no
- * secret to hold and signs in with Microsoft only.
+ * the same reason as Entra above.
  */
-export const githubConfigured =
-  !desktopMode &&
-  Boolean(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
-
-/**
- * The desktop app's sign-in needs only the two IDs, neither of which is a
- * secret: the app does the Microsoft sign-in itself, in the system browser,
- * and this server only checks the ID token it hands over.
- */
-export const desktopConfigured =
-  desktopMode &&
-  Boolean(process.env.AZURE_AD_CLIENT_ID && process.env.AZURE_AD_TENANT_ID);
-
-/**
- * The shared trial organization's one-click sign-in (lib/trial-rules.ts):
- * on when TRIAL_SANDBOX=on, and never in the desktop app.
- */
-export const trialConfigured = trialEnabled();
+export const githubConfigured = Boolean(
+  process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+);
 
 /**
  * NextAuth signs its session cookie with this and refuses to start without it.
@@ -105,13 +71,12 @@ export const secretConfigured =
 
 /**
  * True when a real sign-in could actually complete: somewhere to sign in to
- * (Microsoft or GitHub in the browser, or the desktop app's), and a secret to sign
- * the resulting session with. When this is false the NextAuth routes cannot
+ * (Microsoft or GitHub), and a secret to sign the resulting session with. When this is false the NextAuth routes cannot
  * run at all, and callers answer for them instead of letting them throw. See
  * app/api/auth/[...nextauth]/route.ts and proxy.ts.
  */
 export const authUsable =
-  (entraConfigured || githubConfigured || desktopConfigured || trialConfigured) && secretConfigured;
+  (entraConfigured || githubConfigured) && secretConfigured;
 
 /**
  * Reads who signed in with GitHub, and whether GitHub has checked their
@@ -166,59 +131,11 @@ export async function readGitHubAccount({
 }
 
 /**
- * How the desktop app signs a person in. By the time this runs the app has
- * already been through Microsoft's sign-in in the system browser, and it posts
- * the ID token it got back; authorize() decides whether to believe it.
- *
- * Written out as a plain object rather than with Auth.js's Credentials()
- * helper, because that helper lives in an ES module that Jest cannot load,
- * and the tests that import this file (proxy.test.ts among them) would all
- * have to mock it. The object is exactly what the helper returns, and
- * `satisfies` still has the compiler check its shape.
- *
- * The token check is imported only when a sign-in is actually being checked.
- * The edge proxy imports this file too, and it never signs anyone in, so it
- * never needs to load the checker or the JWT library under it.
- */
-const desktopProvider = {
-  id: "desktop",
-  name: "Microsoft (desktop app)",
-  type: "credentials",
-  credentials: { idToken: {} },
-  async authorize(credentials) {
-    const { verifyDesktopIdToken } = await import("./lib/desktop-sign-in");
-    return verifyDesktopIdToken(credentials?.idToken);
-  },
-} satisfies CredentialsConfig;
-
-/**
- * The landing page's "Try as Admin / Editor / Viewer" buttons. No password:
- * the visitor picks one of the trial's three accounts, and authorize() makes
- * the trial organization ready and hands back that account
- * (lib/trial-sandbox.ts). It can only ever be one of those three, in that
- * one organization, which nobody can use to reach anything else.
- */
-const trialProvider = {
-  id: "trial",
-  name: "Trial",
-  type: "credentials",
-  credentials: { role: {} },
-  async authorize(credentials) {
-    const { trialSignIn } = await import("./lib/trial-sandbox");
-    return trialSignIn(credentials?.role);
-  },
-} satisfies CredentialsConfig;
-
-/**
  * Each kind of sign-in this file can offer. Named rather than left as
  * NextAuthConfig["providers"], which also allows a provider written as a
  * function and so has no `id` to read without calling it.
  */
-type Provider =
-  | ReturnType<typeof MicrosoftEntraID>
-  | ReturnType<typeof GitHub>
-  | typeof desktopProvider
-  | typeof trialProvider;
+type Provider = ReturnType<typeof MicrosoftEntraID> | ReturnType<typeof GitHub>;
 
 /**
  * The ways to sign in, in the order the sign-in page shows them.
@@ -229,7 +146,6 @@ type Provider =
  * published keys and name, so a token is never taken on its own word.
  */
 function providers(): Provider[] {
-  if (desktopMode) return desktopConfigured ? [desktopProvider] : [];
   const list: Provider[] = [];
   if (entraConfigured) {
     const tenant = entraAnyAccount ? "common" : process.env.AZURE_AD_TENANT_ID;
@@ -250,7 +166,6 @@ function providers(): Provider[] {
       })
     );
   }
-  if (trialConfigured) list.push(trialProvider);
   return list;
 }
 

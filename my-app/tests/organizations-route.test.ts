@@ -9,7 +9,7 @@
 //   - GET lists the caller's own organizations, by slug and name only. The
 //     bypass, which is an Admin everywhere, sees every organization.
 //   - canCreate is true exactly where POST would be let through.
-//   - POST is refused on the desktop and with the bypass before the body is
+//   - POST is refused with the bypass before the body is
 //     read, and nothing is written.
 //   - A name or address the rules turn down is 400, naming the field, and
 //     nothing is written. The name is stored cleaned, the address trimmed.
@@ -81,8 +81,6 @@ const ACME_MEMBERSHIP = {
 const DATABASE_DOWN = new Error("connect ECONNREFUSED 127.0.0.1:5433");
 const UNAVAILABLE_TAIL = " The app's database may be unreachable. Try again in a moment.";
 
-const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
-
 /** Made up for these tests. Not a real token. */
 const TOKEN = "github_pat_not_real_0001_abcdefghij";
 
@@ -92,14 +90,11 @@ beforeEach(() => {
   mockKeySource = "app-key";
   mockCheck.mockReset();
   mockCheck.mockResolvedValue({ ok: true, created: false });
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   for (const fake of Object.values(mockOrgsDb)) fake.mockReset();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
-  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
 
 /** A POST to the route with this body, sent as it is when it is a string. */
@@ -183,12 +178,6 @@ describe("GET", () => {
     expect(mockOrgsDb.listMemberships).not.toHaveBeenCalled();
   });
 
-  test("on the desktop offers no making", async () => {
-    process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    mockOrgsDb.listMemberships.mockResolvedValue([ACME_MEMBERSHIP]);
-    expect(await answer(await GET())).toMatchObject([200, { canCreate: false }]);
-  });
-
   test("a database that did not answer is 503, with the reason kept to the log", async () => {
     const errors = quietErrors();
     mockOrgsDb.listMemberships.mockRejectedValue(DATABASE_DOWN);
@@ -217,15 +206,6 @@ describe("POST", () => {
       slug: "acme-data",
       name: "Acme Data",
     });
-  });
-
-  test("on the desktop is 403 before the body is read, and nothing is written", async () => {
-    process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    expect(await answer(await POST(post("not json")))).toEqual([
-      403,
-      { error: "The desktop app keeps a single organization of its own." },
-    ]);
-    nothingWritten();
   });
 
   test("with the bypass is 403 before the body is read, and nothing is written", async () => {

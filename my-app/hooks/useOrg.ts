@@ -7,8 +7,6 @@ import { orgHref } from "@/lib/org-slug";
 export type Org = {
   slug: string;
   name: string;
-  /** True in the shared trial organization (lib/trial-rules.ts isTrialOrg). */
-  trial?: boolean;
 };
 
 /**

@@ -26,14 +26,10 @@ import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcom
 import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
 import { readApplications } from "@/lib/application-read";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
-import { isTrialOrg } from "@/lib/trial-rules";
-import { trialSqlProblem, trialSqlRefusal } from "@/lib/trial-sql-guard";
 import { randomUUID } from "node:crypto";
 import { isRunId } from "@/lib/run-id";
 import {
   beginCommit,
-  BUSY_CHECK_FAILED_MESSAGE,
-  countOtherRuns,
   DUPLICATE_RUN_MESSAGE,
   keepFirstClientError,
   prepareRunTransaction,
@@ -41,8 +37,6 @@ import {
   runLimits,
   runStopMessage,
   throwIfStopped,
-  TRIAL_BUSY_MESSAGE,
-  TRIAL_MAX_CONCURRENT_RUNS,
   unregisterRun,
   type RunEntry,
 } from "@/lib/run-limits";
@@ -709,32 +703,6 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       );
     }
 
-    // ─── 3b. In the trial, nothing that reaches every other visitor ────────
-    // Every trial visitor runs as one shared database user, so a script that
-    // changes that user or its session settings breaks the trial for everyone
-    // (lib/trial-sql-guard.ts). The rollback is read too: the revert route
-    // runs it as the same user.
-    if (isTrialOrg(gate.principal.orgSlug)) {
-      const name = raw.script_name.trim();
-      const problem = trialSqlProblem(raw.sql_content);
-      if (problem) {
-        return answerBeforeRun(
-          { code: "trial_refused", error: trialSqlRefusal(`The script "${name}"${at}`, problem) },
-          { status: 400 }
-        );
-      }
-      const rollbackProblem = raw.down_sql ? trialSqlProblem(raw.down_sql) : null;
-      if (rollbackProblem) {
-        return answerBeforeRun(
-          {
-            code: "trial_refused",
-            error: trialSqlRefusal(`The rollback of "${name}"${at}`, rollbackProblem),
-          },
-          { status: 400 }
-        );
-      }
-    }
-
     const scriptName = raw.script_name.trim();
     const scriptVersion = raw.version.trim();
 
@@ -1187,16 +1155,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   const hoistedEnumAdditions: string[] = [];
   // The time limits this run goes by, and its entry in the list of runs the
   // Stop button can reach (lib/run-limits.ts). Null until registered.
-  const trial = isTrialOrg(gate.principal.orgSlug);
-  const limits = runLimits({ trial, dryRun });
+  const limits = runLimits({ dryRun });
   let run: RunEntry | null = null;
 
   try {
     // ─── 6c. Note the run, so Stop and its time limit can reach it ──────────
-    //
-    // The trial's demo database is shared by every visitor, so it takes only
-    // a few runs at once: counted here in this server, then on the database
-    // itself, which also sees the runs going on other instances of the app.
     const entry = registerRun(
       {
         runId,
@@ -1204,7 +1167,6 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         connectionId,
         actor: actorFor(gate.principal),
         kind: "deploy",
-        trial,
         pool: targetPool,
       },
       limits
@@ -1212,25 +1174,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     if (entry === "duplicate") {
       return answerBeforeRun({ code: "duplicate_run", error: DUPLICATE_RUN_MESSAGE }, { status: 409 });
     }
-    if (entry === "busy") {
-      return answerBeforeRun({ code: "trial_busy", error: TRIAL_BUSY_MESSAGE }, { status: 429 });
-    }
     run = entry;
-    if (trial) {
-      let others: number;
-      try {
-        others = await countOtherRuns(client);
-      } catch (error) {
-        console.error(
-          "Apply: could not count the trial's runs:",
-          error instanceof Error ? error.message : String(error)
-        );
-        return answerBeforeRun({ error: BUSY_CHECK_FAILED_MESSAGE }, { status: 503 });
-      }
-      if (others >= TRIAL_MAX_CONCURRENT_RUNS) {
-        return answerBeforeRun({ code: "trial_busy", error: TRIAL_BUSY_MESSAGE }, { status: 429 });
-      }
-    }
 
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
     //
@@ -1297,8 +1241,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // there only so that a statement that never ends, such as
     // pg_sleep(100000) or a runaway query, cannot hold the connection for
     // good. A dry run is rolled back whatever happens, so it gets a shorter
-    // limit, and the trial, whose demo database every visitor shares,
-    // shorter still.
+    // limit.
     //
     // SET LOCAL, so the pooled connection goes back to the pool unchanged.
     //
@@ -1585,8 +1528,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // The approval has now been spent on a run that really happened, so the
     // finally block must leave it marked used.
     runCommitted = true;
-    // The run no longer holds a transaction, so it stops counting towards the
-    // trial's limit and a late Stop hears that it has finished.
+    // The run no longer holds a transaction, so a late Stop hears that it has
+    // finished.
     unregisterRun(entry);
 
     // Release the target-pool connection BEFORE the lineage advance below: that
@@ -1891,7 +1834,6 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     const stopped = runStopMessage([error, clientError()], run, {
       kind: "deploy",
       dryRun,
-      trial,
       limits,
       subject: failedJob ? `Version ${failedJob.version} of "${failedJob.scriptName}"` : null,
     });

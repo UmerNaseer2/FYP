@@ -313,18 +313,6 @@ export function ShieldIcon(props: IconProps) {
   );
 }
 
-/** Two arrows, one each way: swap one thing for another. */
-export function SwapIcon(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <path d="m8 3-4 4 4 4" />
-      <path d="M4 7h16" />
-      <path d="m16 21 4-4-4-4" />
-      <path d="M20 17H4" />
-    </Svg>
-  );
-}
-
 export function ClipboardIcon(props: IconProps) {
   return (
     <Svg {...props}>
@@ -384,7 +372,7 @@ export function PlayIcon(props: IconProps) {
   );
 }
 
-/** The desktop app: a screen on its stand. */
+/** A computer: a screen on its stand. */
 export function MonitorIcon(props: IconProps) {
   return (
     <Svg {...props}>
@@ -400,16 +388,6 @@ export function ClockIcon(props: IconProps) {
     <Svg {...props}>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
-    </Svg>
-  );
-}
-
-/** The phone app: a phone with its speaker slot at the foot. */
-export function PhoneIcon(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <rect x="6" y="2" width="12" height="20" rx="2.5" />
-      <path d="M11 18h2" />
     </Svg>
   );
 }

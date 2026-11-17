@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InvitePanel } from "@/components/admin/InvitePanel";
-import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole, presetFor } from "@/lib/permissions";
 import {
@@ -87,9 +86,6 @@ export function UsersTab({ active }: { active: boolean }) {
     label: BUILT_IN_ROLE_INFO[name].label,
     assignable: (presetFor(name) ?? []).every((key) => can(key)),
   }));
-  // Removing someone means something different in the desktop app, where
-  // signing in is all it takes to join (lib/accounts-db.ts joinOnSignIn).
-  const desktop = useDesktopBridge() !== null;
 
   const [users, setUsers] = useState<Profile[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -466,12 +462,8 @@ export function UsersTab({ active }: { active: boolean }) {
         title={removeTarget ? `Remove ${removeTarget.email}?` : "Remove user?"}
         description={
           // Their sign-in account belongs to Microsoft or GitHub, so removing
-          // them here never touches it. What it does to their next sign-in is
-          // what differs: on the web nobody joins by signing in, but the
-          // desktop app lets in whoever signs in on it.
-          desktop
-            ? "They lose access at once. Their sign-in account is not touched, so if they sign in to this app again they come back as a Viewer."
-            : "They lose access to this organization at once. Their sign-in account is not touched, but signing in no longer brings them here. They are back only if someone invites them again or they use a join link that is still open, so cancel any link you don't want them to have under Invite people. If this was their only organization, their profile is deleted too."
+          // them here never touches it, and nobody joins by signing in.
+          "They lose access to this organization at once. Their sign-in account is not touched, but signing in no longer brings them here. They are back only if someone invites them again or they use a join link that is still open, so cancel any link you don't want them to have under Invite people. If this was their only organization, their profile is deleted too."
         }
         confirmLabel="Remove access"
       />

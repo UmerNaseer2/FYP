@@ -87,13 +87,5 @@ export const connectionsHelp: HelpTopic = {
         "The line under the page title counts the connections, how many are healthy, failing or untested, and the average time a test took.",
       ],
     },
-    {
-      title: "On linked computers",
-      body: [
-        "These connections are kept in the desktop app on computers linked to the organization. Their passwords stay on that computer, so they cannot be changed or used from the website.",
-        "Open Schema Studio on that computer to use them. Its owner can also compare them from the website while the computer is on.",
-        "A linked computer can open the organization's saved connections. Its owner or an Admin can unlink it with Unlink, for instance when it is lost.",
-      ],
-    },
   ],
 };

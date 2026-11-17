@@ -13,17 +13,14 @@ import { OrgContext } from "@/hooks/useOrg";
 export function OrgProvider({
   slug,
   name,
-  trial = false,
   children,
 }: {
   slug: string;
   name: string;
-  /** The shared trial organization, which gets the trial's strip (components/studio/TrialBar.tsx). */
-  trial?: boolean;
   children: ReactNode;
 }) {
   // One object for as long as the organization stays the same, so a component
   // that memoises on it does not redo its work on every render.
-  const org = useMemo(() => ({ slug, name, trial }), [slug, name, trial]);
+  const org = useMemo(() => ({ slug, name }), [slug, name]);
   return <OrgContext.Provider value={org}>{children}</OrgContext.Provider>;
 }

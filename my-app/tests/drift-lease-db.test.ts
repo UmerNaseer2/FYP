@@ -70,7 +70,6 @@ type StateRow = {
 
 describeWithDatabase("the drift checker's lease on a real database", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   const savedVercel = process.env.VERCEL;
   const savedScheduler = process.env.DRIFT_SCHEDULER;
   const savedCallMinutes = process.env.DRIFT_CALL_MINUTES;
@@ -144,7 +143,6 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
     jest.resetModules();
     globalThis.__metadataSequelize = undefined;
     process.env.DATABASE_URL_A = url;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
     delete process.env.VERCEL;
     delete process.env.DRIFT_SCHEDULER;
     const bootstrap = await import("@/lib/db/bootstrap");
@@ -188,7 +186,6 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
       else process.env[name] = value;
     };
     restore("DATABASE_URL_A", savedUrl);
-    restore("SCHEMA_STUDIO_DESKTOP", savedDesktop);
     restore("VERCEL", savedVercel);
     restore("DRIFT_SCHEDULER", savedScheduler);
     restore("DRIFT_CALL_MINUTES", savedCallMinutes);

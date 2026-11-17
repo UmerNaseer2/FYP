@@ -18,7 +18,6 @@ export const requestsHelp: HelpTopic = {
     { text: "If you answer requests, look under Needs you. Allow just the asker for 24 hours, allow it for everyone in the asker's role, give the asker another role, mark it as done, or decline.", target: anchor("requests-waiting", ".rq-main") },
     "What you allowed for 24 hours is listed under Allowed for 24 hours until it ends. End now stops it early.",
     "For a run, follow Review it on Deploy to approve it, or Open it on Deploy to run one of yours that was approved.",
-    { text: "Away from a computer? Use Phone app at the top of this page. The phone app can alert you when something here needs you.", target: anchor("phone-app", ".rq-page .page-head__actions") },
   ],
   terms: [
     {

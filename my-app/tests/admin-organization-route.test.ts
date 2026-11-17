@@ -38,20 +38,15 @@ const ADMIN = principalFor("admin", { email: "umer@x", name: "Umer" });
 const ADMIN_ELSEWHERE = { ...ADMIN, orgIsDefault: false };
 const TRY_AGAIN = " The app's database may be unreachable. Try again in a moment.";
 
-const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
-
 beforeEach(() => {
   mockGate = { ok: true, principal: ADMIN };
   mockAskedFor = [];
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   mockOrgsDb.updateOrganization.mockReset();
   mockOrgsDb.deleteOrganization.mockReset();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
-  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
 
 function send(method: "PATCH" | "DELETE", body: string): NextRequest {
@@ -77,10 +72,6 @@ describe("GET", () => {
 
   test.each([
     ["another organization", () => (mockGate = { ok: true, principal: ADMIN_ELSEWHERE }), true],
-    ["the desktop app", () => {
-      mockGate = { ok: true, principal: ADMIN_ELSEWHERE };
-      process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    }, false],
     ["the demo", () => (mockGate = { ok: true, principal: { ...bypassAdminPrincipal(), orgIsDefault: false } }), false],
   ])("says whether %s can be deleted", async (_, setUp, canDelete) => {
     setUp();
@@ -157,7 +148,6 @@ describe("DELETE", () => {
   });
 
   test.each([
-    ["on the desktop app", () => (process.env.SCHEMA_STUDIO_DESKTOP = "1"), /desktop app/],
     ["in the demo", () => (mockGate = { ok: true, principal: { ...bypassAdminPrincipal(), orgIsDefault: false } }), /real sign-in/],
   ])("refuses %s without reaching the database", async (_, setUp, why) => {
     mockGate = { ok: true, principal: ADMIN_ELSEWHERE };

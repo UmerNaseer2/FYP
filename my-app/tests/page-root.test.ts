@@ -2,8 +2,8 @@
  * The front door at "/": the landing page for a visitor, and a hop into the
  * studio for anyone who should not see it.
  *
- * What app/page.tsx decides, case by case: inside the desktop app it forwards
- * to /studio; on a demo server with sign-in switched off it shows the landing
+ * What app/page.tsx decides, case by case:
+ * on a demo server with sign-in switched off it shows the landing
  * page with both buttons opening the studio; signed in, it forwards to
  * /studio; otherwise it shows the landing page with both buttons going to
  * /login, "Create account" asking it to carry on to "Your organizations".
@@ -46,12 +46,9 @@ jest.mock("../auth", () => ({ auth: () => mockAuth() }));
 
 // A server with sign-in set up and a key for saved passwords. Each case
 // changes only the switch it is about; getters, so the page reads the change.
-const SIGN_IN_SERVER = { desktopMode: false, authUsable: true, bypass: false, keySource: "derived" };
+const SIGN_IN_SERVER = { authUsable: true, bypass: false, keySource: "derived" };
 const mockFlags = { ...SIGN_IN_SERVER };
 jest.mock("../auth.config", () => ({
-  get desktopMode() {
-    return mockFlags.desktopMode;
-  },
   get authUsable() {
     return mockFlags.authUsable;
   },
@@ -77,14 +74,6 @@ async function landing(): Promise<ReactElement<LandingPageProps>> {
 }
 
 describe("the front door", () => {
-  it("forwards the desktop app to /studio without asking who is signed in", async () => {
-    // The app only ever opens /login and /studio itself, and "Create account"
-    // means nothing inside it, so a "/" typed into its address bar goes on.
-    mockFlags.desktopMode = true;
-    await expect(RootPage()).rejects.toThrow("NEXT_REDIRECT");
-    expect(mockRedirects).toEqual(["/studio"]);
-    expect(mockAuth).not.toHaveBeenCalled();
-  });
 
   it("shows a demo server's landing page with both buttons opening the studio", async () => {
     // With the bypass on there is no sign-in to send anyone to, and no
@@ -171,7 +160,7 @@ describe("the front door", () => {
 
   it("is rendered on every request, never once at build time", () => {
     // A page prerendered by `next build` would keep the build machine's
-    // answers for good: whether this is the desktop app, and whether there is
+    // answers for good: whether sign-in is set up, and whether there is
     // an encryption key. The Docker image and CI both build with placeholders.
     expect(dynamic).toBe("force-dynamic");
   });

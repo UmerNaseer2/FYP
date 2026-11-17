@@ -11,19 +11,14 @@ import {
   type PermissionKey,
 } from "./permissions";
 import { ORG_HEADER } from "./org-slug";
-import { TRIAL_BLOCKED_PERMISSIONS, TRIAL_REFUSAL, isTrialOrg, trialPermissions } from "./trial-rules";
 import {
-  findDefaultMembership,
-  findDefaultOrganization,
   findMembership,
-  findMembershipById,
   findOrganization,
   type Member,
   type Organization,
 } from "./orgs-db";
 import { getRoleAccess } from "./roles-db";
 import { activeGrants } from "./access-requests-db";
-import { applySiteRole, loadSiteRole } from "./site-role";
 import { sessionProfileId } from "./session-profile";
 
 /**
@@ -52,10 +47,7 @@ import { sessionProfileId } from "./session-profile";
  * from their next click. Every query a route makes is then filtered by the
  * principal's orgId.
  *
- * A request that names no organization is answered on the desktop only, in
- * its default organization. The desktop has just the one, and its own calls
- * from outside any page (the phone link, the drift watcher) have no page to
- * take a slug from. Anywhere else it is a 404, the same as naming an
+ * A request that names no organization is a 404, the same as naming an
  * organization the caller is not in: a request that forgets to say where it
  * acts must not quietly act somewhere.
  *
@@ -144,11 +136,6 @@ export type Resolution =
   | { kind: "not-member"; profileId: number | null }
   | { kind: "unavailable" };
 
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
 /**
  * The organization the request names in ORG_HEADER, or null when it names
  * none. Whether the slug is well formed is left to the lookups, which answer
@@ -208,15 +195,13 @@ function bypassAdmin(org: Organization): Principal {
 async function bypassPrincipal(slug: string | null): Promise<Resolution> {
   let org: Organization | null;
   try {
-    if (slug !== null) org = await findOrganization(slug);
-    else if (onDesktop()) org = await findDefaultOrganization();
-    else return { kind: "not-member", profileId: null };
+    if (slug === null) return { kind: "not-member", profileId: null };
+    org = await findOrganization(slug);
   } catch (error) {
     console.error("Could not read the organization:", error);
     return { kind: "unavailable" };
   }
-  // No organization by that name, or (asking for the default) somebody has
-  // deleted its row by hand. Either way there is nothing to act in.
+  // No organization by that name, so there is nothing to act in.
   if (!org) return { kind: "not-member", profileId: null };
 
   let picked: string | undefined;
@@ -283,13 +268,10 @@ async function signedInPrincipal(slug: string | null): Promise<Resolution> {
   const profileId = await signedInProfileId();
   if (profileId === null) return { kind: "signed-out" };
 
-  if (slug === null && !onDesktop()) return { kind: "not-member", profileId };
+  if (slug === null) return { kind: "not-member", profileId };
 
   try {
-    const membership: Member | null =
-      slug === null
-        ? await findDefaultMembership(profileId)
-        : await findMembership(profileId, slug);
+    const membership: Member | null = await findMembership(profileId, slug);
     if (!membership) return { kind: "not-member", profileId };
     const access = await getRoleAccess(membership.orgId, membership.role);
     // The foreign key from a membership to its role will not let a role that
@@ -329,8 +311,7 @@ function memberPrincipal(
     name: membership.personName ?? membership.email,
     role: access.role,
     roleLabel: access.roleLabel,
-    // The shared trial switches some things off for every role in it (lib/trial-rules.ts).
-    permissions: isTrialOrg(membership.slug) ? trialPermissions(permissions) : permissions,
+    permissions,
     bypass: false,
     viewingAs: null,
     orgId: membership.orgId,
@@ -340,39 +321,9 @@ function memberPrincipal(
   };
 }
 
-/**
- * A linked computer's person, in the computer's organization, with the role
- * they hold there now. The routes under /api/agent/sync act as this person, so
- * a desktop can do through the link exactly what its person could do on the
- * website, and no more. Null when they are no longer a member, which the
- * computer's own check (lib/agent-auth.ts) would normally have caught first.
- * Throws when the database cannot be read; the caller answers 503.
- */
-export async function agentPrincipal(agent: { orgId: number; profileId: number }): Promise<Principal | null> {
-  const membership = await findMembershipById(agent.profileId, agent.orgId);
-  if (!membership) return null;
-  const access = await getRoleAccess(membership.orgId, membership.role);
-  if (!access) return null;
-  const grants = await activeGrants(membership.orgId, membership.email);
-  return memberPrincipal(agent.profileId, membership, access, grants);
-}
-
-/**
- * Who is calling, in the organization `slug` names, and what they may do there. Never throws.
- *
- * On a desktop linked to a website, its own organization is also held to the
- * person's website role (lib/site-role.ts): the website can take away, never
- * add. A role kept there that cannot be read is a 503, never the full role.
- */
+/** Who is calling, in the organization `slug` names, and what they may do there. Never throws. */
 async function resolveIn(slug: string | null): Promise<Resolution> {
-  const found = BYPASS_AUTH ? await bypassPrincipal(slug) : await signedInPrincipal(slug);
-  if (found.kind !== "ok" || !onDesktop() || !found.principal.orgIsDefault) return found;
-  try {
-    return { kind: "ok", principal: applySiteRole(found.principal, await loadSiteRole(found.principal.orgId)) };
-  } catch (error) {
-    console.error("Could not read the website role this computer works within:", error instanceof Error ? error.message : "unknown error");
-    return { kind: "unavailable" };
-  }
+  return BYPASS_AUTH ? bypassPrincipal(slug) : signedInPrincipal(slug);
 }
 
 /** Who is calling, in the organization the request names, and what they may do there. Never throws. */
@@ -435,9 +386,6 @@ export async function requirePermission(
   if (found.kind !== "ok") return refusalFor(found);
   const { principal } = found;
   if (!hasPermission(principal, ...keys)) {
-    if (isTrialOrg(principal.orgSlug) && keys.some((key) => TRIAL_BLOCKED_PERMISSIONS.has(key))) {
-      return refuse(403, TRIAL_REFUSAL);
-    }
     return refuse(403, refusalMessage(principal.roleLabel, keys[0]));
   }
   return { ok: true, principal };
@@ -487,8 +435,7 @@ export type SignedInGate =
  * must check the membership for itself.
  *
  * With the bypass on there is nobody to identify, so the caller is the
- * bypass, with no profile. It answers on the desktop too, where the one
- * person is signed in by the desktop app.
+ * bypass, with no profile.
  */
 export async function requireSignedIn(): Promise<SignedInGate> {
   if (BYPASS_AUTH) return { ok: true, caller: { profileId: null, bypass: true } };

@@ -11,8 +11,8 @@
  *   - The choices: the organization open now first, named as the page names
  *     it; then the others in the order the server listed them; then
  *     "New organization…" only when the server says it would make one.
- *   - Nothing drawn when there is nothing to pick (the desktop app's one
- *     organization, a demo with one), before the list arrives, when it could
+ *   - Nothing drawn when there is nothing to pick (a demo with one
+ *     organization), before the list arrives, when it could
  *     not be read, when the answer is not a list, and outside an organization.
  *   - Picking: another organization opens its studio, "New organization…"
  *     opens "Your organizations", and the one already open goes nowhere.
@@ -136,7 +136,7 @@ describe("the choices", () => {
 });
 
 describe("nothing to pick", () => {
-  test("one organization and no way to make another: the desktop app, or a small demo", async () => {
+  test("one organization and no way to make another: a small demo", async () => {
     const { container } = await openQuietly([listing([HERE], false)]);
     expect(container).toBeEmptyDOMElement();
     expect(fetchCalls).toHaveLength(1);

@@ -130,7 +130,6 @@ async function connectTo(url: string): Promise<Client> {
 
 describeWithDatabase("two organizations in one metadata database", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   let server: Client;
   let db: Client;
   let databaseName = "";
@@ -235,7 +234,6 @@ describeWithDatabase("two organizations in one metadata database", () => {
     jest.resetModules();
     globalThis.__metadataSequelize = undefined;
     process.env.DATABASE_URL_A = url;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
     const { syncMetadataTables } = await import("@/lib/db/bootstrap");
     await syncMetadataTables();
     ({ sequelize } = await import("@/lib/db/sequelize"));
@@ -285,8 +283,6 @@ describeWithDatabase("two organizations in one metadata database", () => {
     globalThis.__metadataSequelize = undefined;
     if (savedUrl === undefined) delete process.env.DATABASE_URL_A;
     else process.env.DATABASE_URL_A = savedUrl;
-    if (savedDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-    else process.env.SCHEMA_STUDIO_DESKTOP = savedDesktop;
     await db?.end();
     if (server) {
       if (databaseName) {
@@ -311,33 +307,6 @@ describeWithDatabase("two organizations in one metadata database", () => {
     const logged = errorSpy.mock.calls.slice();
     errorSpy.mockRestore();
     expect(logged).toEqual([]);
-  });
-
-  describe("the website role a linked desktop keeps", () => {
-    it("keeps it in its own organization's row, reads it back, and clears it", async () => {
-      const { saveSiteRole, loadSiteRole } = await import("@/lib/site-role");
-      const role = { role: "viewer", label: "Viewer", permissions: ["connections:read" as const] };
-      expect(await loadSiteRole(orgA.id)).toBeNull();
-      await saveSiteRole(orgA.id, role);
-      expect(await loadSiteRole(orgA.id)).toEqual(role);
-      expect(await loadSiteRole(orgB.id)).toBeNull();
-      const [{ type }] = await rows<{ type: string }>(`SELECT jsonb_typeof(site_role) AS type FROM organizations WHERE id = $1`, [
-        orgA.id,
-      ]);
-      expect(type).toBe("object");
-      await saveSiteRole(orgA.id, null);
-      expect(await loadSiteRole(orgA.id)).toBeNull();
-    }, SLOW);
-
-    it("will not guess at a kept role it cannot read", async () => {
-      const { loadSiteRole } = await import("@/lib/site-role");
-      await db.query(`UPDATE organizations SET site_role = '"everything"' WHERE id = $1`, [orgA.id]);
-      try {
-        await expect(loadSiteRole(orgA.id)).rejects.toThrow(/could not be read/);
-      } finally {
-        await db.query(`UPDATE organizations SET site_role = NULL WHERE id = $1`, [orgA.id]);
-      }
-    }, SLOW);
   });
 
   describe("tracking a schema", () => {

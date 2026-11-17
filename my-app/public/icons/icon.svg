@@ -1,5 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><!-- Schema Studio's mark: two rounded squares, tangerine and aubergine, the overlap cut out (components/ui/BrandMark.tsx). --><rect x="2" y="2" width="96" height="96" rx="22" fill="#fbf5ea"/><defs><clipPath id="c"><rect x="2" y="2" width="18" height="18" rx="6"/></clipPath></defs>
-    <g transform="translate(15.384615384615387 15.384615384615387) scale(2.3076923076923075)">
-    <rect x="2" y="2" width="18" height="18" rx="6" fill="#f55a1c"/>
-    <rect x="10" y="10" width="18" height="18" rx="6" fill="#2a1a3e"/>
-    <rect x="10" y="10" width="18" height="18" rx="6" fill="#fbf5ea" clip-path="url(#c)"/></g></svg>

@@ -8,8 +8,6 @@
  *
  * fetch is replaced with a stub that answers the two addresses GitHub's API
  * is asked, and throws for anything else, so nothing leaves the machine.
- * Which providers auth.config.ts offers, and that the GitHub one is wired to
- * readGitHubAccount, is in tests/desktop-sign-in.test.ts.
  */
 
 import { readGitHubAccount } from "../auth.config";

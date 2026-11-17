@@ -19,7 +19,6 @@ import { DriftExplainPanel } from "@/components/studio/DriftExplainPanel";
 import { driftExplainKey } from "@/lib/ai/features/drift-explain-view";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
-import { ElsewhereDrift } from "@/components/studio/ElsewhereDrift";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { StatusChip, StatusGlyph } from "@/components/ui/StatusChip";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
@@ -131,12 +130,7 @@ function DriftScreen() {
   return (
     <Shell tab={tab} schema={schema}>
       {tab === "detail" ? (
-        <>
-          <DetailContent schema={schema} />
-          {/* Schemas checked on the other side of the sync: the website's own, in
-              the desktop app, or the person's computers', in a browser. */}
-          <ElsewhereDrift />
-        </>
+        <DetailContent schema={schema} />
       ) : tab === "schedule" ? (
         <ScheduleTable />
       ) : (
@@ -286,7 +280,6 @@ function DetailContent({ schema }: { schema: string | undefined }) {
         selectedId={selected.id}
         connectionId={selected.connectionId}
         connectionName={selected.connectionName}
-        onWebsite={selected.connectionOnWebsite === true}
         onListChanged={listChanged}
       />
     </div>
@@ -475,15 +468,12 @@ function DetailTab({
   selectedId,
   connectionId,
   connectionName,
-  onWebsite,
   onListChanged,
 }: {
   selectedId: number;
   /** The schema's connection, so a failed read can say which one and link to it. */
   connectionId: number;
   connectionName: string | null;
-  /** A desktop's copy of one of the website's connections: the website checks it now. */
-  onWebsite: boolean;
   /** A fix changed this schema's drift status, which the watch list shows too. */
   onListChanged: () => void;
 }) {
@@ -647,19 +637,6 @@ function DetailTab({
           )}
         </li>
       </ul>
-
-      {/* Only on a desktop. The scheduler here leaves this schema alone (lib/drift-scheduler.ts). */}
-      {onWebsite && (
-        <div className="warn-inline">
-          <span className="ico dr-ico--wait">
-            <InfoIcon size={14} />
-          </span>
-          <div className="dr-note">
-            <b>This connection belongs to the website.</b> The website checks it on a timer, not this
-            computer. Results show under Checked by the website below.
-          </div>
-        </div>
-      )}
 
       <p className="dr-lead">{head.lead}</p>
 

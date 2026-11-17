@@ -157,7 +157,6 @@ jest.mock("../lib/connection-config", () => {
 });
 
 import { GET as versionHistory } from "@/app/api/compare/version-history/route";
-import { GET as phoneConnections } from "@/app/api/connections/phone/route";
 import { GET as lineageSchemas } from "@/app/api/lineage/schemas/route";
 import { POST as trackSchema } from "@/app/api/lineage/track/route";
 import { GET as activity } from "@/app/api/performance/activity/route";
@@ -400,17 +399,6 @@ describe("GET /api/performance/history", () => {
       expect(org).not.toBeNull();
       expect(values[Number(org![1]) - 1]).toBe(TEST_ORG.id);
     }
-  });
-});
-
-describe("GET /api/connections/phone", () => {
-  it("lists only the caller's organization's connections", async () => {
-    const result = await answer(phoneConnections());
-    expect(result.status).toBe(200);
-    const body = JSON.parse(result.text) as { connections: Array<{ id: number; name: string }> };
-    expect(body.connections.map((row) => row.id)).toEqual([OURS]);
-    expectNothingOfTheirs(result);
-    expectConnectionLookupsInCallersOrg();
   });
 });
 

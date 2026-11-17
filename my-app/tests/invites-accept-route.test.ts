@@ -6,7 +6,7 @@
 // stood in for, so these tests cover only what the route adds on top:
 //
 //   - The gate comes first, and a refusal is passed on as it came.
-//   - Nobody can join on the desktop or with sign-in switched off, and the
+//   - Nobody can join with sign-in switched off, and the
 //     body is not read there.
 //   - The token from the body is passed on as it came, with the caller's own
 //     profile. Nothing else in the body counts. A body with no token is passed
@@ -44,19 +44,14 @@ const BYPASS: SignedInGate = { ok: true, caller: { profileId: null, bypass: true
 const TOKEN = "Abc_def-123".padEnd(43, "x");
 const ACME = { slug: "acme", name: "Acme" };
 
-const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
-
 beforeEach(() => {
   mockGate = SIGNED_IN;
   mockGateCalls = 0;
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   mockAcceptInvite.mockReset();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
-  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
 
 /** A POST to the route with this body, sent as it is when it is a string. */
@@ -86,22 +81,9 @@ describe("before anything is read", () => {
 
   test.each([
     [
-      "on the desktop",
-      () => (process.env.SCHEMA_STUDIO_DESKTOP = "1"),
-      "The desktop app keeps a single organization of its own.",
-    ],
-    [
       "with sign-in switched off",
       () => (mockGate = BYPASS),
       "Taking an invitation needs a real sign-in. The demo has nobody to join as.",
-    ],
-    [
-      "on the desktop, even with sign-in switched off as well",
-      () => {
-        process.env.SCHEMA_STUDIO_DESKTOP = "1";
-        mockGate = BYPASS;
-      },
-      "The desktop app keeps a single organization of its own.",
     ],
   ])("nobody can join %s, and the body is not read", async (_, setUp, error) => {
     setUp();

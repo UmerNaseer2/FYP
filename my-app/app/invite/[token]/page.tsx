@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
-import { desktopMode } from "@/auth.config";
 import { InvitePage, type InviteView } from "@/components/invite/InvitePage";
 import { requireSignedIn } from "@/lib/auth-guard";
 import { inspectInvite } from "@/lib/invites-db";
@@ -25,9 +23,7 @@ import { inspectInvite } from "@/lib/invites-db";
  * - Not indexed: a search engine that came across a link has no business
  *   listing it.
  *
- * Inside the desktop app it forwards to /studio, as "Your organizations" does
- * (app/onboarding/page.tsx): the app keeps one organization of its own, and
- * nobody can be invited into it. With sign-in switched off (the bypass) there
+ * With sign-in switched off (the bypass) there
  * is nobody to join as, so the page says so instead of looking anything up.
  *
  * Rendered on every request, never once at build time: what it shows depends
@@ -41,7 +37,6 @@ export const metadata: Metadata = {
 };
 
 export default async function Invite({ params }: { params: Promise<{ token: string }> }) {
-  if (desktopMode) redirect("/studio");
   const { token } = await params;
   return <InvitePage token={token} view={await viewFor(token)} />;
 }

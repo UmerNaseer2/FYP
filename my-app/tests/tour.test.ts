@@ -19,7 +19,6 @@ import {
   stopCountWords,
   tourPicks,
   tourStops,
-  trialCompareHref,
   withoutTourParam,
   writeTourMemory,
   type TourAudience,
@@ -45,8 +44,7 @@ const ids = (list: { id: string }[]) => list.map((item) => item.id);
 afterEach(() => window.localStorage.clear());
 
 describe("the ?tour= address", () => {
-  test("names one of the three doors", () => {
-    expect(readTourParam("?tour=trial")).toBe("trial");
+  test("names one of the two doors", () => {
     expect(readTourParam("?tour=new")).toBe("new");
     expect(readTourParam("?tour=member&x=1")).toBe("member");
   });
@@ -55,11 +53,11 @@ describe("the ?tour= address", () => {
     expect(readTourParam("")).toBeNull();
     expect(readTourParam("?tour=")).toBeNull();
     expect(readTourParam("?tour=admin")).toBeNull();
-    expect(readTourParam("?other=trial")).toBeNull();
+    expect(readTourParam("?other=new")).toBeNull();
   });
 
   test("is taken out of the address, keeping the rest", () => {
-    expect(withoutTourParam("?tour=trial")).toBe("");
+    expect(withoutTourParam("?tour=member")).toBe("");
     expect(withoutTourParam("?tour=new&connection=4")).toBe("?connection=4");
     expect(withoutTourParam("")).toBe("");
   });
@@ -71,9 +69,9 @@ describe("what the browser remembers", () => {
   });
 
   test("reads back what was written, per organization and role", () => {
-    writeTourMemory("trial", "editor", { done: false, resume: 4 });
-    expect(readTourMemory("trial", "editor")).toEqual({ done: false, resume: 4 });
-    expect(readTourMemory("trial", "viewer")).toEqual({ done: false, resume: null });
+    writeTourMemory("globex", "editor", { done: false, resume: 4 });
+    expect(readTourMemory("globex", "editor")).toEqual({ done: false, resume: 4 });
+    expect(readTourMemory("globex", "viewer")).toEqual({ done: false, resume: null });
     expect(readTourMemory("acme", "editor")).toEqual({ done: false, resume: null });
   });
 
@@ -113,14 +111,13 @@ test("startTour sends the event AppTour listens for", () => {
 });
 
 describe("the stops", () => {
-  test("follow the work, with Catch up only in the trial", () => {
-    expect(ids(stops("trial", EDITOR))).toEqual(["home", "connect", "compare", "script", "ship", "sync", "watch", "ask", "help"]);
+  test("follow the work", () => {
     expect(ids(stops("new", ADMIN))).toEqual(["home", "connect", "compare", "script", "ship", "watch", "ask", "help"]);
     expect(ids(stops("member", VIEWER))).toEqual(["home", "connect", "compare", "script", "ship", "watch", "ask", "help"]);
   });
 
-  test("say something true on an empty Dashboard and Drift page, like the trial's at first", () => {
-    const list = stops("trial", EDITOR);
+  test("say something true on an empty Dashboard and Drift page", () => {
+    const list = stops("new", EDITOR);
     const home = list.find((stop) => stop.id === "home")!;
     const watch = list.find((stop) => stop.id === "watch")!;
     expect(home.empty?.target).toBe(".sk-first");
@@ -132,16 +129,6 @@ describe("the stops", () => {
   test("leave out a page the role cannot open, but keep the top bar", () => {
     const list = stops("member", VIEWER, ["/studio", "/compare", "/drift"]);
     expect(ids(list)).toEqual(["home", "compare", "watch", "help"]);
-  });
-
-  test("in the trial, name the demo's own schemas and say connections are locked", () => {
-    const list = stops("trial", EDITOR);
-    const text = (id: string) => list.find((stop) => stop.id === id)!.body;
-    expect(text("connect")).toContain("University demo");
-    expect(text("connect")).toContain("locked");
-    expect(text("compare")).toContain("students_dev");
-    expect(text("sync")).toContain("1.0.0");
-    expect(text("sync")).toContain("1.2.0");
   });
 
   test("tell a role that may not run so, and one that may how it works", () => {
@@ -166,7 +153,7 @@ describe("the stops", () => {
   });
 
   test("never talk about environment labels or a second person", () => {
-    const every = [...stops("trial", ADMIN), ...stops("new", ADMIN), ...stops("member", VIEWER, ALL_PAGES, true)];
+    const every = [...stops("new", ADMIN), ...stops("member", VIEWER, ALL_PAGES, true)];
     for (const stop of every) {
       expect(`${stop.title} ${stop.body}`).not.toMatch(/two-person|second person|risk tick|Production label/i);
     }
@@ -182,7 +169,7 @@ describe("the stops", () => {
         .filter((name) => name.endsWith(".tsx"))
         .map((name) => readFileSync(path.join(dir, name), "utf8"))
         .join("\n");
-    for (const stop of stops("trial", ADMIN)) {
+    for (const stop of stops("new", ADMIN)) {
       const source =
         stop.page === null
           ? readFileSync(path.join(__dirname, "..", "components", "studio", "StudioTopbar.tsx"), "utf8")
@@ -197,9 +184,6 @@ describe("the stops", () => {
 });
 
 describe("the last card", () => {
-  test("in the trial, offers the demo compare and Version Sync", () => {
-    expect(ids(tourPicks("trial", allows(EDITOR), ALL_PAGES))).toEqual(["compare", "sync", "look"]);
-  });
 
   test("for a new organization, starts with adding a database", () => {
     expect(ids(tourPicks("new", allows(ADMIN), ALL_PAGES))).toEqual(["connect", "compare", "look"]);
@@ -211,17 +195,7 @@ describe("the last card", () => {
   });
 
   test("leaves out a page the role cannot open", () => {
-    expect(ids(tourPicks("trial", allows(VIEWER), ["/studio", "/compare"]))).toEqual(["compare", "look"]);
-  });
-
-  test("the trial compare runs students_dev against students_prod", () => {
-    expect(trialCompareHref(null)).toBe("/compare");
-    const query = new URLSearchParams(trialCompareHref(7).split("?")[1]);
-    expect(query.get("sourceConnection")).toBe("7");
-    expect(query.get("sourceSchema")).toBe("students_dev");
-    expect(query.get("targetConnection")).toBe("7");
-    expect(query.get("targetSchema")).toBe("students_prod");
-    expect(query.get("run")).toBe("1");
+    expect(ids(tourPicks("member", allows(VIEWER), ["/studio", "/compare"]))).toEqual(["compare", "look"]);
   });
 });
 

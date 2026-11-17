@@ -4,12 +4,6 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
-import { useDesktopBridge } from "@/hooks/useDesktopBridge";
-import {
-  getDesktopBridge,
-  type DesktopBridge,
-  type DesktopSignInResult,
-} from "@/lib/desktop-bridge";
 import { APP_VERSION } from "@/lib/app-version";
 import { safeCallbackUrl, wantsAccountPicker } from "@/lib/callback-url";
 import { resetIntro } from "@/lib/intro";
@@ -17,15 +11,10 @@ import { SunIcon, MoonIcon, LockIcon, AlertCircleIcon, ChevronLeftIcon } from "@
 import { BrandMark } from "@/components/ui/BrandMark";
 import "../styles/atelier-signin.css";
 
-/**
- * "redirecting" is the browser sign-in, on its way to Microsoft. The desktop
- * app's sign-in has two steps of its own instead: "waiting" while the person
- * signs in in their web browser, and "finishing" while this server checks the
- * ID token the app got back.
- */
-type Status = "idle" | "redirecting" | "waiting" | "finishing" | "error";
+/** "redirecting" is the sign-in on its way to Microsoft or GitHub. */
+type Status = "idle" | "redirecting" | "error";
 
-/** The two ways to sign in. Inside the desktop app only Microsoft is offered. */
+/** The two ways to sign in. */
 type Via = "microsoft" | "github";
 
 /** The ways this server offers, once it has said. */
@@ -60,12 +49,6 @@ const VIA_SCOPES: Record<Via, string> = {
  * provider has not confirmed the address is theirs (EmailUnverified), or the
  * database could not be asked (AccountUnavailable). Each says what to do next,
  * because none of them is fixed by pressing the same button again.
- *
- * The last three only ever come from the desktop app. CredentialsSignin is what
- * NextAuth sends when lib/desktop-sign-in.ts refuses the app's ID token, and
- * the app itself signs a person out and sends them here with SessionRevoked
- * (Microsoft no longer accepts their sign-in) or OfflineTooLong (the computer
- * went 30 days without being able to ask).
  */
 const ERROR_MESSAGES: Record<string, string> = {
   Configuration: "Sign-in is not set up on this server yet.",
@@ -82,11 +65,6 @@ const ERROR_MESSAGES: Record<string, string> = {
   EmailUnverified:
     "That account has not confirmed its email address is yours. Confirm it with Microsoft or GitHub, or use another account.",
   AccountUnavailable: "Schema Studio could not finish signing you in. Try again in a moment.",
-  TrialUnavailable: "The trial could not be opened just now. Try again in a moment.",
-  CredentialsSignin: "Schema Studio could not confirm your Microsoft sign-in.",
-  SessionRevoked: "Your Microsoft sign-in has ended. Sign in again to carry on.",
-  OfflineTooLong:
-    "This computer has been offline for more than 30 days, so you need to sign in again.",
 };
 
 function errorMessage(code: string): string {
@@ -129,16 +107,10 @@ function offeredVias(offered: Offered | null): Via[] {
 
 export default function LoginPage() {
   const { theme, toggleTheme } = useTheme();
-  /** The desktop app's bridge, or null in a browser. Only the wording uses it. */
-  const desktop = useDesktopBridge();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   /** The raw wording behind an error, shown only under "Technical details". */
   const [errorTech, setErrorTech] = useState<string | null>(null);
-  /** True when this server offers the shared trial (lib/trial-rules.ts). */
-  const [trialOffered, setTrialOffered] = useState(false);
-  /** True when "Try it now" just failed and sent the visitor back here. */
-  const [trialFailed, setTrialFailed] = useState(false);
   /** Whether "Trouble signing in?" is showing its help. */
   const [helpOpen, setHelpOpen] = useState(false);
   /** null while we are still asking the server which providers it has. */
@@ -164,32 +136,19 @@ export default function LoginPage() {
       const code = new URLSearchParams(window.location.search).get("error");
 
       let next: Offered = { microsoft: false, github: false };
-      // The trial has a provider of its own in the same list (auth.config.ts),
-      // there only when the server offers it. The desktop app never does.
-      let trial = false;
       try {
         const res = await fetch("/api/auth/providers");
         const providers: Record<string, unknown> = res.ok ? await res.json() : {};
-        // Inside the desktop app the server offers the app's own "desktop"
-        // provider instead of the browser ones (see auth.config.ts), and the
-        // browser ones would take the app's own window off to Microsoft or
-        // GitHub, which the app is built never to do. So there only that one
-        // counts, and it is a Microsoft sign-in.
-        next = getDesktopBridge()
-          ? { microsoft: Boolean(providers.desktop), github: false }
-          : {
-              microsoft: Boolean(providers[BROWSER_PROVIDER.microsoft]),
-              github: Boolean(providers[BROWSER_PROVIDER.github]),
-            };
-        trial = !getDesktopBridge() && Boolean(providers.trial);
+        next = {
+          microsoft: Boolean(providers[BROWSER_PROVIDER.microsoft]),
+          github: Boolean(providers[BROWSER_PROVIDER.github]),
+        };
       } catch {
         // Unreadable counts as none: see the test of the same name.
       }
 
       if (cancelled) return;
       setOffered(next);
-      setTrialOffered(trial);
-      setTrialFailed(code === "TrialUnavailable");
       if (code) {
         setErrorMsg(errorMessage(code));
         setStatus("error");
@@ -202,49 +161,6 @@ export default function LoginPage() {
     };
   }, []);
 
-  /**
-   * The desktop app's sign-in. The app opens the system browser on Microsoft's
-   * page and hands back the ID token Microsoft gave it; this posts that token
-   * to the "desktop" provider in auth.config.ts, which checks it.
-   *
-   * Like the browser sign-in, the last step navigates by itself: to
-   * `callbackUrl` when the token is accepted, or back here with
-   * ?error=CredentialsSignin when it is not, which the effect above then puts
-   * into words.
-   */
-  async function desktopSignIn(bridge: DesktopBridge, callbackUrl: string) {
-    setStatus("waiting");
-    let result: DesktopSignInResult;
-    try {
-      result = await bridge.signIn();
-    } catch (error) {
-      // The app answers every sign-in with a result, failures included, so
-      // this only happens when something in the app itself broke. What arrives
-      // then is wrapped in Electron's wording, which would mean nothing to the
-      // person reading it; the details are in the app's log.
-      console.error(error);
-      result = {
-        ok: false,
-        reason: "failed",
-        message:
-          "Schema Studio could not start the sign-in. Try again, or open the app's log from Help > Open Logs.",
-      };
-    }
-    if (!result.ok) {
-      // Cancelling is the person changing their mind, not a failure, so it
-      // goes quietly back to the button.
-      if (result.reason === "cancelled") {
-        setStatus("idle");
-      } else {
-        setErrorMsg(result.message);
-        setStatus("error");
-      }
-      return;
-    }
-    setStatus("finishing");
-    await signIn("desktop", { idToken: result.idToken, callbackUrl });
-  }
-
   async function handleLogin(chosen: Via) {
     setErrorMsg(null);
     setErrorTech(null);
@@ -252,11 +168,6 @@ export default function LoginPage() {
     resetIntro();
     const callbackUrl = safeCallbackUrl(window.location.search, window.location.origin);
     try {
-      const bridge = getDesktopBridge();
-      if (bridge) {
-        await desktopSignIn(bridge, callbackUrl);
-        return;
-      }
       setVia(chosen);
       setStatus("redirecting");
       // Microsoft and GitHub both sign straight back in to the account the
@@ -321,14 +232,11 @@ export default function LoginPage() {
 
         {/* Right: the sign-in card. */}
         <main className="si-main">
-          {/* Back to the front page. The desktop app has none ("/" forwards it
-              to the studio), so only a browser gets the link. */}
-          {!desktop && (
-            <Link className="btn btn-ghost btn-sm si-back" href="/">
-              <ChevronLeftIcon size={14} />
-              <span>Back</span>
-            </Link>
-          )}
+          {/* Back to the front page. */}
+          <Link className="btn btn-ghost btn-sm si-back" href="/">
+            <ChevronLeftIcon size={14} />
+            <span>Back</span>
+          </Link>
           <div className="si-top">
             <button
               type="button"
@@ -344,9 +252,7 @@ export default function LoginPage() {
           <article className="card si-card">
             <h1>Welcome to Schema Studio</h1>
             <p className="sub">
-              {desktop
-                ? "Sign in with the work account your team uses. There is no separate password to remember."
-                : "Sign in with the account your team uses. There is no separate password to remember."}
+              Sign in with the account your team uses. There is no separate password to remember.
             </p>
 
             {/* state-swappable region: `key` remounts it so the fade replays */}
@@ -372,40 +278,13 @@ export default function LoginPage() {
                     </span>
                     <div className="notice__main">
                       <p className="notice__title">
-                        {desktop
-                          ? "Microsoft sign-in isn't set up in this copy of the app."
-                          : trialOffered
-                            ? "Microsoft sign-in isn't set up here yet."
-                            : "Sign-in isn't set up on this server yet."}
+                        Sign-in isn&apos;t set up on this server yet.
                       </p>
                       <p className="notice__body">
-                        {desktop
-                          ? "Nothing is wrong with your account. Ask whoever gave you the app for a copy with sign-in set up."
-                          : trialOffered
-                            ? trialFailed
-                              ? "The trial could not be opened just now. Try again in a moment."
-                              : "You can still try the shared trial. No account needed."
-                            : "Nothing is wrong with your account. Whoever runs this server needs to finish setting up sign-in."}
+                        Nothing is wrong with your account. Whoever runs this server needs to finish setting up sign-in.
                       </p>
-                      {trialOffered && (
-                        // The same trial entry the front page uses
-                        // (app/api/trial/route.ts), as the Trial Admin.
-                        <form action="/api/trial" method="post" className="notice__actions">
-                          <button type="submit" name="role" value="admin" className="btn btn-primary btn-sm">
-                            Try it now
-                          </button>
-                        </form>
-                      )}
                       <details className="notice__tech">
                         <summary>Technical details</summary>
-                        {desktop ? (
-                          <p>
-                            This copy of the desktop app was built without its
-                            Microsoft sign-in IDs. Add AZURE_AD_CLIENT_ID and
-                            AZURE_AD_TENANT_ID to desktop/.env.desktop, then
-                            build it again.
-                          </p>
-                        ) : (
                           <p>
                             This server has no sign-in credentials. Set
                             NEXTAUTH_SECRET to a random value of its own (the
@@ -415,7 +294,6 @@ export default function LoginPage() {
                             GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET for
                             GitHub, then restart.
                           </p>
-                        )}
                       </details>
                     </div>
                   </div>
@@ -448,40 +326,9 @@ export default function LoginPage() {
                     ))}
                   </div>
                   <p className="si-note">
-                    {desktop
-                      ? "Opens your web browser for your organization's Microsoft sign-in."
-                      : `You'll sign in with ${vias.map((way) => VIA_NAME[way]).join(" or ")}, then come straight back here.`}
+                    {`You'll sign in with ${vias.map((way) => VIA_NAME[way]).join(" or ")}, then come straight back here.`}
                   </p>
                 </div>
-              )}
-
-              {ssoReady !== false && status === "waiting" && (
-                <div>
-                  <button type="button" className="si-ms busy" disabled aria-busy="true">
-                    <span className="spin" aria-hidden="true" />
-                    <span>Waiting for your browser…</span>
-                  </button>
-                  <p className="si-note">
-                    Finish signing in with Microsoft in your web browser. This
-                    window carries on by itself once you have.
-                  </p>
-                  <div className="si-cancel">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => getDesktopBridge()?.cancelSignIn()}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {ssoReady !== false && status === "finishing" && (
-                <button type="button" className="si-ms busy" disabled aria-busy="true">
-                  <span className="spin" aria-hidden="true" />
-                  <span>Signing you in…</span>
-                </button>
               )}
 
               {ssoReady !== false && status === "redirecting" && (
@@ -534,9 +381,8 @@ export default function LoginPage() {
             </div>
 
             <p className="si-sm">
-              {`Schema Studio reads your name and email from ${
-                desktop ? "Microsoft" : "the account you sign in with"
-              } and nothing else. What you may do here is decided by your organization's admins.`}
+              Schema Studio reads your name and email from the account you sign in with and nothing
+              else. What you may do here is decided by your organization&apos;s admins.
             </p>
 
             {/* inline help */}
@@ -555,12 +401,7 @@ export default function LoginPage() {
               </button>
             </div>
             <p id="signin-help" className="si-help" hidden={!helpOpen}>
-              {desktop
-                ? "Sign in with your work Microsoft account. If Microsoft turns you away, ask " +
-                  "your administrator whether your account may use Schema Studio. Once you are " +
-                  "in, an admin chooses what you can do here. New people start as Viewers, who " +
-                  "can look around but not change anything."
-                : "If someone invited you, sign in with an account that uses the email address " +
+              {"If someone invited you, sign in with an account that uses the email address " +
                   "the invitation went to, then open the invitation link again. Otherwise, sign " +
                   "in to make an organization of your own. Inside an organization, its admins " +
                   "choose what you can do. If the sign-in turns you away, ask whoever runs this " +
@@ -568,13 +409,9 @@ export default function LoginPage() {
             </p>
           </article>
 
-          {/* The desktop app has no front page to go back to ("/" forwards it
-              to the studio), so the link is only for a browser. */}
-          {!desktop && (
-            <Link className="flink si-what" href="/">
-              What is Schema Studio?
-            </Link>
-          )}
+          <Link className="flink si-what" href="/">
+            What is Schema Studio?
+          </Link>
         </main>
       </div>
     </div>

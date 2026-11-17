@@ -90,7 +90,7 @@ describe("help topics", () => {
   });
 
   test("a page with no help of its own gets the general help", () => {
-    expect(helpForPath("/acme/phone")).toBe(GENERAL_HELP);
+    expect(helpForPath("/acme/nowhere")).toBe(GENERAL_HELP);
     expect(helpForPage("/nowhere")).toBe(GENERAL_HELP);
   });
 });

@@ -58,7 +58,6 @@ import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 import { useUser } from "@/hooks/useUser";
 import { SqlGeneratePanel, type GeneratedScript } from "@/components/studio/SqlGeneratePanel";
 import { useOrgHref } from "@/hooks/useOrg";
-import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { DEFAULT_ROLE, refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
 import { SqlEditor, type EditorStatus } from "./SqlEditor";
@@ -272,9 +271,6 @@ export default function ScriptEditorPage() {
   // The pull's error code. "github_unconfigured" means GitHub is not set up for
   // this organization: read from the code rather than the wording of the message.
   const [pullCode, setPullCode] = useState<string | null>(null);
-  // Inside the desktop app the GitHub details are filled in on its Settings
-  // window rather than in a file, so the "not set up" message offers to open it.
-  const desktop = useDesktopBridge();
   // Starts true: before the pull lands, an empty registry is unknown, not empty.
   const [githubLoading, setGithubLoading] = useState(true);
 
@@ -1119,11 +1115,7 @@ export default function ScriptEditorPage() {
                 // not on screen yet: somebody who adds a connection and comes
                 // back should not find a second thing missing only then.
                 "The editor needs a saved PostgreSQL connection to know the target database and read its applied versions." +
-                (!githubUnconfigured
-                  ? ""
-                  : desktop
-                    ? " Saving also needs the GitHub registry, which is not set up yet: add it in Settings."
-                    : ` ${GITHUB_MISSING[githubReader]}`)
+                (githubUnconfigured ? ` ${GITHUB_MISSING[githubReader]}` : "")
               }
               actions={
                 <>
@@ -1131,12 +1123,12 @@ export default function ScriptEditorPage() {
                     <ConnectionsIcon size={14} />
                     Go to Connections
                   </Link>
-                  {githubUnconfigured && !desktop && githubReader === "admin" && (
+                  {githubUnconfigured && githubReader === "admin" && (
                     <Link href={orgPath("/admin?tab=github")} className="btn btn-secondary btn-sm">
                       Set up GitHub
                     </Link>
                   )}
-                  {githubUnconfigured && !desktop && githubReader === "other" && !viewingAs && (
+                  {githubUnconfigured && githubReader === "other" && !viewingAs && (
                     <Link href={orgPath("/requests")} className="btn btn-secondary btn-sm">
                       Ask an Admin
                     </Link>
@@ -1319,20 +1311,7 @@ export default function ScriptEditorPage() {
 
               {githubError && (
                 <p className={`se-hint ${githubUnconfigured ? "se-bad" : "se-warn"}`}>
-                  {githubUnconfigured && desktop ? (
-                    <>
-                      The GitHub registry is not set up yet, so nothing can be listed and
-                      nothing can be saved. Add the registry repository and an access token
-                      in Settings.{" "}
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => desktop.openSettings()}
-                      >
-                        Open Settings
-                      </button>
-                    </>
-                  ) : githubUnconfigured ? (
+                  {githubUnconfigured ? (
                     // What is missing, who can fix it and what to press, worded
                     // for whoever is reading.
                     githubReader === "admin" ? (

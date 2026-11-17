@@ -54,7 +54,6 @@ const PAGE_WORDS: Record<string, string> = {
   "/requests": "approvals inbox",
   "/admin": "roles people permissions",
   "/history": "history activity log timeline",
-  "/devices": "phone desktop pair link devices",
 };
 
 type Group = "Needs you" | "Recent" | "Pages" | "Actions";

@@ -16,8 +16,7 @@ const SLUG = new RegExp(ORG_SLUG_PATTERN);
  * lib/auth-guard.ts reads it and checks the caller's membership there.
  *
  * A header rather than the slug in every API path, because the routes then
- * stay where they are and so do the phone and the desktop, which call them
- * from outside any page.
+ * stay where they are.
  */
 export const ORG_HEADER = "x-schema-studio-org";
 
@@ -58,10 +57,6 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "onboarding",
   "invite",
   "requests",
-  "phone",
-  "link-computer",
-  "demo",
-  "devices",
   "history",
   // The Atelier stylesheets (app/styles) are not a page, but a slug of the
   // same name would still look like one to a reader of the address.

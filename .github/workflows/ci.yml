@@ -1,5 +1,9 @@
-# Continuous integration. Two jobs, side by side:
+# Continuous integration. Three jobs, side by side:
 #
+# - handover builds the app's image and follows deploy/handover/SETUP-GUIDE.md
+#   on a fresh Ubuntu with PostgreSQL 16, command by command. When it all
+#   works, it offers the image and the kit as one download,
+#   "schema-studio-handover", under the run's Artifacts.
 # - check runs the same four commands a developer runs before pushing, in the
 #   same order, so a green tick means the branch is in the state the repo
 #   expects: it lints, it type-checks, its tests pass, and it builds.
@@ -51,7 +55,8 @@ jobs:
     # password would just be one more made-up value in the build log.
     services:
       postgres:
-        image: postgres:17-alpine
+        # PostgreSQL 16, the version the handover kit is made for.
+        image: postgres:16-alpine
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: schema_studio_test
@@ -276,3 +281,207 @@ jobs:
         run: |
           docker compose ps --all
           docker compose logs --no-color --tail 200
+
+  handover:
+    name: Handover kit on Ubuntu with PostgreSQL 16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    # Every step below is a step of deploy/handover/SETUP-GUIDE.md, run with
+    # the guide's own commands where it can be, so a guide that no longer works
+    # turns this job red. The guide's step 6 (the Microsoft registration) is
+    # done by hand, so made-up values stand in for it.
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image the download carries, under both of its names: "handover",
+      # which docker-compose.yml runs, and the commit it was built from.
+      - name: Build the image
+        run: |
+          echo "VERSION=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          docker build --tag schema-studio-app:handover --tag "schema-studio-app:${GITHUB_SHA::12}" my-app
+
+      # sql/02 is made from the image. A change to the app's tables without a
+      # new sql/02 committed stops the run here.
+      - name: sql/02 matches the app's tables
+        run: |
+          bash deploy/handover/make-sql.sh schema-studio-app:handover
+          git diff --exit-code -- deploy/handover/sql/02-schema-studio-tables.sql
+
+      # What the download holds: the image as one file, its checksum, and the
+      # kit folder (this guide, the compose file, the SQL, the settings
+      # template).
+      - name: Pack the download
+        run: |
+          mkdir -p "$RUNNER_TEMP/download/kit"
+          cp -r deploy/handover/. "$RUNNER_TEMP/download/kit/"
+          cd "$RUNNER_TEMP/download"
+          docker save schema-studio-app:handover "schema-studio-app:$VERSION" | gzip > "schema-studio-app-$VERSION.tar.gz"
+          sha256sum "schema-studio-app-$VERSION.tar.gz" > "schema-studio-app-$VERSION.tar.gz.sha256"
+          ls -lR
+
+      - name: "Guide step 1: Docker and PostgreSQL 16"
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-16
+          sudo service postgresql start
+          pg_lsclusters
+          docker version --format 'Docker {{.Server.Version}}'
+          docker compose version
+          docker info --format '{{.OperatingSystem}}'
+          sudo -u postgres psql -tAc 'SHOW server_version' | grep '^16'
+
+      # From the download alone: the images built above are deleted first.
+      - name: "Guide step 2: the files in place and the image loaded"
+        run: |
+          docker image rm schema-studio-app:handover "schema-studio-app:$VERSION"
+          cd "$RUNNER_TEMP/download"
+          sha256sum -c schema-studio-app-*.tar.gz.sha256
+          sudo install -d -m 700 -o "$USER" -g "$USER" /opt/schema-studio
+          cp -r kit/. /opt/schema-studio/
+          docker load -i schema-studio-app-*.tar.gz
+          docker image ls schema-studio-app
+          [ "$(docker image inspect -f '{{.Id}}' schema-studio-app:handover)" = "$(docker image inspect -f '{{.Id}}' "schema-studio-app:$VERSION")" ]
+          [ "$(stat -c %a /opt/schema-studio)" = 700 ]
+
+      # The guide keeps the password in one terminal for steps 3 to 5. Here
+      # each step is a new shell, so it travels in the job's environment,
+      # masked in the log.
+      - name: "Guide step 3: the database and its login"
+        working-directory: /opt/schema-studio
+        run: |
+          export SS_DB_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$SS_DB_PASSWORD"
+          echo "SS_DB_PASSWORD=$SS_DB_PASSWORD" >> "$GITHUB_ENV"
+          sudo --preserve-env=SS_DB_PASSWORD -u postgres psql -v ON_ERROR_STOP=1 -f - < sql/01-database-and-login.sql
+          [ "$(PGPASSWORD="$SS_DB_PASSWORD" psql -h 127.0.0.1 -U schema_studio -d schema_studio -tAc 'SELECT current_user')" = schema_studio ]
+          # Another ordinary login cannot even connect to the app's database.
+          sudo -u postgres psql -qc "CREATE ROLE someone_else LOGIN PASSWORD 'someone-else-password'"
+          if PGPASSWORD=someone-else-password psql -h 127.0.0.1 -U someone_else -d schema_studio -c 'SELECT 1' 2> "$RUNNER_TEMP/refused"; then
+            echo "someone_else could connect to schema_studio."
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/refused"
+          grep -q 'CONNECT privilege' "$RUNNER_TEMP/refused"
+
+      - name: "Guide step 4: the tables"
+        working-directory: /opt/schema-studio
+        run: |
+          PGPASSWORD="$SS_DB_PASSWORD" psql -h 127.0.0.1 -U schema_studio -d schema_studio -v ON_ERROR_STOP=1 -q -f sql/02-schema-studio-tables.sql
+          PGPASSWORD="$SS_DB_PASSWORD" psql -h 127.0.0.1 -U schema_studio -d schema_studio -c '\dt'
+          [ "$(sudo -u postgres psql -d schema_studio -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'schema_studio'")" = 0 ]
+
+      - name: "Guide step 5: the settings file"
+        working-directory: /opt/schema-studio
+        run: |
+          cp example.env .env && chmod 600 .env
+          sed -i "s|^DATABASE_URL_A=.*|DATABASE_URL_A=postgres://schema_studio:${SS_DB_PASSWORD}@127.0.0.1:5432/schema_studio|" .env
+          sed -i "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$(openssl rand -hex 32)|" .env
+          sed -i "s|^APP_ENCRYPTION_KEY=.*|APP_ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
+          [ "$(grep -cE '^(DATABASE_URL_A|NEXTAUTH_SECRET|APP_ENCRYPTION_KEY)=.+' .env)" = 3 ]
+          [ "$(stat -c %a .env)" = 600 ]
+          # Before step 6, Compose refuses to start and names what is missing.
+          if docker compose config > /dev/null 2> "$RUNNER_TEMP/missing"; then
+            echo "Compose started without the Microsoft values."
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/missing"
+          grep -q 'AZURE_AD_' "$RUNNER_TEMP/missing"
+
+      # Stand-ins for the guide's step 6. "common" is a real Microsoft sign-in
+      # address, so the sign-in check below gets a real answer from Microsoft;
+      # the client ID and secret are made up, and nobody signs in.
+      - name: "Guide step 6: Microsoft values (made up)"
+        working-directory: /opt/schema-studio
+        run: |
+          sed -i "s|^AZURE_AD_CLIENT_ID=.*|AZURE_AD_CLIENT_ID=00000000-0000-0000-0000-000000000001|" .env
+          sed -i "s|^AZURE_AD_CLIENT_SECRET=.*|AZURE_AD_CLIENT_SECRET=$(openssl rand -hex 20)|" .env
+          sed -i "s|^AZURE_AD_TENANT_ID=.*|AZURE_AD_TENANT_ID=common|" .env
+
+      - name: "Guide step 7: start"
+        working-directory: /opt/schema-studio
+        run: |
+          timeout 300 docker compose up -d --wait
+          docker compose ps
+          [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]
+
+      # Pressing "Continue with Microsoft" sends the browser to Microsoft,
+      # which is to send it back to this machine's localhost address.
+      - name: Sign-in goes to Microsoft and back to localhost
+        run: |
+          providers="$(curl -fsS http://localhost:3000/api/auth/providers)"
+          echo "$providers"
+          echo "$providers" | grep -qF '"callbackUrl":"http://localhost:3000/api/auth/callback/microsoft-entra-id"'
+          jar="$RUNNER_TEMP/cookies"
+          csrf="$(curl -fsS -c "$jar" http://localhost:3000/api/auth/csrf | jq -r .csrfToken)"
+          to="$(curl -sS -b "$jar" -o /dev/null -w '%{redirect_url}' --data-urlencode "csrfToken=$csrf" --data-urlencode "callbackUrl=http://localhost:3000/" http://localhost:3000/api/auth/signin/microsoft-entra-id)"
+          echo "Sign-in sends the browser to: ${to%%\?*}"
+          case "$to" in
+            https://login.microsoftonline.com/common/oauth2/v2.0/authorize\?*) ;;
+            *) echo "$to"; exit 1 ;;
+          esac
+          echo "$to" | grep -qF 'redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fapi%2Fauth%2Fcallback%2Fmicrosoft-entra-id'
+
+      # The first start adds the default organization and its roles, and
+      # leaves the structure exactly as sql/02 made it.
+      - name: The first start kept sql/02's tables
+        working-directory: /opt/schema-studio
+        run: |
+          done_sql="SELECT pg_try_advisory_xact_lock(7365786101) AND EXISTS (SELECT 1 FROM organizations o JOIN roles r ON r.org_id = o.id WHERE o.is_default AND r.role = 'admin')"
+          for _ in $(seq 120); do
+            [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql")" = t ] && break
+            sleep 1
+          done
+          [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql")" = t ]
+          sudo -u postgres psql -d schema_studio -c 'SELECT slug, name, is_default FROM organizations'
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_dump -d schema_studio \
+            --schema-only --no-owner --no-privileges --no-comments --quote-all-identifiers \
+            | grep -vE '^\\(un)?restrict |^-- Dumped (from database|by pg_dump) version ' > "$RUNNER_TEMP/after.sql"
+          diff <(sed -n '/^-- PostgreSQL database dump$/,$p' sql/02-schema-studio-tables.sql) \
+               <(sed -n '/^-- PostgreSQL database dump$/,$p' "$RUNNER_TEMP/after.sql")
+          ! docker compose logs app | grep 'tick failed'
+
+      # What the guide's "Who can read what" says about the container.
+      - name: The container is confined as the guide says
+        working-directory: /opt/schema-studio
+        run: |
+          id="$(docker compose ps -q app)"
+          [ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$id")" = true ]
+          [ "$(docker inspect -f '{{.Config.User}}' "$id")" = 1001:1001 ]
+          [ "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$id")" = '[ALL]' ]
+          [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id")" = host ]
+          ! docker inspect -f '{{range .Mounts}}{{.Type}} {{end}}' "$id" | grep -qE 'bind|volume'
+          [ "$(docker compose exec -T app id -u)" = 1001 ]
+          if docker compose exec -T app sh -c 'echo x > /app/probe' 2> /dev/null; then
+            echo "The app could write to its own files."
+            exit 1
+          fi
+          docker compose exec -T app sh -c 'echo x > /tmp/probe && rm /tmp/probe'
+
+      # The guide's day-to-day table: stop, start, and a restart with the
+      # tables already there.
+      - name: Stop and start again
+        working-directory: /opt/schema-studio
+        run: |
+          docker compose down
+          timeout 300 docker compose up -d --wait
+          [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]
+          sleep 10
+          ! docker compose logs app | grep 'tick failed'
+
+      - name: Offer the image and the kit as a download
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-studio-handover
+          path: ${{ runner.temp }}/download/
+          # The image is gzipped already.
+          compression-level: 0
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Show the app's logs
+        if: failure()
+        run: |
+          cd /opt/schema-studio 2> /dev/null || exit 0
+          docker compose ps --all || true
+          docker compose logs --no-color --tail 300 || true

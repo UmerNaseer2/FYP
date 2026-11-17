@@ -4,12 +4,6 @@ import { OrgProvider } from "@/components/OrgProvider";
 import { resolveOrganization } from "@/lib/auth-guard";
 import { isOrgSlug } from "@/lib/org-slug";
 import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
-import { isTrialOrg } from "@/lib/trial-rules";
-
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
 
 /**
  * Every page of an organization sits under its address: /acme/studio,
@@ -28,12 +22,8 @@ function onDesktop(): boolean {
  *   - Not a member: the 404 page, the same answer the API gives for another
  *     organization's rows, so an address cannot be used to find out whether an
  *     organization exists. Except for someone signed in who belongs to no
- *     organization at all, whom a 404 would leave nowhere to go. In the
- *     browser they are sent to make one (/onboarding). In the desktop app,
- *     which has no such page, the pages' own guard (components/AuthGuard.tsx)
- *     says they are not a member and offers to sign out. It learns that from
- *     /api/me, which answers 404 too. They see the slug they typed, never the
- *     organization's name.
+ *     organization at all, whom a 404 would leave nowhere to go. They are
+ *     sent to make one (/onboarding).
  *
  *   - The database did not answer: the pages are drawn with the slug for a
  *     name, and their guard says "Could not check your access", as it does
@@ -69,11 +59,7 @@ export default async function OrganizationLayout({
         }
       }
       return (
-        <OrgProvider
-          slug={principal.orgSlug}
-          name={principal.orgName}
-          trial={isTrialOrg(principal.orgSlug)}
-        >
+        <OrgProvider slug={principal.orgSlug} name={principal.orgName}>
           {children}
         </OrgProvider>
       );
@@ -94,7 +80,7 @@ export default async function OrganizationLayout({
       }
       if (typeof elsewhere === "string") notFound();
       // Outside the try above, because redirect() works by throwing.
-      if (elsewhere === null && !onDesktop()) redirect("/onboarding");
+      if (elsewhere === null) redirect("/onboarding");
       return (
         <OrgProvider slug={slug} name={slug}>
           {children}

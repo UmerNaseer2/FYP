@@ -82,7 +82,6 @@ function unknownToken(): string {
 
 describeWithDatabase("invitations in a real metadata database", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   let server: Client;
   let db: Client;
   let databaseName = "";
@@ -255,7 +254,6 @@ describeWithDatabase("invitations in a real metadata database", () => {
     jest.resetModules();
     globalThis.__metadataSequelize = undefined;
     process.env.DATABASE_URL_A = url;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     ({ sequelize } = await import("@/lib/db/sequelize"));
@@ -281,8 +279,6 @@ describeWithDatabase("invitations in a real metadata database", () => {
     globalThis.__metadataSequelize = undefined;
     if (savedUrl === undefined) delete process.env.DATABASE_URL_A;
     else process.env.DATABASE_URL_A = savedUrl;
-    if (savedDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-    else process.env.SCHEMA_STUDIO_DESKTOP = savedDesktop;
     await db?.end();
     if (server) {
       if (databaseName) {

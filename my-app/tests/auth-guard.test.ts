@@ -9,8 +9,7 @@
 //   - No session, or one that names no profile, is 401, and so is a session
 //     lookup that throws: never a 500 that says why.
 //   - The organization is the one the request's header names. A request that
-//     names none is 404 on the web and the default organization on the
-//     desktop, which has only the one.
+//     names none is 404.
 //   - Someone signed in who is not a member is 404, the same answer as an
 //     organization that does not exist, and nothing about a role is read.
 //   - A membership or a role the database could not read is 503 for every
@@ -31,11 +30,6 @@
 //     503, never the full admin.
 //   - resolveOrganization, the pages' lookup, reads the slug it is handed
 //     rather than the header, and says who was turned away, by profile ID.
-//   - On the desktop, a website role kept for the default organization (a
-//     linked computer, lib/site-role.ts) holds its member to what both roles
-//     allow, and names itself in a refusal. A website Admin, an organization
-//     other than the default, and the web leave the role whole. A kept role
-//     that cannot be read is a 503, never the full role.
 //   - requireSignedIn, for the one route about a person's organizations as a
 //     whole, asks only who someone is: no organization, no membership, no
 //     role. Signed out is 401, as it is for the other gates, and the bypass is
@@ -44,7 +38,6 @@ import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import { ORG_HEADER } from "@/lib/org-slug";
 import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/permissions";
 import { TEST_ORG, bypassAdminPrincipal } from "./helpers/principals";
-import { TRIAL_REFUSAL } from "@/lib/trial-rules";
 
 let mockBypass = false;
 jest.mock("../lib/auth-mode", () => ({
@@ -83,12 +76,10 @@ jest.mock("next/headers", () => ({
 const mockFindOrganization = jest.fn();
 const mockFindDefault = jest.fn();
 const mockFindMembership = jest.fn();
-const mockFindDefaultMembership = jest.fn();
 jest.mock("../lib/orgs-db", () => ({
   findOrganization: (...args: unknown[]) => mockFindOrganization(...args),
   findDefaultOrganization: (...args: unknown[]) => mockFindDefault(...args),
   findMembership: (...args: unknown[]) => mockFindMembership(...args),
-  findDefaultMembership: (...args: unknown[]) => mockFindDefaultMembership(...args),
 }));
 
 const mockGetRoleAccess = jest.fn();
@@ -96,17 +87,12 @@ jest.mock("../lib/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockGetRoleAccess(...args),
 }));
 
-const mockLoadSiteRole = jest.fn();
 /** The metadata database: here only the day-long grants (lib/access-requests-db activeGrants) read it. */
 const mockQuery = jest.fn();
 jest.mock("../lib/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockQuery(...args) },
   syncMetadataTables: async () => undefined,
-}));
-jest.mock("../lib/site-role", () => ({
-  ...jest.requireActual("../lib/site-role"),
-  loadSiteRole: (...args: unknown[]) => mockLoadSiteRole(...args),
 }));
 
 import {
@@ -138,38 +124,25 @@ const ACME = { id: 12, slug: "acme", name: "Acme", isDefault: false };
 /** Ed's profile ID, which their session names and every lookup about them is keyed by. */
 const ED = 31;
 
-const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
-
 beforeEach(() => {
   mockBypass = false;
   mockJar = {};
   // Every call a screen makes names the organization its page is open in.
   mockHeaders = { [ORG_HEADER]: TEST_ORG.slug };
   mockOutsideRequest = false;
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   mockAuth.mockReset();
   mockCookieReads.mockReset();
   mockFindOrganization.mockReset();
   mockFindDefault.mockReset();
   mockFindMembership.mockReset();
-  mockFindDefaultMembership.mockReset();
   mockGetRoleAccess.mockReset();
-  mockLoadSiteRole.mockReset();
-  mockLoadSiteRole.mockResolvedValue(null);
   mockQuery.mockReset();
   mockQuery.mockResolvedValue({ rows: [] });
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
-  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
-
-/** Answer the way the server the desktop app starts does. */
-function onTheDesktop() {
-  process.env.SCHEMA_STUDIO_DESKTOP = "1";
-}
 
 /** A request that names no organization. */
 function noHeader() {
@@ -315,7 +288,7 @@ describe("with real sign-in", () => {
   test.each([
     ["no header", () => noHeader()],
     ["a blank header", () => (mockHeaders = { [ORG_HEADER]: "   " })],
-  ])("%s on the web is 404 for both gates, and no membership is looked up", async (_name, arrange) => {
+  ])("%s is 404 for both gates, and no membership is looked up", async (_name, arrange) => {
     // A screen that forgot to say where it acts must not quietly act in the
     // caller's first organization, or any other.
     signedInAs(EDITOR);
@@ -325,107 +298,7 @@ describe("with real sign-in", () => {
       [404, NOT_A_MEMBER],
     ]);
     expect(mockFindMembership).not.toHaveBeenCalled();
-    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
-  });
-
-  test("no header on the desktop acts in its default organization", async () => {
-    onTheDesktop();
-    noHeader();
-    mockAuth.mockResolvedValue(session());
-    mockFindDefaultMembership.mockResolvedValue(membership("editor"));
-    mockGetRoleAccess.mockResolvedValue(EDITOR);
-    expect(principalOf(await requirePermission("connections:create"))).toMatchObject({
-      role: "editor",
-      orgId: TEST_ORG.id,
-      orgSlug: TEST_ORG.slug,
-    });
-    expect(mockFindDefaultMembership).toHaveBeenCalledWith(ED);
-    expect(mockFindMembership).not.toHaveBeenCalled();
-  });
-
-  test("on the desktop a header still names the organization", async () => {
-    onTheDesktop();
-    signedInAs(EDITOR);
-    expect((await requireMember()).ok).toBe(true);
-    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
-    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
-  });
-
-  test("on the desktop, someone with no membership in the default organization is 404", async () => {
-    onTheDesktop();
-    noHeader();
-    mockAuth.mockResolvedValue(session());
-    mockFindDefaultMembership.mockResolvedValue(null);
-    expect(await bothRefusals()).toEqual([
-      [404, NOT_A_MEMBER],
-      [404, NOT_A_MEMBER],
-    ]);
-    expect(mockGetRoleAccess).not.toHaveBeenCalled();
-  });
-
-  describe("on a desktop linked to a website", () => {
-    const SITE_VIEWER = { role: "viewer", label: "Viewer", permissions: VIEWER.permissions };
-
-    test("the website role holds the default organization's member to what both roles allow", async () => {
-      onTheDesktop();
-      signedInAs(EDITOR);
-      mockLoadSiteRole.mockResolvedValue(SITE_VIEWER);
-      expect(principalOf(await requirePermission("dashboard:read"))).toMatchObject({
-        role: "viewer",
-        roleLabel: "Viewer on the website",
-        permissions: EDITOR.permissions.filter((key) => VIEWER.permissions.includes(key)),
-      });
-      expect(mockLoadSiteRole).toHaveBeenCalledWith(TEST_ORG.id);
-      expect(await refusal(await requirePermission("connections:create"))).toEqual([
-        403,
-        { error: refusalMessage("Viewer on the website", "connections:create") },
-      ]);
-    });
-
-    test("never gives more than the desktop role", async () => {
-      onTheDesktop();
-      signedInAs(VIEWER);
-      mockLoadSiteRole.mockResolvedValue({ role: "editor", label: "Editor", permissions: EDITOR.permissions });
-      expect(principalOf(await requireMember())).toMatchObject(VIEWER);
-      expect(await refusal(await requirePermission("connections:create"))).toEqual([
-        403,
-        { error: refusalMessage("Viewer", "connections:create") },
-      ]);
-    });
-
-    test("a website Admin, and no kept role, leave the desktop role whole", async () => {
-      onTheDesktop();
-      signedInAs(EDITOR);
-      mockLoadSiteRole.mockResolvedValue({ role: "admin", label: "Admin", permissions: [] });
-      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
-      mockLoadSiteRole.mockResolvedValue(null);
-      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
-    });
-
-    test("an organization other than the default is left alone, and so is the web", async () => {
-      onTheDesktop();
-      signedInAs(EDITOR);
-      mockLoadSiteRole.mockResolvedValue(SITE_VIEWER);
-      mockFindMembership.mockResolvedValue({ ...membership("editor"), orgId: ACME.id, slug: ACME.slug, isDefault: false });
-      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
-      delete process.env.SCHEMA_STUDIO_DESKTOP;
-      signedInAs(EDITOR);
-      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
-      expect(mockLoadSiteRole).not.toHaveBeenCalled();
-    });
-
-    test("a kept role that cannot be read is 503 for both gates, never the full role", async () => {
-      onTheDesktop();
-      signedInAs(EDITOR);
-      mockLoadSiteRole.mockRejectedValue(new Error("The website role kept for this computer could not be read."));
-      const errors = quietErrors();
-      expect(await bothRefusals()).toEqual([
-        [503, ACCESS_UNAVAILABLE],
-        [503, ACCESS_UNAVAILABLE],
-      ]);
-      expect(errors).toHaveBeenCalled();
-    });
   });
 
   test("a member's address and name are their profile's, never the session's", async () => {
@@ -593,7 +466,7 @@ describe("with the bypass on", () => {
     expect(mockCookieReads).not.toHaveBeenCalled();
   });
 
-  test("no header on the web is 404 for both gates, and no organization is looked up", async () => {
+  test("no header is 404 for both gates, and no organization is looked up", async () => {
     noHeader();
     expect(await bothRefusals()).toEqual([
       [404, NOT_A_MEMBER],
@@ -601,36 +474,6 @@ describe("with the bypass on", () => {
     ]);
     expect(mockFindOrganization).not.toHaveBeenCalled();
     expect(mockFindDefault).not.toHaveBeenCalled();
-  });
-
-  test("no header on the desktop is the full admin of its default organization", async () => {
-    onTheDesktop();
-    noHeader();
-    expect(principalOf(await requireMember())).toEqual(bypassAdminPrincipal());
-    expect(mockFindDefault).toHaveBeenCalled();
-    expect(mockFindOrganization).not.toHaveBeenCalled();
-  });
-
-  test("on a linked desktop the website role holds the bypass's admin too", async () => {
-    onTheDesktop();
-    noHeader();
-    mockLoadSiteRole.mockResolvedValue({ role: "viewer", label: "Viewer", permissions: VIEWER.permissions });
-    expect(principalOf(await requireMember())).toMatchObject({
-      role: "viewer",
-      roleLabel: "Viewer on the website",
-      permissions: ALL_PERMISSIONS.filter((key) => VIEWER.permissions.includes(key)),
-    });
-  });
-
-  test("on the desktop, no default organization at all is 404 for both gates", async () => {
-    onTheDesktop();
-    noHeader();
-    mockFindDefault.mockResolvedValue(null);
-    expect(await bothRefusals()).toEqual([
-      [404, NOT_A_MEMBER],
-      [404, NOT_A_MEMBER],
-    ]);
-    expect(mockCookieReads).not.toHaveBeenCalled();
   });
 
   test("a cookie naming a role gives exactly that role's permissions, under the bypass's own name", async () => {
@@ -686,28 +529,15 @@ describe("with the bypass on", () => {
     expect(errors).toHaveBeenCalledWith("Could not read the role picked in View as:", DATABASE_DOWN);
   });
 
-  test("outside a request, where there is nothing to read, only the desktop answers, as the full admin", async () => {
+  test("outside a request, where there is nothing to read, nobody is let in", async () => {
     mockOutsideRequest = true;
     expect(await refusal(await requireMember())).toEqual([404, NOT_A_MEMBER]);
-    onTheDesktop();
-    expect(principalOf(await requireMember())).toEqual(bypassAdminPrincipal());
-    expect(mockCookieReads).toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
-  test.each([
-    ["named in the request", () => mockFindOrganization.mockRejectedValue(DATABASE_DOWN)],
-    [
-      "the desktop's default",
-      () => {
-        onTheDesktop();
-        noHeader();
-        mockFindDefault.mockRejectedValue(DATABASE_DOWN);
-      },
-    ],
-  ])("an organization (%s) that could not be read is 503 for both gates, whatever the cookie says", async (_name, arrange) => {
+  test("an organization that could not be read is 503 for both gates, whatever the cookie says", async () => {
     const errors = quietErrors();
-    arrange();
+    mockFindOrganization.mockRejectedValue(DATABASE_DOWN);
     const jars: Record<string, string>[] = [{}, { [VIEW_AS_COOKIE]: "qa-lead" }];
     for (const jar of jars) {
       mockJar = jar;
@@ -758,14 +588,6 @@ describe("resolveOrganization, the pages' lookup", () => {
     arrange();
     expect(await resolveOrganization(TEST_ORG.slug)).toEqual(expected);
   });
-
-  test("on the desktop it still looks in the organization it is handed", async () => {
-    onTheDesktop();
-    signedInAs(VIEWER);
-    await resolveOrganization(TEST_ORG.slug);
-    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
-    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
-  });
 });
 
 describe("requireSignedIn, the gate that asks only who someone is", () => {
@@ -774,7 +596,6 @@ describe("requireSignedIn, the gate that asks only who someone is", () => {
     expect(mockFindOrganization).not.toHaveBeenCalled();
     expect(mockFindDefault).not.toHaveBeenCalled();
     expect(mockFindMembership).not.toHaveBeenCalled();
-    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
     expect(mockCookieReads).not.toHaveBeenCalled();
   }
@@ -806,14 +627,6 @@ describe("requireSignedIn, the gate that asks only who someone is", () => {
     if (gate.ok) throw new Error("requireSignedIn let in a session it could not read.");
     expect([gate.response.status, await gate.response.json()]).toEqual([401, SIGN_IN_FIRST]);
     expect(errors).toHaveBeenCalledWith("Session lookup failed:", broken);
-  });
-
-  test("on the desktop it asks the same session", async () => {
-    onTheDesktop();
-    noHeader();
-    mockAuth.mockResolvedValue(session());
-    expect(await requireSignedIn()).toEqual({ ok: true, caller: { profileId: ED, bypass: false } });
-    nothingElseRead();
   });
 
   test("with the bypass on, the caller is the bypass, with no profile, and no session is read", async () => {
@@ -848,61 +661,5 @@ describe("a day's allowance from the Requests page", () => {
   test("without one, the role is all there is", async () => {
     signedInAs(VIEWER);
     expect(await refusal(await requirePermission("deploy:run"))).toEqual([403, expect.anything()]);
-  });
-});
-
-describe("in the shared trial organization", () => {
-  const ADMIN = { role: "admin", roleLabel: "Admin", permissions: [...(presetFor("admin") ?? [])] };
-  const TRIAL = process.env.TRIAL_SANDBOX;
-
-  beforeEach(() => {
-    process.env.TRIAL_SANDBOX = "on";
-    mockHeaders = { [ORG_HEADER]: "trial" };
-    mockAuth.mockResolvedValue(session());
-    mockFindMembership.mockResolvedValue({ ...membership("admin"), slug: "trial", name: "Schema Studio Trial" });
-    mockGetRoleAccess.mockResolvedValue(ADMIN);
-  });
-
-  afterEach(() => {
-    if (TRIAL === undefined) delete process.env.TRIAL_SANDBOX;
-    else process.env.TRIAL_SANDBOX = TRIAL;
-  });
-
-  test("even an Admin is refused what the trial switches off, in the trial's words", async () => {
-    for (const key of ["connections:create", "users:update", "organization:update"]) {
-      expect(await refusal(await requirePermission(key as never))).toEqual([403, { error: TRIAL_REFUSAL }]);
-    }
-  });
-
-  test("lets the Trial Admin change roles, since Reset trial puts the built-in ones back", async () => {
-    for (const key of ["roles:create", "roles:update", "roles:delete"]) {
-      expect(principalOf(await requirePermission(key as never)).permissions).toContain(key);
-    }
-  });
-
-  test("the principal never lists a switched-off permission, and keeps the rest", async () => {
-    const principal = principalOf(await requirePermission("deploy:run"));
-    expect(principal.permissions).not.toContain("connections:create");
-    expect(principal.permissions).not.toContain("organization:delete");
-    expect(principal.permissions).toContain("approvals:create");
-  });
-
-  test("lets the Trial Admin save a GitHub token, so the trial can push scripts", async () => {
-    expect(principalOf(await requirePermission("github:update")).permissions).toContain("github:update");
-  });
-
-  test("a day's allowance never gets round what the trial switches off", async () => {
-    mockFindMembership.mockResolvedValue({ ...membership("viewer"), slug: "trial", name: "Schema Studio Trial" });
-    mockGetRoleAccess.mockResolvedValue(VIEWER);
-    mockQuery.mockResolvedValue({ rows: [{ permission: "connections:create" }, { permission: "deploy:run" }] });
-    const principal = principalOf(await requirePermission("deploy:run"));
-    expect(principal.permissions).toContain("deploy:run");
-    expect(principal.permissions).not.toContain("connections:create");
-  });
-
-  test("an organization called trial is an ordinary one on a server without the trial", async () => {
-    delete process.env.TRIAL_SANDBOX;
-    const principal = principalOf(await requirePermission("connections:create"));
-    expect(principal.permissions).toContain("connections:create");
   });
 });

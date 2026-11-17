@@ -60,7 +60,7 @@ export const scriptEditorHelp: HelpTopic = {
   problems: [
     {
       problem: "The page says the GitHub registry is not set up.",
-      fix: "Nothing can be listed or saved until it is. An admin adds the repository and an access token on the Admin screen, under GitHub. In the desktop app, add them in Settings.",
+      fix: "Nothing can be listed or saved until it is. An admin adds the repository and an access token on the Admin screen, under GitHub.",
     },
     {
       problem: "The page will not save a script that has COMMIT or ROLLBACK in it.",

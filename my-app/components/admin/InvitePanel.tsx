@@ -46,9 +46,8 @@ import { BUILT_IN_ROLE_INFO, DEFAULT_ROLE } from "@/lib/permissions";
  * cancelled.
  *
  * The server says whether anyone can be invited here at all (`canInvite`):
- * not in the desktop app, which keeps one organization of its own, and not in
- * the demo, where nobody signs in to take an invitation. The panel draws
- * nothing in those, rather than forms that could only be refused.
+ * not in the demo, where nobody signs in to take an invitation. The panel
+ * draws nothing there, rather than forms that could only be refused.
  */
 
 const UNREACHABLE = "Could not reach the server. Check your connection, then try again.";

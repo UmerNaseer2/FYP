@@ -17,18 +17,13 @@ import { deleteOrganization, updateOrganization } from "@/lib/orgs-db";
  * permissions tab.
  *
  * DELETE deletes it and everything it owns, once the body's `confirm` is its
- * name exactly as it is now. It is refused in two places:
+ * name exactly as it is now. It is refused in the demo, with sign-in switched
+ * off, where everyone is the same stand-in admin and one click would take the
+ * organization from all of them.
  *
- * - The desktop app, which keeps one organization of its own and has nowhere
- *   else to go.
- * - The demo, with sign-in switched off, where everyone is the same stand-in
- *   admin and one click would take the organization from all of them.
- *
- * The default organization can't be deleted anywhere: the desktop app and the
- * demo act in it, and its scripts sit at the top of the GitHub registry.
+ * The default organization can't be deleted anywhere: the demo acts in it, and its scripts sit at the top of the GitHub registry.
  */
 
-const DESKTOP = "The desktop app keeps a single organization of its own, so it can't be deleted.";
 const DEMO =
   "Deleting an organization needs a real sign-in. In the demo everyone is the same stand-in admin.";
 
@@ -41,7 +36,7 @@ export async function GET() {
     name: orgName,
     slug: orgSlug,
     // So the tab draws no Delete that could only be refused.
-    canDelete: !orgIsDefault && !bypass && !onDesktop(),
+    canDelete: !orgIsDefault && !bypass,
   });
 }
 
@@ -80,7 +75,6 @@ export async function DELETE(request: NextRequest) {
   const gate = await requirePermission("organization:delete");
   if (!gate.ok) return gate.response;
 
-  if (onDesktop()) return NextResponse.json({ error: DESKTOP }, { status: 403 });
   if (gate.principal.bypass) return NextResponse.json({ error: DEMO }, { status: 403 });
 
   const fields = await readBody(request);
@@ -146,11 +140,6 @@ function gone(): NextResponse {
     { error: "This organization no longer exists. Someone may have just deleted it." },
     { status: 404 }
   );
-}
-
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
 }
 
 /** A 503 for a database that did not answer, with the reason kept to the log. */

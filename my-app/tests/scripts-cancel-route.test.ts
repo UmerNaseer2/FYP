@@ -133,7 +133,6 @@ function startRun(over: Partial<RunDetails> = {}): RunEntry {
       connectionId: 5,
       actor: "editor@test",
       kind: "deploy",
-      trial: false,
       pool: local.pool,
       ...over,
     },

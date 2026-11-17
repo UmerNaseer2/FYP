@@ -16,9 +16,8 @@ export type OldAddressProps = {
  * on to the same page in an organization (/acme/compare?left=1).
  *
  * Those addresses are everywhere: bookmarks, links in GitHub pull requests
- * and change logs, the landing page's buttons, the desktop app, which opens
- * /studio, and the sign-in page, which goes back to whatever address sent
- * someone there. Each studio page has an old address at
+ * and change logs, the landing page's buttons, and the sign-in page, which
+ * goes back to whatever address sent someone there. Each studio page has an old address at
  * app/<segment>/[[...rest]]/page.tsx that calls this. Next.js serves a folder
  * with a fixed name before app/[org], so /studio comes here and /acme/studio
  * goes to the organization.
@@ -28,11 +27,8 @@ export type OldAddressProps = {
  *     every organization, and the default one holds everything that existed
  *     before there were others.
  *   - Signed in, the one they opened last (findLastOrganization). Someone in
- *     no organization at all is sent to make one (/onboarding), since in the
- *     browser nobody joins an organization without being asked. The desktop
- *     app has no such page: it signs everyone into the default organization
- *     (lib/accounts-db.ts), so someone taken out of it lands there, and its
- *     pages say they are not a member and offer to sign out.
+ *     no organization at all is sent to make one (/onboarding), since
+ *     nobody joins an organization without being asked.
  *   - Signed out, the sign-in page, which comes back to this same old address
  *     and so through here again. With real sign-in proxy.ts has already done
  *     that, so this is for a session with no profile ID in it.
@@ -63,11 +59,6 @@ export async function redirectToLastOrg(
   redirect(orgHref(await organizationFor(path), path));
 }
 
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
 /** The slug of the organization to open `path` in, for whoever is asking. */
 async function organizationFor(path: string): Promise<string> {
   if (!BYPASS_AUTH) {
@@ -81,7 +72,7 @@ async function organizationFor(path: string): Promise<string> {
     if (profileId === null) redirect(`/login?callbackUrl=${encodeURIComponent(path)}`);
     const last = await findLastOrganization(profileId);
     if (last !== null) return last;
-    if (!onDesktop()) redirect("/onboarding");
+    redirect("/onboarding");
   }
   const fallback = await findDefaultOrganization();
   // The bootstrap always creates it, so this is a row deleted by hand. The log

@@ -1,5 +1,3 @@
-import { redirect } from "next/navigation";
-import { desktopMode } from "@/auth.config";
 import { OnboardingPage } from "@/components/onboarding/OnboardingPage";
 import { BYPASS_AUTH } from "@/lib/auth-mode";
 
@@ -18,20 +16,16 @@ import { BYPASS_AUTH } from "@/lib/auth-mode";
  *     /login?callbackUrl=/onboarding.
  *
  * The proxy sends a signed-out visitor to sign in first, so the page itself
- * only has to know two things about the server. Inside the desktop app it
- * forwards to /studio: the app keeps one organization of its own and has
- * nowhere to show another. With sign-in switched off (the bypass) it lists the
+ * only has to know one thing about the server. With sign-in switched off (the bypass) it lists the
  * demo's organizations, and the form is not offered, because nobody is signed
  * in to be a new organization's Admin.
  *
  * Rendered on every request, never once at build time, for the reason
- * app/page.tsx gives: whether this is the desktop app is read from the
- * server's environment, and a prerendered page would keep the build machine's
- * answer.
+ * app/page.tsx gives: what the server is set up to do is read from its
+ * environment, and a prerendered page would keep the build machine's answer.
  */
 export const dynamic = "force-dynamic";
 
 export default function Onboarding() {
-  if (desktopMode) redirect("/studio");
   return <OnboardingPage demo={BYPASS_AUTH} />;
 }

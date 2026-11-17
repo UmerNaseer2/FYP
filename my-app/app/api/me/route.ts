@@ -12,9 +12,7 @@ import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth-mode";
  * what the server will allow rather than whatever was true at sign-in.
  *
  * It names the organization the answer is about, so a screen can say where
- * you are. It never says who you are: the browser has the session for that,
- * and the desktop app reads it to answer a paired phone
- * (desktop/src/main/phone-requests.ts), which has no need of it.
+ * you are. It never says who you are: the browser has the session for that.
  *
  * Someone who is not a member gets the gate's 404, and someone whose role
  * could not be read its 503, so a screen can tell "you do not belong here"

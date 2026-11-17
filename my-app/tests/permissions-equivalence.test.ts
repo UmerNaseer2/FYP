@@ -86,31 +86,11 @@ const ADDED: Record<string, Gate> = {
   "POST /api/admin/roles": { kind: "permission", keys: ["roles:create"] },
   "PUT /api/admin/roles": { kind: "permission", keys: ["roles:update"] },
   "DELETE /api/admin/roles": { kind: "permission", keys: ["roles:delete"] },
-  "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
   "POST /api/invites/accept": { kind: "signed-in" },
-  "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
   "GET /api/connections/machine": { kind: "permission", keys: ["connections:read", "connections:create", "connections:update"] },
-  "GET /api/connections/computers": { kind: "permission", keys: ["connections:read"] },
-  "GET /api/deploy/approvals/phone": { kind: "permission", keys: ["approvals:read"] },
-  "GET /api/deploy/approvals/[id]/phone": { kind: "permission", keys: ["approvals:read"] },
-  "GET /api/deploy/phone": { kind: "permission", keys: ["deploy:read"] },
-  "POST /api/deploy/phone": { kind: "permission", keys: ["deploy:read"] },
-  "POST /api/performance/cancel": { kind: "permission", keys: ["performance:update"] },
   "GET /api/me": { kind: "member" },
-  "GET /api/me/approver": { kind: "member" },
   "GET /api/me/view-as": { kind: "member" },
   "POST /api/me/view-as": { kind: "member" },
-  "GET /api/phone/push": { kind: "member" },
-  "POST /api/phone/push": { kind: "member" },
-  "DELETE /api/phone/push": { kind: "member" },
-  "POST /api/phone/push/test": { kind: "member" },
-  "GET /api/computers": { kind: "permission", keys: ["compare:read"] },
-  "DELETE /api/computers/[id]": { kind: "permission", keys: ["compare:read", "users:delete"] },
-  "GET /api/computers/link": { kind: "permission", keys: ["compare:read"] },
-  "POST /api/computers/link": { kind: "permission", keys: ["compare:read"] },
-  "DELETE /api/computers/link": { kind: "permission", keys: ["compare:read"] },
-  "POST /api/computers/jobs": { kind: "permission", keys: ["compare:read"] },
-  "GET /api/computers/jobs/[id]": { kind: "permission", keys: ["compare:read"] },
   "GET /api/organizations": { kind: "signed-in" },
   "POST /api/organizations": { kind: "signed-in" },
   // Asking is open to every member. Who may answer is checked inside.
@@ -140,29 +120,10 @@ const ADDED: Record<string, Gate> = {
   // The Stop button for a run that is going. Who may stop which run is
   // decided inside (tests/scripts-cancel-route.test.ts).
   "POST /api/scripts/cancel": { kind: "permission", keys: ["deploy:read"] },
-  // The Trial Admin's "Reset trial" button; the role and the trial are checked inside.
-  "POST /api/trial/reset": { kind: "permission", keys: ["organization:read"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */
 const UNGATED = [
-  "POST /api/agent/link",
-  "POST /api/agent/link/claim",
-  "POST /api/agent/jobs/next",
-  "POST /api/agent/jobs/[id]",
-  "PUT /api/agent/connections",
-  "DELETE /api/agent/self",
-  // The two-way sync. A linked computer's own token, checked against the
-  // person who linked it and their role inside the handler.
-  "GET /api/agent/sync",
-  "GET /api/agent/sync/drift",
-  "POST /api/agent/sync/connections",
-  "PUT /api/agent/sync/connections",
-  "DELETE /api/agent/sync/connections",
-  // The desktop app's own server, answering only its main process's token.
-  "POST /api/desktop/sync",
-  // The landing page's "Try as ..." buttons, signing in a trial account.
-  "POST /api/trial",
   "GET /api/internal/drift-tick",
   "GET /api/auth/[...nextauth]",
   "POST /api/auth/[...nextauth]"];
@@ -246,61 +207,6 @@ describe.each(Object.entries(ADDED))("%s, added since 256a210", (name, gate) => 
       expect(startsAllowed("editor", gate.keys)).toBe(false);
     });
   }
-});
-
-test("a phone's comparison lets in whoever may use Compare", () => {
-  // POST /api/compare/phone runs the same comparison as the Compare screen, so
-  // it asks for the same box, and a viewer gets in, as at POST /api/compare.
-  const compare = handlers.get("POST /api/compare")?.gate;
-  expect(handlers.get("POST /api/compare/phone")?.gate).toEqual(compare);
-  expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
-});
-
-test("a phone's connection list lets in whoever may compare or read a schema", () => {
-  // GET /api/connections answers with the hosts, so it leaves Compare out. The
-  // phone's list holds only what Compare's pickers show, so it asks for the two
-  // boxes a phone uses it for, and a viewer gets in.
-  expect(handlers.get("GET /api/connections/phone")?.gate).toEqual({
-    kind: "permission",
-    keys: ["compare:read", "visualizer:read"],
-  });
-  expect(startsAllowed("viewer", ["compare:read", "visualizer:read"])).toBe(true);
-});
-
-test("a phone's approval queue lets in whoever may read approvals, and says who may decide", () => {
-  // The queue holds what the Deploy screen's list holds, so it has the same
-  // gate. Whether the person may decide is only reported, from the box the
-  // decision route itself asks for.
-  const list = handlers.get("GET /api/deploy/approvals")?.gate;
-  expect(handlers.get("GET /api/deploy/approvals/phone")?.gate).toEqual(list);
-  expect(list).toEqual({ kind: "permission", keys: ["approvals:read"] });
-  expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
-  expect(hasPermissionLiterals(path.join(API_DIR, "deploy", "approvals", "phone", "route.ts"))).toEqual([
-    "approvals:approve",
-  ]);
-  expect(handlers.get("POST /api/deploy/approvals/[id]")?.gate).toEqual({
-    kind: "permission",
-    keys: ["approvals:approve"],
-  });
-});
-
-test("a phone sees a request's SQL only where the Deploy screen would show it", () => {
-  // On the Deploy screen the approver reads the SQL from the registry, through
-  // GET /api/github/pull. The phone's copy asks for one of the same two boxes,
-  // on top of reading approvals, and a viewer has both out of the box.
-  expect(handlers.get("GET /api/deploy/approvals/[id]/phone")?.gate).toEqual({
-    kind: "permission",
-    keys: ["approvals:read"],
-  });
-  expect(
-    hasPermissionLiterals(path.join(API_DIR, "deploy", "approvals", "[id]", "phone", "route.ts"))
-  ).toEqual(["scripts:read", "deploy:read"]);
-  expect(handlers.get("GET /api/github/pull")?.gate).toEqual({
-    kind: "permission",
-    keys: ["scripts:read", "deploy:read"],
-  });
-  expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
-  expect(startsAllowed("viewer", ["scripts:read", "deploy:read"])).toBe(true);
 });
 
 test("an AI route asks for AI assistance on top of the screen it serves", () => {

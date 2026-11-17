@@ -162,7 +162,7 @@ describe("a schema that drifts twice", () => {
     expect(result.ok).toBe(true);
     expect(inserted()).toHaveLength(1);
     expect(result.ok && result.run.recorded).toBe(true);
-    // The phone alerts compare with this, to say what changed.
+    // An alert compares with this, to say what changed.
     expect(result.ok && result.run.previous).toEqual(previousEvent);
     expect(result.ok && result.run.fingerprint).toBe(driftFingerprint(report(afterSecondChange)));
   });

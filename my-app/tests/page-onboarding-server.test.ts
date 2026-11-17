@@ -1,9 +1,7 @@
 /**
  * The server half of "Your organizations" (app/onboarding/page.tsx).
  *
- * It decides one thing: inside the desktop app, which keeps a single
- * organization of its own, there is no list to show, so it forwards to
- * /studio. Everywhere else it hands over to the client half, telling it
+ * It decides one thing: it hands over to the client half, telling it
  * whether this is the demo (sign-in switched off).
  *
  * Node, not jsdom, as in tests/page-root.test.ts: the page is called as a
@@ -32,12 +30,7 @@ jest.mock("next/navigation", () => ({
 jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn() }));
 
 // Getters, so each case's change is what the page reads.
-const mockFlags = { desktopMode: false, bypass: false };
-jest.mock("../auth.config", () => ({
-  get desktopMode() {
-    return mockFlags.desktopMode;
-  },
-}));
+const mockFlags = { bypass: false };
 jest.mock("../lib/auth-mode", () => ({
   get BYPASS_AUTH() {
     return mockFlags.bypass;
@@ -46,26 +39,12 @@ jest.mock("../lib/auth-mode", () => ({
 
 beforeEach(() => {
   mockRedirects.length = 0;
-  mockFlags.desktopMode = false;
   mockFlags.bypass = false;
 });
 
 function page(): ReactElement<{ demo: boolean }> {
   return Onboarding() as ReactElement<{ demo: boolean }>;
 }
-
-test("forwards the desktop app to /studio, whose one organization it already is", () => {
-  mockFlags.desktopMode = true;
-  expect(() => Onboarding()).toThrow("NEXT_REDIRECT");
-  expect(mockRedirects).toEqual(["/studio"]);
-});
-
-test("forwards the desktop app even with sign-in switched off", () => {
-  mockFlags.desktopMode = true;
-  mockFlags.bypass = true;
-  expect(() => Onboarding()).toThrow("NEXT_REDIRECT");
-  expect(mockRedirects).toEqual(["/studio"]);
-});
 
 test("on a server with sign-in, hands over to the page, not as the demo", () => {
   const element = page();

@@ -66,7 +66,6 @@ type Instance = {
 
 describeWithDatabase("setting up the metadata tables on a real database", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   const savedStamp = process.env.VERCEL_DEPLOYMENT_ID;
   let baseName = "";
   let server: Client;
@@ -171,7 +170,6 @@ describeWithDatabase("setting up the metadata tables on a real database", () => 
     server = await connectTo(testUrl);
     const { rows } = await server.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [ANON]);
     anonExisted = rows.length > 0;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
   }, SETUP);
 
   // A database of its own for each test, under a new name. Each boot here changes
@@ -201,7 +199,6 @@ describeWithDatabase("setting up the metadata tables on a real database", () => 
       else process.env[name] = value;
     };
     restore("DATABASE_URL_A", savedUrl);
-    restore("SCHEMA_STUDIO_DESKTOP", savedDesktop);
     restore("VERCEL_DEPLOYMENT_ID", savedStamp);
     await server?.end();
   }, SETUP);

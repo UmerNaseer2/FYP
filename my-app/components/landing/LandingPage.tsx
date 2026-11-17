@@ -5,9 +5,7 @@ import {
   CompareIcon,
   DeployIcon,
   DriftIcon,
-  InfoIcon,
   LockIcon,
-  MonitorIcon,
   SchemaMapIcon,
   UsersIcon,
 } from "@/components/ui/icons";
@@ -15,7 +13,6 @@ import { BrandMark } from "@/components/ui/BrandMark";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { LandingThemeToggle } from "./LandingThemeToggle";
 import { LandingReveal, SectionButton } from "./LandingMotion";
-import { TrialRolePicker } from "./TrialRolePicker";
 import "@/app/styles/atelier-landing.css";
 
 /**
@@ -33,13 +30,6 @@ import "@/app/styles/atelier-landing.css";
  * the header is not a link: on the front page it would only lead back here,
  * and the header's section buttons only scroll.
  *
- * On a server that offers the shared trial, "Try it now" sits first in the
- * same row and is the one orange button. It asks first: it opens a role
- * picker (TrialRolePicker) with the Trial Admin, Trial Editor and Trial
- * Viewer, and the card pressed posts to app/api/trial/route.ts, which signs
- * the visitor in as that account. Before the page's script runs, the button
- * itself posts, as the Trial Admin.
- *
  * The Atelier design. Styles are app/styles/atelier-landing.css (every class
  * starts with lp-).
  */
@@ -53,11 +43,6 @@ export type LandingPageProps = {
   encryptsPasswords: boolean;
   /** A demo server with sign-in switched off, where both buttons open the studio. */
   demo?: boolean;
-  /**
-   * Where the shared trial's buttons post to (app/api/trial/route.ts), when
-   * this server offers the trial (lib/trial-rules.ts).
-   */
-  trialAction?: string;
 };
 
 type Feature = { icon: ReactNode; title: string; body: string };
@@ -102,13 +87,6 @@ const FEATURES: Feature[] = [
     title: "Schema diagrams",
     body: "See any schema as a diagram of its tables and the foreign keys between them.",
   },
-  {
-    icon: <MonitorIcon size={18} />,
-    title: "Desktop app and phone approvals",
-    body:
-      "Run Schema Studio as an app on Ubuntu 20.04 or newer. Pair your phone with it to approve " +
-      "the runs people ask for with a passkey and to get drift alerts.",
-  },
 ];
 
 /**
@@ -127,7 +105,7 @@ const STEPS = [
 ];
 
 /** How wide each feature card is on the six-column grid, in FEATURES order. */
-const FEATURE_SPANS = ["s4 dark", "s2", "s2", "s4", "s3", "s3"];
+const FEATURE_SPANS = ["s4 dark", "s2", "s2", "s4", "s6"];
 
 const TITLE = "Catch the schema changes nobody shipped.";
 
@@ -141,7 +119,6 @@ export function LandingPage({
   logInHref,
   encryptsPasswords,
   demo = false,
-  trialAction,
 }: LandingPageProps) {
   return (
     <div className="lp-page">
@@ -180,28 +157,13 @@ export function LandingPage({
                 and watches for changes made outside a deploy.
               </p>
               <div className="lp-cta lp-in" style={delay(540)}>
-                {trialAction && <TrialRolePicker action={trialAction} />}
-                {/* With the trial on offer it is the one orange button, and
-                    these two step back. */}
-                <Link
-                  href={createAccountHref}
-                  className={trialAction ? "btn btn-secondary btn-lg" : "btn btn-primary btn-lg"}
-                >
+                <Link href={createAccountHref} className="btn btn-primary btn-lg">
                   Create account
                 </Link>
-                <Link href={logInHref} className={trialAction ? "lp-login" : "btn btn-secondary btn-lg"}>
+                <Link href={logInHref} className="btn btn-secondary btn-lg">
                   Log in
                 </Link>
               </div>
-              {trialAction && (
-                <p className="lp-note lp-in" style={delay(600)}>
-                  <InfoIcon size={16} />
-                  <span>
-                    Try it now opens a shared trial with example data. Pick Admin, Editor or Viewer,
-                    and switch any time.
-                  </span>
-                </p>
-              )}
               <p className="lp-fine lp-in" style={delay(680)}>
                 {demo
                   ? "This is a demo server with sign-in switched off, so both buttons open the studio."

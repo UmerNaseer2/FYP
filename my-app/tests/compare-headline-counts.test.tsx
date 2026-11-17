@@ -4,7 +4,7 @@
 // The Compare tiles count what the script changes, one per table, column,
 // index and so on. Three new tables used to read "8 added": the owner and
 // grants entry of each new table and of each table's id sequence was counted
-// as a change of its own. Found on the trial data (courses_dev against
+// as a change of its own. Found on sample data (courses_dev against
 // students_dev). These tests hold the tiles, the export bar, the matrix and the
 // report to one answer: the grants of something new go with it.
 import "@testing-library/jest-dom";

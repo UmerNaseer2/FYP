@@ -1,11 +1,10 @@
 // How one row of pg_stat_activity becomes a session (lib/db-activity.ts).
 //
 // The kinds and the times are pinned where people read them, in
-// tests/component-live-activity.test.tsx. This pins the moment a query started,
-// which POST /api/performance/cancel asks for back: it has to survive as text
-// with all of PostgreSQL's digits, or the cancel would read as a different
-// query, and it has to be there for a phone to offer Cancel at all.
-import { ACTIVITY_SQL, CANCEL_SQL, toSession, type ActivityRow } from "@/lib/db-activity";
+// tests/component-live-activity.test.tsx. This pins the moment a query started:
+// it has to survive as text with all of PostgreSQL's digits, because with the
+// pid it is what names one statement.
+import { ACTIVITY_SQL, toSession, type ActivityRow } from "@/lib/db-activity";
 
 const ROW: ActivityRow = {
   pid: 4242,
@@ -27,7 +26,6 @@ describe("which sessions are read", () => {
     // pg_stat_activity covers the whole server. Without this filter a
     // statement running in another database is listed under this one.
     expect(ACTIVITY_SQL).toContain("AND datname = current_database()");
-    expect(CANCEL_SQL).toContain("AND datname = current_database()");
   });
 });
 

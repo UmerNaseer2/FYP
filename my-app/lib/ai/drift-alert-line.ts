@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // lib/ai/drift-alert-line.ts
-// The AI's one line on a new drift, for the phone and desktop alerts.
+// The AI's one line on a new drift, kept with the drift check's details.
 //
 // Only the scheduler asks: a person who presses Check now is looking at the
 // answer already. The line is a nice-to-have, so every failure (AI off for the

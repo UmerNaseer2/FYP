@@ -56,30 +56,6 @@ export const ACTIVITY_SQL = `
   LIMIT 200
 `;
 
-/**
- * Cancel one running statement, and nothing else about its session.
- *
- * The number and the moment the statement began name it together. A number
- * alone is not enough: by the time somebody has read the screen and decided,
- * that session may be on its next statement, or have ended and left its number
- * to a stranger. No row comes back when it has moved on, so nothing is
- * cancelled. pg_cancel_backend leaves the session connected. There is no
- * terminate here on purpose: ending a session rolls back its work and takes
- * its connection away, which is not a thing to do from a phone.
- *
- * Like the list, it reaches only sessions of this connection's own database.
- */
-export const CANCEL_SQL = `
-  SELECT pg_cancel_backend(pid) AS cancelled
-    FROM pg_stat_activity
-   WHERE pid = $1
-     AND query_start = $2::timestamptz
-     AND pid <> pg_backend_pid()
-     AND datname = current_database()
-     AND backend_type = 'client backend'
-     AND state = 'active'
-`;
-
 /** One row of ACTIVITY_SQL, before shaping. Every field can come back null. */
 export type ActivityRow = {
   pid: number;
@@ -121,8 +97,8 @@ export type ActivitySession = {
   querySeconds: number | null;
   /**
    * When this statement began, in UTC with its microseconds, as text. With the
-   * pid it names this one statement, so a cancel cannot hit a later one (see
-   * CANCEL_SQL). Text because a JavaScript Date would drop the microseconds.
+   * pid it names this one statement. Text because a JavaScript Date would drop
+   * the microseconds.
    */
   queryStart: string | null;
   /** How long its transaction has been open. Null when not in one. */

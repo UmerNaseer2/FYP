@@ -18,7 +18,7 @@ export type OrgSummary = { slug: string; name: string };
 
 /**
  * The whole answer. `canCreate` says whether POST /api/organizations would let
- * this person make one: false in the desktop app and in the demo.
+ * this person make one: false in the demo.
  */
 export type OrgListing = { organizations: OrgSummary[]; canCreate: boolean };
 

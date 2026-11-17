@@ -120,7 +120,7 @@ export type PendingInvite = {
 /** What GET /api/admin/invites answers. */
 export type InviteListing = {
   invites: PendingInvite[];
-  /** Whether POST would make one: false in the desktop app and the demo. */
+  /** Whether POST would make one: false in the demo. */
   canInvite: boolean;
 };
 

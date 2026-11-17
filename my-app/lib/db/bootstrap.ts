@@ -99,20 +99,12 @@ const ORG_TABLES = [
  */
 export const BOOTSTRAP_LOCK_KEY = 7_365_786_101;
 
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
 /**
  * The organization every install starts with, and the one everything made
- * before organizations existed belongs to. On the desktop it is the one
- * person's own, private space.
+ * before organizations existed belongs to.
  */
-function defaultOrganization(): { slug: string; name: string; personal: boolean } {
-  return onDesktop()
-    ? { slug: "personal", name: "Personal", personal: true }
-    : { slug: "swinburne-fyp", name: "Swinburne FYP", personal: false };
+function defaultOrganization(): { slug: string; name: string } {
+  return { slug: "swinburne-fyp", name: "Swinburne FYP" };
 }
 
 /**
@@ -551,28 +543,14 @@ async function backfillOlderTables(): Promise<void> {
      UPDATE connections SET ssl_mode = 'require' WHERE ssl IS TRUE AND ssl_mode = 'disable'`
   );
 
-  // Two-way sync with a linked desktop (docs/two-way-sync-plan.md): a version
-  // that every save moves on, who saved last, and on a desktop the website's
-  // number and version for a connection it holds a copy of.
+  // A version that every save moves on, and who saved last, so a save that
+  // started from an older copy is turned down (lib/connection-writes.ts).
   await metadataPool.query(
     `ALTER TABLE connections
        ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ,
-       ADD COLUMN IF NOT EXISTS updated_by TEXT,
-       ADD COLUMN IF NOT EXISTS site_id INTEGER,
-       ADD COLUMN IF NOT EXISTS site_version INTEGER`
+       ADD COLUMN IF NOT EXISTS updated_by TEXT`
   );
-  // A computer used to send only the connections its person shared with the
-  // phone, so every row already there is a shared one.
-  await metadataPool.query(
-    `ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT true`
-  );
-  // What a computer's own drift checks found, so its person sees them on the website.
-  await metadataPool.query(`ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS drift JSONB`);
-  // Who asked for each waiting link, so one caller cannot take every place.
-  await metadataPool.query(`ALTER TABLE agent_links ADD COLUMN IF NOT EXISTS caller_hash TEXT`);
-  // On a linked desktop, the website role that caps what its person may do there (lib/site-role.ts).
-  await metadataPool.query(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS site_role JSONB`);
   // Connections and tracked schemas once carried a dev, staging or production
   // label, and an organization had a switch that made production runs wait
   // for a second person. Both are gone: roles and approvals decide everything.
@@ -580,7 +558,6 @@ async function backfillOlderTables(): Promise<void> {
   // column drops the CHECK on it too.
   await metadataPool.query(`ALTER TABLE connections DROP COLUMN IF EXISTS environment`);
   await metadataPool.query(`ALTER TABLE tracked_schemas DROP COLUMN IF EXISTS environment`);
-  await metadataPool.query(`ALTER TABLE agent_connections DROP COLUMN IF EXISTS environment`);
   await metadataPool.query(
     `ALTER TABLE organizations
        DROP COLUMN IF EXISTS require_approvals,
@@ -709,10 +686,9 @@ async function backfillOlderTables(): Promise<void> {
        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`
   );
 
-  // A copy of the SQL each approval request covers, so a paired phone can show
-  // the approver what they are deciding. Nullable with no default on purpose:
-  // a request made before this column existed never had its SQL kept, and the
-  // phone says so instead of showing an empty run.
+  // A copy of the SQL each approval request covers, kept with the request.
+  // Nullable with no default on purpose: a request made before this column
+  // existed never had its SQL kept.
   await metadataPool.query(
     `ALTER TABLE deploy_approvals ADD COLUMN IF NOT EXISTS scripts JSONB`
   );
@@ -814,15 +790,15 @@ async function ensureDefaultOrganization(): Promise<number> {
   );
   if (found.rows[0]) return found.rows[0].id;
 
-  const { slug, name, personal } = defaultOrganization();
+  const { slug, name } = defaultOrganization();
   // No conflict target, so this covers every unique index, the slug's
   // included: if another organization already holds this address, the insert
   // does nothing and the check below says why.
   await metadataPool.query(
-    `INSERT INTO organizations (slug, name, personal, is_default)
-     VALUES ($1, $2, $3, true)
+    `INSERT INTO organizations (slug, name, is_default)
+     VALUES ($1, $2, true)
      ON CONFLICT DO NOTHING`,
-    [slug, name, personal]
+    [slug, name]
   );
   const created = await metadataPool.query<{ id: number }>(
     `SELECT id FROM organizations WHERE is_default`
@@ -843,7 +819,7 @@ async function ensureDefaultOrganization(): Promise<number> {
  * It has to run before sync(), because sync() adds `<table>_org_id_idx` to
  * tables that already exist, and that index needs the column. A constant
  * default makes the ALTER instant on Postgres 11 and later, whatever the table
- * holds; settleOrgIdDefaults then decides whether the default stays.
+ * holds; settleOrgIdDefaults then takes the default off.
  */
 async function addOrgIdToOlderTables(defaultId: number): Promise<void> {
   const missing = await metadataPool.query<{ table_name: string }>(
@@ -866,16 +842,12 @@ async function addOrgIdToOlderTables(defaultId: number): Promise<void> {
 }
 
 /**
- * Decide whether `org_id` keeps a default.
+ * Take the default off `org_id`.
  *
- * On the web it does not: a query that forgets to say which organization a row
- * belongs to should fail loudly, not quietly file the row under the default
- * one. The desktop keeps the default organization as the default, because a
- * backup made before organizations existed has no `org_id` column, and
- * desktop/src/main/backup.ts accepts a missing column only when it has a
- * default.
+ * A query that forgets to say which organization a row belongs to should fail
+ * loudly, not quietly file the row under the default one.
  */
-async function settleOrgIdDefaults(client: MetadataClient, defaultId: number): Promise<void> {
+async function settleOrgIdDefaults(client: MetadataClient): Promise<void> {
   const columns = await client.query<{ table_name: string; column_default: string | null }>(
     `SELECT table_name, column_default FROM information_schema.columns
       WHERE table_schema = current_schema()
@@ -884,12 +856,7 @@ async function settleOrgIdDefaults(client: MetadataClient, defaultId: number): P
     [[...ORG_TABLES]]
   );
   for (const { table_name, column_default } of columns.rows) {
-    if (onDesktop()) {
-      if (column_default === String(defaultId)) continue;
-      await client.query(
-        `ALTER TABLE ${table_name} ALTER COLUMN org_id SET DEFAULT ${defaultId}`
-      );
-    } else if (column_default !== null) {
+    if (column_default !== null) {
       await client.query(`ALTER TABLE ${table_name} ALTER COLUMN org_id DROP DEFAULT`);
     }
   }
@@ -1024,7 +991,7 @@ async function addOrganizationKeys(client: MetadataClient): Promise<void> {
  * Loosen profiles.role, which no longer decides anything.
  *
  * Roles live on memberships now. The column stays so a database from before
- * organizations, or a pre-organization backup restored on the desktop, still
+ * organizations still
  * carries it for backfillMemberships to read once. Its default has to go, or
  * it would hand every new person a role in the default organization the next
  * time the server starts.
@@ -1055,11 +1022,11 @@ async function loosenProfileRole(client: MetadataClient): Promise<void> {
  * It has a connection of its own, because a transaction belongs to one
  * connection and the pool hands out a different one for every statement.
  */
-async function moveToOrganizations(defaultId: number): Promise<void> {
+async function moveToOrganizations(): Promise<void> {
   const client = await metadataPool.connect();
   try {
     await client.query("BEGIN");
-    await settleOrgIdDefaults(client, defaultId);
+    await settleOrgIdDefaults(client);
     await rekey(client, "roles", ["org_id", "name"]);
     await rekey(client, "role_permissions", ["org_id", "role", "feature", "action"]);
     await addOrganizationKeys(client);
@@ -1079,8 +1046,7 @@ async function moveToOrganizations(defaultId: number): Promise<void> {
  * Give everyone who still has a role on their profile a membership instead.
  *
  * A role there only exists on an install that has just moved onto
- * organizations, or on a desktop that has just restored a backup from before
- * them. That person joins the default organization in that role (Viewer if the
+ * organizations. That person joins the default organization in that role (Viewer if the
  * role is gone), and the old value is cleared in the same statement, so it is
  * read once and can never give access back.
  */
@@ -1138,7 +1104,7 @@ async function addIndexesSyncSkipped(): Promise<void> {
  * security with no policies shuts it. The app connects as the tables' owner, which
  * the policies do not apply to, so it carries on as before.
  *
- * Only where the anon role exists, so nothing changes on Docker or the desktop.
+ * Only where the anon role exists, so nothing changes on Docker.
  * Only tables where it is off, so that a boot with nothing to do takes no lock.
  * And only this app's tables, because the project may hold someone else's.
  */
@@ -1234,7 +1200,7 @@ async function createEverything(stamp: string | null): Promise<void> {
     await sequelize.sync();
     await addIndexesSyncSkipped();
     await backfillOlderTables();
-    await moveToOrganizations(defaultId);
+    await moveToOrganizations();
     // Before setUpRoles: the old roles_label_key is unique across every
     // organization, so seeding "Viewer" into a second one would fail on it.
     await addFunctionalIndexes();

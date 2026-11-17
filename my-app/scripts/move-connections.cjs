@@ -89,8 +89,8 @@ const AS_TEXT = { getTypeParser: () => (value) => value };
 
 /**
  * Columns never copied: the row's number and organization belong to the old
- * database, a desktop's note of a website row means nothing here, and the
- * secrets are written on their own.
+ * database, site_id and site_version are columns the app no longer has (an old
+ * database may still carry them), and the secrets are written on their own.
  */
 const NOT_COPIED = new Set(["id", "org_id", "environment", "site_id", "site_version", "version", "updated_at", "password", "connection_string"]);
 

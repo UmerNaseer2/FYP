@@ -14,7 +14,7 @@
  *
  * What it is held to here:
  *  - Nothing is drawn until the server says invitations work here, and
- *    nothing at all where it says they do not (the demo, the desktop app).
+ *    nothing at all where it says they do not (the demo).
  *  - An address is checked before anything is sent, and the address sent is
  *    the cleaned one.
  *  - A refusal lands under the box it is about when the server names one, and

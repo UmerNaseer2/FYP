@@ -20,17 +20,12 @@ import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/in
  * can offer a role that can do something theirs can't (canHandOut in
  * lib/permissions.ts).
  *
- * Nobody can be invited in two places, and GET says so with `canInvite`, so
- * the Users tab draws no form that could only be refused:
- *
- * - The desktop app, which keeps one organization of its own that nobody
- *   else can reach.
- * - The demo, with sign-in switched off. Nobody signs in there, so there is no
- *   Admin to have made an invitation and nobody who could take one.
+ * Nobody can be invited in the demo, with sign-in switched off, and GET says
+ * so with `canInvite`, so the Users tab draws no form that could only be
+ * refused. Nobody signs in there, so there is no Admin to have made an
+ * invitation and nobody who could take one.
  */
 
-const DESKTOP =
-  "Invitations are for the web app. The desktop app keeps a single organization of its own.";
 const DEMO =
   "Inviting someone needs a real sign-in. In the demo nobody signs in, so nobody could take an invitation.";
 
@@ -212,9 +207,6 @@ export async function DELETE(request: NextRequest) {
 function inviter(
   principal: Principal
 ): { ok: true; profileId: number } | { ok: false; response: NextResponse } {
-  if (onDesktop()) {
-    return { ok: false, response: NextResponse.json({ error: DESKTOP }, { status: 403 }) };
-  }
   if (principal.bypass || principal.profileId === null) {
     return { ok: false, response: NextResponse.json({ error: DEMO }, { status: 403 }) };
   }
@@ -230,11 +222,6 @@ function outOfReach(label: string, principal: Principal): NextResponse {
     },
     { status: 403 }
   );
-}
-
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
 }
 
 /** A 503 for a database that did not answer, with the reason kept to the log. */

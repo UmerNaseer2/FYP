@@ -19,12 +19,9 @@ import {
   QUERY_CANCELED,
   REAL_RUN_LIMITS,
   RunStoppedError,
-  TRIAL_MAX_CONCURRENT_RUNS,
-  TRIAL_RUN_LIMITS,
   beginCommit,
   cancelRunElsewhere,
   cancelRunStatement,
-  countOtherRuns,
   findRun,
   formatLimit,
   keepFirstClientError,
@@ -97,7 +94,6 @@ function details(over: Partial<RunDetails> = {}): RunDetails {
     connectionId: 5,
     actor: "editor@test",
     kind: "deploy",
-    trial: false,
     pool: pool.pool,
     ...over,
   };
@@ -131,25 +127,15 @@ describe("the limits", () => {
     expect(DRY_RUN_LIMITS).toEqual({ statementMs: 300_000, runMs: 900_000, idleInTransactionMs: 300_000 });
   });
 
-  it("are shorter still in the trial, whose small demo database every visitor shares", () => {
-    expect(TRIAL_RUN_LIMITS).toEqual({ statementMs: 60_000, runMs: 240_000, idleInTransactionMs: 60_000 });
-  });
-
-  it("end a trial run before a Vercel function's 300 seconds run out, so the run's own answer comes back", () => {
-    expect(TRIAL_RUN_LIMITS.runMs).toBeLessThan(300_000);
-  });
-
   it("give one statement less time than the whole run", () => {
-    for (const limits of [REAL_RUN_LIMITS, DRY_RUN_LIMITS, TRIAL_RUN_LIMITS]) {
+    for (const limits of [REAL_RUN_LIMITS, DRY_RUN_LIMITS]) {
       expect(limits.statementMs).toBeLessThan(limits.runMs);
     }
   });
 
-  it("are the trial's for any run in the trial, dry or real", () => {
-    expect(runLimits({ trial: true, dryRun: false })).toBe(TRIAL_RUN_LIMITS);
-    expect(runLimits({ trial: true, dryRun: true })).toBe(TRIAL_RUN_LIMITS);
-    expect(runLimits({ trial: false, dryRun: true })).toBe(DRY_RUN_LIMITS);
-    expect(runLimits({ trial: false, dryRun: false })).toBe(REAL_RUN_LIMITS);
+  it("are picked by whether the run is a dry one", () => {
+    expect(runLimits({ dryRun: true })).toBe(DRY_RUN_LIMITS);
+    expect(runLimits({ dryRun: false })).toBe(REAL_RUN_LIMITS);
   });
 });
 
@@ -205,8 +191,7 @@ describe("the list of runs going", () => {
       connectionId: 5,
       actor: "admin@test",
       kind: "rollback",
-      trial: false,
-      pid: null,
+        pid: null,
       startedAt: now,
       committing: false,
       done: false,
@@ -221,17 +206,6 @@ describe("the list of runs going", () => {
     const entry = start();
     expect(registerRun(details({ runId: entry.runId }), REAL_RUN_LIMITS)).toBe("duplicate");
     expect(findRun(entry.runId)).toBe(entry);
-  });
-
-  it(`takes at most ${TRIAL_MAX_CONCURRENT_RUNS} trial runs at once, and any number of others`, () => {
-    expect(TRIAL_MAX_CONCURRENT_RUNS).toBe(2);
-    const first = start({ trial: true }, TRIAL_RUN_LIMITS);
-    start({ trial: true }, TRIAL_RUN_LIMITS);
-    expect(registerRun(details({ trial: true }), TRIAL_RUN_LIMITS)).toBe("busy");
-    // A run outside the trial is never held up by the trial's runs.
-    expect(typeof registerRun(details({ trial: false }), REAL_RUN_LIMITS)).toBe("object");
-    unregisterRun(first);
-    expect(typeof registerRun(details({ trial: true }), TRIAL_RUN_LIMITS)).toBe("object");
   });
 
   it("forgets a run once it ends, and is safe to tell twice", () => {
@@ -262,12 +236,6 @@ describe("the whole-run limit", () => {
     await flush(1);
     expect(entry.stopReason).toBe("run_limit");
     expect(pool.connect).toHaveBeenCalledTimes(1);
-  });
-
-  it("stops a trial run after four minutes", async () => {
-    const entry = start({ trial: true }, TRIAL_RUN_LIMITS);
-    await flush(TRIAL_RUN_LIMITS.runMs);
-    expect(entry.stopReason).toBe("run_limit");
   });
 
   it("never fires for a run that has ended", async () => {
@@ -417,11 +385,11 @@ describe("prepareRunTransaction", () => {
 
   it("names the session after the run and gives it its idle limit, for this transaction only", async () => {
     const client = withPid();
-    expect(await prepare(client, TRIAL_RUN_LIMITS)).toBe(PID);
+    expect(await prepare(client, DRY_RUN_LIMITS)).toBe(PID);
     const [first] = client.queries;
     expect(first.text).toContain("set_config('application_name', $1, true)");
     expect(first.text).toContain("set_config('idle_in_transaction_session_timeout', $2, true)");
-    expect(first.values).toEqual([`schema-studio run ${RUN}`, "60000"]);
+    expect(first.values).toEqual([`schema-studio run ${RUN}`, "300000"]);
   });
 
   it("sets nothing on the session itself, which a transaction pooler would hand on to others", async () => {
@@ -461,22 +429,6 @@ describe("prepareRunTransaction", () => {
     ["no row", []],
   ])("answers null for %s", async (_label, rows) => {
     expect(await prepare(withPid(rows))).toBeNull();
-  });
-});
-
-describe("countOtherRuns", () => {
-  it("counts the other runs on this database under this login, from any instance of the app", async () => {
-    const client = createFakeClient([{ match: /FROM pg_stat_activity/, rows: [{ n: 3 }] }]);
-    expect(await countOtherRuns(client as unknown as PoolClient)).toBe(3);
-    const [query] = client.queries;
-    expect(query.values).toEqual(["schema-studio run %"]);
-    expect(query.text).toContain("usename = current_user");
-    expect(query.text).toContain("datname = current_database()");
-    expect(query.text).toContain("pid <> pg_backend_pid()");
-  });
-
-  it("answers 0 when the database sends no row", async () => {
-    expect(await countOtherRuns(createFakeClient([]) as unknown as PoolClient)).toBe(0);
   });
 });
 
@@ -625,7 +577,6 @@ describe("runStopMessage", () => {
   const ctx = (over: Partial<StopContext> = {}): StopContext => ({
     kind: "deploy",
     dryRun: false,
-    trial: false,
     limits: REAL_RUN_LIMITS,
     subject: null,
     ...over,
@@ -664,19 +615,6 @@ describe("runStopMessage", () => {
         "A statement ran longer than 5 minutes, the most one statement may take in a dry run, so the dry " +
           "run was stopped. Nothing was changed. A real deploy allows each statement 30 minutes, so the " +
           "script may still be fine, only slow on this much data."
-      );
-    });
-
-    it("in the trial, dry or real, where a real run is no longer", () => {
-      expect(
-        runStopMessage([statementTimeout], null, ctx({ trial: true, dryRun: true, limits: TRIAL_RUN_LIMITS }))
-      ).toBe(
-        "A statement ran longer than 1 minute, the most one statement may take in the trial, so the dry " +
-          "run was stopped. Nothing was changed."
-      );
-      expect(runStopMessage([statementTimeout], null, ctx({ trial: true, limits: TRIAL_RUN_LIMITS }))).toBe(
-        "A statement ran longer than 1 minute, the most one statement may take in the trial, so the " +
-          "deploy was stopped. Nothing was applied."
       );
     });
 
@@ -727,12 +665,6 @@ describe("runStopMessage", () => {
         "This dry run took longer than 15 minutes, the most a dry run may take, so it was stopped. Nothing " +
           "was changed.",
       ],
-      [
-        "a trial deploy",
-        { trial: true, limits: TRIAL_RUN_LIMITS },
-        "This deploy took longer than 4 minutes, the most a run in the trial may take, so it was stopped. " +
-          "Nothing was applied.",
-      ],
     ])("in %s", (_label, over, text) => {
       expect(runStopMessage([new RunStoppedError("run_limit")], null, ctx(over))).toBe(text);
       expect(runStopMessage([userCancel], stoppedWith("run_limit"), ctx(over))).toBe(text);
@@ -756,13 +688,6 @@ describe("runStopMessage", () => {
         "This rollback sat inside its transaction without sending anything for longer than 5 minutes, " +
           "so the database ended its session. Nothing was changed, and every version in this rollback " +
           "is still applied."
-      );
-    });
-
-    it("after a minute idle in the trial", () => {
-      expect(runStopMessage([idleTimeout], null, ctx({ trial: true, limits: TRIAL_RUN_LIMITS }))).toBe(
-        "This deploy sat inside its transaction without sending anything for longer than 1 minute, so " +
-          "the database ended its session. Nothing was applied."
       );
     });
 
@@ -813,12 +738,11 @@ describe("keepFirstClientError", () => {
       runStopMessage([thrown, clientError()], null, {
         kind: "deploy",
         dryRun: false,
-        trial: true,
-        limits: TRIAL_RUN_LIMITS,
+        limits: REAL_RUN_LIMITS,
         subject: null,
       })
     ).toBe(
-      "This deploy sat inside its transaction without sending anything for longer than 1 minute, so " +
+      "This deploy sat inside its transaction without sending anything for longer than 5 minutes, so " +
         "the database ended its session. Nothing was applied."
     );
   });

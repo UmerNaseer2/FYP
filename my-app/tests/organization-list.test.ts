@@ -37,7 +37,7 @@ describe("one organization", () => {
 describe("the whole list", () => {
   test("is the organizations and whether another can be made", () => {
     expect(isOrgListing({ organizations: [ACME, BETA], canCreate: true })).toBe(true);
-    // Somebody in no organization yet, in the desktop app or the demo.
+    // Somebody in no organization yet, in the demo.
     expect(isOrgListing({ organizations: [], canCreate: false })).toBe(true);
   });
 

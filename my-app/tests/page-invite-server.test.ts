@@ -6,8 +6,6 @@
  * against a real database. Here inspectInvite and the gate are stood in for, so
  * these tests cover only what the page adds on top:
  *
- * - Inside the desktop app, which keeps a single organization of its own, it
- *   forwards to /studio without looking anything up.
  * - A session with no profile in it is shown "signed-out", and the demo (sign-in
  *   switched off) "demo", both without looking anything up.
  * - Otherwise the invitation is looked up for the caller's own profile, and
@@ -43,21 +41,9 @@ jest.mock("next/navigation", () => ({
 // only through the client half.
 jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn() }));
 
-// A getter, so each case's change is what the page reads.
-const mockFlags = { desktopMode: false };
-jest.mock("../auth.config", () => ({
-  get desktopMode() {
-    return mockFlags.desktopMode;
-  },
-}));
-
 let mockGate: SignedInGate;
-let mockGateCalls = 0;
 jest.mock("../lib/auth-guard", () => ({
-  requireSignedIn: async () => {
-    mockGateCalls += 1;
-    return mockGate;
-  },
+  requireSignedIn: async () => mockGate,
 }));
 
 const mockInspectInvite = jest.fn();
@@ -74,9 +60,7 @@ const TOKEN = "Abc_def-123".padEnd(43, "x");
 
 beforeEach(() => {
   mockRedirects.length = 0;
-  mockFlags.desktopMode = false;
   mockGate = SIGNED_IN;
-  mockGateCalls = 0;
   mockInspectInvite.mockReset();
 });
 
@@ -90,22 +74,6 @@ type Props = { token: string; view: InviteView };
 async function page(token = TOKEN): Promise<ReactElement<Props>> {
   return (await Invite({ params: Promise.resolve({ token }) })) as ReactElement<Props>;
 }
-
-describe("on the desktop", () => {
-  test.each([
-    ["", () => {}],
-    // The desktop wins: it has no invitations whether sign-in is on or not.
-    [" even with sign-in switched off", () => (mockGate = BYPASS)],
-  ])("forwards to /studio%s, looking nothing up", async (_, setUp) => {
-    mockFlags.desktopMode = true;
-    setUp();
-
-    await expect(page()).rejects.toThrow("NEXT_REDIRECT");
-    expect(mockRedirects).toEqual(["/studio"]);
-    expect(mockGateCalls).toBe(0);
-    expect(mockInspectInvite).not.toHaveBeenCalled();
-  });
-});
 
 describe("who is asking", () => {
   test("a session with no profile in it is asked to sign in again, and nothing is looked up", async () => {

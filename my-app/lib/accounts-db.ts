@@ -1,6 +1,6 @@
 import pool, { syncMetadataTables } from "./version-db";
 import type { MetadataClient } from "./db/sequelize";
-import { ADMIN_ROLE, DEFAULT_ROLE } from "./permissions";
+import { ADMIN_ROLE } from "./permissions";
 
 /**
  * Who has just signed in, and which person in this app that is.
@@ -70,29 +70,20 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function inDesktopApp(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
 /**
  * The sign-in Auth.js is asking about, or null when it does not say who signed
  * in or gives no address to know them by.
  *
  * Each provider hands its details over in its own shape:
- *   - Microsoft in the browser: the ID token's claims, as `profile`. The
- *     account is `tid:oid`, the tenant and the object ID, which together name
- *     one account for every app (`sub` would do too, but it differs between
- *     apps, and the desktop app is registered separately). The address is the
+ *   - Microsoft: the ID token's claims, as `profile`. The account is
+ *     `tid:oid`, the tenant and the object ID, which together name one
+ *     account for every app (`sub` differs between apps). The address is the
  *     `email` claim, or for a work account with no mailbox its sign-in name,
  *     which is an address as well. An account in the home tenant is trusted
  *     with its address, as it always was here. One from anywhere else is only
  *     when Microsoft says the address's domain is verified (`xms_edov`, an
  *     optional claim the app registration has to ask for, and only ever about
  *     the `email` claim).
- *   - Microsoft in the desktop app: lib/desktop-sign-in.ts has already checked
- *     the token, refused any tenant but the home one, and put `tid:oid` in
- *     `user.id`.
  *   - GitHub: the user's details from GitHub's API, as `profile`, with the
  *     address and whether GitHub has verified it filled in by auth.config.ts
  *     from the account's primary address. The account is the numeric user ID,
@@ -120,19 +111,6 @@ export function identityFrom({ user, account, profile }: SignInParams): SignInId
         emailVerified: homeTenant || (email === claimed && profile?.xms_edov === true),
         name,
         homeTenant,
-      };
-    }
-    case "desktop": {
-      const subject = text(user.id)?.toLowerCase();
-      const email = text(user.email);
-      if (!subject || !email) return null;
-      return {
-        provider: "microsoft",
-        subject,
-        email,
-        emailVerified: true,
-        name,
-        homeTenant: true,
       };
     }
     case "github": {
@@ -320,26 +298,21 @@ async function seen(client: MetadataClient, profileId: number, name: string | nu
  * Where someone starts. Nobody is moved once they belong somewhere, and a role
  * somebody already has is never changed.
  *
- *   - In the desktop app, the default organization is the one person's own,
- *     and they join it if they belong nowhere yet: as its admin when it is
- *     empty, which on a new install it is, and as a viewer otherwise (a
- *     restored backup that already has an admin).
- *   - On the web, nobody joins an organization just by signing in. They make
- *     their own (/onboarding) or accept an invitation to someone else's. The
- *     one exception is a fresh deployment, whose default organization nobody
- *     could otherwise ever administer: the first person from the home tenant
- *     to sign in while it has no members at all becomes its admin. Only the
- *     home tenant, because anyone at all can sign in with GitHub or a
- *     Microsoft account from elsewhere, and the default organization holds
- *     everything from before there were others.
+ * Nobody joins an organization just by signing in. They make their own
+ * (/onboarding) or accept an invitation to someone else's. The one exception
+ * is a fresh deployment, whose default organization nobody could otherwise
+ * ever administer: the first person from the home tenant to sign in while it
+ * has no members at all becomes its admin. Only the home tenant, because
+ * anyone at all can sign in with GitHub or a Microsoft account from
+ * elsewhere, and the default organization holds everything from before there
+ * were others.
  *
- * Both take the default organization's row first and hold it to the end of
+ * It takes the default organization's row first and holds it to the end of
  * the transaction. Without that, two people signing in to a new deployment at
  * the same moment could both find it empty, and both become its admin.
  */
 async function joinOnSignIn(client: MetadataClient, profileId: number, who: SignInIdentity) {
-  const desktop = inDesktopApp();
-  if (!desktop && !who.homeTenant) return;
+  if (!who.homeTenant) return;
 
   const org = await client.query<{ id: number }>(
     `SELECT id FROM organizations WHERE is_default FOR UPDATE`
@@ -349,24 +322,11 @@ async function joinOnSignIn(client: MetadataClient, profileId: number, who: Sign
   // still signs in, and the gates answer "not a member" until there is one.
   if (defaultId === undefined) return;
 
-  if (desktop) {
-    await client.query(
-      `-- every organization: a member of any of them stays where they are
-       INSERT INTO memberships (org_id, profile_id, role)
-       SELECT $1::int, $2::int,
-              CASE WHEN EXISTS (SELECT 1 FROM memberships WHERE org_id = $1::int)
-                   THEN $4::text ELSE $3::text END
-        WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE profile_id = $2::int)
-       ON CONFLICT DO NOTHING`,
-      [defaultId, profileId, ADMIN_ROLE, DEFAULT_ROLE]
-    );
-  } else {
-    await client.query(
-      `INSERT INTO memberships (org_id, profile_id, role)
-       SELECT $1::int, $2::int, $3::text
-        WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE org_id = $1::int)
-       ON CONFLICT DO NOTHING`,
-      [defaultId, profileId, ADMIN_ROLE]
-    );
-  }
+  await client.query(
+    `INSERT INTO memberships (org_id, profile_id, role)
+     SELECT $1::int, $2::int, $3::text
+      WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE org_id = $1::int)
+     ON CONFLICT DO NOTHING`,
+    [defaultId, profileId, ADMIN_ROLE]
+  );
 }

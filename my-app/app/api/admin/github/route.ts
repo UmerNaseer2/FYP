@@ -38,13 +38,7 @@ import { encryptionKeySource } from "@/lib/secret-store";
  * The scripts already in the repository stay there.
  *
  * Every change goes in the change log on the Roles & permissions tab.
- *
- * The desktop app keeps its own settings in its Settings window and the
- * system keyring, so it saves nothing here.
  */
-
-const DESKTOP =
-  "The desktop app keeps its GitHub settings in its own Settings window. Open Settings from the File menu.";
 
 const NO_KEY =
   "This server has no encryption key, so it can't keep an access token safe and won't save one. " +
@@ -73,7 +67,6 @@ export async function PUT(request: NextRequest) {
   if (!gate.ok) return gate.response;
   const { principal } = gate;
 
-  if (onDesktop()) return NextResponse.json({ error: DESKTOP }, { status: 403 });
   if (encryptionKeySource() === "none") return NextResponse.json({ error: NO_KEY }, { status: 503 });
 
   const fields = await readBody(request);
@@ -138,8 +131,6 @@ export async function DELETE() {
   if (!gate.ok) return gate.response;
   const { principal } = gate;
 
-  if (onDesktop()) return NextResponse.json({ error: DESKTOP }, { status: 403 });
-
   try {
     const { removed } = await removeOrgGitHub(principal.orgId, actorOf(principal));
     return NextResponse.json({ removed });
@@ -153,20 +144,6 @@ export async function DELETE() {
 async function viewFor(principal: Principal): Promise<GitHubSettingsView> {
   const folder = registryRoot(principal);
   const serverReady = githubConfig().ok;
-
-  if (onDesktop()) {
-    return {
-      source: serverReady ? "server" : "none",
-      repository: null,
-      folder,
-      tokenUnreadable: false,
-      updatedBy: null,
-      updatedAt: null,
-      serverFallback: true,
-      cannotSave: DESKTOP,
-      canUpdate: false,
-    };
-  }
 
   const saved = await readOrgGitHub(principal.orgId);
   const shared = {
@@ -224,11 +201,6 @@ function gone(): NextResponse {
 /** A repository and token are already saved, and a saved pair is never changed. */
 function locked(): NextResponse {
   return NextResponse.json({ error: LOCKED, locked: true }, { status: 409 });
-}
-
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
 }
 
 /** A 503 for a database that did not answer, with the reason kept to the log. */

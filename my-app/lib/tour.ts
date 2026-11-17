@@ -4,10 +4,9 @@
 // with no React in it, so the tests can read it directly. The last part, "the
 // light", finds a part of the page and lights it up.
 //
-// When it is offered: right after someone arrives by one of three doors, each
+// When it is offered: right after someone arrives by one of two doors, each
 // of which adds `?tour=` to the first studio address it opens.
 //
-//   - trial:  the landing page's "Try it" (app/api/trial/route.ts)
 //   - new:    making a new organization (components/onboarding/OnboardingPage)
 //   - member: joining one by invite (components/invite/InvitePage)
 //
@@ -17,15 +16,15 @@
 import type { PermissionKey } from "@/lib/permissions";
 
 /** Who the tour is for. It changes a few of the words and the last card. */
-export type TourAudience = "trial" | "new" | "member";
+export type TourAudience = "new" | "member";
 
-/** The query parameter the three doors add: /acme/studio?tour=new. */
+/** The query parameter the two doors add: /acme/studio?tour=new. */
 export const TOUR_PARAM = "tour";
 
 /** The window event "Take the tour" sends. AppTour listens for it. */
 export const START_TOUR_EVENT = "schema-studio:start-tour";
 
-/** Starts the tour, from the account menu, the command bar or the trial bar. */
+/** Starts the tour, from the account menu or the command bar. */
 export function startTour(): void {
   window.dispatchEvent(new Event(START_TOUR_EVENT));
 }
@@ -33,7 +32,7 @@ export function startTour(): void {
 /** The audience a `?tour=` value names, or null when it names none. */
 export function readTourParam(search: string): TourAudience | null {
   const value = new URLSearchParams(search).get(TOUR_PARAM);
-  if (value === "trial" || value === "new" || value === "member") return value;
+  if (value === "new" || value === "member") return value;
   return null;
 }
 
@@ -49,7 +48,7 @@ export function withoutTourParam(search: string): string {
 
 /**
  * What this browser remembers about the tour, per organization and role, so
- * trying the trial as an Admin and then as a Viewer offers it to each.
+ * someone whose role changes is offered it again.
  *
  *   - done:   finished or skipped, so it is not offered again
  *   - resume: the stop it was closed at, for "Resume the tour"; null for none
@@ -105,7 +104,7 @@ export type TourStop = {
   union?: boolean;
   /**
    * What the card says instead when the page shows its first-run card in place
-   * of the real thing (an empty Dashboard: the trial tracks nothing at first).
+   * of the real thing (an empty Dashboard, before anything is tracked).
    * `target` is that card, and it must also be in `targets`.
    */
   empty?: { target: string; body: string };
@@ -127,10 +126,9 @@ export type TourInput = {
  * is left out, so the tour never walks into "your role can't".
  *
  * The words follow the help notes (lib/help), so the tour and the Help panel
- * never disagree. In the trial they name the demo's own schemas.
+ * never disagree.
  */
 export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[] {
-  const trial = audience === "trial";
   const mayAddDatabases = can("connections:create");
   const mayRun = can("deploy:run");
   const stops: TourStop[] = [];
@@ -156,12 +154,10 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     page: "/connections",
     icon: "connect",
     kicker: "Connect",
-    title: trial ? "Already connected for you" : audience === "new" ? "Add your databases once" : "Your team's databases",
-    body: trial
-      ? "University demo is set up with three students schemas and two courses schemas. Connections are locked in the trial, so the demo stays the same for everyone."
-      : mayAddDatabases
-        ? "Save a database here once and everyone in the organization can use it. The password is stored encrypted and never sent back to the browser."
-        : "Every database your team has saved is listed here, ready to compare. Passwords are stored encrypted and never shown to anyone.",
+    title: audience === "new" ? "Add your databases once" : "Your team's databases",
+    body: mayAddDatabases
+      ? "Save a database here once and everyone in the organization can use it. The password is stored encrypted and never sent back to the browser."
+      : "Every database your team has saved is listed here, ready to compare. Passwords are stored encrypted and never shown to anyone.",
     targets: [".cn-group-block", ".cn-page .page-header"],
   });
 
@@ -171,9 +167,8 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     icon: "compare",
     kicker: "Compare",
     title: "See exactly what differs",
-    body: trial
-      ? "Pick the schema that looks right, then the one to update. Here, students_dev has a grades table and two student columns that students_prod lacks. Comparing changes nothing, and you get the script that closes the gap."
-      : "Pick the schema that looks right, then the one to update. Comparing changes nothing: you get every difference and a script that closes the gap, ready to edit.",
+    body:
+      "Pick the schema that looks right, then the one to update. Comparing changes nothing: you get every difference and a script that closes the gap, ready to edit.",
     targets: [".cp-form", ".cp-page .page-header"],
   });
 
@@ -200,19 +195,6 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     targets: [".dp-stage", ".dp-card", ".dp-page .page-header"],
   });
 
-  // Only in the trial, where the demo has a schema behind on purpose.
-  if (trial) {
-    stops.push({
-      id: "sync",
-      page: "/versionsync",
-      icon: "sync",
-      kicker: "Catch up",
-      title: "Bring a schema up to date",
-      body:
-        "students_prod is at version 1.0.0 and students_dev at 1.2.0. Version Sync shows the two versions prod is missing and replays them in order, with a dry run first.",
-      targets: [".vs-pick", ".vs-page .page-header"],
-    });
-  }
 
   stops.push({
     id: "watch",
@@ -293,26 +275,6 @@ export type TourPick = {
   page: string | null;
 };
 
-/** The trial's demo connection, by the name lib/trial-sandbox.ts gives it. */
-export const TRIAL_CONNECTION_NAME = "University demo";
-
-/**
- * The address of a compare of students_dev (the one that looks right) with
- * students_prod (the one to update), run straight away. Without the
- * connection's ID it is plain Compare.
- */
-export function trialCompareHref(connectionId: number | null): string {
-  if (connectionId === null) return "/compare";
-  const query = new URLSearchParams({
-    sourceConnection: String(connectionId),
-    sourceSchema: "students_dev",
-    targetConnection: String(connectionId),
-    targetSchema: "students_prod",
-    run: "1",
-  });
-  return `/compare?${query.toString()}`;
-}
-
 /** The choices on the last card, best first. */
 export function tourPicks(audience: TourAudience, can: TourInput["can"], pages: readonly string[]): TourPick[] {
   const compare: TourPick = { id: "compare", title: "Run your first compare", hint: "Pick two schemas and see what differs.", page: "/compare" };
@@ -324,17 +286,9 @@ export function tourPicks(audience: TourAudience, can: TourInput["can"], pages: 
   };
   const lookAround: TourPick = { id: "look", title: "Just look around", hint: "Stay on the Dashboard.", page: null };
 
-  let picks: TourPick[];
-  if (audience === "trial") {
-    picks = [
-      { ...compare, hint: "students_dev against students_prod, ready to go." },
-      { id: "sync", title: "See what students_prod is missing", hint: "Version Sync, from 1.0.0 up to 1.2.0.", page: "/versionsync" },
-      lookAround,
-    ];
-  } else {
-    const mayAdd = can("connections:create");
-    picks = audience === "new" && mayAdd ? [addDatabase, compare, lookAround] : [compare, ...(mayAdd ? [addDatabase] : []), lookAround];
-  }
+  const mayAdd = can("connections:create");
+  const picks: TourPick[] =
+    audience === "new" && mayAdd ? [addDatabase, compare, lookAround] : [compare, ...(mayAdd ? [addDatabase] : []), lookAround];
   return picks.filter((pick) => pick.page === null || pages.includes(pick.page));
 }
 

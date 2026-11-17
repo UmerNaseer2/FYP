@@ -10,7 +10,6 @@
 //     the server's token.
 //   - A saved token this server can't read, or a database that did not
 //     answer, is an error, never a quiet fall back to the server's token.
-//   - The desktop app reads the server's keys alone, and no database.
 //   - No message holds a token or a value of the server's keys.
 
 const mockReadOrgGitHub = jest.fn();
@@ -39,12 +38,11 @@ const SAVED = {
   updatedAt: new Date(0),
 };
 
-const ENV_KEYS = ["GITHUB_REPO_OWNER", "GITHUB_REPO_NAME", "GITHUB_PAT", "SCHEMA_STUDIO_DESKTOP"] as const;
+const ENV_KEYS = ["GITHUB_REPO_OWNER", "GITHUB_REPO_NAME", "GITHUB_PAT"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
 beforeEach(() => {
   mockReadOrgGitHub.mockReset();
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   process.env.GITHUB_REPO_OWNER = SERVER.owner;
   process.env.GITHUB_REPO_NAME = SERVER.repo;
   process.env.GITHUB_PAT = SERVER.token;
@@ -119,20 +117,4 @@ test("a database that did not answer is a 503, never the server's token, with th
   expect(lookup).toMatchObject({ ok: false, status: 503, code: GITHUB_SETTINGS_UNAVAILABLE_CODE });
   expect(messageOf(lookup)).toMatch(/Nothing was read from or written to GitHub/);
   expect(logged).toHaveBeenCalled();
-});
-
-test("the desktop app reads the server's keys alone, and no database", async () => {
-  process.env.SCHEMA_STUDIO_DESKTOP = "1";
-  mockReadOrgGitHub.mockResolvedValue(SAVED);
-  expect(await githubConfigFor(DEFAULT_ORG)).toEqual({ ok: true, source: "server", ...SERVER });
-  expect(mockReadOrgGitHub).not.toHaveBeenCalled();
-});
-
-test("the desktop app without its keys points to its Settings window", async () => {
-  process.env.SCHEMA_STUDIO_DESKTOP = "1";
-  delete process.env.GITHUB_REPO_NAME;
-  const lookup = await githubConfigFor(DEFAULT_ORG);
-  expect(lookup).toMatchObject({ ok: false, status: 500, code: GITHUB_UNCONFIGURED_CODE });
-  expect(messageOf(lookup)).toMatch(/Missing now: repository name\..*Open Settings from the File menu/);
-  expect(mockReadOrgGitHub).not.toHaveBeenCalled();
 });

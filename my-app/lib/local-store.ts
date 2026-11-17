@@ -17,8 +17,8 @@ import {
  * a marker (lib/local-secrets); the password itself is saved here, encrypted
  * with this machine's APP_ENCRYPTION_KEY like any other stored secret.
  *
- * With no `LOCAL_DATABASE_URL` every function here does nothing, so Vercel, the
- * desktop app and the client's container image behave exactly as before.
+ * With no `LOCAL_DATABASE_URL` every function here does nothing, so Vercel and
+ * the client's container image behave exactly as before.
  *
  * Entries are never removed on their own. A row whose connection was deleted
  * somewhere else stays behind, harmless: cleaning up automatically would wipe

@@ -25,7 +25,7 @@
  *     again, nothing typed in it is sent.
  *   - The demo (sign-in switched off): no Sign out, and no form.
  *
- * The server half, which forwards the desktop app to /studio, is in
+ * The server half, which forwards the demo to /studio, is in
  * tests/page-onboarding-server.test.ts. The route's own refusals are in
  * tests/organizations-route.test.ts, and the name and address rules in
  * tests/new-organization.test.ts.

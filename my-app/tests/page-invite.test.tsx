@@ -17,7 +17,7 @@
  *   - Another account: signing out on the way to the account picker, and back
  *     to this invitation afterwards.
  *
- * The server half, which looks the invitation up and forwards the desktop app
+ * The server half, which looks the invitation up and forwards the demo
  * to /studio, is tests/page-invite-server.test.ts. The route Join asks is
  * tests/invites-accept-route.test.ts, and what an invitation is to whoever
  * opens it is tests/invites-db.test.ts.

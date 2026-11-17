@@ -61,15 +61,14 @@ export type DriftRun = {
   /** What was compared this time, in a form that can be matched against another check. Null when nothing was. */
   fingerprint: string | null;
   /**
-   * The outcome on record before this check, so a phone alert can say what
+   * The outcome on record before this check, so a caller can say what
    * changed. Null when this is the first. Undefined when it was not read, which
    * is every "always" check and any that could not read it.
    */
   previous?: RecordedOutcome | null;
   /**
-   * The AI's one line on this drift, for the alerts. Only a check that was
-   * given a `describe` and found new drift has one; null when the AI was off,
-   * slow or wrong, and the alert then goes out without it.
+   * The AI's one line on this drift. Only a check that was given a `describe`
+   * and found new drift has one; null when the AI was off, slow or wrong.
    */
   aiSummary?: string | null;
 };
@@ -77,10 +76,10 @@ export type DriftRun = {
 /** Extras a caller can hand a check. */
 export type DriftCheckOptions = {
   /**
-   * Writes the one line an alert carries about a new drift. Called only on an
-   * "on_change" check that found drift, is writing a row about it, and whose
-   * alert will show the line (a "Drift found" alert, see alertShowsLine), so
-   * an unchanged drift or any other alert costs no AI call. It must answer
+   * Writes the one line kept about a new drift. Called only on an
+   * "on_change" check that found drift, is writing a row about it, and is the
+   * first to find it (see alertShowsLine), so an unchanged drift costs no AI
+   * call. It must answer
    * null rather than throw, and quickly: the check waits for it.
    */
   describe?: (driftReport: CompareReport) => Promise<string | null>;
@@ -186,8 +185,7 @@ export async function runDriftCheck(
   const previous = mode === "always" ? undefined : await previousOutcome(orgId, trackedSchemaId);
   let worthRecording = mode === "always" || outcomeChanged(previous, status, fingerprint);
 
-  // The alert line, written before the row so the row keeps it: the desktop
-  // app reads its alerts from these rows.
+  // The AI's line, written before the row so the row keeps it.
   let aiSummary: string | null = null;
   if (worthRecording && status === "drifted" && report && options.describe && alertShowsLine(previous)) {
     try {
@@ -296,16 +294,14 @@ function outcomeChanged(
 }
 
 /**
- * Whether the alert this check sends will show the AI's line, so the line is
- * only asked for then.
+ * Whether this check counts as new drift, so the AI's line is only asked for
+ * then.
  *
- * Plan 6.3 (3a) gives the line to new drift only: the "Drift found" alert.
- * That is a drifted check after an in_sync row or after no row at all
- * (driftAlertKind in lib/push-alerts.ts, alertKind in the desktop app's
- * src/core/drift-alerts.ts). After an unreachable row the alert is "reachable
- * again", and after a drifted row it is "Drift changed" or nothing, and
- * neither shows the line. When the previous row could not be read, the web
- * sends no alert at all, so nothing is asked either.
+ * Plan 6.3 (3a) gives the line to new drift only. That is a drifted check
+ * after an in_sync row or after no row at all. After an unreachable row the
+ * database is only reachable again, and after a drifted row the drift has
+ * changed or stayed the same, and neither gets a line. When the previous row
+ * could not be read, nothing is asked either.
  */
 function alertShowsLine(previous: RecordedOutcome | null | undefined): boolean {
   if (previous === undefined) return false;

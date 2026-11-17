@@ -35,8 +35,7 @@ const NEW_ORGANIZATION = ":new";
  * asks again for the new one.
  *
  * Draws nothing when there is nothing to choose: one organization and no way
- * to make another. That is the desktop app, which keeps a single hidden
- * organization of its own, and a demo with one organization. It also draws
+ * to make another. That is a demo with one organization. It also draws
  * nothing until the list arrives, and nothing if it never does: the account
  * menu already names the organization, so a picker that could only fail
  * would add a broken control and nothing else.

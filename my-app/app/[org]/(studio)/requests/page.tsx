@@ -834,7 +834,6 @@ function DoneRunRow({ run, since }: { run: ListedApproval; since: string | null 
 type TabKey = "needs" | "asked" | "done";
 
 function RequestsBody() {
-  const orgPath = useOrgHref();
   const { isAdmin } = useUser();
   const [data, setData] = useState<RequestsPayload | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -938,14 +937,7 @@ function RequestsBody() {
 
   return (
     <div className="rq-page">
-      <PageHeader
-        page="/requests"
-        actions={
-          <Link href={orgPath("/phone")} className="btn btn-secondary btn-sm">
-            Phone app
-          </Link>
-        }
-      >
+      <PageHeader page="/requests">
         {data && onlyTab && (
           <h2 id="requests-heading" className="rq-heading">
             {onlyTab.label}

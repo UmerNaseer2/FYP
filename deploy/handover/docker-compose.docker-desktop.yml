@@ -1,0 +1,26 @@
+# Docker Desktop (Mac, Windows) only. Not needed with Docker Engine on Ubuntu.
+#
+# docker-compose.yml shares the computer's network with the container. Docker
+# Desktop runs containers inside its own small virtual machine, so there the
+# container gets a network of its own and the port is published instead. Turn
+# this file on with one line in .env:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.docker-desktop.yml
+#
+# From inside the container, PostgreSQL on the computer is then
+# host.docker.internal, not 127.0.0.1, both in DATABASE_URL_A (with
+# ?sslmode=disable on the end) and for every connection you add in the app.
+
+services:
+  app:
+    network_mode: bridge
+    ports:
+      # 127.0.0.1 on the left: only this computer can open the app.
+      - "127.0.0.1:${APP_PORT:-3000}:${APP_PORT:-3000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Inside its own network the app must listen on every address for the
+      # published port to reach it. The 127.0.0.1 above is what keeps it
+      # private.
+      HOSTNAME: 0.0.0.0

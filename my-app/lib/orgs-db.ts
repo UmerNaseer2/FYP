@@ -24,11 +24,9 @@ import { logRoleChanges } from "./roles-db";
  *
  * A request names its organization by slug: the page's address does
  * (/acme/compare), and its API calls carry the same slug in a header
- * (lib/api-fetch.ts). The desktop is the one exception. It has a single
- * organization of its own, and its calls from outside any page name none, so
- * they act in the default organization: the one row in `organizations` with
- * is_default set, which lib/db/bootstrap.ts creates and moves every older row
- * into.
+ * (lib/api-fetch.ts). The default organization is the one row in
+ * `organizations` with is_default set, which lib/db/bootstrap.ts creates and
+ * moves every older row into.
  *
  * Nothing here is cached, on purpose. An admin who removes someone, or changes
  * their role, expects it to hold from that person's very next request, not
@@ -154,38 +152,6 @@ export async function findMembership(profileId: number, slug: string): Promise<M
     `${MEMBERSHIP_SELECT}
       WHERE p.id = $1 AND o.slug = $2`,
     [profileId, slug]
-  );
-  return toMember(rows[0]);
-}
-
-/**
- * The membership a person holds in the organization with this id, or null. For
- * a linked computer, whose token names its organization by id (lib/agent-auth.ts).
- */
-export async function findMembershipById(profileId: number, orgId: number): Promise<Member | null> {
-  await syncMetadataTables();
-  const { rows } = await pool.query<MemberRow>(
-    `${MEMBERSHIP_SELECT}
-      WHERE p.id = $1 AND o.id = $2`,
-    [profileId, orgId]
-  );
-  return toMember(rows[0]);
-}
-
-/**
- * The membership a signed-in person holds in the default organization, or
- * null when they hold none: an admin removed them after they signed in, or
- * the sign-in that should have added them could not reach the database.
- *
- * Only for a request that names no organization, which only the desktop
- * answers (see lib/auth-guard.ts).
- */
-export async function findDefaultMembership(profileId: number): Promise<Member | null> {
-  await syncMetadataTables();
-  const { rows } = await pool.query<MemberRow>(
-    `${MEMBERSHIP_SELECT}
-      WHERE p.id = $1 AND o.is_default`,
-    [profileId]
   );
   return toMember(rows[0]);
 }
@@ -481,9 +447,8 @@ export type Deleted =
  * they are in the repository's history whatever happens here, and removing
  * files from a repository is for whoever owns it.
  *
- * The default organization cannot be deleted. The desktop app and the demo
- * act in it, and its scripts sit at the top of the registry, where no other
- * organization's may (see Organization.isDefault).
+ * The default organization cannot be deleted. Its scripts sit at the top of
+ * the registry, where no other organization's may (see Organization.isDefault).
  *
  * The name is compared inside the transaction, against the row as it is now,
  * so a rename that lands between opening the dialog and confirming it makes

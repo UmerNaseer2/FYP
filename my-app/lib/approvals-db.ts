@@ -45,11 +45,10 @@ export type { ApprovalScript };
  * under a different header (rollbackFingerprintBody), so an approval for one
  * can never be spent on the other.
  *
- * A request also keeps a copy of its SQL, in `scripts`, so that a paired
- * phone can show the approver what they are deciding. The copy is only for
- * reading. What an approval covers is still pinned by the fingerprint, and
- * the phone's route hands the copy out only when it hashes back to it (see
- * getApprovalScripts).
+ * A request also keeps a copy of its SQL, in `scripts`, as a record of what
+ * was asked for. The copy is only for reading. What an approval covers is
+ * still pinned by the fingerprint, and getApprovalScripts hands the copy out
+ * only when it hashes back to it.
  *
  * Every row belongs to one organization, the one that owns its connection. A
  * request is written with INSERT ... SELECT from that connection, filtered by
@@ -167,25 +166,9 @@ export function runFingerprint(scripts: ApprovalScript[], action: ApprovalAction
 }
 
 /**
- * Stands in for a person's email wherever the only question is "is this still
- * the same person?".
- *
- * The desktop app remembers who set up approvals on a paired phone, so that a
- * yes from that phone is refused once somebody else is signed in on the
- * computer. Comparing is all it ever does, so it keeps this hash instead of
- * the address. Lower-cased, like every other email comparison in this file.
- */
-export function approverKey(email: string): string {
-  return createHash("sha256")
-    .update(`schema-studio approver\n${email.trim().toLowerCase()}`, "utf8")
-    .digest("hex");
-}
-
-/**
  * The most SQL a request keeps a copy of: one million characters, over every
- * script in the run. A phone is sent the whole copy in one answer, and a run
- * bigger than this is better read on the Deploy screen anyway. A request over
- * it works exactly the same. It just has no copy, and the phone says so.
+ * script in the run. A run bigger than this is better read on the Deploy screen
+ * anyway. A request over it works exactly the same. It just has no copy.
  */
 export const MAX_STORED_SQL_CHARS = 1_000_000;
 
@@ -279,8 +262,7 @@ export async function createApprovalRequest(input: {
     [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId, runByRequester, input.requestedBy]
   );
   if (open.rows.length > 0) {
-    // A request made before copies were kept gets one now, so a phone can
-    // show it after somebody asks again. The fingerprints matched, so this is
+    // A request made before copies were kept gets one now. The fingerprints matched, so this is
     // the SQL that request covers.
     if (scripts !== null) {
       await pool.query(
@@ -431,9 +413,7 @@ export type PendingApproval = DeployApproval & { has_sql: boolean };
 
 /**
  * The newest hundred requests still waiting for a decision, on every
- * connection in the organization, for the phone's route. The desktop app then
- * keeps only the ones on connections shared with phones. The copies of their
- * SQL stay behind: getApprovalScripts reads one at a time.
+ * connection in the organization. The copies of their SQL stay behind: getApprovalScripts reads one at a time.
  */
 export async function listPendingApprovals(orgId: number): Promise<PendingApproval[]> {
   await syncMetadataTables();
@@ -583,7 +563,7 @@ export async function getApprovalScripts(
 /**
  * Whether an approval for this exact run already exists, without spending it.
  *
- * The phone's plan reads this to say what the next step is: run it, wait for
+ * A caller can read this to say what the next step is: run it, wait for
  * the decision, or ask. It is only advice for the screen. claimApproval is what
  * decides, at the moment of the run, so a row that changes between the two only
  * means a refusal there.

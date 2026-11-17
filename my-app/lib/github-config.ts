@@ -11,8 +11,6 @@
 //   - Any other organization without settings has no GitHub at all. It never
 //     borrows the server's token: that would let anyone who makes an
 //     organization write into the server owner's repository.
-//   - The desktop app keeps a single organization, and its settings window
-//     already passes the three keys to its server, so it reads those alone.
 //
 // Kept apart from lib/github-registry.ts on purpose: that module has no
 // database in it, and the tests and tools that load it have none either.
@@ -46,8 +44,6 @@ export const ORG_UNCONFIGURED_MESSAGE =
 
 /** The repository and token for this organization. Never throws. */
 export async function githubConfigFor(owner: RegistryOwner): Promise<GitHubLookup> {
-  if (process.env.SCHEMA_STUDIO_DESKTOP === "1") return fromServer();
-
   let saved;
   try {
     saved = await readOrgGitHub(owner.orgId);

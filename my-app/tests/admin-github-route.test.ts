@@ -12,8 +12,8 @@
  *     or names the server's own repository;
  *   - that only the default organization is told the server's settings stand
  *     in for its own;
- *   - what is refused before GitHub or the database is reached: the desktop
- *     app, a server with no encryption key, a body the rules turn down;
+ *   - what is refused before GitHub or the database is reached:
+ *     a server with no encryption key, a body the rules turn down;
  *   - that a repository and token come together, and a saved pair is
  *     locked: nothing can change it, or reuse its token, until it is removed;
  *   - that GitHub is asked about the typed token, and nothing is saved when
@@ -69,7 +69,7 @@ const SAVED = {
   updatedAt: new Date("2026-11-01T02:03:04.000Z"),
 };
 
-const ENV_KEYS = ["GITHUB_REPO_OWNER", "GITHUB_REPO_NAME", "GITHUB_PAT", "SCHEMA_STUDIO_DESKTOP"] as const;
+const ENV_KEYS = ["GITHUB_REPO_OWNER", "GITHUB_REPO_NAME", "GITHUB_PAT"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
 /** What GitHub answers the repository check with, or "unreachable" for no answer at all. */
@@ -87,7 +87,6 @@ beforeEach(() => {
   mockAskedFor = [];
   mockKeySource = "app-key";
   for (const each of Object.values(mockStore)) each.mockReset();
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   process.env.GITHUB_REPO_OWNER = SERVER.owner;
   process.env.GITHUB_REPO_NAME = SERVER.repo;
   process.env.GITHUB_PAT = SERVER.token;
@@ -210,15 +209,6 @@ describe("GET", () => {
     mockStore.readOrgGitHub.mockResolvedValue(null);
     const [, body] = await answer(await GET());
     expect((body as { cannotSave: string }).cannotSave).toMatch(/no encryption key.*APP_ENCRYPTION_KEY/);
-  });
-
-  test("on the desktop, points to its Settings window and reads no database", async () => {
-    process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    const [status, body] = await answer(await GET());
-    expect(status).toBe(200);
-    expect(body).toMatchObject({ source: "server", repository: null, canUpdate: false });
-    expect((body as { cannotSave: string }).cannotSave).toMatch(/Settings window/);
-    expect(mockStore.readOrgGitHub).not.toHaveBeenCalled();
   });
 
   test("is 503 when the database does not answer, with the reason kept to the log", async () => {
@@ -369,7 +359,6 @@ describe("PUT", () => {
   });
 
   test.each<[string, () => void, number, RegExp]>([
-    ["the desktop app", () => (process.env.SCHEMA_STUDIO_DESKTOP = "1"), 403, /Settings window/],
     ["a server with no encryption key", () => (mockKeySource = "none"), 503, /no encryption key/],
   ])("refuses on %s before the body is read", async (_, setUp, status, message) => {
     setUp();
@@ -439,14 +428,6 @@ describe("DELETE", () => {
   test("says when there was nothing to forget", async () => {
     mockStore.removeOrgGitHub.mockResolvedValue({ removed: false });
     expect(await answer(await DELETE())).toEqual([200, { removed: false }]);
-  });
-
-  test("refuses on the desktop", async () => {
-    process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    const [status, body] = await answer(await DELETE());
-    expect(status).toBe(403);
-    expect((body as { error: string }).error).toMatch(/Settings window/);
-    expect(mockStore.removeOrgGitHub).not.toHaveBeenCalled();
   });
 
   test("is 503 when the database does not answer", async () => {

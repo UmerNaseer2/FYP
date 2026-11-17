@@ -148,7 +148,6 @@ describe("the move tool's own rules", () => {
 
 describeWithDatabase("copying connections into a shared database", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   const savedKey = process.env.APP_ENCRYPTION_KEY;
   let server: Client;
   let source: Client;
@@ -217,7 +216,6 @@ describeWithDatabase("copying connections into a shared database", () => {
     globalThis.__metadataSequelize = undefined;
     process.env.DATABASE_URL_A = urlFor(names.template);
     process.env.APP_ENCRYPTION_KEY = OLD_KEY_HEX;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     const { sequelize } = await import("@/lib/db/sequelize");
@@ -263,8 +261,6 @@ describeWithDatabase("copying connections into a shared database", () => {
     await local?.end();
     if (savedUrl === undefined) delete process.env.DATABASE_URL_A;
     else process.env.DATABASE_URL_A = savedUrl;
-    if (savedDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-    else process.env.SCHEMA_STUDIO_DESKTOP = savedDesktop;
     if (savedKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
     else process.env.APP_ENCRYPTION_KEY = savedKey;
     if (server) {

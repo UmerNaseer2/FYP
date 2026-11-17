@@ -9,8 +9,8 @@ import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
-import { BellIcon, HelpIcon, MoonIcon, PhoneIcon, SparkIcon, SunIcon } from "@/components/ui/icons";
-import { ADMIN_ROLE, DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
+import { BellIcon, HelpIcon, MoonIcon, SparkIcon, SunIcon } from "@/components/ui/icons";
+import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { HelpButton, HelpProvider, useHelp } from "@/components/help/HelpPanel";
 import { StudioTopbar } from "./StudioTopbar";
@@ -22,7 +22,6 @@ import { CommandBar } from "./CommandBar";
 import { useAiFeature } from "./AiPanel";
 import LogoIntro from "./LogoIntro";
 import { AppTour } from "./AppTour";
-import { TrialBar } from "./TrialBar";
 import { NAV_ITEMS, activeScreen, isKnownScreen, type NavItem } from "./nav";
 import { recordRecent } from "@/lib/recents";
 import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
@@ -161,7 +160,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // Remember this page for the command bar's "Recent" list (lib/recents.ts).
   // Only a real, named page this person's menu offers: not the Dashboard
   // fallback for an unknown address, and nothing before the role is known.
-  const onMenu = navItems.some((item) => item.href === activeHref) || active.href === "/devices";
+  const onMenu = navItems.some((item) => item.href === activeHref);
   const knownPage = isKnownScreen(pathname);
   const orgSlug = org?.slug ?? null;
   useEffect(() => {
@@ -199,15 +198,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // Where "Your requests" and the Needs you button go. Not for someone who is
   // not a member (there is nothing of theirs to see) or nobody signed in.
   const requestsHref = !notMember && authUser ? orgPath("/requests") : undefined;
-  // The one page only the account menu (and the command bar) leads to: your
-  // phone and desktop links (Devices). History is on the menu, under Watch.
-  const devicesHref = !notMember && authUser ? orgPath("/devices") : undefined;
-  const commandPages: NavItem[] = [
-    ...navItems,
-    ...(devicesHref
-      ? [{ screen: "Phone and desktop", label: "Phone and desktop", href: devicesHref, icon: <PhoneIcon size={16} /> }]
-      : []),
-  ];
   const signOut = () => void signOutEverywhere();
 
   // The round buttons at the right end of the top bar. Ask AI first (it only
@@ -263,7 +253,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
         roleLabel={roleKnown ? roleLabel : undefined}
         orgName={orgName}
         requestsHref={requestsHref}
-        devicesHref={devicesHref}
         onSignOut={signOut}
       />
     </>
@@ -323,7 +312,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
           onOpenCommand={() => setCommandOpen(true)}
           action={topActions}
         />
-        {org?.trial && <TrialBar isAdmin={roleKnown && role === ADMIN_ROLE} />}
         {/* tabIndex -1: the skip link can put focus here, Tab never stops on it. */}
         <main
           id="main-content"
@@ -351,7 +339,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
     {commandOpen && (
       <ShellCommandBar
         onClose={() => setCommandOpen(false)}
-        pages={commandPages}
+        pages={navItems}
         activeHref={activeHref}
         waiting={roleKnown ? waitingRequests : 0}
         requestsHref={requestsHref}
@@ -365,9 +353,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
       pages={tourPages}
       roleKnown={roleKnown}
       role={role}
-      roleLabel={roleLabel}
       can={can}
-      isAdmin={roleKnown && role === ADMIN_ROLE}
     />
     </HelpProvider>
   );

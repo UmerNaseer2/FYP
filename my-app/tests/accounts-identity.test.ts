@@ -145,37 +145,6 @@ describe("a Microsoft sign-in in the browser", () => {
   });
 });
 
-describe("a desktop app sign-in", () => {
-  // lib/desktop-sign-in.ts has checked the token and refused any other tenant.
-  const desktop = (user: SignInParams["user"]): SignInParams => ({
-    user,
-    account: { provider: "desktop" },
-  });
-
-  test("is the same Microsoft account the browser would name, trusted", () => {
-    const who = identityFrom(
-      desktop({
-        id: `${HOME}:${OBJECT_ID.toUpperCase()}`,
-        email: "ada@client.example",
-        name: "Ada",
-      }),
-    );
-    expect(who).toEqual({
-      provider: "microsoft",
-      subject: `${HOME}:${OBJECT_ID}`,
-      email: "ada@client.example",
-      emailVerified: true,
-      name: "Ada",
-      homeTenant: true,
-    });
-  });
-
-  test("is nobody without an account or an address", () => {
-    expect(identityFrom(desktop({ id: "", email: "ada@client.example" }))).toBeNull();
-    expect(identityFrom(desktop({ id: `${HOME}:${OBJECT_ID}`, email: null }))).toBeNull();
-  });
-});
-
 describe("a GitHub sign-in", () => {
   test("is the numeric user ID, with GitHub's word on the address", () => {
     expect(identityFrom(github({}))).toEqual({

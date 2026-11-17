@@ -114,12 +114,5 @@ export const driftHelp: HelpTopic = {
         "The card at the top says whether automatic checking is running on this server.",
       ],
     },
-    {
-      title: "Checked by the website, and On your computers",
-      body: [
-        "In the desktop app, Checked by the website lists schemas the organization checks on its own connections. This computer shows the latest results. The full diff is on the website.",
-        "In a browser, On your computers lists schemas the desktop app checks on connections that stay on your computers. Only you see that list, and the full diff is in the desktop app.",
-      ],
-    },
   ],
 };

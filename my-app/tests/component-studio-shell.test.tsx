@@ -63,7 +63,6 @@ import {
   type BuiltInRole,
 } from "@/lib/permissions";
 import { pageLoader } from "@/lib/sign-out";
-import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import { setPathname } from "./helpers/render-page";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
@@ -546,22 +545,6 @@ describe("signing out", () => {
       loaded.mockRestore();
     }
   });
-
-  test("inside the desktop app, leaves it to the app, which forgets the Microsoft account too", async () => {
-    // The app holds the account so that it can re-check it in the background.
-    // Ending only the session would leave the account behind, so the app ends
-    // both and brings up the login screen itself.
-    const bridge = installDesktopBridge();
-    try {
-      renderShell();
-      fireEvent.click(within(openAccountMenu()).getByRole("menuitem", { name: "Sign out" }));
-      await act(async () => {});
-      expect(bridge.signOut).toHaveBeenCalledTimes(1);
-      expect(mockSignOutCalls).toEqual([]);
-    } finally {
-      removeDesktopBridge();
-    }
-  });
 });
 
 describe("the theme", () => {
@@ -723,45 +706,5 @@ describe("the number beside Requests", () => {
     answerCounts({ waiting: 5, answered: 5 });
     renderShell();
     expect(asked).toEqual([]);
-  });
-});
-
-describe("the shared trial's strip", () => {
-  function renderTrial(trial: boolean) {
-    resetUserCache();
-    if (mockSession) seedUserAccess(me.status, me.body);
-    return render(
-      <OrgProvider slug="trial" name="Schema Studio Trial" trial={trial}>
-        <StudioShell>{PAGE}</StudioShell>
-      </OrgProvider>
-    );
-  }
-
-  test("tells everyone in the trial that it is shared", () => {
-    signInAs("viewer");
-    renderTrial(true);
-    expect(screen.getByRole("note")).toHaveTextContent("Shared trial. Others see what you change.");
-  });
-
-  test("is not there in any other organization", () => {
-    renderTrial(false);
-    expect(screen.queryByText(/Shared trial/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Trial options" })).not.toBeInTheDocument();
-  });
-
-  test("offers Reset trial to the Trial Admin", () => {
-    signInAs("admin");
-    renderTrial(true);
-    fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
-    expect(screen.getByRole("menuitem", { name: "Reset trial" })).toBeInTheDocument();
-  });
-
-  test("and to nobody else", () => {
-    signInAs("editor");
-    renderTrial(true);
-    expect(screen.getByText(/Shared trial/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Trial options" }));
-    expect(screen.getByRole("menuitem", { name: "Take the tour" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Reset trial" })).not.toBeInTheDocument();
   });
 });

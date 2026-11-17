@@ -25,8 +25,6 @@ import { connectionsHelp } from "./connections";
 import { requestsHelp } from "./requests";
 import { adminHelp } from "./admin";
 import { schemaDetailsHelp } from "./schema-details";
-import { linkComputerHelp } from "./link-computer";
-import { devicesHelp } from "./devices";
 import { historyHelp } from "./history";
 
 export type { HelpTopic, HelpStep, HelpTerm, HelpProblem, HelpSection } from "./types";
@@ -52,8 +50,6 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
   "/requests": requestsHelp,
   "/admin": adminHelp,
   "/schemas": schemaDetailsHelp,
-  "/link-computer": linkComputerHelp,
-  "/devices": devicesHelp,
   "/history": historyHelp,
 };
 

@@ -37,10 +37,8 @@ import {
 
 /**
  * Saving, changing and deleting a saved connection, for whoever the caller's
- * gate says is asking. Two doors lead here: the Connections page
- * (app/api/connections) and a linked desktop acting as its person
- * (app/api/agent/sync/connections). Each door checks its own caller; what
- * happens after that is this file, once, so the two cannot drift apart.
+ * gate says is asking. The Connections page's routes (app/api/connections)
+ * check their caller; what happens after that is this file.
  *
  * The rules are the ones app/api/connections/route.ts describes, plus one:
  * every save moves the row's `version` on, and a change or delete that names
@@ -62,7 +60,7 @@ export const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, userna
                 ssl, ssl_mode, application_table, execute_role,
                 last_tested_at, last_test_ok, last_test_version,
                 last_test_latency_ms, last_test_error,
-                version, updated_at, updated_by, site_id, site_version,
+                version, updated_at, updated_by,
                 substring(password from '^local:v1:[^:]*:(.*)$') AS lives_on,
                 substring(password from '^local:v1:([^:]*):') AS local_key`;
 
@@ -163,14 +161,6 @@ function baseVersion(body: Record<string, unknown>): number | null {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : null;
 }
-
-/**
- * On a desktop, a copy of a connection the linked website owns. It is changed
- * on the website, through the link, and never here: a change made only here
- * would be overwritten by the next sync without anyone being told.
- */
-export const SITE_OWNED_MESSAGE =
-  "This connection belongs to the website this computer is linked to. Change it there, or through the link while online.";
 
 async function conflict(principal: Principal, id: number): Promise<WriteAnswer> {
   const { rows } = await pool.query(
@@ -349,11 +339,10 @@ export async function updateConnection(
       ssl_mode: string | null;
       name: string;
       version: number;
-      site_id: number | null;
       execute_role: string | null;
     }>(
       `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode,
-              name, version, site_id, execute_role
+              name, version, execute_role
          FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
@@ -361,9 +350,6 @@ export async function updateConnection(
     // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return reply({ error: "Connection not found." }, { status: 404 });
-    }
-    if (existing.rows[0].site_id != null) {
-      return reply({ error: SITE_OWNED_MESSAGE, siteOwned: true }, { status: 409 });
     }
     // A local connection is changed only on the machine that holds its
     // password: anywhere else there is nothing to check the change against.
@@ -634,19 +620,15 @@ export async function deleteConnection(
     const existing = await pool.query<{
       name: string;
       version: number;
-      site_id: number | null;
       password: string | null;
     }>(
-      `SELECT name, version, site_id, password FROM connections WHERE id = $1 AND org_id = $2`,
+      `SELECT name, version, password FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
     // Another organization's connection reads as missing, the same answer a
     // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return reply({ error: "Connection not found." }, { status: 404 });
-    }
-    if (existing.rows[0].site_id != null) {
-      return reply({ error: SITE_OWNED_MESSAGE, siteOwned: true }, { status: 409 });
     }
     // Deleting a connection someone has just changed is worth a second look:
     // they may have pointed it somewhere that is still wanted.

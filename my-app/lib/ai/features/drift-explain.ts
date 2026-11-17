@@ -496,7 +496,7 @@ export const driftOneLinerSchema = z.object({ line: z.string().min(1).max(240) }
 export type DriftOneLiner = z.infer<typeof driftOneLinerSchema>;
 
 export const DRIFT_ONE_LINER_SYSTEM = [
-  "You write the one line that goes on a drift alert, shown on a phone's lock screen and in a desktop notification.",
+  "You write the one line that goes on a drift alert, shown in a notification.",
   "Drift means the live database no longer matches the registry's baseline. The CHANGES list goes from the baseline to live.",
   `Answer in JSON: line, one plain sentence of at most 25 words on what changed on live, the most serious change first. Name the tables and columns that changed, and put every table and column name in backticks. No change ids, no advice, no greeting, and no guess at who did it.`,
 ].join("\n");

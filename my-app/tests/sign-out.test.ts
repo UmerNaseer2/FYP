@@ -4,12 +4,10 @@
  * signOutEverywhere (lib/sign-out.ts): where signing out lands.
  *
  * tests/component-studio-shell.test.tsx presses Sign out on the studio's rail,
- * and checks the default (the login screen) in a browser and the hand-off to
- * the desktop app. These add a caller that asks to land somewhere else: the
+ * and checks the default (the login screen). These add a caller that asks to land somewhere else: the
  * invitation page, which brings someone who signs out to use another account
  * back to the same invitation.
  */
-import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import { pageLoader, signOutEverywhere } from "@/lib/sign-out";
 
 // next-auth ships as ESM, which Jest cannot load.
@@ -42,7 +40,6 @@ beforeEach(() => {
   loaded = jest.spyOn(pageLoader, "load").mockImplementation(() => {});
 });
 afterEach(() => {
-  removeDesktopBridge();
   loaded.mockRestore();
 });
 
@@ -90,14 +87,4 @@ test("reads no answer from the server as signed out", async () => {
   await signOutEverywhere();
   expect(mockSignOut).toHaveBeenCalledTimes(1);
   expect(loaded.mock.calls).toEqual([["/login"]]);
-});
-
-test("inside the desktop app, leaves it to the app wherever it was told to land", async () => {
-  // The app always shows its own login screen, and has no invitation page to
-  // come back to.
-  const bridge = installDesktopBridge();
-  await signOutEverywhere(BACK_TO_INVITE);
-  expect(bridge.signOut.mock.calls).toEqual([[]]);
-  expect(mockSignOut).not.toHaveBeenCalled();
-  expect(loaded).not.toHaveBeenCalled();
 });

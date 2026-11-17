@@ -20,8 +20,7 @@
 // or an index, so one statement may take half an hour and the whole run an
 // hour. They are there only so that a statement like pg_sleep(100000), or a
 // query that never finishes, cannot hold a connection forever. A dry run's
-// are shorter, and the trial's shorter still: its demo database is small and
-// shared by every visitor.
+// are shorter.
 //
 // How Stop works. Each run names its session after its run id
 // (application_name "schema-studio run <id>") and notes its backend pid. Stop
@@ -36,7 +35,7 @@
 //
 // A script that renames its own session (SET application_name) hides it from
 // Stop and from the whole-run timer, though statement_timeout still ends each
-// of its statements. The trial refuses such scripts (lib/trial-sql-guard.ts).
+// of its statements.
 
 import type { Pool, PoolClient } from "pg";
 
@@ -71,21 +70,10 @@ export const DRY_RUN_LIMITS: RunLimits = {
   idleInTransactionMs: 5 * MINUTE,
 };
 
-/** Any run in the trial, dry or real. */
-export const TRIAL_RUN_LIMITS: RunLimits = {
-  statementMs: MINUTE,
-  runMs: 4 * MINUTE,
-  idleInTransactionMs: MINUTE,
-};
-
-/** The limits one run goes by. The trial's win over a dry run's. */
-export function runLimits(run: { trial: boolean; dryRun: boolean }): RunLimits {
-  if (run.trial) return TRIAL_RUN_LIMITS;
+/** The limits one run goes by. */
+export function runLimits(run: { dryRun: boolean }): RunLimits {
   return run.dryRun ? DRY_RUN_LIMITS : REAL_RUN_LIMITS;
 }
-
-/** The most deploys and rollbacks the trial's demo database runs at once. */
-export const TRIAL_MAX_CONCURRENT_RUNS = 2;
 
 /** How often Stop tries again while the run is between two statements. */
 const CANCEL_RETRY_MS = 2 * SECOND;
@@ -107,13 +95,8 @@ export function runApplicationName(runId: string): string {
   return `${APPLICATION_NAME_PREFIX}${runId}`;
 }
 
-export const TRIAL_BUSY_MESSAGE =
-  `The trial's demo database is already running ${TRIAL_MAX_CONCURRENT_RUNS} deploys or ` +
-  `rollbacks, the most it takes at once. Wait a moment for one to finish, then try again.`;
 export const DUPLICATE_RUN_MESSAGE =
   "A run with this id is already going. Reload the page and try again.";
-export const BUSY_CHECK_FAILED_MESSAGE =
-  "Could not check how busy the trial database is, so nothing ran. Try again in a moment.";
 
 // ─── The runs going in this server process ─────────────────────────────────
 
@@ -124,7 +107,6 @@ export type RunEntry = {
   /** Who started it (actorFor), so that they may stop it. */
   actor: string;
   kind: RunKind;
-  trial: boolean;
   /** The pool the run's connection came from. Stop borrows a second one from it. */
   pool: Pool;
   /** The run's backend pid, once its transaction has begun. */
@@ -142,7 +124,7 @@ export type RunEntry = {
 
 export type RunDetails = Pick<
   RunEntry,
-  "runId" | "orgId" | "connectionId" | "actor" | "kind" | "trial" | "pool"
+  "runId" | "orgId" | "connectionId" | "actor" | "kind" | "pool"
 >;
 
 declare global {
@@ -166,19 +148,11 @@ function quietTimer(callback: () => void, ms: number): ReturnType<typeof setTime
 
 /**
  * Note a run as going and start its whole-run timer. "duplicate" when a run
- * with that id is already going here, and "busy" when the trial already has
- * its most runs going in this process.
+ * with that id is already going here.
  */
-export function registerRun(details: RunDetails, limits: RunLimits): RunEntry | "duplicate" | "busy" {
+export function registerRun(details: RunDetails, limits: RunLimits): RunEntry | "duplicate" {
   const runs = registry();
   if (runs.has(details.runId)) return "duplicate";
-  if (details.trial) {
-    let going = 0;
-    for (const other of runs.values()) {
-      if (other.trial && !other.done) going += 1;
-    }
-    if (going >= TRIAL_MAX_CONCURRENT_RUNS) return "busy";
-  }
   const entry: RunEntry = {
     ...details,
     pid: null,
@@ -325,20 +299,6 @@ export async function prepareRunTransaction(
   return typeof pid === "number" ? pid : null;
 }
 
-/**
- * How many other runs are going on this database under this login, on any
- * instance of the app. Asked before BEGIN, in the trial only.
- */
-export async function countOtherRuns(client: PoolClient): Promise<number> {
-  const { rows } = await client.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM pg_stat_activity
-      WHERE application_name LIKE $1 AND usename = current_user
-        AND datname = current_database() AND pid <> pg_backend_pid()`,
-    [`${APPLICATION_NAME_PREFIX}%`]
-  );
-  return rows[0]?.n ?? 0;
-}
-
 // ─── Cancelling a run's statement ──────────────────────────────────────────
 
 /**
@@ -433,7 +393,6 @@ export function formatLimit(ms: number): string {
 export type StopContext = {
   kind: RunKind;
   dryRun: boolean;
-  trial: boolean;
   limits: RunLimits;
   /** The step that was running, such as `Version 3 of "orders"`, or null. */
   subject: string | null;
@@ -456,8 +415,8 @@ function sqlStateOf(error: unknown): string | null {
 export function runStopMessage(errors: unknown[], entry: RunEntry | null, ctx: StopContext): string | null {
   const kindWord = ctx.kind;
   const runWord = ctx.dryRun ? "dry run" : kindWord;
-  const where = ctx.trial ? "in the trial" : ctx.dryRun ? "in a dry run" : `in a ${kindWord}`;
-  const whoMay = ctx.trial ? "a run in the trial" : ctx.dryRun ? "a dry run" : `a ${kindWord}`;
+  const where = ctx.dryRun ? "in a dry run" : `in a ${kindWord}`;
+  const whoMay = ctx.dryRun ? "a dry run" : `a ${kindWord}`;
   const outcome = ctx.dryRun
     ? "Nothing was changed."
     : ctx.kind === "deploy"
@@ -469,7 +428,7 @@ export function runStopMessage(errors: unknown[], entry: RunEntry | null, ctx: S
     let text =
       `${who} ran longer than ${formatLimit(ctx.limits.statementMs)}, the most one statement ` +
       `may take ${where}, so the ${runWord} was stopped. ${outcome}`;
-    if (ctx.dryRun && !ctx.trial) {
+    if (ctx.dryRun) {
       text +=
         ` A real ${kindWord} allows each statement ${formatLimit(REAL_RUN_LIMITS.statementMs)}, ` +
         `so the script may still be fine, only slow on this much data.`;

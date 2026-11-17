@@ -106,10 +106,6 @@ const mockCheck = jest.fn<Promise<{ ok: true; run: { status: string } }>, unknow
 jest.mock("../lib/drift-runner", () => ({
   runDriftCheck: (...args: unknown[]) => mockCheck(...args),
 }));
-const mockAlert = jest.fn(async (..._args: unknown[]) => undefined);
-jest.mock("../lib/push-alerts", () => ({
-  alertDriftChange: (...args: unknown[]) => mockAlert(...args),
-}));
 jest.mock("../lib/schema-metrics", () => ({
   pruneSchemaMetrics: async () => 0,
   METRIC_RETENTION_DAYS: 90,
@@ -150,7 +146,6 @@ beforeEach(() => {
   mockDb.connected = 0;
   mockCheck.mockClear();
   mockAfter.mockClear();
-  mockAlert.mockClear();
   delete process.env.VERCEL;
   delete process.env.DRIFT_SCHEDULER;
   jest.spyOn(console, "error").mockImplementation(() => undefined);
@@ -192,30 +187,11 @@ describe("a tick nobody else is running", () => {
     expect(report).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1."]]) });
   });
 
-  it("leaves out schemas on a desktop's copies of the website's connections: the website checks those", async () => {
-    await runSchedulerTick(NOW);
-    const read = mockDb.statements.find((statement) => statement.text.includes("FROM tracked_schemas"));
-    expect(read?.text.replace(/\s+/g, " ")).toMatch(
-      /NOT EXISTS \( ?SELECT 1 FROM connections c WHERE c\.id = t\.connection_id AND c\.site_id IS NOT NULL ?\)/
-    );
-  });
-
   it("runs each check in the organization its schema belongs to", async () => {
     await runSchedulerTick(NOW);
     // The tick reads schemas from every organization, so nothing else tells the
     // check whose rows it may read and write.
     expect(mockCheck.mock.calls[0]).toEqual([3, 1, "scheduled", "on_change", { describe: expect.any(Function) }]);
-  });
-
-  it("passes each check's outcome to the phone alerts, in that organization", async () => {
-    await runSchedulerTick(NOW);
-    expect(mockAlert.mock.calls).toEqual([[3, { status: "in_sync" }]]);
-  });
-
-  it("has nothing to alert about when a check could not run", async () => {
-    mockCheck.mockRejectedValueOnce(new Error("metadata database went away"));
-    await runSchedulerTick(NOW);
-    expect(mockAlert).not.toHaveBeenCalled();
   });
 
   it("gives the lease back under the name it took it", async () => {
@@ -365,7 +341,6 @@ describe("a check that never answers", () => {
 
     await jest.advanceTimersByTimeAsync(1);
     expect(await tick).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1 · 1 timed out."]]) });
-    expect(mockAlert).not.toHaveBeenCalled();
   });
 
   it("gives the lease back and lets the next tick run", async () => {
@@ -436,20 +411,6 @@ describe("a check that never answers", () => {
     for (const orgId of [3, 5]) {
       expect((await driftSchedulerStatus(orgId)).lastTickSummary).not.toContain("org-five");
     }
-  });
-
-  it("still sends the alert for a late answer", async () => {
-    // The check carried on and recorded what it found, so the phone should hear
-    // about it, even though the tick's line could not wait for it.
-    const ending = hangingCheck();
-    const tick = runSchedulerTick(NOW);
-    await settle();
-    await jest.advanceTimersByTimeAsync(LIMIT_MS);
-    await tick;
-
-    ending.answer({ ok: true, run: { status: "drifted" } });
-    await settle();
-    expect(mockAlert.mock.calls).toEqual([[3, { status: "drifted" }]]);
   });
 });
 

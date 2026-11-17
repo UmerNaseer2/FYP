@@ -17,7 +17,7 @@
  *    is CSS, and jsdom applies no stylesheet.
  */
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { LandingPage, type LandingPageProps } from "@/components/landing/LandingPage";
 
 const SIGN_IN: LandingPageProps = {
@@ -39,99 +39,9 @@ function links(): [string | null, string | null][] {
 }
 
 describe("LandingPage", () => {
-  it("offers the shared trial as Try it now, only when the server has it", () => {
-    const { rerender } = render(<LandingPage {...SIGN_IN} />);
-    expect(screen.queryByRole("button", { name: /^Try/ })).toBeNull();
-    expect(screen.queryByText(/shared trial/)).toBeNull();
-    rerender(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    // One button. It asks which role first; before the page's script runs it
-    // posts on its own, as the Trial Admin.
-    const button = screen.getByRole("button", { name: /^Try/ });
-    expect(button).toHaveAccessibleName("Try it now, no account needed");
-    expect(button).toHaveTextContent("Try it now");
-    expect(button).toHaveTextContent("No account needed");
-    expect(button).toHaveAttribute("name", "role");
-    expect(button).toHaveAttribute("value", "admin");
-    expect(button).toHaveAttribute("aria-haspopup", "dialog");
-    expect(button.closest("form")).toHaveAttribute("action", "/api/trial");
-    expect(button.closest("form")).toHaveAttribute("method", "post");
-    expect(
-      screen.getByText(
-        "Try it now opens a shared trial with example data. Pick Admin, Editor or Viewer, and switch any time."
-      )
-    ).toBeInTheDocument();
-    // Create account and Log in stay, next to it.
-    expect(links()).toEqual([
-      ["Create account", "/login?callbackUrl=/onboarding"],
-      ["Log in", "/login"],
-    ]);
-  });
 
-  it("asks which role first, and each choice signs in as that trial account", () => {
-    render(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    const button = screen.getByRole("button", { name: "Try it now, no account needed" });
-    // The click opens the picker instead of posting.
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
-    act(() => {
-      button.dispatchEvent(click);
-    });
-    expect(click.defaultPrevented).toBe(true);
-    const dialog = screen.getByRole("dialog", { name: "Choose a role to try" });
-    expect(dialog).toHaveAttribute("aria-modal", "true");
-    expect(button).toHaveAttribute("aria-expanded", "true");
-    expect(dialog).toHaveTextContent(/switch role any time from the account menu/i);
-    const cards = within(dialog).getAllByRole("button", { name: /^Try as/ });
-    expect(cards.map((c) => [c.getAttribute("aria-label"), c.getAttribute("name"), c.getAttribute("value")])).toEqual([
-      ["Try as Trial Admin", "role", "admin"],
-      ["Try as Trial Editor", "role", "editor"],
-      ["Try as Trial Viewer", "role", "viewer"],
-    ]);
-    for (const card of cards) {
-      expect(card).toHaveAttribute("type", "submit");
-      expect(card.closest("form")).toHaveAttribute("action", "/api/trial");
-      expect(card.closest("form")).toHaveAttribute("method", "post");
-    }
-    // Each card says what that role can do.
-    expect(cards[2]).toHaveAccessibleDescription(/except Admin/);
-  });
-
-  it("closes the picker with Escape, the close button or a press outside it", () => {
-    render(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    const button = screen.getByRole("button", { name: "Try it now, no account needed" });
-    fireEvent.click(button);
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
-    fireEvent.click(button);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
-    fireEvent.click(button);
-    fireEvent.mouseDown(screen.getByRole("dialog").parentElement as HTMLElement);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(button).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("signs in once, however many times a card is pressed", () => {
-    render(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    fireEvent.click(screen.getByRole("button", { name: "Try it now, no account needed" }));
-    const editor = screen.getByRole("button", { name: "Try as Trial Editor" });
-    const first = new MouseEvent("click", { bubbles: true, cancelable: true });
-    act(() => {
-      editor.dispatchEvent(first);
-    });
-    expect(first.defaultPrevented).toBe(false);
-    expect(editor).toHaveAttribute("aria-busy", "true");
-    expect(editor).toHaveTextContent("Opening the trial…");
-    const second = new MouseEvent("click", { bubbles: true, cancelable: true });
-    act(() => {
-      screen.getByRole("button", { name: "Try as Trial Viewer" }).dispatchEvent(second);
-    });
-    expect(second.defaultPrevented).toBe(true);
-  });
-
-  it("never says the trial resets by itself, and names no environments", () => {
-    render(<LandingPage {...SIGN_IN} trialAction="/api/trial" />);
-    expect(document.body).not.toHaveTextContent(/every night|nightly|resets? (every|each|at)/i);
+  it("names no environments", () => {
+    render(<LandingPage {...SIGN_IN} />);
     expect(document.body).not.toHaveTextContent(/\b(dev|staging|prod|production)\b/i);
   });
 
@@ -162,7 +72,7 @@ describe("LandingPage", () => {
     expect(screen.queryByText(/created the first time/)).toBeNull();
   });
 
-  it("says what the product is for and lists six features", () => {
+  it("says what the product is for and lists five features", () => {
     render(<LandingPage {...SIGN_IN} />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
       "Catch the schema changes nobody shipped."
@@ -174,7 +84,6 @@ describe("LandingPage", () => {
       "Deploy and roll back",
       "Roles and permissions",
       "Schema diagrams",
-      "Desktop app and phone approvals",
     ]);
   });
 

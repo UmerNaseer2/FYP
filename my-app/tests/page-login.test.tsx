@@ -9,7 +9,7 @@
  * refusal — a blocked account, an expired link, a server with no credentials
  * at all — arrived as a button that appeared to do nothing when pressed.
  *
- * In the browser there are two ways in, Microsoft and GitHub, each offered
+ * There are two ways in, Microsoft and GitHub, each offered
  * only when the server has its keys. Signing in carries on to the page that
  * sent the person here (?callbackUrl=), as long as that page is on this site;
  * lib/callback-url.ts has the rules and tests/callback-url.test.ts the cases.
@@ -18,7 +18,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // A real redirect never comes back, so the stub never settles: that is what
 // puts the button into its "Redirecting…" state and keeps it there, which is
@@ -29,13 +29,7 @@ jest.mock("next-auth/react", () => ({
 
 import { signIn } from "next-auth/react";
 import LoginPage from "@/app/login/page";
-import type { DesktopSignInResult } from "@/lib/desktop-bridge";
 import { resetPageState, setRoutes } from "./helpers/render-page";
-import {
-  installDesktopBridge,
-  removeDesktopBridge,
-  type FakeDesktopBridge,
-} from "./helpers/desktop-bridge";
 
 const signInMock = signIn as jest.Mock;
 
@@ -160,37 +154,6 @@ describe("signing in", () => {
     expect(details).toHaveTextContent("NEXTAUTH_SECRET");
     details?.remove();
     expect(banner).not.toHaveTextContent(/AZURE|GITHUB_|NEXTAUTH/);
-    // No trial on this server, so no button that could only fail.
-    expect(screen.queryByRole("button", { name: "Try it now" })).toBeNull();
-  });
-
-  it("offers the shared trial beside the greyed out button when the server has it", async () => {
-    setRoutes([{ match: "/api/auth/providers", body: { trial: { id: "trial" } } }]);
-    render(<LoginPage />);
-
-    const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent("Microsoft sign-in isn't set up here yet.");
-    expect(banner).toHaveTextContent("You can still try the shared trial.");
-    // The same entry the front page uses: a form post to /api/trial.
-    const tryIt = screen.getByRole("button", { name: "Try it now" });
-    expect(tryIt).toHaveAttribute("name", "role");
-    expect(tryIt).toHaveAttribute("value", "admin");
-    expect(tryIt.closest("form")).toHaveAttribute("action", "/api/trial");
-    expect(tryIt.closest("form")).toHaveAttribute("method", "post");
-    expect(
-      screen.getByRole("button", { name: "Continue with Microsoft (unavailable)" })
-    ).toBeDisabled();
-  });
-
-  it("says so when the trial itself could not be opened", async () => {
-    arriveWith("?error=TrialUnavailable");
-    setRoutes([{ match: "/api/auth/providers", body: { trial: { id: "trial" } } }]);
-    render(<LoginPage />);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The trial could not be opened just now. Try again in a moment."
-    );
-    expect(screen.getByRole("button", { name: "Try it now" })).toBeEnabled();
   });
 
   it("tells a newcomer how to join or start an organization", async () => {
@@ -201,8 +164,7 @@ describe("signing in", () => {
     fireEvent.click(screen.getByRole("button", { name: "Trouble signing in?" }));
     expect(screen.getByText(/the email address the invitation went to/)).toBeVisible();
     expect(screen.getByText(/make an organization of your own/)).toBeVisible();
-    // The old promise that everyone starts as a Viewer is the desktop app's
-    // alone now: in the browser nobody joins anything just by signing in.
+    // Nobody joins anything just by signing in.
     expect(screen.queryByText(/New people start as Viewers/)).not.toBeInTheDocument();
   });
 
@@ -339,226 +301,5 @@ describe("the theme toggle on the signed-out screen", () => {
     fireEvent.click(screen.getByRole("button", { name: /Light mode/ }));
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
     expect(localStorage.getItem("ss-theme")).toBe("light");
-  });
-});
-
-describe("inside the desktop app", () => {
-  // The app's own server offers a "desktop" provider in place of the browser
-  // one (auth.config.ts), and the sign-in itself happens in the system
-  // browser: the app opens it, waits, and hands back the ID token Microsoft
-  // gave it, which this screen then posts to that provider.
-  const DESKTOP = [{ match: "/api/auth/providers", body: { desktop: { id: "desktop" } } }];
-
-  let bridge: FakeDesktopBridge;
-  beforeEach(() => {
-    bridge = installDesktopBridge();
-  });
-  afterEach(() => removeDesktopBridge());
-
-  /**
-   * Keeps the app's sign-in waiting, the way it does while the person is still
-   * in their browser, and hands back the way to end it.
-   */
-  function holdSignIn() {
-    let finish: (result: DesktopSignInResult) => void = () => {};
-    bridge.signIn.mockImplementation(
-      () =>
-        new Promise<DesktopSignInResult>((resolve) => {
-          finish = resolve;
-        })
-    );
-    return (result: DesktopSignInResult) => act(async () => finish(result));
-  }
-
-  /** The button, once the provider list has said there is a sign-in to start. */
-  async function pressContinue() {
-    fireEvent.click(await screen.findByRole("button", { name: "Continue with Microsoft" }));
-  }
-
-  it("says the sign-in opens the web browser rather than leaving this window", async () => {
-    setRoutes(DESKTOP);
-    render(<LoginPage />);
-
-    expect(await screen.findByRole("button", { name: "Continue with Microsoft" })).toBeEnabled();
-    expect(
-      screen.getByText("Opens your web browser for your organization's Microsoft sign-in.")
-    ).toBeInTheDocument();
-  });
-
-  it("has no Back link, since the app has no front page", async () => {
-    setRoutes(DESKTOP);
-    render(<LoginPage />);
-    await screen.findByRole("button", { name: "Continue with Microsoft" });
-
-    expect(screen.queryByRole("link", { name: "Back" })).not.toBeInTheDocument();
-  });
-
-  it("waits for the browser, then hands Microsoft's token to the server", async () => {
-    setRoutes(DESKTOP);
-    const finish = holdSignIn();
-    render(<LoginPage />);
-    await pressContinue();
-
-    // Nothing is posted until there is a token to post, and the button says
-    // where the person has to look in the meantime.
-    expect(screen.getByRole("button", { name: "Waiting for your browser…" })).toBeDisabled();
-    expect(bridge.signIn).toHaveBeenCalledTimes(1);
-    expect(signInMock).not.toHaveBeenCalled();
-
-    await finish({ ok: true, idToken: "header.payload.signature" });
-    expect(await screen.findByRole("button", { name: "Signing you in…" })).toBeDisabled();
-    expect(signInMock).toHaveBeenCalledTimes(1);
-    expect(signInMock).toHaveBeenCalledWith("desktop", {
-      idToken: "header.payload.signature",
-      callbackUrl: "/studio",
-    });
-  });
-
-  it("goes quietly back to the button when the person cancels", async () => {
-    setRoutes(DESKTOP);
-    const finish = holdSignIn();
-    render(<LoginPage />);
-    await pressContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(bridge.cancelSignIn).toHaveBeenCalledTimes(1);
-
-    // The app answers a cancel by ending the wait it was holding open.
-    await finish({ ok: false, reason: "cancelled", message: "The sign-in was cancelled." });
-    expect(await screen.findByRole("button", { name: "Continue with Microsoft" })).toBeEnabled();
-    // Changing your mind is not a failure, so nothing is reported as one.
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(signInMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      "offline",
-      "Microsoft could not be reached. Check this computer's internet connection and try again.",
-    ],
-    ["failed", "Microsoft did not finish the sign-in. Try again in a moment."],
-  ] as const)("shows the app's own words for a sign-in that came back %s", async (reason, message) => {
-    setRoutes(DESKTOP);
-    bridge.signIn.mockResolvedValue({ ok: false, reason, message });
-    render(<LoginPage />);
-    await pressContinue();
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(message);
-    expect(screen.getByRole("button", { name: "Retry with Microsoft" })).toBeEnabled();
-    expect(signInMock).not.toHaveBeenCalled();
-  });
-
-  it("opens the browser again from the banner, and drops the old reason", async () => {
-    setRoutes(DESKTOP);
-    bridge.signIn.mockResolvedValueOnce({
-      ok: false,
-      reason: "offline",
-      message: "Microsoft could not be reached.",
-    });
-    render(<LoginPage />);
-    await pressContinue();
-    fireEvent.click(await screen.findByRole("button", { name: "Retry with Microsoft" }));
-
-    // The second attempt falls back to the fake's default, a sign-in still
-    // waiting for the browser.
-    expect(bridge.signIn).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("button", { name: "Waiting for your browser…" })).toBeDisabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("keeps Electron's wording out of it when the app itself breaks", async () => {
-    // The app answers every sign-in with a result, failures included, so a
-    // rejected call means something in the app broke. What arrives then names
-    // Electron's plumbing, which tells the person nothing they can act on.
-    setRoutes(DESKTOP);
-    bridge.signIn.mockRejectedValue(
-      new Error("Error invoking remote method 'sign-in': Error: EACCES")
-    );
-    const quiet = jest.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      render(<LoginPage />);
-      await pressContinue();
-
-      const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent("Schema Studio could not start the sign-in.");
-      expect(alert).toHaveTextContent("Help > Open Logs");
-      expect(alert).not.toHaveTextContent(/remote method|EACCES/);
-      expect(signInMock).not.toHaveBeenCalled();
-    } finally {
-      quiet.mockRestore();
-    }
-  });
-
-  it("says the app was built without its sign-in IDs when the server has none", async () => {
-    setRoutes(UNCONFIGURED);
-    render(<LoginPage />);
-
-    expect(
-      await screen.findByText("Microsoft sign-in isn't set up in this copy of the app.")
-    ).toBeInTheDocument();
-    expect(screen.getByText(/This copy of the desktop app was built without/)).toBeInTheDocument();
-    // A desktop build has no client secret at all, so the browser's list of
-    // four keys would send whoever builds it looking for one.
-    expect(screen.queryByText(/AZURE_AD_CLIENT_SECRET/)).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Continue with Microsoft (unavailable)" })
-    ).toBeDisabled();
-  });
-
-  it("does not offer the browser sign-in inside the app", async () => {
-    // Its redirect would take the app's own window to Microsoft's page, which
-    // is the one thing the app is built not to do, so a server offering only
-    // that provider counts as offering none.
-    setRoutes(CONFIGURED);
-    render(<LoginPage />);
-
-    expect(
-      await screen.findByText("Microsoft sign-in isn't set up in this copy of the app.")
-    ).toBeInTheDocument();
-  });
-
-  it("carries on to the page that sent the person here", async () => {
-    arriveWith(`?callbackUrl=${encodeURIComponent("/acme/connections")}`);
-    setRoutes(DESKTOP);
-    const finish = holdSignIn();
-    render(<LoginPage />);
-    await pressContinue();
-
-    await finish({ ok: true, idToken: "header.payload.signature" });
-    expect(signInMock).toHaveBeenCalledWith("desktop", {
-      idToken: "header.payload.signature",
-      callbackUrl: "/acme/connections",
-    });
-  });
-
-  it("offers only Microsoft, even from a server that has GitHub's keys", async () => {
-    // The app's sign-in is built on Microsoft, and GitHub's redirect would take
-    // the app's own window away, as the browser Microsoft one would.
-    setRoutes([
-      {
-        match: "/api/auth/providers",
-        body: { desktop: { id: "desktop" }, github: { id: "github" } },
-      },
-    ]);
-    render(<LoginPage />);
-
-    expect(await screen.findByRole("button", { name: "Continue with Microsoft" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: /GitHub/ })).not.toBeInTheDocument();
-  });
-
-  it.each([
-    ["CredentialsSignin", "Schema Studio could not confirm your Microsoft sign-in."],
-    ["SessionRevoked", "Your Microsoft sign-in has ended. Sign in again to carry on."],
-    [
-      "OfflineTooLong",
-      "This computer has been offline for more than 30 days, so you need to sign in again.",
-    ],
-  ])("explains %s, the code the app or its server sends back", async (code, message) => {
-    arriveWith(`?error=${code}`);
-    setRoutes(DESKTOP);
-    render(<LoginPage />);
-
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry with Microsoft" })).toBeEnabled();
   });
 });

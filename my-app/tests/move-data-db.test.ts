@@ -15,7 +15,6 @@ import { metadataWantsSsl } from "@/lib/db/metadata-ssl";
 import { ORG_SLUG_PATTERN, RESERVED_SLUGS, isOrgSlug } from "@/lib/org-slug";
 import { testDatabaseUrl } from "./helpers/test-database";
 
-type Row = Record<string, unknown>;
 type Source = object;
 type Step = { name: string; renumber: boolean; links: Record<string, string>; cleared?: string[] };
 type Report = {
@@ -26,7 +25,7 @@ type Report = {
   identitiesLeft: number;
   passwordsLeft: number;
   checksOff: number;
-  leftBehind: { invites: number; computers: number; phones: number };
+  leftBehind: { invites: number };
 };
 type MoveOptions = {
   source: Source;
@@ -56,7 +55,6 @@ type MoveTool = {
   isPrivateHost(host: string, lookup: (host: string) => Promise<string[]>): Promise<boolean>;
   wantsSsl(url: string): boolean;
   databaseSource(client: Client): Source;
-  backupSource(tables: Map<string, { columns: string[]; rows: Row[] }>): Source;
   moveOrganization(options: MoveOptions): Promise<Report>;
   main(argv: string[], env: Record<string, string>, print: (line: string) => void): Promise<void>;
   safeMessage(error: unknown): string;
@@ -147,7 +145,6 @@ const newSite = <T>(run: (store: SecretStore) => T) => withSiteKeys({ NEXTAUTH_S
 
 describeWithDatabase("moving an organization between two real metadata databases", () => {
   const savedUrl = process.env.DATABASE_URL_A;
-  const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   const savedKey = process.env.APP_ENCRYPTION_KEY;
   let server: Client;
   let source: Client;
@@ -208,8 +205,8 @@ describeWithDatabase("moving an organization between two real metadata databases
     const rival = await id(db, `INSERT INTO organizations (slug, name) VALUES ('rival-co', 'Rival Co')`);
     await copyRoles(db, rows[0].id, acme);
     await copyRoles(db, rows[0].id, rival);
-    // A desktop keeps everything in its default organization, so that is the
-    // one moved here. Two steps, since only one may be the default at a time.
+    // The default organization is the one moved here. Two steps, since only
+    // one may be the default at a time.
     await db.query(`UPDATE organizations SET is_default = false`);
     await db.query(`UPDATE organizations SET is_default = true WHERE id = $1`, [acme]);
     const roles = await db.query(`SELECT name FROM roles WHERE org_id = $1`, [acme]);
@@ -258,11 +255,6 @@ describeWithDatabase("moving an organization between two real metadata databases
       [docker]
     );
     const rivalBox = await connection(rival, "Rival box", "203.0.113.9", "made-up-4", null);
-    // As on a desktop linked to a website: a copy of the website's connection 31, and the person's website role.
-    await db.query(`UPDATE connections SET site_id = 31, site_version = 4 WHERE id = $1`, [pub]);
-    await db.query(`UPDATE organizations SET site_role = '{"role":"viewer","label":"Viewer","permissions":[]}' WHERE id = $1`, [
-      acme,
-    ]);
 
     const tracked = (org: string, conn: string) =>
       id(
@@ -344,20 +336,11 @@ describeWithDatabase("moving an organization between two real metadata databases
     await db.query(`INSERT INTO role_changes (org_id, role, kind, actor) VALUES ($1, 'viewer', 'grant', 'x')`, [rival]);
     await db.query(`INSERT INTO access_requests (org_id, requested_by) VALUES ($1, 'bea@example.test')`, [acme]);
 
-    // What stays behind: an invite, a linked computer and a phone's alerts.
+    // What stays behind: an invite.
     await db.query(
       `INSERT INTO invites (org_id, token_hash, kind, email, role, expires_at)
        VALUES ($1, 'made-up-hash', 'email', 'zed@example.test', 'viewer', now() + interval '1 day')`,
       [acme]
-    );
-    await db.query(
-      `INSERT INTO agents (org_id, profile_id, name, token_hash) VALUES ($1, $2, 'Laptop', 'made-up-token-hash')`,
-      [acme, ada]
-    );
-    await db.query(
-      `INSERT INTO push_subscriptions (profile_id, endpoint, p256dh, auth)
-       VALUES ($1, 'https://push.example.test/1', 'made-up-key', 'made-up-auth')`,
-      [ada]
     );
   }
 
@@ -387,7 +370,6 @@ describeWithDatabase("moving an organization between two real metadata databases
     globalThis.__metadataSequelize = undefined;
     process.env.DATABASE_URL_A = urlFor(names.template);
     process.env.APP_ENCRYPTION_KEY = OLD_KEY_HEX;
-    delete process.env.SCHEMA_STUDIO_DESKTOP;
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     await bootstrap.setUpRoles();
@@ -419,8 +401,6 @@ describeWithDatabase("moving an organization between two real metadata databases
     await target?.end();
     if (savedUrl === undefined) delete process.env.DATABASE_URL_A;
     else process.env.DATABASE_URL_A = savedUrl;
-    if (savedDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-    else process.env.SCHEMA_STUDIO_DESKTOP = savedDesktop;
     if (savedKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
     else process.env.APP_ENCRYPTION_KEY = savedKey;
     if (server) {
@@ -461,7 +441,7 @@ describeWithDatabase("moving an organization between two real metadata databases
     identitiesLeft: 2,
     passwordsLeft: 2,
     checksOff: 1,
-    leftBehind: { invites: 1, computers: 1, phones: 1 },
+    leftBehind: { invites: 1 },
   });
 
   it("knows every table, and follows every link between moved tables", async () => {
@@ -714,13 +694,10 @@ describeWithDatabase("moving an organization between two real metadata databases
 
     // Passwords: locked with the new key, and none at all for private hosts.
     const connections = await one(
-      `SELECT name, password, connection_string, last_tested_at, last_test_ok, site_id, site_version
+      `SELECT name, password, connection_string, last_tested_at, last_test_ok
          FROM connections WHERE org_id = $1 ORDER BY name`
     );
     const [docker, pub, sneaky] = connections;
-    // A desktop's note of the website connection it copies, and its website role, mean nothing here.
-    expect(connections.map((row) => [row.site_id, row.site_version])).toEqual([[null, null], [null, null], [null, null]]);
-    expect((await one(`SELECT site_role FROM organizations WHERE id = $1`))[0].site_role).toBeNull();
     expect(pub.password.startsWith("enc:v1:")).toBe(true);
     expect(tool.openSecret(pub.password, NEW_KEY)).toBe("made-up-1");
     expect(newSite((store) => [store.decryptSecret(pub.password), store.decryptSecret(pub.connection_string)])).toEqual([
@@ -742,9 +719,7 @@ describeWithDatabase("moving an organization between two real metadata databases
     expect((await target.query(`SELECT 1 FROM organizations WHERE slug = 'rival-co'`)).rows).toEqual([]);
     expect((await target.query(`SELECT 1 FROM connections WHERE name = 'Rival box'`)).rows).toEqual([]);
     expect((await target.query(`SELECT 1 FROM profiles WHERE email = 'eve@example.test'`)).rows).toEqual([]);
-    for (const table of ["invites", "agents", "push_subscriptions"]) {
-      expect([table, (await target.query(`SELECT 1 FROM ${table}`)).rows.length]).toEqual([table, 0]);
-    }
+    expect((await target.query(`SELECT 1 FROM invites`)).rows).toEqual([]);
 
     // The same organization again is refused, since its address is now taken.
     await expect(move({ apply: true })).rejects.toThrow("already has an organization with that address");
@@ -767,44 +742,6 @@ describeWithDatabase("moving an organization between two real metadata databases
       [org]
     );
     expect(admins.rows.map((row) => row.email)).toEqual(["ada@example.test", "new.admin@example.test"]);
-  }, SLOW);
-
-  it("moves from a desktop backup's rows exactly as from the database", async () => {
-    // Rows saved the way the desktop saves them (desktop/src/main/backup.ts):
-    // every column turned into text, then the row into JSON.
-    const tables = new Map<string, { columns: string[]; rows: Row[] }>();
-    for (const table of await tableNames(source)) {
-      const { rows: columns } = await source.query(
-        `SELECT column_name FROM information_schema.columns
-          WHERE table_schema = 'public' AND table_name = $1 AND is_generated = 'NEVER' ORDER BY ordinal_position`,
-        [table]
-      );
-      const list = columns.map((column) => `${quoteIdent(column.column_name)}::text AS ${quoteIdent(column.column_name)}`).join(", ");
-      const { rows } = await source.query(`SELECT row_to_json(r.*)::text AS row FROM (SELECT ${list} FROM ${quoteIdent(table)}) r`);
-      tables.set(table, { columns: columns.map((column) => column.column_name), rows: rows.map((row) => JSON.parse(row.row)) });
-    }
-    const fromBackup = tool.backupSource(tables);
-
-    const trial = await move({ newSlug: "acme-copy" });
-    expect(await move({ source: fromBackup, newSlug: "acme-copy" })).toEqual(trial);
-    await move({ source: fromBackup, newSlug: "acme-copy", apply: true });
-
-    // Row for row the same as the first move, apart from the new ids and the
-    // freshly locked passwords.
-    const [first, copy] = [await orgId("acme-data"), await orgId("acme-copy")];
-    for (const step of tool.ORG_TABLES) {
-      const { rows: columns } = await target.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
-        [step.name]
-      );
-      const skip = new Set(["id", "org_id", "password", "connection_string", ...Object.keys(step.links)]);
-      const list = columns.map((column) => column.column_name).filter((name) => !skip.has(name)).map(quoteIdent);
-      const of = async (org: string) =>
-        (await target.query(`SELECT row_to_json(r.*)::text AS row FROM (SELECT ${list.join(", ")} FROM ${quoteIdent(step.name)} WHERE org_id = $1) r`, [org]))
-          .rows.map((row) => row.row)
-          .sort();
-      expect([step.name, await of(copy)]).toEqual([step.name, await of(first)]);
-    }
   }, SLOW);
 
   it("runs from the command line, printing counts and nothing secret", async () => {

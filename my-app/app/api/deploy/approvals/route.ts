@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { afterResponse, alertRunWaiting } from "@/lib/push-alerts";
 import { requirePermission } from "@/lib/auth-guard";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
@@ -23,8 +22,8 @@ import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
  * Both handlers are deliberately quiet about what the migrations do: the SQL
  * goes into a fingerprint, and neither one ever answers with it. The approver
  * reads the migrations on the Deploy screen, from the registry, which is the
- * copy that will actually run. A copy is kept with the request only for a
- * paired phone to show, and only ./[id]/phone/route.ts reads it.
+ * copy that will actually run. A copy is kept with the request, and no route
+ * answers with it.
  *
  * POST takes an optional `action`: "deploy" (the default, so every caller
  * written before rollbacks needed approval keeps working) or "revert". For a
@@ -246,7 +245,6 @@ export async function POST(request: NextRequest) {
       // deleted one gets, so this cannot be used to learn which ids exist.
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
     }
-    afterResponse(() => alertRunWaiting(gate.principal, approval));
     return NextResponse.json({ approval });
   } catch (error) {
     console.error("Approvals — request failed:", error);

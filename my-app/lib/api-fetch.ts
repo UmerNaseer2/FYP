@@ -19,9 +19,7 @@ import { ORG_HEADER, orgSlugFromPath } from "./org-slug";
  *
  * Every screen calls this instead of fetch() for /api/..., and
  * tests/api-fetch.test.ts fails on a screen that does not. On an address that
- * names no organization (the landing page, a page test) it sends no header,
- * which the gate answers for the desktop and nobody else (see
- * lib/auth-guard.ts).
+ * names no organization (the landing page, a page test) it sends no header.
  */
 export function apiFetch(input: string, init?: RequestInit): Promise<Response> {
   const slug = typeof window === "undefined" ? null : orgSlugFromPath(window.location.pathname);

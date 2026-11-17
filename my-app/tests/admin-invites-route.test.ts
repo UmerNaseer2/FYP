@@ -9,7 +9,7 @@
 //
 //   - GET asks for Users: Read, and POST and DELETE for Users: Create, before
 //     anything else, and a refusal goes back exactly as the gate made it.
-//   - Nobody can invite on the desktop or with sign-in switched off. GET says
+//   - Nobody can invite with sign-in switched off. GET says
 //     so with canInvite and lists nothing; POST and DELETE refuse before they
 //     read the body.
 //   - A body of the wrong shape is turned down in words a person can act on,
@@ -56,8 +56,6 @@ import { DELETE, GET, POST } from "@/app/api/admin/invites/route";
 
 const ADMIN = principalFor("admin", { email: "umer@x", name: "Umer" });
 const TRY_AGAIN = " The app's database may be unreachable. Try again in a moment.";
-const DESKTOP_REFUSAL =
-  "Invitations are for the web app. The desktop app keeps a single organization of its own.";
 const DEMO_REFUSAL =
   "Inviting someone needs a real sign-in. In the demo nobody signs in, so nobody could take an invitation.";
 const NOT_JSON = "Expected a JSON body.";
@@ -85,19 +83,14 @@ const LINK_INVITE = {
   expiresAt: "2026-11-25T01:00:00.000Z",
 };
 
-const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
-
 beforeEach(() => {
   mockGate = { ok: true, principal: ADMIN };
   mockAskedFor = [];
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   for (const fn of Object.values(mockInvitesDb)) fn.mockReset();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
-  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
 
 const HANDLERS = { POST, DELETE };
@@ -165,19 +158,10 @@ describe("asking first", () => {
 
 describe("where nobody can invite", () => {
   const PLACES = [
-    ["on the desktop", () => (process.env.SCHEMA_STUDIO_DESKTOP = "1"), DESKTOP_REFUSAL],
     [
       "with sign-in switched off",
       () => (mockGate = { ok: true, principal: bypassAdminPrincipal() }),
       DEMO_REFUSAL,
-    ],
-    [
-      "on the desktop, even with sign-in switched off as well",
-      () => {
-        process.env.SCHEMA_STUDIO_DESKTOP = "1";
-        mockGate = { ok: true, principal: bypassAdminPrincipal() };
-      },
-      DESKTOP_REFUSAL,
     ],
   ] as const;
 

@@ -82,7 +82,6 @@ import {
   type TimelineRow,
   type TimelineStatus,
 } from "@/lib/version-timeline";
-import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
@@ -1238,8 +1237,6 @@ function DeployBody() {
   // already loads (connections and the GitHub pull), so nothing extra is asked.
   const mayDeploy = can("deploy:run");
   const maySetUpGitHub = can("github:update");
-  // Inside the desktop app the GitHub details live in its Settings.
-  const desktop = useDesktopBridge();
   // GitHub was set up, but the saved token was locked with another key.
   const githubTokenUnreadable = githubMissing && /can.?t be read/i.test(pullError ?? "");
   // Nothing is said about setup until both lists and the role have arrived.
@@ -3178,16 +3175,12 @@ function DeployBody() {
       done: !githubMissing,
       detail: !githubMissing
         ? "Done. Every deploy saves its script there first."
-        : desktop
-          ? "GitHub is not set up on this computer yet: add it in Settings."
-          : githubTokenUnreadable
-            ? "The saved GitHub token can't be read on this server. An Admin adds it again under Admin › GitHub."
-            : maySetUpGitHub
-              ? "GitHub is not set up for this organization yet. Set it up once and every deploy saves its script there first."
-              : "Deploys need GitHub, which an Admin sets up. Your ask lands in Requests, where any Admin can act on it.",
-      action: desktop
-        ? { label: "Open Settings", onClick: () => desktop.openSettings() }
-        : maySetUpGitHub
+        : githubTokenUnreadable
+          ? "The saved GitHub token can't be read on this server. An Admin adds it again under Admin › GitHub."
+          : maySetUpGitHub
+            ? "GitHub is not set up for this organization yet. Set it up once and every deploy saves its script there first."
+            : "Deploys need GitHub, which an Admin sets up. Your ask lands in Requests, where any Admin can act on it.",
+      action: maySetUpGitHub
         ? {
             label: githubTokenUnreadable ? "Add the token again" : "Set up GitHub",
             href: orgPath("/admin?tab=github"),

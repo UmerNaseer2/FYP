@@ -263,10 +263,6 @@ describe("deciding which screen you are on", () => {
 });
 
 describe("activeScreen", () => {
-  it("names the account page in the breadcrumb and lights up no rail row", () => {
-    expect(activeScreen("/acme/devices")).toEqual({ screen: "Phone and desktop", href: "/devices" });
-    expect(NAV_ITEMS.some((item) => item.href === "/devices")).toBe(false);
-  });
 
   it("puts History in the menu, under Watch", () => {
     // It was "Your activity" in the account menu. Same address, new home.
@@ -281,7 +277,7 @@ describe("activeScreen", () => {
 
   it("tells a real screen from an address that only falls back to the Dashboard", () => {
     expect(isKnownScreen("/acme/drift")).toBe(true);
-    expect(isKnownScreen("/acme/devices")).toBe(true);
+    expect(isKnownScreen("/acme/history")).toBe(true);
     expect(isKnownScreen("/acme/no-such-page")).toBe(false);
   });
 

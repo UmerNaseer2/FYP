@@ -6,7 +6,7 @@ import { localMachineName, localStoreConfigured } from "@/lib/local-secrets";
  * The name of the machine this copy runs on, when it keeps local connections'
  * passwords (LOCAL_DATABASE_URL). The Connections form uses it to offer "Only
  * this machine can reach it". Null on a copy with no local store (Vercel, the
- * desktop app, the client's container image), where every connection is saved
+ * client's container image), where every connection is saved
  * as before.
  */
 export async function GET() {

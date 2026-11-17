@@ -187,8 +187,6 @@ describe("edge proxy", () => {
       mockSession = null;
       const { proxy } = await loadProxy(signInOn);
       expect((await proxy(home())).status).toBe(200);
-      // The demo page is the other one: the poster's QR code opens it.
-      expect((await proxy(new NextRequest("http://localhost:3000/demo"))).status).toBe(200);
       // The pathname decides, so a query string changes nothing.
       expect((await proxy(new NextRequest("http://localhost:3000/?from=email"))).status).toBe(200);
       expect((await proxy(page())).status).toBe(307);
@@ -216,94 +214,6 @@ describe("edge proxy", () => {
     });
   });
 
-  describe("inside the desktop app", () => {
-    // The desktop app carries no client secret and needs none: it does the
-    // Microsoft sign-in itself, so the two IDs and the session secret it makes
-    // for itself are all it takes for the proxy to start checking.
-    const desktop = {
-      NEXT_PUBLIC_AUTH_BYPASS: "false",
-      SCHEMA_STUDIO_DESKTOP: "1",
-      AZURE_AD_CLIENT_ID: "client",
-      AZURE_AD_CLIENT_SECRET: "",
-      AZURE_AD_TENANT_ID: "tenant",
-      NEXTAUTH_SECRET: "a-test-secret-that-is-long-enough",
-    };
-
-    afterEach(() => {
-      mockSession = null;
-    });
-
-    it("guards pages and API routes without a client secret", async () => {
-      const { proxy } = await loadProxy(desktop);
-      expect((await proxy(api())).status).toBe(401);
-      const response = await proxy(page());
-      expect(response.status).toBe(307);
-      const location = new URL(response.headers.get("location") ?? "");
-      expect(location.pathname).toBe("/login");
-      expect(location.searchParams.get("callbackUrl")).toBe("/studio");
-      // Sign-in is set up, so the login screen offers it rather than an error.
-      expect(location.searchParams.get("error")).toBeNull();
-    });
-
-    it("lets a signed-in user through", async () => {
-      mockSession = { user: { email: "someone@example.com" }, expires: "2099-01-01" };
-      const { proxy } = await loadProxy(desktop);
-      expect((await proxy(page())).status).toBe(200);
-      expect((await proxy(api())).status).toBe(200);
-    });
-
-    it("never hands the browser a session cookie", async () => {
-      // A request still open when the person pressed Sign out used to come
-      // back with this cookie and sign them in again. Only /api/auth/* may set
-      // it now.
-      mockSession = { user: { email: "someone@example.com" }, expires: "2099-01-01" };
-      mockAuthCookies = [
-        "authjs.session-token=abc.def.ghi; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax",
-        "__Secure-authjs.session-token.1=jkl; Path=/; Max-Age=2592000; HttpOnly; Secure",
-        "authjs.csrf-token=xyz; Path=/; HttpOnly; SameSite=Lax",
-      ];
-      const { proxy } = await loadProxy(desktop);
-      for (const request of [page(), api()]) {
-        const response = await proxy(request);
-        expect(response.status).toBe(200);
-        expect(response.headers.getSetCookie()).toEqual([
-          "authjs.csrf-token=xyz; Path=/; HttpOnly; SameSite=Lax",
-        ]);
-      }
-    });
-
-    it("still passes on a cookie that ends the session", async () => {
-      mockSession = null;
-      mockAuthCookies = [
-        "authjs.session-token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
-        "__Secure-authjs.session-token=gone; Path=/; Max-Age=0; HttpOnly; Secure",
-      ];
-      const { proxy } = await loadProxy(desktop);
-      const response = await proxy(page());
-      expect(response.status).toBe(307);
-      expect(response.headers.getSetCookie()).toEqual(mockAuthCookies);
-    });
-
-    it("says sign-in is not set up in an app built without the two IDs", async () => {
-      const { proxy } = await loadProxy({
-        ...desktop,
-        AZURE_AD_CLIENT_ID: "",
-        AZURE_AD_TENANT_ID: "",
-      });
-      const response = await proxy(page());
-      expect(response.status).toBe(307);
-      const location = new URL(response.headers.get("location") ?? "");
-      expect(location.searchParams.get("error")).toBe("Configuration");
-    });
-
-    it("lets the landing page through, which forwards to /studio itself", async () => {
-      // app/page.tsx sends the desktop app on to /studio, and /studio is
-      // guarded like every other page, so letting "/" through opens nothing.
-      const { proxy } = await loadProxy(desktop);
-      expect((await proxy(home())).status).toBe(200);
-    });
-  });
-
   it("guards the pages that need it and leaves sign-in reachable", async () => {
     const { config } = await loadProxy({ NEXT_PUBLIC_AUTH_BYPASS: "true" });
     // Anchored, the way Next compiles a matcher. Unanchored it would happily
@@ -324,56 +234,12 @@ describe("edge proxy", () => {
 });
 
 describe("isPublicPath", () => {
-  it("opens the routes a linked computer calls, and no others like them", () => {
-    // They check the computer's own token, and it has no cookie to show.
-    for (const open of ["/api/agent/link", "/api/agent/link/claim", "/api/agent/jobs/next", "/api/agent/self"]) {
-      expect(isPublicPath(open)).toBe(true);
-    }
-    // The routes a person calls about their computers must stay behind sign-in.
-    for (const guarded of ["/api/agent", "/api/agents", "/api/agents/link", "/api/computers", "/api/computers/link", "/link-computer"]) {
-      expect(isPublicPath(guarded)).toBe(false);
-    }
-  });
 
   // No reload needed: the list is fixed and no switch reads it.
   it("opens the landing page, and no other page", () => {
     expect(isPublicPath("/")).toBe(true);
     // Exact paths only. A prefix match on "/" would open every page there is.
     for (const guarded of ["/studio", "/login", "/api/me", "//", "", "/index"]) {
-      expect(isPublicPath(guarded)).toBe(false);
-    }
-  });
-
-  it("opens the demo page, and nothing under or beside it", () => {
-    // The FYP poster's QR code opens it, so it must answer without a session.
-    expect(isPublicPath("/demo")).toBe(true);
-    for (const guarded of ["/demo/", "/demo/x", "/demos", "/demo-x", "/org/demo", "/api/demo"]) {
-      expect(isPublicPath(guarded)).toBe(false);
-    }
-  });
-
-  it("opens the installable app's two files and nothing beside them", () => {
-    // A browser fetches both without any cookie, so a redirect to sign-in would
-    // stop the app installing and alerts registering. Neither holds anything private.
-    expect(isPublicPath("/sw.js")).toBe(true);
-    expect(isPublicPath("/manifest.webmanifest")).toBe(true);
-    for (const guarded of ["/sw.js/x", "/sw", "/phone", "/manifest.webmanifest/x", "/org/sw.js"]) {
-      expect(isPublicPath(guarded)).toBe(false);
-    }
-  });
-
-  it("opens the trial's sign-in route and nothing beside it", () => {
-    // Nobody is signed in when they press "Try as ..."; the route signs in only the trial's own accounts.
-    expect(isPublicPath("/api/trial")).toBe(true);
-    for (const guarded of ["/api/trial/", "/api/trial/x", "/api/trials", "/trial", "/trial/studio"]) {
-      expect(isPublicPath(guarded)).toBe(false);
-    }
-  });
-
-  it("opens the desktop sync route and nothing beside it", () => {
-    // The route checks the desktop's main-process token, and answers 404 off a desktop.
-    expect(isPublicPath("/api/desktop/sync")).toBe(true);
-    for (const guarded of ["/api/desktop", "/api/desktop/", "/api/desktop/sync/", "/api/desktop/sync/x", "/api/desktop/syncs"]) {
       expect(isPublicPath(guarded)).toBe(false);
     }
   });

@@ -2,8 +2,8 @@
 // on to the same page in an organization (/acme/compare?left=1), and an
 // organization's own address (/acme) opens its dashboard.
 //
-// The old addresses are in bookmarks, pull requests, the desktop app and the
-// sign-in page's way back, so a studio page without one is a link that used
+// The old addresses are in bookmarks, pull requests and the sign-in page's
+// way back, so a studio page without one is a link that used
 // to work and now says "There is no page here". The last tests here fail when
 // a page is added under app/[org]/(studio) without its old address.
 import fs from "fs";
@@ -65,15 +65,8 @@ async function whereTo(call: Promise<unknown>): Promise<string> {
   return mockRedirect.mock.calls[0][0];
 }
 
-const realDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
-afterAll(() => {
-  if (realDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
-  else process.env.SCHEMA_STUDIO_DESKTOP = realDesktop;
-});
-
 beforeEach(() => {
   mockBypass = false;
-  delete process.env.SCHEMA_STUDIO_DESKTOP;
   // auth.ts puts the profile ID in the session, as a string.
   mockAuth.mockReset().mockResolvedValue({ user: { id: "7", email: "sam@example.com" } });
   mockFindLast.mockReset().mockResolvedValue("acme");
@@ -83,10 +76,6 @@ beforeEach(() => {
 });
 
 describe("redirectToLastOrg", () => {
-  test("keeps a computer's code on the way to the link page", async () => {
-    const to = await whereTo(redirectToLastOrg("link-computer", props(undefined, { code: "BCDF-GHJK" })));
-    expect(to).toBe("/acme/link-computer?code=BCDF-GHJK");
-  });
 
   test("sends someone signed in to the organization they opened last, with the page and query", async () => {
     const to = await whereTo(redirectToLastOrg("compare", props(undefined, { left: "1", right: "2" })));
@@ -116,14 +105,6 @@ describe("redirectToLastOrg", () => {
     mockFindLast.mockResolvedValue(null);
     expect(await whereTo(redirectToLastOrg("studio", props()))).toBe("/onboarding");
     expect(mockFindDefault).not.toHaveBeenCalled();
-  });
-
-  test("in the desktop app, sends someone in no organization to the default one", async () => {
-    // The desktop app has no way to make one. Its pages tell them they are not
-    // a member and offer to sign out.
-    process.env.SCHEMA_STUDIO_DESKTOP = "1";
-    mockFindLast.mockResolvedValue(null);
-    expect(await whereTo(redirectToLastOrg("studio", props()))).toBe("/swinburne-fyp/studio");
   });
 
   test("with sign-in switched off, opens the default organization and asks for no session", async () => {
@@ -212,24 +193,6 @@ describe("the old addresses", () => {
       .readdirSync(APP, { withFileTypes: true })
       .filter((entry) => fs.existsSync(path.join(APP, entry.name, "[[...rest]]", "page.tsx")))
       .map((entry) => entry.name);
-    // The phone app and the page for linking a computer live beside the studio
-    // pages, not among them, because neither has a rail. The test above walks only
-    // the studio, so the next test covers them.
-    expect(oldAddresses.sort()).toEqual([...studioPages, "link-computer", "phone"].sort());
-  });
-
-  test("the phone app has one too, for a link from before organizations came in", async () => {
-    const { default: OldAddress } = await import(path.join(APP, "phone", "[[...rest]]", "page.tsx"));
-    mockRedirect.mockClear();
-    expect(await whereTo(OldAddress(props()))).toBe("/acme/phone");
-  });
-
-  test("a computer's link has one too, and it keeps the code", async () => {
-    // The computer knows no organization, so this is the address it opens.
-    const { default: OldAddress } = await import(path.join(APP, "link-computer", "[[...rest]]", "page.tsx"));
-    mockRedirect.mockClear();
-    expect(await whereTo(OldAddress(props(undefined, { code: "BCDF-GHJK" })))).toBe(
-      "/acme/link-computer?code=BCDF-GHJK"
-    );
+    expect(oldAddresses.sort()).toEqual([...studioPages].sort());
   });
 });

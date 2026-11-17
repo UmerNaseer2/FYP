@@ -5,7 +5,6 @@ import { readGitHubPair } from "@/lib/github-settings";
 import { createOrganization, listMemberships, listOrganizations } from "@/lib/orgs-db";
 import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/new-organization";
 import { encryptionKeySource } from "@/lib/secret-store";
-import { TRIAL_REFUSAL, trialEnabled } from "@/lib/trial-rules";
 
 /**
  * The caller's organizations, and a way to make a new one.
@@ -24,12 +23,9 @@ import { TRIAL_REFUSAL, trialEnabled } from "@/lib/trial-rules";
  * screen offers a button that can only be refused.
  *
  * POST makes an organization with the caller as its Admin
- * (lib/orgs-db.ts createOrganization). It is refused in two places:
- *
- * - The desktop app, which keeps one organization of its own that nobody
- *   sees. A second one would have nowhere to show.
- * - The bypass, where nobody is signed in. An organization needs a person to
- *   be its first Admin, and the demo user is not one.
+ * (lib/orgs-db.ts createOrganization). It is refused with the bypass, where
+ * nobody is signed in. An organization needs a person to be its first Admin,
+ * and the demo user is not one.
  *
  * The body may also hold `repository` and `token`: the GitHub repository
  * the organization keeps its scripts in, and an access token for it. Both or
@@ -54,7 +50,7 @@ export async function GET() {
       : await listMemberships(caller.profileId);
     return NextResponse.json({
       organizations: organizations.map(({ slug, name }) => ({ slug, name })),
-      canCreate: !caller.bypass && !onDesktop() && !(await isTrialAccount(caller.profileId).catch(() => true)),
+      canCreate: !caller.bypass,
     });
   } catch (error) {
     console.error("Failed to list organizations:", error);
@@ -67,16 +63,6 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
 
   const { caller } = gate;
-  if (onDesktop()) {
-    return NextResponse.json(
-      { error: "The desktop app keeps a single organization of its own." },
-      { status: 403 }
-    );
-  }
-  // The trial's accounts are shared by everyone, so none of them may start or join anything.
-  if (!caller.bypass && (await isTrialAccount(caller.profileId).catch(() => true))) {
-    return NextResponse.json({ error: TRIAL_REFUSAL }, { status: 403 });
-  }
   if (caller.bypass) {
     return NextResponse.json(
       {
@@ -171,22 +157,10 @@ const NO_KEY =
   "and token to make the organization without GitHub for now. Whoever runs the server can set " +
   "APP_ENCRYPTION_KEY and restart it.";
 
-/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
-function onDesktop(): boolean {
-  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
-}
-
 /** A 503 for a database that did not answer, with the reason kept to the log. */
 function unavailable(what: string): NextResponse {
   return NextResponse.json(
     { error: `${what} The app's database may be unreachable. Try again in a moment.` },
     { status: 503 }
   );
-}
-
-/** Only loaded when the trial is on: lib/trial-sandbox.ts opens the database as it loads. */
-async function isTrialAccount(profileId: number): Promise<boolean> {
-  if (!trialEnabled()) return false;
-  const { isTrialProfile } = await import("@/lib/trial-sandbox");
-  return isTrialProfile(profileId);
 }

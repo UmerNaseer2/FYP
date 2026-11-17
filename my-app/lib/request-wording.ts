@@ -4,8 +4,8 @@ import type { ListedApproval } from "./approvals-db";
 import { PERMISSIONS, permissionLabel } from "./permissions";
 
 /**
- * How a request or a run reads on screen. The Requests page and the phone app
- * both use these, so the same request says the same thing on both.
+ * How a request or a run reads on screen. The Requests page uses these, so
+ * the same request says the same thing wherever it is shown.
  */
 
 export const STATUS_PILLS: Record<RequestStatus, { label: string; tone: PillTone }> = {

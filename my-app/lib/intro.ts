@@ -2,7 +2,7 @@
 // screen, then flies into its place at the top of the sidebar.
 //
 // It plays once per browser tab: the first time the studio opens after you
-// sign in, or when the desktop app starts. "Replay intro" in the account menu
+// sign in. "Replay intro" in the account menu
 // plays it again on purpose.
 //
 // This file is not a client component on purpose. app/layout.tsx (a server

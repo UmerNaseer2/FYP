@@ -39,7 +39,7 @@ export function Spotlight({ target, children, onDone }: SpotlightProps) {
     onDone();
     // After the layer has gone, so the focus ring shows on the control itself.
     // A control that can't take focus hands it to the first thing inside it
-    // that can, and failing that to the Help button (or the phone menu).
+    // that can, and failing that to the Help button (or the menu button on a narrow screen).
     window.setTimeout(() => {
       if (element instanceof HTMLElement) {
         element.focus({ preventScroll: true });
