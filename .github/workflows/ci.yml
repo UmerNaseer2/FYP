@@ -456,6 +456,10 @@ jobs:
         with:
           name: schema-studio-handover
           path: ${{ runner.temp }}/download/
+          # source/ needs its dot files: .env.local.example (For developers),
+          # .dockerignore (keeps local files out of a self-built image) and
+          # .github. They are all tracked files of this public repository.
+          include-hidden-files: true
           # The image is gzipped already.
           compression-level: 0
           retention-days: 90
@@ -497,6 +501,9 @@ jobs:
       - name: Check the scripts with shellcheck
         run: |
           ls -l ~/schema-studio-download ~/schema-studio-download/kit
+          test -f ~/schema-studio-download/source/docs/DEVELOPER-MANUAL.md
+          test -f ~/schema-studio-download/source/my-app/.env.local.example
+          test -f ~/schema-studio-download/source/my-app/.dockerignore
           if ! command -v shellcheck > /dev/null; then
             sudo apt-get update -q
             sudo apt-get install -y -q shellcheck
