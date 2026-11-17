@@ -748,8 +748,9 @@ failing to reach the app's database; it tries again on its next round.
 ## For developers
 
 The source is in the repository's `my-app` folder (Next.js 16, React 19,
-TypeScript, PostgreSQL through `pg` and Sequelize). The repository README
-explains the layout.
+TypeScript, PostgreSQL through `pg` and Sequelize). Start with
+`docs/DEVELOPER-MANUAL.md`: how the app is built, where each feature lives,
+how roles work, and step by step recipes for common changes.
 
 Build the image yourself, from the repository root:
 

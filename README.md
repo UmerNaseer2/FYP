@@ -1,17 +1,24 @@
 # Schema Studio
 
-Database schema comparison and version control. Final-year project, Swinburne
-Sarawak.
+Compare two PostgreSQL schemas, generate the migration between them, keep it as
+a versioned script in GitHub, and apply it to a target database with a ledger
+of what ran. A Next.js web app, shipped as one container image.
 
-The application is in [`my-app/`](my-app/). Everything — what it does, how to run
-it, the architecture, and the verified list of what is and is not built — is in
-**[`my-app/README.md`](my-app/README.md)**.
+| To | Read |
+|---|---|
+| Install and run it beside your own PostgreSQL, with your own Microsoft sign-in | [`deploy/handover/SETUP-GUIDE.md`](deploy/handover/SETUP-GUIDE.md) |
+| Run it from the source, and see what is and is not built | [`my-app/README.md`](my-app/README.md) |
+| Change the code | [`docs/DEVELOPER-MANUAL.md`](docs/DEVELOPER-MANUAL.md) |
+| Every document, in one list | [`docs/README.md`](docs/README.md) |
+
+The application is in [`my-app/`](my-app/). To try it from the source:
 
 ```bash
-cd my-app && npm install && npm run dev
+docker compose up -d db
 ```
 
-The desktop app for Ubuntu is in [`desktop/`](desktop/), with its own
-[`README.md`](desktop/README.md), and the relay that links it to phones,
-which also serves the phone app, is in [`relay/`](relay/), with its own
-[`README.md`](relay/README.md).
+```bash
+cd my-app && npm ci && cp .env.local.example .env.local && npm run dev
+```
+
+Then open `http://localhost:3000`.
