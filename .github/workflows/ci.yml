@@ -1,20 +1,16 @@
-# Continuous integration. Three jobs, side by side:
+# Continuous integration. Four jobs, side by side:
 #
+# - check runs the same four commands a developer runs before pushing, in the
+#   same order, so a green tick means the branch is in the state the repo
+#   expects: it lints, it type-checks, its tests pass, and it builds.
+# - schema-reading reads schemas and runs generated SQL on every PostgreSQL
+#   from 13 to 18, one run each.
+# - stack starts the developer stack from docker-compose.yml (the app beside
+#   its own PostgreSQL) with the sign-in bypass off, and checks it answers.
 # - handover builds the app's image and follows deploy/handover/SETUP-GUIDE.md
 #   on a fresh Ubuntu with PostgreSQL 16, command by command. When it all
 #   works, it offers the image and the kit as one download,
 #   "schema-studio-handover", under the run's Artifacts.
-# - check runs the same four commands a developer runs before pushing, in the
-#   same order, so a green tick means the branch is in the state the repo
-#   expects: it lints, it type-checks, its tests pass, and it builds.
-# - stack starts the app the way the server runs it, from docker-compose.yml
-#   with the sign-in bypass off, then saves a copy of its database with
-#   deploy/backup.sh and puts it back. Last, it saves the app's image to a
-#   file with deploy/export-image.sh, starts the app again from that file
-#   alone, and checks the script refuses an image with the bypass on.
-#
-# deploy/auto-update.sh deploys a commit to the server only after this whole
-# workflow has passed, so a stack that would not start never reaches it.
 #
 # The app lives in my-app/, not at the repository root, so every step of the
 # check job runs there and the npm cache is keyed on my-app/package-lock.json.
@@ -113,8 +109,64 @@ jobs:
           DATABASE_URL_A: postgres://ci:ci@127.0.0.1:5432/ci
           NEXTAUTH_SECRET: ci-build-only-not-a-real-secret
 
+  schema-reading:
+    # The schema reader and the SQL it writes, on every PostgreSQL from 13 to
+    # 18. Both talk to PostgreSQL's own catalog in plain SQL, and the catalog
+    # changes a little between major versions, so a query that only works on
+    # the newest server fails here rather than on someone's database.
+    # PostgreSQL 12 and older are out of support and not tested.
+    name: Schema reading on PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Every version reports, even when one fails.
+      fail-fast: false
+      matrix:
+        pg: ["13", "14", "15", "16", "17", "18"]
+
+    defaults:
+      run:
+        working-directory: my-app
+
+    # Set up like the check job's database, one version each.
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: schema_studio_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # tests/schema-reading-db.test.ts reads one of every kind of object;
+      # tests/generate-sql-db.test.ts runs the generated scripts and reads
+      # the result back. Cases for objects only newer servers have skip
+      # themselves on older ones.
+      - name: Read and write schemas
+        run: npx jest tests/schema-reading-db.test.ts tests/generate-sql-db.test.ts
+        env:
+          TEST_DATABASE_URL: postgres://postgres@127.0.0.1:55432/schema_studio_test
+          REQUIRE_TEST_DATABASE: "1"
+
   stack:
-    name: Docker stack, backup and restore
+    name: Developer Docker stack
     runs-on: ubuntu-latest
     # Building the image takes a few minutes. A container that never turns
     # healthy stops the run here rather than after GitHub's six hours.
@@ -124,10 +176,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Fresh secrets for this run only, made the way deploy/README.md (step 4)
-      # makes the server's, so none is written in the repo or in the log.
-      # The made-up AZURE_AD_ values turn Microsoft sign-in on, as on the
-      # server. Nothing in this job reaches Microsoft.
+      # Fresh secrets for this run only, so none is written in the repo or in
+      # the log. The made-up AZURE_AD_ values turn Microsoft sign-in on.
+      # Nothing in this job reaches Microsoft.
       #
       # `sql` runs the SQL it reads in the stack's database and prints bare
       # values. The later steps use it to look at the data.
@@ -169,12 +220,12 @@ jobs:
           providers="$(curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/api/auth/providers)"
           echo "$providers"
           echo "$providers" | grep -qF '"callbackUrl":"http://localhost:3000/api/auth/callback/microsoft-entra-id"'
-          to="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{redirect_url}' http://127.0.0.1:3000/admin)"
-          echo "/admin sends a signed-out visitor to $to"
-          [ "$to" = "http://localhost:3000/login?callbackUrl=%2Fadmin" ]
+          to="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{redirect_url}' http://127.0.0.1:3000/studio)"
+          echo "/studio sends a signed-out visitor to $to"
+          [ "$to" = "http://localhost:3000/login?callbackUrl=%2Fstudio" ]
 
       # The drift scheduler's first round, straight after start-up, makes the
-      # app's tables. Wait for them, so the copy below holds a real database.
+      # app's tables.
       - name: The app made its tables
         run: |
           for try in $(seq 1 30); do
@@ -184,97 +235,6 @@ jobs:
           done
           echo "The app's database has $tables tables."
           [ "$tables" -gt 0 ]
-
-      # A row written just before the copy. The restore must bring it back.
-      - name: Save a copy with deploy/backup.sh
-        run: |
-          echo "create table ci_check (note text); insert into ci_check values ('in the copy');" | sql
-          ./deploy/backup.sh
-          ls -l backups
-          file="$(ls -1t backups/*.dump | head -n 1)"
-          docker compose exec -T db pg_restore --list < "$file" | head
-          # Only the account that made them may read the copies.
-          [ "$(stat -c %a backups)" = 700 ]
-          [ "$(stat -c %a "$file")" = 600 ]
-
-      - name: Change the data after the copy
-        run: echo "delete from ci_check; insert into ci_check values ('after the copy');" | sql
-
-      # The steps written at the top of deploy/backup.sh, on the newest copy.
-      - name: Put the copy back
-        run: |
-          file="$(ls -1t backups/*.dump | head -n 1)"
-          docker compose stop app
-          docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --single-transaction' < "$file"
-          docker compose start app
-
-      - name: The data is back as it was
-        run: |
-          note="$(echo "select string_agg(note, ', ') from ci_check" | sql)"
-          echo "ci_check holds: $note"
-          [ "$note" = "in the copy" ]
-
-      - name: The app is healthy again
-        run: |
-          docker compose up -d --no-build --wait --wait-timeout 180
-          curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
-
-      # deploy/export-image.sh saves the running app's image as one file, the
-      # way the server hands it over (deploy/CONTAINER-IMAGE.md).
-      - name: Save the app's image with deploy/export-image.sh
-        run: |
-          ./deploy/export-image.sh
-          ls -l images
-          # It let go of the lock it held while saving.
-          [ ! -d .deploy.lock ]
-          cd images
-          sha256sum -c ./*.sha256
-
-      # The file alone is enough: with the image deleted, the app comes back
-      # from the file and still finds its data, which lives in its own volume.
-      - name: The saved image runs on its own
-        run: |
-          tag="schema-studio-app:$(git rev-parse --short=12 HEAD)"
-          docker compose rm --stop --force app
-          docker image rm schema-studio-app
-          for name in schema-studio-app "$tag"; do
-            if docker image inspect "$name" > /dev/null 2>&1; then
-              echo "$name is still here."
-              exit 1
-            fi
-          done
-          docker load -i images/schema-studio-app-*.tar.gz
-          docker tag "$tag" schema-studio-app
-          docker compose up -d --no-build --wait --wait-timeout 180
-          curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
-          [ "$(docker image inspect -f '{{index .Config.Labels "org.schema-studio.sign-in-bypass"}}' schema-studio-app)" = false ]
-          [ "$(docker image inspect -f '{{.Config.User}}' schema-studio-app)" = nextjs ]
-          note="$(echo "select string_agg(note, ', ') from ci_check" | sql)"
-          echo "ci_check holds: $note"
-          [ "$note" = "in the copy" ]
-
-      # Images that differ only in their label stand in for one built with
-      # the bypass on and one built before the label existed. Each must be
-      # refused, leaving no file behind and the lock free.
-      - name: The script refuses an image with the bypass on
-        run: |
-          tag="schema-studio-app:$(git rev-parse --short=12 HEAD)"
-          refused() {
-            printf 'FROM %s\nLABEL org.schema-studio.sign-in-bypass="%s"\n' "$tag" "$1" | docker build --quiet --tag schema-studio-app -
-            docker compose up -d --no-build --no-deps --force-recreate app
-            if out="$(./deploy/export-image.sh 2>&1)"; then
-              echo "It saved an image labelled '$1'."
-              return 1
-            fi
-            echo "$out"
-            echo "$out" | grep -q "$2"
-            [ ! -d .deploy.lock ]
-          }
-          refused true "set to 'true'"
-          refused "" "built before"
-          [ "$(ls -1 images | wc -l)" -eq 2 ]
-          docker tag "$tag" schema-studio-app
-          docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout 180 app
 
       - name: Show the containers and their logs
         if: failure()

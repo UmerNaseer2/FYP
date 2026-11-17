@@ -1,4 +1,4 @@
-// Local connections (docs/cross-site-sync-plan.md): a connection only one
+// Local connections: a connection only one
 // machine can reach is listed in the shared database by name, with a marker
 // where its password would be; the password itself stays in that machine's own
 // store (lib/connections/local-store).

@@ -36,9 +36,6 @@ export const ORG_HEADER = "x-schema-studio-org";
  * The rest are kept back for pages that are likely to come, so that adding
  * one later never takes an address an organization already has. Anything
  * that cannot match ORG_SLUG_PATTERN anyway (_next, favicon.ico) is left out.
- *
- * scripts/move-data.cjs keeps a copy, because a plain script cannot import
- * this file. Change both: tests/org-slug.test.ts fails while they disagree.
  */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   // Folders in app/ today, and the names of the studio's pages.

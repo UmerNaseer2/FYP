@@ -50,8 +50,9 @@ FROM node:22-slim AS runner
 WORKDIR /app
 
 # Says on the image whether its sign-in bypass is on (see the build stage), so
-# a look at the image tells without starting it: deploy/export-image.sh
-# refuses to hand over one that has it on.
+# a look at the image tells without starting it:
+#   docker image inspect -f '{{index .Config.Labels "org.schema-studio.sign-in-bypass"}}' <image>
+# An image to hand to anyone else must say false.
 ARG NEXT_PUBLIC_AUTH_BYPASS="false"
 LABEL org.schema-studio.sign-in-bypass="$NEXT_PUBLIC_AUTH_BYPASS"
 

@@ -415,8 +415,14 @@ describeWithDatabase("the generated SQL on a real PostgreSQL", () => {
   // the snapshot does not hold one by one still arrive.
 
   it(
-    "keeps the column list of ON DELETE SET NULL (columns) on a foreign key",
+    "keeps the column list of ON DELETE SET NULL (columns) on a foreign key (PostgreSQL 15)",
     async () => {
+      // The column list arrived in PostgreSQL 15. An older server has nothing to check.
+      const version = await server.query<{ num: string }>(
+        "SELECT current_setting('server_version_num') AS num"
+      );
+      if (Number(version.rows[0].num) < 150000) return;
+
       const users = `CREATE TABLE users (tenant_id integer NOT NULL, id integer NOT NULL, PRIMARY KEY (tenant_id, id));`;
       const script = await roundTrip(
         `${users}

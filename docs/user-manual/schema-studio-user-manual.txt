@@ -3,8 +3,8 @@
                     PostgreSQL Schema Comparison & Versioning
 ================================================================================
 
-VERSION: 2.4.0
-LAST UPDATED: 2026-11-10
+VERSION: 2.5.0
+LAST UPDATED: 2026-11-17
 
 ================================================================================
 TABLE OF CONTENTS
@@ -49,8 +49,8 @@ you deploy it, explain a drift, draft SQL from plain words and answer
 questions about a schema. It is off until an admin switches it on (see THE AI
 TAB in section 11).
 
-This manual covers the website. The desktop app and the phone app have their
-own guides in the project: desktop/README.md and relay/README.md.
+This manual covers the web app. Setting it up on a machine of your own is
+deploy/handover/SETUP-GUIDE.md.
 
 ================================================================================
 2. GETTING STARTED
@@ -186,39 +186,6 @@ three. A role without one still sees the button, switched off, and the page says
 why once, under its header.
 
 IMPORTANT: Passwords are encrypted at rest and never shown after saving.
-
-LINKING A COMPUTER
-------------------
-The desktop app can be linked to an organization on the website. A linked
-computer gets the organization's saved connections, and the connections kept
-only on that computer are listed here by name (their passwords stay on it).
-
-  1. On the computer, open Schema Studio's Settings, enter the site's address
-     and click "Link". The app shows a code of eight letters and numbers, and
-     your web browser opens the site's "Link a computer" page.
-  2. Sign in if the site asks you to.
-  3. Type the code under "Code shown on the computer". The address of the
-     page never fills it in, so you always read it off the computer in front
-     of you. Only link a computer you are sitting at, and never type a code
-     that someone sent you.
-  4. Read what the page says before you go on: linking lets that computer
-     open the organization's saved connections, including their passwords,
-     and answer questions from your account.
-  5. If you belong to more than one organization, pick the right one under
-     "Organization".
-  6. The page names the computer and says when it asked. Click "Link this
-     computer", or "Not mine" if you did not start this just now.
-
-A code works for 10 minutes. Linking needs a role that may compare schemas.
-
-Linked computers are listed on the Connections page under "On linked
-computers". An Admin sees every linked computer there and can unlink any of
-them with "Unlink", for instance one that was lost. Everyone else sees the
-computers that hold connections of their own, and can unlink their own one.
-A computer can also be unlinked from its own Settings.
-
-A link ends by itself when the computer has not been used with the site for
-90 days. Link it again the same way: it takes a minute.
 
 ================================================================================
 4. DASHBOARD
@@ -866,9 +833,7 @@ sign-in account (their Microsoft account, for example) is not touched, but
 signing in no longer brings them here. They are back only if someone invites
 them again or they use a join link that is still open, so cancel any link you
 don't want them to have (see INVITING PEOPLE). If this was their only
-organization, their profile in the app is deleted too. The desktop app has no
-invitations: someone removed there comes back as a Viewer if they sign in to
-it again.
+organization, their profile in the app is deleted too.
 
 While sign-in is switched off for testing, nobody new is added to this list:
 everyone using the app is the same stand-in admin. The tab says so, and
@@ -886,7 +851,7 @@ The app sends no email itself. When you make an invitation, its link is shown
 once, with "Copy link": copy it then and send it yourself. Invitations nobody
 has taken yet are listed under "Waiting to be taken", each with "Cancel
 invitation". Each one made, canceled or taken is listed under Recent
-changes. The desktop app has no invitations.
+changes.
 
 THE RANK RULE
 -------------
@@ -1111,8 +1076,8 @@ Only the Admin role sees this tab. It has two parts:
     organization's connections, scripts, approvals, invitations and change
     log, and takes everyone out of it. Their accounts stay, and so do scripts
     already in the GitHub registry. The first organization on an install
-    cannot be deleted, and nothing can be deleted on the desktop app or while
-    sign-in is switched off for testing.
+    cannot be deleted, and nothing can be deleted while sign-in is switched
+    off for testing.
 
 THE GITHUB TAB
 --------------
@@ -1155,8 +1120,7 @@ then and paste it here. If the repository belongs to a GitHub organization,
 that organization may have to approve the token first.
 
 If the tab says the saved token can't be read, the server's encryption key has
-changed since it was saved: paste the token again. The desktop app keeps its
-GitHub settings in its own Settings window instead (File > Settings).
+changed since it was saved: paste the token again.
 
 THE AI TAB
 ----------
@@ -1368,7 +1332,7 @@ END OF USER MANUAL
 ================================================================================
 
 For more help, contact your system administrator. Developers: the code is
-described in docs/PROJECT_CONTEXT.md, and docs/README.md says which document to
-trust when two of them disagree.
+described in docs/DEVELOPER-MANUAL.md, and docs/README.md lists every
+document.
 
-Last updated: 2026-11-10 · Manual version 2.4.0
+Last updated: 2026-11-17 · Manual version 2.5.0
