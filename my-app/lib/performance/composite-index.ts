@@ -9,7 +9,7 @@ import type { PerfAdvice } from "./advice";
  *
  * The Analyse tab already suggests a multi-column index for ONE query: it has
  * that query's plan in front of it, so it can read the columns straight off
- * the conditions (see indexAdvice in lib/performance/query-analysis.ts). What no single
+ * the conditions (see indexAdvice in lib/performance/query-analysis/). What no single
  * analysis can see is the pattern — that four different queries all search
  * `orders` on customer_id and status, and that one index would serve all four.
  * That is what this file is for, and it is the reason query_history stores

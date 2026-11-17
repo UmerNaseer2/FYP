@@ -38,7 +38,7 @@ import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/performance/query-histo
  * Spec feature 09 — performance suggestions.
  *
  * Two independent passes over one schema, deliberately not merged in the
- * analyzer (see lib/performance/advice.ts): the structural rules read the snapshot the
+ * analyzer (see lib/performance/advice/): the structural rules read the snapshot the
  * introspector already knows how to take, and the statistics rules read
  * PostgreSQL's own counters. They are merged HERE, tagged with which pass found
  * them, because a reader needs to know that "this index has not been used"
@@ -72,7 +72,7 @@ import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/performance/query-histo
  * READ ONLY transaction, which the server enforces.
  */
 
-// AdviceItem and AdviceView live in lib/performance/advice.ts, so this route and the
+// AdviceItem and AdviceView live in lib/performance/advice/, so this route and the
 // screen that reads its response share one definition instead of two copies
 // that could drift apart without anyone noticing.
 

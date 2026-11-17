@@ -328,7 +328,7 @@ export function nextvalSequenceName(columnDefault: string | null): string | null
  * column as its identity (deptype 'i'). pg_get_serial_sequence would be the
  * obvious call, but a serial turned identity still owns its old sequence, and
  * pg_get_serial_sequence returns whichever of the two it finds first, usually
- * the old one (see the serial fix in lib/performance/advice.ts).
+ * the old one (see the serial fix in lib/performance/advice/serial-fix.ts).
  */
 export function counterPastRowsStatement(
   tableName: string,

@@ -1,5 +1,5 @@
-// Small SQL helpers shared by the two performance tabs (lib/performance/query-analysis.ts
-// and lib/performance/advice.ts).
+// Small SQL helpers shared by the two performance tabs (lib/performance/query-analysis/
+// and lib/performance/advice/).
 //
 // Dependency-free, like the modules that use it: nothing here opens a
 // connection, so it runs in a test, in a route handler and in the browser.
@@ -311,7 +311,7 @@ export function createExpressionIndexSql(
 
 /**
  * What the builder needs from a finding. Both tabs' findings have these fields
- * (AdviceItem in lib/performance/advice.ts, QueryFinding in lib/performance/query-analysis.ts), so
+ * (AdviceItem in lib/performance/advice/, QueryFinding in lib/performance/query-analysis/), so
  * either list is passed straight in.
  */
 export type FixScriptItem = {

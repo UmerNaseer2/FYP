@@ -215,7 +215,7 @@ my-app/
 | `lib/drift/runner.ts` | One drift check plus its audit row — shared by the button, the scheduler and tracking |
 | `lib/drift/schedule.ts` | Cadence arithmetic: what is due, what is overdue. Pure, so it is unit-tested |
 | `lib/drift/scheduler.ts` | The background loop itself; the only timer in the process |
-| `lib/performance/query-analysis.ts` | Reads an `EXPLAIN` plan and says what is wrong with it. Pure |
+| `lib/performance/query-analysis/` | Reads an `EXPLAIN` plan and says what is wrong with it. Pure |
 | `lib/performance/schema-metrics.ts` | `schema_metrics`: takes a reading, reads a window, prunes the tail |
 | `lib/performance/metrics-series.ts` | Readings to plot geometry, ticks and a sentence. Pure |
 | `lib/postgres/snapshot-format.ts` | The snapshot format version, and what to do with an older one |

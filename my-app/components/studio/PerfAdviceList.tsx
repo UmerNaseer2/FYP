@@ -13,7 +13,7 @@ import {
 import type { PerfTarget } from "./PerfTargetPicker";
 import { FixScriptBuilder } from "./FixScriptBuilder";
 // A type-only import: erased at build time, so nothing from the server side of
-// lib/performance/advice.ts reaches the browser. One definition, shared with the route
+// lib/performance/advice/ reaches the browser. One definition, shared with the route
 // that produces the response, means the two can never silently disagree.
 import type { AdviceItem, AdviceView } from "@/lib/performance/advice";
 import { apiFetch } from "@/lib/ui/api-fetch";

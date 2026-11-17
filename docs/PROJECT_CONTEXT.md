@@ -222,8 +222,8 @@ route into the codebase.
 | `runComparison(query, record)` | `lib/compare/run.ts:1027` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
 | `runDriftCheck(id, source, mode)` | `lib/drift/runner.ts:120` | One drift check, and the `drift_events` row it writes. |
 | `fetchSchemaVersionInfo(cfg, schema)` | `lib/versions/detection.ts:575` | Finds a target's own version table: Flyway, Liquibase, or hand-rolled. |
-| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/performance/query-analysis.ts:3517`, `:6049` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
-| `analyzeSchemaPerformance(snapshot)` | `lib/performance/advice.ts:1021` | Structural performance advice. |
+| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/performance/query-analysis/read-plan.ts`, `read-sql.ts` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
+| `analyzeSchemaPerformance(snapshot)` | `lib/performance/advice/schema-rules.ts` | Structural performance advice. |
 
 ### Rename detection is the interesting algorithm
 

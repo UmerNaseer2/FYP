@@ -2,8 +2,8 @@ import type { FixKind } from "@/lib/performance/sql";
 
 /**
  * The promises every fix on the two performance tabs makes, checked in one
- * place, so the Suggestions tab's rules (lib/performance/advice.ts) and the Analyse
- * tab's (lib/performance/query-analysis.ts) are held to the same ones.
+ * place, so the Suggestions tab's rules (lib/performance/advice/) and the Analyse
+ * tab's (lib/performance/query-analysis/) are held to the same ones.
  *
  * A fix is SQL a person pastes into their own server, so what matters is what
  * pasting it would do. Each kind (see FixKind in lib/performance/sql.ts) promises:

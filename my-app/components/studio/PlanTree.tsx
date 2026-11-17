@@ -3,7 +3,7 @@
 import { Pill } from "@/components/ui";
 import { SEVERITY_META, type FindingSeverity } from "./FindingCard";
 // Type-only: erased at build time. The shapes have one definition, in
-// lib/performance/query-analysis.ts, shared with the route that produces them.
+// lib/performance/query-analysis/, shared with the route that produces them.
 import type { PlanStep, PlanSummary, QueryFinding } from "@/lib/performance/query-analysis";
 // Pure helpers from the same module (it opens no connections, so it is safe in
 // the browser). The step list uses the same ones, so a box and its row can

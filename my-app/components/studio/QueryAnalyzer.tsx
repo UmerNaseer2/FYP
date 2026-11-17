@@ -25,7 +25,7 @@ import { FixScriptBuilder } from "./FixScriptBuilder";
 import { ScorePanel } from "./ScoreBadge";
 import { ThresholdBanner } from "./ThresholdBanner";
 // Type-only: erased at build time. The response shape has one definition, in
-// lib/performance/query-analysis.ts, shared with the route that produces it, so the screen
+// lib/performance/query-analysis/, shared with the route that produces it, so the screen
 // and the route can never silently disagree about it.
 import type {
   AnalyzeView,

@@ -1423,7 +1423,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
    one it hangs from. The lines between boxes are borders on li::before and
    li::after, the classic CSS org chart: each child draws half of the bar
    above it and its own drop line, and the first and last child trim the
-   bar's ends. The tints follow shareBand in lib/performance/query-analysis.ts: hot is
+   bar's ends. The tints follow shareBand in lib/performance/query-analysis/: hot is
    half of the query or more, warm a fifth or more. Theme tokens only, so
    light and dark both work.
    ============================================================================ */

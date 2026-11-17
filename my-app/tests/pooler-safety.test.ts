@@ -23,7 +23,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 // Refuses these functions in SQL people type, so it has to name them.
-const ALLOWED = new Set(["lib/performance/query-analysis.ts"]);
+const ALLOWED = new Set(["lib/performance/query-analysis/gate.ts"]);
 
 const FILES = [...sourceFiles("lib"), ...sourceFiles("app"), "instrumentation.ts", "proxy.ts"]
   .filter((file) => !ALLOWED.has(file));

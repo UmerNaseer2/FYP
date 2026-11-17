@@ -47,7 +47,7 @@ moved past them.
   decides what each role may do, feature by feature, and can add roles of their
   own. See `my-app/lib/roles/permissions.ts` and section 11 of the user manual.
 - **The project plan lists rollback and query analysis as later work.** Both are
-  built. See `my-app/lib/performance/query-analysis.ts`, `my-app/lib/performance/advice.ts` and the
+  built. See `my-app/lib/performance/query-analysis/`, `my-app/lib/performance/advice/` and the
   `/api/scripts/revert` route.
 - **The project plan describes signing in with a Microsoft work account.** The sign-in flow is built, with GitHub as a second way in, but this
   repository carries no credentials for either. Until a server is given them,
