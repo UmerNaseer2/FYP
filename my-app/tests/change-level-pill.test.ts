@@ -107,7 +107,7 @@ describe("the screens that show a change level", () => {
   // level's colour from the one table rather than a map of its own.
   it.each([
     "app/[org]/(studio)/versionsync/page.tsx",
-    "app/[org]/(studio)/deploy/page.tsx",
+    "app/[org]/(studio)/deploy/MigRow.tsx",
     "app/[org]/(studio)/schemas/[id]/page.tsx",
     "app/[org]/(studio)/script-editor/page.tsx",
     "components/studio/DiffReport.tsx",

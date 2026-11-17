@@ -1,66 +1,38 @@
 "use client";
 
 import "@/app/styles/atelier-deploy.css";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { AskAdmin } from "@/components/studio/AskAdmin";
 import { TargetPicker, type TargetChoice } from "@/components/studio/TargetPicker";
 import { QuickRun, QuickRunButton, type QuickRunTarget } from "./QuickRun";
-import {
-  DeployIcon,
-  RefreshIcon,
-  CheckIcon,
-  XIcon,
-  AlertCircleIcon,
-  AlertTriangleIcon,
-  DriftIcon,
-  InfoIcon,
-  ChevronRightIcon,
-  ChevronDownIcon,
-  EyeIcon,
-  LogoIcon,
-} from "@/components/ui/icons";
+import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import {
   compareVersions,
   buildVersionLedger,
-  levelOfStep,
   pendingPrefixThrough,
   versionKey,
   type LedgerEntry,
 } from "@/lib/versions/script-status";
 import { deployStage, patchPrompt, stagePrompt } from "@/lib/deploy/init";
-import {
-  checkApplications,
-  readAppliesToHeader,
-  type TargetApplications,
-} from "@/lib/deploy/application-targeting";
+import { checkApplications, readAppliesToHeader } from "@/lib/deploy/application-targeting";
 import {
   containsTransactionControl,
-  EXECUTE_CANNOT_BE_READ,
   findRowDestroyingStatements,
   ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql/guard";
 import { analyseRunRisk } from "@/lib/deploy/risk";
 import { readApplyFailure, type ApplyFailure } from "@/lib/deploy/apply-failure";
 import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
-import {
-  describeChangeType,
-  louderChangeType,
-  type ChangeTypeReading,
-  type ScriptChangeType,
-} from "@/lib/versions/change-type";
+import { describeChangeType } from "@/lib/versions/change-type";
 import { changeNoteSummary, readChangeNote } from "@/lib/versions/change-note";
 import type { DeployAttemptRow } from "@/lib/deploy/attempts";
 import { countOf } from "@/lib/ui/plural";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
-import { Select } from "@/components/ui/Select";
 import { SetupChecklist, type SetupStep } from "@/components/ui/SetupChecklist";
-import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
+import { canExecute, toExecuteRole } from "@/lib/connections/access";
 import { describeError } from "@/lib/ui/friendly-error";
-import { DEFAULT_ROLE, permissionLabel, refusalMessage } from "@/lib/roles/permissions";
-import { fingerprintBody, rollbackFingerprintBody } from "@/lib/deploy/approval-fingerprint";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { rollbackFingerprintBody } from "@/lib/deploy/approval-fingerprint";
 import {
   listVersions,
   MAX_ROLLBACK_VERSIONS,
@@ -68,34 +40,62 @@ import {
   rollbackTargets,
   versionRange,
   vLabel,
-  type RollbackStep,
 } from "@/lib/deploy/rollback-plan";
-import type { PulledRollbackState } from "@/lib/github/registry-push";
 import { normalizeChangeLevel } from "@/lib/versions/change-level";
 import {
-  displayVersion,
   mergeTimelines,
   outdatedSideOfEntries,
   timelineKey,
   versionTitle,
   type TimelineEntry,
   type TimelineRow,
-  type TimelineStatus,
 } from "@/lib/versions/timeline";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
-import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
-import { MigrationReviewPanel } from "@/components/studio/MigrationReviewPanel";
+import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { RunTimeline } from "./RunTimeline";
-import { RiskGate } from "@/components/studio/RiskGate";
-import { VersionTimeline } from "@/components/studio/VersionTimeline";
-import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { PageHeader } from "@/components/studio/PageHeader";
-import { HelpHint } from "@/components/ui/HelpHint";
-import { shortUtcDate } from "@/lib/ui/format-date";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import { newRunId } from "@/lib/deploy/run-id";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
+import type {
+  GitHubScript,
+  Connection,
+  PreflightResult,
+  OtherScriptEntry,
+  RunStatus,
+  RunCell,
+  ApplyOutcome,
+  ApplyResponse,
+  RevertResponse,
+  DriftResult,
+  DriftPhase,
+} from "./types";
+import {
+  changeTypeSent,
+  sortGitHubScriptsByVersion,
+  scriptKey,
+  getSqlLineCount,
+  bumpWord,
+  ledgerStatus,
+  batchBody,
+  selectionChange,
+  nameTwoRuns,
+} from "./helpers";
+import {
+  BEFORE_FIRST,
+  rollbackProblemText,
+  rowLossKinds,
+  APPROVAL_REQUESTED_TOAST,
+} from "./row-notes";
+import { DriftPanel } from "./DriftPanel";
+import { HeadNotes, TargetCard, ShipsCard, VersionTimelineCard } from "./PreflightCards";
+import { RollbackCard } from "./RollbackCard";
+import { PendingCard } from "./PendingCard";
+import { ShipChecklist } from "./ShipChecklist";
+import { RunPanel } from "./RunPanel";
+import { RunHead, RunList, RunResults } from "./RunStage";
+import { VerifyCards } from "./VerifyStage";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5): Pre-flight → Run → Verify stepper.
@@ -137,806 +137,6 @@ import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
 // selection by its fingerprintBody text, so none of them can speak for a
 // different range or for SQL a re-pull has changed.
 // ---------------------------------------------------------------------------
-
-// The deploy screen's own name for a script's change type. The grading itself
-// lives in lib/versions/change-type, so this screen and the generator can never disagree
-// about what a script does.
-type ChangeKind = ScriptChangeType;
-
-// A migration script, loaded from the GitHub repo (the source of truth).
-type GitHubScript = {
-  database_name: string;
-  schema_name: string;
-  script_name: string;
-  version: string;
-  path: string;
-  sql_content: string;
-  /**
-   * The rollback saved beside this version in the registry (v<ver>.down.sql).
-   * Sent only when rollback_state is "usable": the pull leaves out a file that
-   * is blank or only comments, contains COMMIT or ROLLBACK, or could not be
-   * downloaded, and says which in rollback_state.
-   */
-  down_sql?: string;
-  /** How the rollback file read. Optional: an older pull route did not say. */
-  rollback_state?: PulledRollbackState;
-};
-
-// A saved connection from /api/connections.
-type Connection = {
-  id: number;
-  name: string;
-  host: string;
-  port: number;
-  database_name: string;
-  type: string;
-  /** Who may run migrations here: none, editor or admin. See lib/connections/access.ts. */
-  execute_role?: string | null;
-};
-
-// One row of the target's applied history.
-type PatchEntry = {
-  version: string;
-  title: string | null;
-  /**
-   * The change log stored with the row (spec 07, "change logs with user
-   * notes"). Optional: a row written by an older build, or by another tool,
-   * has none.
-   */
-  description?: string | null;
-  change_type: string;
-  applied_at: string;
-  /**
-   * Who ran it. Optional: an older preflight route did not send it, and a
-   * ledger row written before the column existed has no answer to give.
-   */
-  applied_by?: string | null;
-  /** Whether the ledger row kept its own rollback. Optional: an older API. */
-  has_down_sql?: boolean;
-  /** The rollback stored on the row. Optional for the same reason. */
-  down_sql?: string | null;
-  /**
-   * The SQL that ran, as the ledger row stored it: the only copy for a
-   * version Version Sync replayed. Optional for the same reason.
-   */
-  sql_content?: string | null;
-};
-
-// What /api/scripts/preflight returns.
-type PreflightResult = {
-  hasVersionTable: boolean;
-  needsInit: boolean;
-  /** Does the schema exist on the target? See lib/deploy/init.ts. */
-  /**
-   * What the target says it hosts, read from the connection's application
-   * table. Used here only to say so on screen, the apply route runs the same
-   * check again and is the one that refuses, because a screen is a courtesy
-   * and the rule has to hold whatever reaches the endpoint.
-   */
-  applications: TargetApplications;
-  schemaExists: boolean;
-  /** Its ordinary tables, not counting this app's own ledger tables. */
-  tableCount: number;
-  currentVersion: string | null;
-  timeline: PatchEntry[];
-  schema: string;
-  scriptName: string | null;
-  message: string;
-  /**
-   * Rollback history for this family, newest first (at most 50). Optional:
-   * an older preflight route did not send it.
-   */
-  reverted?: RevertedEntry[];
-  /**
-   * Other families' versions applied after this family's first version,
-   * oldest first (at most 200). The "Roll back to" panel narrows it to the
-   * versions it would undo. Optional for the same reason.
-   */
-  otherScripts?: OtherScriptEntry[];
-};
-
-// One row of the rollback history (script_patch_reverted). Mirrors
-// RevertedEntry in app/api/scripts/preflight/route.ts.
-type RevertedEntry = {
-  script_name: string;
-  version: string;
-  title: string | null;
-  change_type: string | null;
-  applied_at: string | null;
-  /** Who applied it, carried into the archive by the revert route. Optional. */
-  applied_by?: string | null;
-  reverted_at: string;
-  /** Who rolled it back. Optional for the same reason as applied_by. */
-  reverted_by?: string | null;
-};
-
-// A version of ANOTHER script family applied after this family's versions.
-// The preflight and the revert route both send these. applied_at is typed as
-// nullable because the revert route's copy comes straight from the ledger.
-type OtherScriptEntry = {
-  script_name: string;
-  version: string;
-  applied_at: string | null;
-};
-
-// Live status of a single migration during a run.
-//
-// "rehearsed" is a dry run's version of "applied": the SQL really executed
-// against the target and then the whole run was rolled back.
-// "unknown" is not a state the run passes through, it is what is left when
-// the answer never arrived: the COMMIT did not report back, or the request
-// itself never completed. Neither "applied" nor "skipped" is a thing this page
-// can claim then, and picking one would send the reader off to do the wrong
-// thing about half the time.
-// "not-in-run" is a pending row the chosen target version stops short of. It
-// is not a run state at all, the run never reaches it, but the pending list
-// draws the same rows, and calling those "queued" promised the reader a run
-// they had not asked for.
-type RunStatus =
-  | "queued"
-  | "not-in-run"
-  | "running"
-  | "applied"
-  | "rehearsed"
-  | "failed"
-  | "skipped"
-  | "unknown";
-// `statements` is how many statements PostgreSQL ran for this migration, as the
-// server counted them. There is deliberately no per-migration duration: the run
-// is one request and one transaction, so the only honest timing is the run's.
-type RunCell = { status: RunStatus; error?: string; statements?: number };
-
-// What POST /api/scripts/apply reports for one migration in the run.
-type ApplyOutcome = {
-  script_name: string;
-  version: string;
-  status: "applied" | "rehearsed" | "failed" | "skipped" | "unknown";
-  statements?: number;
-  error?: string;
-};
-// The parts of the apply response this page reads.
-type ApplyResponse = {
-  success?: boolean;
-  error?: string;
-  results?: ApplyOutcome[];
-  message?: string;
-  /** Set on a dry run the server could not rehearse, see the 55P04 branch. */
-  dryRunLimitation?: boolean;
-  /** Set when the COMMIT did not report back, see the route's catch block. */
-  outcomeUnknown?: boolean;
-  /**
-   * Set on every answer the route gives before its first write to the target
-   * (answerBeforeRun there). lib/deploy/apply-failure is the one reading of it.
-   */
-  nothingRan?: boolean;
-  /**
-   * What the run recorded in the GitHub registry (spec 07). Unknown rather
-   * than typed, because readArchivedVersions is the one place that decides
-   * what a well-formed entry is, and an older server sends no such field.
-   *
-   * Nearly always absent HERE: Deploy's scripts were pulled from the registry,
-   * so their files are already in it and the route leaves those out. It shows
-   * up when a version could not be recorded, which on this screen means GitHub
-   * went unreachable partway through a deploy.
-   */
-  registry?: unknown;
-  /**
-   * "run_stopped" when the run was ended partway: by Stop, or by one of its
-   * time limits (lib/deploy/run-limits.ts). It rolled back like any failed run.
-   */
-  code?: string;
-};
-
-// The change_type this page sends with a migration, to the apply route and to
-// the approvals route: its stamp when it has one, its SQL's grade otherwise.
-// The page's own risk reading (runRisk) is given the same value, so the boxes
-// on this page and the server's checks read every migration the same way.
-function changeTypeSent(sql: string): ScriptChangeType {
-  return describeChangeType(sql).recorded;
-}
-
-// The parts of POST /api/scripts/revert's response this page reads. Every
-// refusal carries `error` and every success carries `message`: a sentence that
-// says what happened and what state the target is in now. The page shows it
-// as written, so the screen and the server never tell two different stories.
-type RevertResponse = {
-  success?: boolean;
-  error?: string;
-  message?: string;
-  dryRun?: boolean;
-  /** The versions the route undid, or rehearsed, newest first. */
-  versions?: string[];
-  /**
-   * Other families' versions applied after the oldest version this rollback
-   * undoes, as the server counted them. Sent with a dry run's result and with
-   * a refusal.
-   */
-  otherScripts?: OtherScriptEntry[];
-  /** The caller may only run this with an approval, and none covers this exact rollback yet. */
-  needsApproval?: boolean;
-  /** The COMMIT did not report back, so nobody knows whether it happened. */
-  outcomeUnknown?: boolean;
-  /**
-   * Why the route refused, as a short code. "not_applied" and "not_newest"
-   * mean this page's copy of the ledger is out of date, so it reads it again.
-   */
-  code?: string;
-};
-
-// ── Phase 6 drift pre-check (lineage) ──────────────────────────────────────
-// The bits we use from POST /api/lineage/drift. The deploy page shows the
-// status + human summary; the full Expected-vs-Actual report belongs to the
-// drift detail screen, so we deliberately don't pull it in here.
-type DriftCounts = {
-  tablesAdded: number;
-  tablesRemoved: number;
-  tablesChanged: number;
-  constraintsChanged: number;
-};
-type DriftResult = {
-  status: "in_sync" | "drifted" | "unreachable";
-  summary: string;
-  counts: DriftCounts | null;
-  expectedVersion: string | null;
-  checkedAt: string;
-};
-// Where the lineage drift check stands for the chosen target.
-type DriftPhase = "idle" | "loading" | "untracked" | "ready" | "error";
-
-// Version comparison + the Applied/Pending ledger live in lib/versions/script-status so
-// they can be unit-tested in isolation; compareVersions is imported above.
-function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
-  return [...scripts].sort((a, b) => compareVersions(a.version, b.version));
-}
-
-// Stable unique key, must include schema_name because two schemas can hold the
-// same script_name@version pair.
-function scriptKey(s: GitHubScript): string {
-  return `${s.schema_name}@${s.script_name}@${s.version}`;
-}
-
-function getSqlLineCount(sql: string): number {
-  return sql.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
-}
-
-// The version bump a change kind implies, used for the "bump" summary.
-function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
-  if (kind === "breaking") return "major";
-  if (kind === "additive") return "minor";
-  return "patch";
-}
-
-// The COMMIT/ROLLBACK pre-flight check uses the SAME helper as the server apply
-// route (lib/sql/guard), so the advisory warning here can never disagree with
-// what the route actually rejects, including the dollar-quoted-body handling.
-
-// "1 statement" / "4 statements": the count PostgreSQL reported for one script.
-function fmtStatements(n: number): string {
-  return `${n} statement${n === 1 ? "" : "s"}`;
-}
-
-function fmtSecs(ms: number): string {
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
-// Short, safe date for the ledger's applied rows: the UTC day, the same day
-// the version timeline on this screen shows for the same row. Returns "" for a
-// missing or unparseable timestamp rather than "Invalid Date".
-function fmtDate(iso: string | null): string {
-  return shortUtcDate(iso);
-}
-
-// Applied / Pending / Skipped (the version ledger, lib/versions/script-status) → the
-// "This database" status in the version timeline.
-//
-// - `current` is the version applied to the target ("v5.0.2"). A skipped
-//   version's tooltip names it, so the reason it will not run is one hover
-//   away.
-// - `rolledBack` is the version's latest rollback, given only when it is not
-//   applied now. The status then says when it was rolled back, so "Pending"
-//   is not read as "never deployed". The status word stays Pending or
-//   Skipped, because that word is what a deploy will do with it.
-// - `pullWarned` says part of the registry could not be read. That is a
-//   second reason an applied version can have no registry file.
-function ledgerStatus(
-  entry: LedgerEntry,
-  rolledBack: RevertedEntry | null,
-  current: string,
-  pullWarned: boolean
-): TimelineStatus {
-  if (entry.status === "applied") {
-    if (entry.inRegistry) return { text: "Applied", tone: "applied" };
-    return {
-      text: "Applied · no registry file",
-      tone: "applied",
-      title: pullWarned
-        ? "Applied to this database, but the registry has no file for it: applied directly, " +
-          "replayed here by Version Sync, or its file could not be read (see the top of the page)."
-        : "Applied to this database, but the registry has no file for it: applied directly, " +
-          "or replayed here by Version Sync.",
-    };
-  }
-  // " · rolled back 3 Sep 2026", or without the date when it is unreadable.
-  const undone = rolledBack ? fmtDate(rolledBack.reverted_at) : "";
-  const note = rolledBack ? ` · rolled back${undone ? ` ${undone}` : ""}` : "";
-  if (entry.status === "pending") {
-    return {
-      text: `Pending${note}`,
-      tone: "pending",
-      title: rolledBack
-        ? rolledBackTitle(rolledBack, "pending", current)
-        : "Not applied to this database yet. A deploy that includes it runs it.",
-    };
-  }
-  return {
-    text: `Skipped${note}`,
-    tone: "skipped",
-    title: rolledBack
-      ? rolledBackTitle(rolledBack, "skipped", current)
-      : `Never applied, and below ${current}, the version applied to the target. ` +
-        "Deploys only move forward, so this version will not run.",
-  };
-}
-
-// The note above the version timeline that explains its Skipped rows: what
-// happened, that a deploy will not run them, and how to still ship the change
-// (the Script Editor saves a change as the family's next version, above the
-// version applied to the target).
-function skippedNote(skipped: ReadonlyArray<string>, current: string): string {
-  if (skipped.length === 1) {
-    return (
-      `Skipped: ${listVersions(skipped)} was never applied and is below ${current}, ` +
-      `the version applied to the target. Deploys only move forward, so it will not run. ` +
-      `If its change is still needed, save it in the Script Editor as a new version above ${current}.`
-    );
-  }
-  return (
-    `Skipped: ${listVersions(skipped)} were never applied and are below ${current}, ` +
-    `the version applied to the target. Deploys only move forward, so they will not run. ` +
-    `If their changes are still needed, save them in the Script Editor as new versions above ${current}.`
-  );
-}
-
-// Tooltip for "rolled back <date>" on a version that is not applied now: when
-// it ran, when it was undone, and whether a deploy would run it again. A
-// pending version is in the next deploy's list; a skipped one is below the
-// target's version, and deploys only move forward.
-function rolledBackTitle(row: RevertedEntry, status: LedgerEntry["status"], current: string): string {
-  const applied = fmtDate(row.applied_at);
-  const undone = fmtDate(row.reverted_at);
-  const history =
-    (applied ? `Applied ${applied}, then rolled back` : "Rolled back") +
-    (undone ? ` ${undone}` : "") +
-    ", so it is not applied now.";
-  return status === "pending"
-    ? `${history} A deploy that includes it runs it again.`
-    : `${history} It is below ${current}, the version applied to the target, so a deploy will not run it again.`;
-}
-
-// The text an approval of this batch is hashed from (lib/deploy/approval-fingerprint,
-// the same text the server hashes). The rehearsal pin and the recovery bar
-// compare these strings directly: equal text means the same scripts, in the
-// same order, with the same SQL, so no hashing is needed to tell.
-function batchBody(scripts: ReadonlyArray<GitHubScript>): string {
-  return fingerprintBody(
-    scripts.map((s) => ({ scriptName: s.script_name, version: s.version, sqlContent: s.sql_content }))
-  );
-}
-
-// How the selected batch differs from one that already ran (a rehearsal, or
-// the run on screen), so the page can say why that run no longer speaks for
-// the selection. null when it still does (the same body).
-// - "nothing": nothing is selected now (a re-read found it all applied).
-// - "scripts": the same versions, but the SQL changed (a re-pull).
-// - "range":   a different set of versions.
-type SelectionChange = "nothing" | "range" | "scripts";
-function selectionChange(
-  ranBody: string | null,
-  ran: ReadonlyArray<GitHubScript>,
-  selected: ReadonlyArray<GitHubScript>,
-  selectedBody: string
-): SelectionChange | null {
-  if (ranBody !== null && ranBody === selectedBody) return null;
-  if (selected.length === 0) return "nothing";
-  const sameVersions =
-    ran.length === selected.length &&
-    ran.every((s, i) => versionKey(s.version) === versionKey(selected[i].version));
-  return sameVersions ? "scripts" : "range";
-}
-
-// Names for two different runs of one family, so a sentence that sets them
-// side by side never prints the same words twice. The range reads
-// "v5.0.1 → v6.0.0". If the ranges read the same, the counts tell them apart
-// ("(3)" and "(2)" when a version between them was added or removed). Failing
-// that, every version is listed.
-function nameTwoRuns(ran: ReadonlyArray<string>, now: ReadonlyArray<string>): [string, string] {
-  const a = versionRange(ran);
-  const b = versionRange(now);
-  if (a !== b) return [a, b];
-  if (ran.length !== now.length) return [`${a} (${ran.length})`, `${b} (${now.length})`];
-  return [listVersions(ran), listVersions(now)];
-}
-
-// The right-hand status cell of a migration row.
-function RightStatus({ cell }: { cell: RunCell }) {
-  if (cell.status === "running") {
-    return (
-      <span className="dp-stat">
-        <span className="spin" />
-        running…
-      </span>
-    );
-  }
-  if (cell.status === "applied" || cell.status === "rehearsed") {
-    return (
-      <span className="dp-stat dp-good">
-        <span className="dp-stat-i">
-          <CheckIcon size={11} />
-        </span>
-        {cell.status}
-        {cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : ""}
-      </span>
-    );
-  }
-  if (cell.status === "failed") {
-    return (
-      <span className="dp-stat dp-bad">
-        <span className="dp-stat-i">
-          <XIcon size={11} />
-        </span>
-        failed
-      </span>
-    );
-  }
-  if (cell.status === "skipped") {
-    return (
-      <span className="dp-stat">
-        <span className="dp-stat-i">
-          <XIcon size={11} />
-        </span>
-        skipped
-      </span>
-    );
-  }
-  if (cell.status === "unknown") {
-    return (
-      <span className="dp-stat dp-unsure">
-        <span className="dp-stat-i">
-          <AlertTriangleIcon size={11} />
-        </span>
-        not known
-      </span>
-    );
-  }
-  if (cell.status === "not-in-run") {
-    return <span className="dp-stat">not in this run</span>;
-  }
-  // queued, waiting to run is not a warning, so it gets a dot, not an alert.
-  return (
-    <span className="dp-stat">
-      <span className="dp-dot" />
-      queued
-    </span>
-  );
-}
-
-// One migration row, shared by the pending list (stage 1) and run list (stage 2/3).
-function MigRow({
-  seq,
-  toggle,
-  name,
-  kind,
-  sub,
-  rightPill,
-  cell,
-  selected,
-  sql,
-  sqlOpen,
-  notes,
-  action,
-}: {
-  seq: string;
-  /**
-   * Makes the sequence circle a tick box (spec 11.5, select or deselect which
-   * pending scripts to run). Absent on the run and rollback lists, where the
-   * batch is already fixed and a box that changed nothing would be a lie.
-   */
-  toggle?: { checked: boolean; onChange: (checked: boolean) => void; label: string; disabled?: boolean };
-  name: string;
-  kind: ChangeKind;
-  sub: string;
-  rightPill: string;
-  cell: RunCell;
-  selected?: boolean;
-  /**
-   * The statements this row will run. When given, the row opens to show them.
-   *
-   * The checklist beside this list warns about breaking migrations. A warning
-   * about text nobody can read is not much help, so the text is here.
-   */
-  sql?: string;
-  /** Start expanded. Used for the breaking ones, which are the point. */
-  sqlOpen?: boolean;
-  /**
-   * Short sentences under the row: why it counts as breaking when its label
-   * says less, a version step that disagrees with its level, and whether a
-   * rollback will be saved with it. `warn` colours the ones worth acting on.
-   */
-  notes?: { text: string; warn: boolean }[];
-  /** A control under the notes. The pending list puts its "Run …" button here. */
-  action?: ReactNode;
-}) {
-  const cls = ["dp-mig-row", cell.status, selected ? "selected" : ""]
-    .filter(Boolean)
-    .join(" ");
-  return (
-    <div className="dp-mig">
-      <div className={cls}>
-        {toggle ? (
-          // The number stays visible beside the box: it is the run order, and
-          // the order is the reason a middle version cannot be dropped.
-          <label className="dp-seq" title={toggle.label}>
-            <input
-              type="checkbox"
-              checked={toggle.checked}
-              disabled={toggle.disabled}
-              aria-label={toggle.label}
-              onChange={(e) => toggle.onChange(e.target.checked)}
-            />
-            {toggle.checked ? <CheckIcon size={13} /> : seq}
-          </label>
-        ) : (
-          <div className="dp-seq">{seq}</div>
-        )}
-        <div className="dp-mig-text">
-          <div className="dp-mig-title">
-            <span className="dp-mig-name">{name}</span>
-            <ChangeLevelPill level={kind} />
-          </div>
-          <div className="dp-mig-sub">{sub}</div>
-          {notes?.map((note, index) => (
-            <div key={index} className={note.warn ? "dp-mig-note dp-warn" : "dp-mig-note"}>
-              {note.text}
-            </div>
-          ))}
-          {action && <div className="dp-mig-act">{action}</div>}
-        </div>
-        <span className="pill pill-outline mono">{rightPill}</span>
-        <RightStatus cell={cell} />
-      </div>
-      {cell.error && <pre className="dp-err">{cell.error}</pre>}
-      {sql && (
-        <details className="dp-sql" open={sqlOpen}>
-          <summary>
-            <ChevronDownIcon size={12} />
-            <span>SQL</span>
-            <span className="mono">{countOf(getSqlLineCount(sql), "line")}</span>
-          </summary>
-          <pre>{sql.trim()}</pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
-// The "Roll back to" choice that undoes every applied version of the family.
-// Not a version number, so it can never collide with one.
-const BEFORE_FIRST = "__before_first__";
-
-type RowNote = { text: string; warn: boolean };
-
-// How the pull read a version's rollback file (its rollback_state). Not
-// lib/github/registry-push's rollbackFileState: that one classifies a file's text,
-// this one only reads the answer the pull already worked out. The pull sets
-// it on every script; without one, the fallback agrees with the apply body,
-// which sends down_sql whenever there is one.
-function pulledRollbackState(script: GitHubScript): PulledRollbackState {
-  return script.rollback_state ?? (script.down_sql ? "usable" : "none");
-}
-
-/**
- * The short notes under one pending migration in stage 1, in reading order:
- *   1. its SQL is always breaking though its label says less (counted anyway);
- *   2. its version number moves by a different step than its level;
- *   3. whether Deploy will be able to undo it once it is applied.
- * `reading` is describeChangeType of its SQL, which the row has worked out
- * already. `previous` is the version it follows on the target: the pending
- * version before it, or the target's current version for the first one.
- */
-function pendingRowNotes(
-  script: GitHubScript,
-  reading: ChangeTypeReading,
-  previous: string | null,
-  applications: TargetApplications
-): RowNote[] {
-  const notes: RowNote[] = [];
-  const v = vLabel(script.version);
-
-  // First, because it is the note that decides whether the rest matters: a
-  // script this target is not allowed to run is refused by the apply route,
-  // and the reader should see that here rather than after pressing Deploy.
-  const verdict = checkApplications(readAppliesToHeader(script.sql_content), applications);
-  if (verdict.reason) notes.push({ text: verdict.reason, warn: !verdict.allowed });
-
-  if (reading.louderNote) notes.push({ text: reading.louderNote, warn: true });
-
-  // The level wins everywhere on this page (the pill, the Bump summary, what is
-  // recorded), so a version number that says otherwise gets a sentence. It is
-  // a warning when the number says more than the level: the reader sees, say,
-  // a major version that the breaking checks do not count.
-  const step = previous ? levelOfStep(previous, script.version) : null;
-  if (previous && step && step !== reading.recorded) {
-    const why = reading.declared
-      ? `this migration is marked ${reading.recorded}`
-      : `its SQL grades as ${reading.recorded}`;
-    const uncounted =
-      step === "breaking" && !reading.countsAsBreaking
-        ? " It is not counted in the breaking checks."
-        : "";
-    notes.push({
-      text:
-        `${v} is a ${bumpWord(step)} step from ${vLabel(previous)}, but ${why}, ` +
-        `so it is recorded as ${reading.recorded}.${uncounted} ` +
-        "Major = breaking, minor = additive, patch = small change.",
-      warn: louderChangeType(step, reading.recorded) === step,
-    });
-  }
-
-  const file = `${v}.down.sql`;
-  const state = pulledRollbackState(script);
-  if (state === "usable") {
-    notes.push({
-      text: `Has a rollback (${file}). Deploying saves it with this version, so Deploy can undo it later.`,
-      warn: false,
-    });
-  } else if (state === "none") {
-    notes.push({
-      text: `No rollback file (${file}) in the registry. Once applied, Deploy can undo it only after one is added in the Script Editor.`,
-      warn: false,
-    });
-  } else if (state === "no_statements") {
-    notes.push({
-      text: `Its rollback file (${file}) is blank or only comments, so it counts as none. Once applied, Deploy can undo it only after a real one is written in the Script Editor.`,
-      warn: false,
-    });
-  } else if (state === "transaction_control") {
-    notes.push({
-      text: `Its rollback file (${file}) contains COMMIT or ROLLBACK, so it is not saved with this version and Deploy cannot run it. Remove those statements in the Script Editor.`,
-      warn: true,
-    });
-  } else {
-    notes.push({
-      text: `Its rollback file (${file}) could not be downloaded, so deploying now does not save it with this version. Reload the page to read it again.`,
-      warn: true,
-    });
-  }
-  return notes;
-}
-
-/**
- * Why one version in a "Roll back to" plan cannot be undone from Deploy, and
- * what to do about it. `editor` is true when the fix is in the Script Editor,
- * so the panel can link there.
- *
- * A registry rollback that cannot run never reaches planRollback (the pull
- * leaves its text out), so the file's rollback_state is what says why.
- * `registryComplete` is false when the pull could not read part of the
- * registry: then a file that seems to be missing may only be unread.
- */
-function rollbackProblemText(
-  step: RollbackStep<GitHubScript>,
-  registryComplete: boolean
-): { text: string; editor: boolean } {
-  const v = vLabel(step.version);
-  const file = `${v}.down.sql`;
-  const fileState = step.registry ? pulledRollbackState(step.registry) : null;
-
-  if ("problem" in step.resolved && step.resolved.problem === "transaction_control") {
-    // The copy saved on the ledger row ends the transaction itself, and the
-    // registry has nothing that could run in its place.
-    const saved =
-      `The rollback saved when ${v} was applied contains COMMIT or ROLLBACK, so it ` +
-      "cannot run inside the transaction that protects this rollback.";
-    if (fileState === null) {
-      return {
-        text: registryComplete
-          ? `${saved} Run it by hand from a SQL console.`
-          : `${saved} Part of the registry could not be read (see the top of the page), so a ${file} that could run instead may be missing. Reload the page to try again, or run it by hand from a SQL console.`,
-        editor: false,
-      };
-    }
-    if (fileState === "unreadable") {
-      return {
-        text: `${saved} ${file} could not be downloaded to run instead. Reload the page to read it again, or run the rollback by hand from a SQL console.`,
-        editor: false,
-      };
-    }
-    if (fileState === "transaction_control") {
-      return {
-        text: `${saved} So does ${file} in the registry. Remove those statements from it in the Script Editor, or run the rollback by hand from a SQL console.`,
-        editor: true,
-      };
-    }
-    return {
-      text: `${saved} A ${file} without them runs instead: write one in the Script Editor, or run the rollback by hand from a SQL console.`,
-      editor: true,
-    };
-  }
-
-  // No rollback that runs, saved or in the registry.
-  if (fileState === null) {
-    return {
-      text: registryComplete
-        ? `${v} has no rollback saved with it and no file in the registry for this schema, so Deploy has nothing to run. Undo it by hand from a SQL console, or fix it forward with a new version.`
-        : `${v} has no rollback saved with it, and no ${file} was read from the registry: part of the registry could not be read (see the top of the page). Reload the page to try again.`,
-      editor: false,
-    };
-  }
-  if (fileState === "unreadable") {
-    return {
-      text: `${v} has no rollback saved with it, and ${file} could not be downloaded from GitHub. Reload the page to read it again.`,
-      editor: false,
-    };
-  }
-  if (fileState === "transaction_control") {
-    return {
-      text: `${v} has no rollback saved with it, and ${file} contains COMMIT or ROLLBACK, so it cannot run inside the transaction that protects this rollback. Remove those statements from it in the Script Editor, or run it by hand from a SQL console.`,
-      editor: true,
-    };
-  }
-  if (fileState === "no_statements") {
-    return {
-      text: `${v} has no rollback saved with it, and ${file} is blank or only comments. Write the rollback in the Script Editor, then open Deploy again.`,
-      editor: true,
-    };
-  }
-  return {
-    text: `${v} has no rollback: none was saved when it was applied, and the registry has no ${file}. Add one in the Script Editor (Add a missing rollback), then open Deploy again.`,
-    editor: true,
-  };
-}
-
-/**
- * The toast after an approval request. Under the auth bypass there is only one
- * principal, so whoever asked is also the one who clears it, unless View as
- * has them looking at the app as a role that may not approve.
- */
-/**
- * Splits the kinds the row-loss reader found into the two ways to word them.
- *
- * The reader (findRowDestroyingStatements) names what it found: "TRUNCATE",
- * "DELETE", a DROP. One of its names is "EXECUTE (cannot be read)": a DO block
- * that runs SQL from a string. That SQL may delete rows or may not, so the
- * page must not say that it does.
- *
- *   named   the statements that do delete rows
- *   unread  true when part of the SQL could not be read
- */
-function rowLossKinds(kinds: ReadonlyArray<string>): { named: string[]; unread: boolean } {
-  return {
-    named: kinds.filter((kind) => kind !== EXECUTE_CANNOT_BE_READ),
-    unread: kinds.includes(EXECUTE_CANNOT_BE_READ),
-  };
-}
-
-/** Said in a row-loss box when part of the SQL could not be read. */
-const UNREAD_SQL_SENTENCE =
-  "Part of the SQL could not be read: an EXECUTE inside a DO block runs SQL " +
-  "that is put together while it runs. It may delete rows. ";
-
-/** One rollback's line in the row-loss box above a rollback. */
-function rollbackLossSentence(version: string, kinds: ReadonlyArray<string>): string {
-  const { named, unread } = rowLossKinds(kinds);
-  if (named.length === 0) {
-    return `Part of the rollback of ${vLabel(version)} could not be read (an EXECUTE inside a DO block) and may delete rows.`;
-  }
-  return (
-    `The rollback of ${vLabel(version)} contains ${named.join(", ")}.` +
-    (unread ? " Part of it could not be read as well and may delete more rows." : "")
-  );
-}
-
-const APPROVAL_REQUESTED_TOAST = "Asked for approval. Once an Admin says yes, you can run it";
 
 function DeployBody() {
   // Who is looking, and what their role may do here. The approval panel needs
@@ -3274,65 +2474,15 @@ function DeployBody() {
           onRan={quickRunRan}
           onShowGroup={quickRunShow}
         />
-        {/* Somebody who only looks, on a Deploy that is not set up: one plain
-            line. Nothing to set up and nothing to ask for, so no button. */}
-        {historyOnly && (
-          <div className="role-note dp-note">
-            <InfoIcon size={15} className="ico" />
-            <div className="body">
-              <p>
-                You can see deploys once they run.{" "}
-                {role === DEFAULT_ROLE
-                  ? "Viewers can't start deploys, so there is nothing to set up here."
-                  : `Your role (${roleLabel}) can't start deploys, so there is nothing to set up here.`}
-              </p>
-            </div>
-          </div>
-        )}
-        {runRefusal && !historyOnly && (
-          <div className="role-note dp-note">
-            <InfoIcon size={15} className="ico" />
-            <div className="body space-y-0.5">
-              <p>
-                {runRefusal}
-                <AskAdmin permission="deploy:run" />
-              </p>
-              <p>
-                You can still see what is pending on each target and what has run before.
-                {" To run one anyway, pick the target and the versions, check the database, and " +
-                  "press Ask for approval. Once an Admin says yes, you can run that exact run once."}
-              </p>
-            </div>
-          </div>
-        )}
-        {/* GitHub not being set up is a step on the checklist below, not an error. */}
-        {pullError && !githubMissing && (
-          <div className="banner">
-            <span className="ico">
-              <AlertCircleIcon size={16} />
-            </span>
-            <span>{pullError}</span>
-          </div>
-        )}
-        {/* The pull lists what it could and names what it could not, so a
-            version missing below is never a silent gap. */}
-        {pullWarnings.length > 0 && (
-          <div className="help dp-note dp-warn-text">
-            <p>Some of the registry could not be read:</p>
-            <ul className="list-disc pl-5 mt-1 space-y-0.5">
-              {pullWarnings.slice(0, 5).map((warning, index) => (
-                <li key={index} className="break-words">
-                  {warning}
-                </li>
-              ))}
-            </ul>
-            {pullWarnings.length > 5 && <p className="mt-1">{`…and ${pullWarnings.length - 5} more.`}</p>}
-            <p className="mt-1">
-              Everything below is built from what was read. Reload the page to read the
-              registry again.
-            </p>
-          </div>
-        )}
+        <HeadNotes
+          historyOnly={historyOnly}
+          role={role}
+          roleLabel={roleLabel}
+          runRefusal={runRefusal}
+          pullError={pullError}
+          githubMissing={githubMissing}
+          pullWarnings={pullWarnings}
+        />
       </div>
 
       {/* ═══════════════════ STAGE 1: PRE-FLIGHT ═══════════════════ */}
@@ -3377,105 +2527,33 @@ function DeployBody() {
 
       {stage === 1 && !needsSetup && (
         <section className="dp-stage">
-          {/* Selection */}
-          <div className="card dp-card">
-            <h2 className="dp-h-sm">Deploy to</h2>
-            <div className="dp-fields" data-tour="deploy-target">
-              <div className="dp-field">
-                {targetPicker}
-                {connectionsLoaded && connections.length === 0 && connectionsFailed && (
-                  <p className="help mt-1">
-                    Could not read your saved connections. Reload the page to try again.
-                  </p>
-                )}
-                {activeConn && (
-                  <div className="dp-field-notes">
-                    <ExecuteRolePill role={targetExecuteRole} />
-                    {targetIsReadOnly && (
-                      <span className="help dp-bad-text">
-                        Marked read-only on Connections, so this app will not run migrations
-                        against it. Everything else on this page still works.
-                      </span>
-                    )}
-                    {/* A missing "Deploy: Run" is already said at the top of the page,
-                        so only the rule this connection adds is said here. */}
-                    {targetExecuteRole === "admin" && !mayExecuteOnTarget && (
-                      <span className="help dp-bad-text">
-                        {/* The apply route's own words, so this line and the
-                            refusal a press would get read the same. */}
-                        {executeRefusal(activeConn.name, roleLabel, targetExecuteRole)}
-                      </span>
-                    )}
-                    {targetExecuteRole === "admin" && mayExecuteOnTarget && (
-                      <span className="help">Restricted to admins, which includes you.</span>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="dp-field">
-                <label className="label" htmlFor="dep-group">Script group</label>
-                <HelpHint label="Script group">
-                  One named set of migrations that carries a schema forward, one version
-                  at a time. A group shows up here once a script is saved for this schema.
-                </HelpHint>
-                <Select
-                  variant="input"
-                  id="dep-group"
-                  className="mt-1"
-                  ariaLabel="Script group"
-                  value={scriptGroup}
-                  disabled={!schema || targetLocked}
-                  placeholder={!schema ? "Select a schema first" : "Select a script group…"}
-                  options={schemaScriptNames.map((name) => ({ value: name, label: name }))}
-                  onChange={(value) => {
-                    forgetLink();
-                    setScriptGroup(value);
-                    forgetPreflight();
-                    setTargetVersion("");
-                    resetRun();
-                    resetDrift();
-                  }}
-                />
-                {/*
-                  This used to be a note beside the Check button, and it required
-                  scriptGroup to be set, which it can never be when the list is
-                  empty, because an empty list is exactly what leaves the picker
-                  on its placeholder. So the one case it was written for was the
-                  one case it never appeared in: the reader opened the picker,
-                  read "No options", and got no word on where a script group
-                  comes from. What a script group is sits in the "?" beside
-                  the label, and in Help.
-                */}
-                {githubScripts && schema && schemaScriptNames.length === 0 && (
-                  <p className="help mt-1">
-                    No scripts saved for <span className="mono">{schema}</span>{" "}
-                    yet. Make one on{" "}
-                    <Link href={orgPath("/compare")} className="underline">
-                      Compare &amp; Author
-                    </Link>
-                    , or write one by hand in the{" "}
-                    <Link href={orgPath("/script-editor")} className="underline">
-                      Script Editor
-                    </Link>
-                    .
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="dp-check">
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={!connectionId || !schema || !scriptGroup || preflightLoading || pullLoading}
-                onClick={handlePreflight}
-              >
-                {preflightLoading ? <span className="spin" /> : <RefreshIcon size={13} />}
-                {preflightLoading ? "Checking…" : "Check database"}
-              </button>
-            </div>
-          </div>
+          <TargetCard
+            targetPicker={targetPicker}
+            connectionsLoaded={connectionsLoaded}
+            connections={connections}
+            connectionsFailed={connectionsFailed}
+            activeConn={activeConn}
+            targetExecuteRole={targetExecuteRole}
+            targetIsReadOnly={targetIsReadOnly}
+            mayExecuteOnTarget={mayExecuteOnTarget}
+            roleLabel={roleLabel}
+            scriptGroup={scriptGroup}
+            schema={schema}
+            targetLocked={targetLocked}
+            schemaScriptNames={schemaScriptNames}
+            forgetLink={forgetLink}
+            setScriptGroup={setScriptGroup}
+            forgetPreflight={forgetPreflight}
+            setTargetVersion={setTargetVersion}
+            resetRun={resetRun}
+            resetDrift={resetDrift}
+            githubScripts={githubScripts}
+            orgPath={orgPath}
+            connectionId={connectionId}
+            preflightLoading={preflightLoading}
+            pullLoading={pullLoading}
+            handlePreflight={handlePreflight}
+          />
 
           {/* A read that failed says what to press: enter the password
               again, or try again. The server's words go under Technical details. */}
@@ -3497,415 +2575,87 @@ function DeployBody() {
                 nextLabel={selectionCount > 0 ? `up to ${selectionLastLabel}` : null}
               />
 
-              <div className="card dp-card dp-ships">
-                <div className="dp-db">
-                  <LogoIcon size={20} />
-                </div>
-                <div className="dp-where">
-                  <div className="dp-where-name">
-                    <span className="dp-clip" title={preflightResult.schema}>{preflightResult.schema}</span>
-                    <span className="dp-at">@</span>
-                    <span className="dp-conn dp-clip" title={activeConn.name}>{activeConn.name}</span>
-                    <span className="pill pill-sync"><span className="dot" />reachable</span>
-                  </div>
-                  <div className="dp-where-host">
-                    {activeConn.host}:{activeConn.port}/{activeConn.database_name}
-                  </div>
-                </div>
-                <div className="dp-route">
-                  <div className="dp-route-end">
-                    {/* "Applied": the highest script version recorded in the
-                        target's script_patch, the same word Compare and the
-                        Script Editor use. Not the lineage number. */}
-                    <small>Applied to target</small>
-                    <span className="dp-chip">{currentLabel}</span>
-                  </div>
-                  <ChevronRightIcon size={20} />
-                  <div className="dp-route-end">
-                    <small>Deploy to</small>
-                    <span className="dp-chip dp-next">{selectionLastLabel}</span>
-                  </div>
-                </div>
-              </div>
+              <ShipsCard
+                preflightResult={preflightResult}
+                activeConn={activeConn}
+                currentLabel={currentLabel}
+                selectionLastLabel={selectionLastLabel}
+              />
 
-              {/* The version timeline: every version of this family, the
-                  registry's file on the left and the target's ledger row on
-                  the right, newest first. The right-hand status is the version
-                  ledger's Applied / Pending / Skipped, the same one the pending
-                  list below runs from. Always shown once pre-flight has run.
-                  "Roll back to here…" only picks that version in the Roll back
-                  card below, which does the undoing. */}
-              {versionLedger.length > 0 && (
-                <div className="card dp-card">
-                  <div className="dp-card-top mb-3">
-                    <h2 className="dp-h-sm">
-                      Version timeline · <span className="mono dp-clip" title={scriptGroup}>{scriptGroup}</span>
-                    </h2>
-                    <div className="dp-pills">
-                      <span className="pill pill-sync"><span className="dot" />{appliedCount} applied</span>
-                      <span className="pill pill-pending"><span className="dot" />{pendingCount} pending</span>
-                      {/* The same colour as the Skipped status in the rows. */}
-                      {skippedVersions.length > 0 && (
-                        <span className="pill pill-drift"><span className="dot" />{skippedVersions.length} skipped</span>
-                      )}
-                    </div>
-                  </div>
-                  {/* Skipped rows would read as "still to do" without this. */}
-                  {skippedVersions.length > 0 && (
-                    <p className="help mb-3">{skippedNote(skippedVersions, currentLabel)}</p>
-                  )}
-                  {/* Roll back to here… is withheld while a rollback runs: it
-                      would change the choice under a running request. */}
-                  <VersionTimeline
-                    leftLabel="Registry (GitHub)"
-                    rightLabel="This database"
-                    rows={timeline.rows}
-                    outdatedSide={timeline.outdatedSide}
-                    showHeadVersions
-                    revertableVersions={revertableVersions}
-                    revertableFamily={scriptGroup}
-                    onRevert={rollbackBusy === null ? rollBackTo : undefined}
-                    leftNoScript="The registry file for this version is empty."
-                    rightNoScript="The ledger row for this version did not store its SQL (rows written before the ledger kept a copy have none)."
-                  />
-                </div>
-              )}
+              <VersionTimelineCard
+                versionLedger={versionLedger}
+                scriptGroup={scriptGroup}
+                appliedCount={appliedCount}
+                pendingCount={pendingCount}
+                skippedVersions={skippedVersions}
+                currentLabel={currentLabel}
+                timeline={timeline}
+                revertableVersions={revertableVersions}
+                rollbackBusy={rollbackBusy}
+                rollBackTo={rollBackTo}
+              />
 
-              {/* Roll back: undo the newest applied versions of this family,
-                  newest first, in one transaction. The preview is what the
-                  revert route will run (planRollback shares its rule), and
-                  the panel warns about rollbacks that delete rows and about
-                  other scripts applied since. Somebody whose role may not
-                  roll back here asks an Admin to approve this exact rollback
-                  SQL. */}
-              {/* The list of every attempt, failed and refused ones too, now
-                  sits in the timeline card at the top, which always shows. */}
-              {(appliedNewestFirst.length > 0 ||
-                rollbackDone ||
-                revertedHistory.length > 0) && (
-                <div className="card dp-card" ref={rollbackCardRef} tabIndex={-1}>
-                  <div className="dp-card-top">
-                    <h2 className="dp-h-sm">
-                      Roll back · <span className="mono">{scriptGroup}</span>
-                      <HelpHint label="Roll back">
-                        Pick a version to go back to. Every applied version above it is
-                        undone, newest first, in one transaction: all of them or none.
-                        It runs as soon as you press the button, when your role may run it.
-                      </HelpHint>
-                    </h2>
-                    {appliedNewestFirst.length > 0 && (
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        disabled={rollbackBusy !== null}
-                        onClick={() => setRollbackOpen((open) => !open)}
-                      >
-                        {rollbackOpen ? "Close" : "Plan a rollback"}
-                      </button>
-                    )}
-                  </div>
-                  <p className="help mt-1">
-                    {appliedNewestFirst.length === 0
-                      ? `No version of ${scriptGroup} is applied to ${preflightResult.schema} now, so there is nothing to roll back.`
-                      : // The one line that stays: it is about losing data.
-                        "A rollback restores structure, not rows."}
-                  </p>
-
-                  {rollbackDone && (
-                    <div className="mt-3 space-y-3">
-                      <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--ink-2)" }}>
-                        <span className="flex-none mt-0.5" style={{ color: "var(--add)" }}>
-                          <CheckIcon size={14} />
-                        </span>
-                        <span>{rollbackDone.message}</span>
-                      </div>
-                      {/* Re-verify: the live schema read again after the rollback. */}
-                      <DriftPanel
-                        phase={driftPhase}
-                        result={driftResult}
-                        error={driftError}
-                        context="rollback"
-                        targetVersion={preflightResult.currentVersion ?? ""}
-                      />
-                    </div>
-                  )}
-
-                  {/* A sticky message (see rollbackError) is shown even with the planner shut. */}
-                  {!rollbackPlannerShown && rollbackErrorShown && (
-                    <pre className="dp-err mt-3">{rollbackErrorShown}</pre>
-                  )}
-
-                  {rollbackPlannerShown && (
-                    <div className="mt-3 space-y-3">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[12px]" style={{ color: "var(--ink-3)" }}>Roll back to</span>
-                        <Select
-                          variant="input"
-                          ariaLabel="Roll back to version"
-                          style={{ width: "auto" }}
-                          mono
-                          disabled={rollbackBusy !== null}
-                          value={rollbackPick}
-                          options={rollbackOptions}
-                          onChange={(value) => setRollbackChoice(value)}
-                        />
-                      </div>
-                      {rollbackListCapped && (
-                        <p className="text-[12px]" style={{ color: "var(--ink-3)" }}>
-                          This list stops at {vLabel(appliedNewestFirst[MAX_ROLLBACK_VERSIONS])}: a
-                          rollback undoes at most {MAX_ROLLBACK_VERSIONS} versions at a time. To go
-                          further back, run this one, then roll back again.
-                        </p>
-                      )}
-
-                      <div>
-                        <div className="section-title mb-1">Runs in this order</div>
-                        {rollbackSteps.map((step, index) => {
-                          const v = vLabel(step.version);
-                          const problem =
-                            rollbackProblems.find((entry) => entry.version === step.version) ?? null;
-                          // Open the SQL that deletes rows, as the deploy opens
-                          // its breaking migrations: those are the ones to read.
-                          const deletesRows = rollbackDataLoss.some(
-                            (loss) => loss.version === step.version
-                          );
-                          return (
-                            <div key={step.version} className="dp-hist">
-                              <div className="flex items-center justify-between gap-3">
-                                <span className="mono text-[13px]">{`${index + 1}. Undo ${v}`}</span>
-                                {step.appliedAt && (
-                                  <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
-                                    {`applied ${fmtDate(step.appliedAt)}`}
-                                  </span>
-                                )}
-                              </div>
-                              {"sql" in step.resolved ? (
-                                <>
-                                  <div className="help mt-0.5">
-                                    {step.resolved.source === "ledger"
-                                      ? `Runs the rollback saved when ${v} was applied.`
-                                      : `Runs ${v}.down.sql from the registry. No rollback was saved when ${v} was applied.`}
-                                  </div>
-                                  {step.registryDiffers && (
-                                    <div className="help mt-0.5 dp-warn-text">
-                                      {`The registry's ${v}.down.sql differs from the copy saved when ${v} was applied. The saved copy is the one that runs.`}
-                                    </div>
-                                  )}
-                                  <details className="dp-sql" open={deletesRows}>
-                                    <summary>
-                                      <ChevronDownIcon size={12} />
-                                      <span>Rollback SQL</span>
-                                      <span className="mono">
-                                        {countOf(getSqlLineCount(step.resolved.sql), "line")}
-                                      </span>
-                                    </summary>
-                                    <pre>{step.resolved.sql.trim()}</pre>
-                                  </details>
-                                </>
-                              ) : problem ? (
-                                <div className="help mt-0.5 dp-bad-text">
-                                  {problem.text}
-                                  {problem.editor && (
-                                    <>
-                                      {" "}
-                                      <Link href={orgPath("/script-editor")} className="underline">
-                                        Open the Script Editor
-                                      </Link>
-                                    </>
-                                  )}
-                                </div>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {rollbackDataLoss.length > 0 && (
-                        <RiskGate
-                          tone="break"
-                          title={
-                            rollbackLossSure
-                              ? `${countOf(rollbackDataLoss.length, "rollback")} ${rollbackDataLoss.length === 1 ? "deletes" : "delete"} rows`
-                              : `${countOf(rollbackDataLoss.length, "rollback")} may delete rows`
-                          }
-                          body={
-                            rollbackDataLoss
-                              .map((loss) => rollbackLossSentence(loss.version, loss.kinds))
-                              .join(" ") +
-                            (rollbackLossSure
-                              ? " Those take rows out of a live table, and deploying the " +
-                                "version again does not bring them back: it rebuilds " +
-                                "structure, not data. Have a backup you can restore from " +
-                                "before running this."
-                              : " Deploying the version again does not bring deleted rows " +
-                                "back: it rebuilds structure, not data. Have a backup you " +
-                                "can restore from before running this.")
-                          }
-                        />
-                      )}
-                      {rollbackOthers.length > 0 && rollbackOldest && (
-                        <RiskGate
-                          tone="drift"
-                          title={`${countOf(rollbackOthers.length, "other script")} applied since ${vLabel(rollbackOldest)}`}
-                          body={
-                            `These were applied to ${preflightResult.schema} after ` +
-                            `${vLabel(rollbackOldest)}, the oldest version this rollback ` +
-                            "undoes. They may use what the rollback removes, and a DROP " +
-                            "... CASCADE takes their objects with it."
-                          }
-                        >
-                          <ul className="mono text-[12px] space-y-0.5">
-                            {rollbackOthers.slice(0, 10).map((other) => (
-                              <li key={`${other.script_name}@${other.version}`}>
-                                {`${other.script_name} ${vLabel(other.version)}`}
-                                {other.applied_at ? ` · applied ${fmtDate(other.applied_at)}` : ""}
-                              </li>
-                            ))}
-                          </ul>
-                          {rollbackOthers.length > 10 && (
-                            <div className="help mt-1">{`…and ${rollbackOthers.length - 10} more.`}</div>
-                          )}
-                          {/* Until the server has listed them for this plan,
-                              the list is the database check's, narrowed by time. */}
-                          {rollbackOtherScripts?.key !== rollbackKey && (
-                            <div className="help mt-1">
-                              From the last database check. A dry run lists them again
-                              from the ledger.
-                            </div>
-                          )}
-                        </RiskGate>
-                      )}
-                      {connectionId && rollbackReady && (
-                        <MigrationReviewPanel
-                          connectionId={Number(connectionId)}
-                          schemaName={schema}
-                          action="revert"
-                          scripts={rollbackReviewScripts}
-                          resetKey={rollbackKey}
-                        />
-                      )}
-                      {/* The asker's own panel, and the answer panel for
-                          somebody else's ask of this exact rollback. */}
-                      {[
-                        askToRun
-                          ? { key: "own", own: true, approved: approvedRollback, pending: pendingRollback, latest: latestRollback }
-                          : null,
-                        rollbackAsk
-                          ? { key: "ask", own: false, approved: null, pending: rollbackAsk, latest: rollbackAsk }
-                          : null,
-                      ].map(
-                        (panel) =>
-                          panel && (
-                            <ApprovalPanel
-                              key={panel.key}
-                              action="revert"
-                              migrationCount={rollbackReady ? rollbackSteps.length : 0}
-                              targetVersion={rollbackOldest ?? ""}
-                              versionsLabel={listVersions(rollbackSteps.map((step) => step.version))}
-                              hashReady={rollbackHash !== null}
-                              hashError={rollbackHashError}
-                              loading={approvalsLoading}
-                              error={rollbackApprovalError ?? approvalsReadError}
-                              unreadable={approvalsReadError !== null && approvals.length === 0}
-                              busy={approvalBusy}
-                              approved={panel.approved}
-                              pending={panel.pending}
-                              latest={panel.latest}
-                              viewerEmail={user?.email ?? ""}
-                              roleLabel={roleLabel}
-                              askToRun={panel.own}
-                              mayApprove={mayApprove}
-                              bypass={bypass}
-                              note={rollbackApprovalNote}
-                              onNoteChange={setRollbackApprovalNote}
-                              onRequest={handleRequestRollbackApproval}
-                              onDecide={(id, decision) => void handleDecideApproval(id, decision, "revert")}
-                            />
-                          )
-                      )}
-
-                      {rollbackErrorShown && <pre className="dp-err">{rollbackErrorShown}</pre>}
-                      {rollbackDryRun && rollbackDryRun.key === rollbackKey && (
-                        <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--ink-2)" }}>
-                          <span className="flex-none mt-0.5" style={{ color: "var(--add)" }}>
-                            <CheckIcon size={14} />
-                          </span>
-                          <span>{rollbackDryRun.message}</span>
-                        </div>
-                      )}
-
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          disabled={rollbackBlocked || askToRun}
-                          onClick={() => void handleRollback(true)}
-                        >
-                          <EyeIcon size={13} />
-                          {rollbackBusy === "dry" ? "Running the dry run…" : "Dry run the rollback"}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-destructive btn-sm"
-                          disabled={rollbackRunBlocked}
-                          onClick={() => void handleRollback(false)}
-                        >
-                          {rollbackBusy === "real"
-                            ? "Rolling back…"
-                            : rollbackTarget
-                              ? `Roll back to ${vLabel(rollbackTarget)}`
-                              : "Roll back every version"}
-                        </button>
-                        {/* Stop rolls the rollback back on the server, so
-                            every version in it stays applied. */}
-                        {rollbackBusy !== null && (
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            disabled={stopBusy}
-                            onClick={() => void stopActiveRun()}
-                          >
-                            <XIcon size={13} />
-                            {stopBusy ? "Stopping…" : "Stop"}
-                          </button>
-                        )}
-                      </div>
-                      <div className="text-[11px]" style={{ color: "var(--ink-3)" }}>
-                        {rollbackHint}
-                      </div>
-                    </div>
-                  )}
-
-                  {revertedHistory.length > 0 && (
-                    <div className="mt-4">
-                      <div className="section-title mb-1">Rollback history</div>
-                      {revertedHistory.slice(0, 10).map((row) => (
-                        <div
-                          key={`${row.version}@${row.reverted_at}`}
-                          className="dp-hist dp-hist-top"
-                        >
-                          <span className="mono text-[13px]">{vLabel(row.version)}</span>
-                          <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
-                            {`${
-                              row.applied_at
-                                ? `applied ${fmtDate(row.applied_at)}${
-                                    row.applied_by ? ` by ${row.applied_by}` : ""
-                                  } · `
-                                : ""
-                            }rolled back ${fmtDate(row.reverted_at)}${
-                              row.reverted_by ? ` by ${row.reverted_by}` : ""
-                            }`}
-                          </span>
-                        </div>
-                      ))}
-                      {revertedHistory.length > 10 && (
-                        <div className="help mt-1">{`…and ${revertedHistory.length - 10} more.`}</div>
-                      )}
-                    </div>
-                  )}
-
-                </div>
-              )}
+              <RollbackCard
+                appliedNewestFirst={appliedNewestFirst}
+                rollbackDone={rollbackDone}
+                revertedHistory={revertedHistory}
+                rollbackCardRef={rollbackCardRef}
+                scriptGroup={scriptGroup}
+                rollbackBusy={rollbackBusy}
+                setRollbackOpen={setRollbackOpen}
+                rollbackOpen={rollbackOpen}
+                preflightResult={preflightResult}
+                driftPhase={driftPhase}
+                driftResult={driftResult}
+                driftError={driftError}
+                rollbackPlannerShown={rollbackPlannerShown}
+                rollbackErrorShown={rollbackErrorShown}
+                rollbackPick={rollbackPick}
+                rollbackOptions={rollbackOptions}
+                setRollbackChoice={setRollbackChoice}
+                rollbackListCapped={rollbackListCapped}
+                rollbackSteps={rollbackSteps}
+                rollbackProblems={rollbackProblems}
+                rollbackDataLoss={rollbackDataLoss}
+                orgPath={orgPath}
+                rollbackLossSure={rollbackLossSure}
+                rollbackOthers={rollbackOthers}
+                rollbackOldest={rollbackOldest}
+                rollbackOtherScripts={rollbackOtherScripts}
+                rollbackKey={rollbackKey}
+                connectionId={connectionId}
+                rollbackReady={rollbackReady}
+                schema={schema}
+                rollbackReviewScripts={rollbackReviewScripts}
+                askToRun={askToRun}
+                approvedRollback={approvedRollback}
+                pendingRollback={pendingRollback}
+                latestRollback={latestRollback}
+                rollbackAsk={rollbackAsk}
+                rollbackHash={rollbackHash}
+                rollbackHashError={rollbackHashError}
+                approvalsLoading={approvalsLoading}
+                rollbackApprovalError={rollbackApprovalError}
+                approvalsReadError={approvalsReadError}
+                approvals={approvals}
+                approvalBusy={approvalBusy}
+                user={user}
+                roleLabel={roleLabel}
+                mayApprove={mayApprove}
+                bypass={bypass}
+                rollbackApprovalNote={rollbackApprovalNote}
+                setRollbackApprovalNote={setRollbackApprovalNote}
+                handleRequestRollbackApproval={handleRequestRollbackApproval}
+                handleDecideApproval={handleDecideApproval}
+                rollbackDryRun={rollbackDryRun}
+                rollbackBlocked={rollbackBlocked}
+                handleRollback={handleRollback}
+                rollbackRunBlocked={rollbackRunBlocked}
+                rollbackTarget={rollbackTarget}
+                stopBusy={stopBusy}
+                stopActiveRun={stopActiveRun}
+                rollbackHint={rollbackHint}
+              />
 
               {/* Spec feature 11: the prompt for a target that has nothing on
                   it yet, or has tables this app has never deployed to. Above
@@ -3947,146 +2697,17 @@ function DeployBody() {
                 <div className="dp-grid">
                   {/* Left: pending list + drift pre-check */}
                   <div className="dp-col">
-                    <div className="card dp-card">
-                    <div className="dp-card-top">
-                      <div>
-                        <div className="section-title">
-                          Pending migrations
-                          {/* Said once, here, rather than on every row: the boxes
-                              do not behave like a shopping list and a reader who
-                              unticks the middle one should know why the ones
-                              below it went with it. */}
-                          {pendingScripts.length > 1 && (
-                            <HelpHint label="Pending migrations">
-                              Tick a version to run everything up to it, or untick one to
-                              stop before it. A run is always an unbroken sequence from the
-                              first pending version, because a later migration changes what
-                              an earlier one creates.
-                            </HelpHint>
-                          )}
-                        </div>
-                        <h2 className="dp-h mt-1">
-                          {pendingScripts.length} pending · {scriptsUpToTarget.length} in this run
-                        </h2>
-                        {/* Taken out of the run by their own "Applies-to"
-                            header. They are not in the list below, and a
-                            version that is simply absent reads as one that
-                            does not exist. */}
-                        {addressedElsewhere.length > 0 && (
-                          <p className="help mt-1">
-                            {`Not in this run: ${listVersions(
-                              addressedElsewhere.map((script) => script.version)
-                            )} ${addressedElsewhere.length === 1 ? "is" : "are"} for ${
-                              addressedElsewhere.length === 1 ? "an application" : "applications"
-                            } this database does not host, by ${
-                              addressedElsewhere.length === 1 ? "its" : "their"
-                            } Applies-to header. ${
-                              preflightResult?.applications.source ?? "The application table"
-                            } says this database hosts ${
-                              preflightResult?.applications.names.join(", ") || "nothing by name"
-                            }. Later versions still run.`}
-                          </p>
-                        )}
-                        {/* Skipped versions are not in the list below, so say
-                            why rather than leave them missing without a word. */}
-                        {skippedVersions.length > 0 && (
-                          <p className="help mt-1">
-                            {`Not in this run: ${listVersions(skippedVersions)} ${
-                              skippedVersions.length === 1 ? "was" : "were"
-                            } skipped: never applied and below ${currentLabel}, the version applied to the target. See Skipped in the version timeline above.`}
-                          </p>
-                        )}
-                      </div>
-                      {/* Every pending version at once. Each row's own
-                          "Run …" picks a shorter run, from the first pending
-                          version up to that row. */}
-                      {pendingScripts.length > 1 && (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          disabled={isDeploying}
-                          title="Selects every pending version for the run below. Nothing runs until you press Deploy or Dry run."
-                          onClick={() => selectRun(pendingScripts[pendingScripts.length - 1].version)}
-                        >
-                          {`Run all (${pendingScripts.length})…`}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="dp-mig-list" data-tour="deploy-pending">
-                      {pendingScripts.map((script, i) => {
-                        const reading = describeChangeType(script.sql_content);
-                        const kind = reading.recorded;
-                        const from = i === 0 ? currentLabel : vLabel(pendingScripts[i - 1].version);
-                        // The version this one follows on the target, for the
-                        // step note. null on a fresh target: there is no step.
-                        const previous =
-                          i === 0 ? preflightResult.currentVersion : pendingScripts[i - 1].version;
-                        // In the run when the selection holds this script, so
-                        // the rows marked here are exactly what Deploy sends.
-                        const inRun = inRunKeys.has(scriptKey(script));
-                        // This row's button selects every pending version up to
-                        // it. A run always starts at the first pending version:
-                        // deploys only move forward, one version after another.
-                        const through = pendingPrefixThrough(pendingScripts, script.version);
-                        const runLabel =
-                          through.length <= 1
-                            ? `Run ${vLabel(script.version)}…`
-                            : `Run ${versionRange(through.map((s) => s.version))} (${through.length})…`;
-                        return (
-                          <MigRow
-                            key={scriptKey(script)}
-                            seq={String(i + 1).padStart(2, "0")}
-                            toggle={{
-                              checked: inRun,
-                              disabled: isDeploying,
-                              label: inRun
-                                ? `Take ${vLabel(script.version)} out of the run. Every version after it comes out too.`
-                                : `Run every pending version up to and including ${vLabel(script.version)}.`,
-                              // Ticking a row runs everything up to it; unticking
-                              // one runs everything up to the row BEFORE it. Both
-                              // are the same rule: a run is a prefix. v5.0.3 alters
-                              // what v5.0.2 created, so a list with a hole in it is
-                              // not a shorter run, it is a broken one.
-                              onChange: (checked) =>
-                                selectRun(
-                                  checked
-                                    ? script.version
-                                    : i === 0
-                                      ? ""
-                                      : pendingScripts[i - 1].version
-                                ),
-                            }}
-                            name={script.script_name}
-                            kind={kind}
-                            sub={`${from} → ${vLabel(script.version)} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
-                            // The version it lands, as in the run list below. A
-                            // bare "major" here sat beside "v1.1.0 → v1.2.0" and
-                            // contradicted it; the level pill already says what
-                            // kind of change this is, and the note explains a
-                            // number that disagrees with it.
-                            rightPill={vLabel(script.version)}
-                            cell={{ status: inRun ? "queued" : "not-in-run" }}
-                            selected={inRun}
-                            sql={script.sql_content}
-                            sqlOpen={inRun && reading.countsAsBreaking}
-                            notes={pendingRowNotes(script, reading, previous, preflightResult.applications)}
-                            action={
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-secondary"
-                                disabled={isDeploying}
-                                title="Selects this range for the run below. Nothing runs until you press Deploy or Dry run."
-                                onClick={() => selectRun(script.version)}
-                              >
-                                {runLabel}
-                              </button>
-                            }
-                          />
-                        );
-                      })}
-                    </div>
-                    </div>
+                    <PendingCard
+                      pendingScripts={pendingScripts}
+                      scriptsUpToTarget={scriptsUpToTarget}
+                      addressedElsewhere={addressedElsewhere}
+                      preflightResult={preflightResult}
+                      skippedVersions={skippedVersions}
+                      currentLabel={currentLabel}
+                      isDeploying={isDeploying}
+                      selectRun={selectRun}
+                      inRunKeys={inRunKeys}
+                    />
 
                     {/* Drift pre-check, real lineage compare when the target is tracked */}
                     <div className="card dp-card">
@@ -4099,476 +2720,100 @@ function DeployBody() {
                     />
                     </div>
 
-                    <div className="card dp-card">
-                      <h2 className="dp-h">Before you ship</h2>
-                      <ul className="dp-pre">
-                        <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
-                        {/* Only the settings that stop or narrow a run get a
-                            row. The default one is what a checklist reader
-                            assumes, and a line confirming the assumption is a
-                            line they learn to skip. */}
-                        {targetIsReadOnly ? (
-                          <ChecklistItem ok={false}>
-                            Execution · read-only: this app will not write to this database
-                          </ChecklistItem>
-                        ) : askToRun ? (
-                          <ChecklistItem ok={Boolean(approvedRun)}>
-                            {approvedRun
-                              ? "Execution · approved for you, for this one run"
-                              : `Execution · ${roleLabel} may run this only with an Admin's approval`}
-                          </ChecklistItem>
-                        ) : !mayExecuteOnTarget ? (
-                          <ChecklistItem ok={false}>
-                            {targetExecuteRole === "admin"
-                              ? `Execution · admins only · your role is ${roleLabel}`
-                              : `Execution · needs "${permissionLabel("deploy:run")}" · ${roleLabel} does not have it`}
-                          </ChecklistItem>
-                        ) : targetExecuteRole === "admin" ? (
-                          <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
-                        ) : null}
-                        <ChecklistItem ok>
-                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh, no versions yet"}
-                        </ChecklistItem>
-                        <ChecklistItem ok={blockedByApplication.length === 0}>
-                          {/* Silent when nothing is restricted, which is every
-                              run until somebody writes the header, but a tick
-                              rather than nothing, so a reader who has used the
-                              feature can see it was checked. */}
-                          {blockedByApplication.length > 0
-                            ? `Restriction could not be checked · ${blockedByApplication
-                                .map((script) => vLabel(script.version))
-                                .join(", ")} (see the note on the row)`
-                            : addressedElsewhere.length > 0
-                              ? `Applications · ${addressedElsewhere.length} pending ${
-                                  addressedElsewhere.length === 1 ? "version is" : "versions are"
-                                } for other applications and ${
-                                  addressedElsewhere.length === 1 ? "is" : "are"
-                                } not in this run`
-                            : preflightResult.applications.known
-                              ? `Applications · this database hosts ${
-                                  preflightResult.applications.names.length > 0
-                                    ? preflightResult.applications.names.join(", ")
-                                    : "none by name"
-                                }`
-                              : "No script in this run is restricted to an application"}
-                        </ChecklistItem>
-                        <ChecklistItem ok={!hasTxnViolation}>
-                          {/* A count leaves the reader to open every script and
-                              hunt. The versions are already in scope, name them,
-                              and state the rule the apply route enforces. */}
-                          {hasTxnViolation
-                            ? `COMMIT or ROLLBACK found in ${txnViolationScripts
-                                .map((s) => vLabel(s.version))
-                                .join(", ")}. The run is already one transaction, so ` +
-                              "remove them from the SQL"
-                            : "No transaction-control in SQL"}
-                        </ChecklistItem>
-                        {breakingCount > 0 ? (
-                          // `info`: a warning to read, which stops nothing.
-                          <ChecklistItem info>
-                            {/* Counted as describeChangeType counts: marked
-                                breaking, or containing SQL that is always
-                                breaking whatever the mark says. */}
-                            Breaking changes · {breakingCount}
-                            {louderCount > 0
-                              ? `, including ${louderCount} marked less than breaking whose SQL is always breaking`
-                              : ""}
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>
-                            Nothing in this run drops or rewrites structure
-                          </ChecklistItem>
-                        )}
-                        {dataLossScripts.length > 0 ? (
-                          <ChecklistItem info>
-                            {dataLossSure
-                              ? `Deletes rows · ${dataLossKinds}${dataLoss.unread ? ", and part of the SQL could not be read" : ""}`
-                              : "May delete rows · part of the SQL could not be read"}{" "}
-                            in{" "}
-                            {countOf(dataLossScripts.length, "script")}
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>No statement found that deletes rows</ChecklistItem>
-                        )}
-                        {mightFailScripts.length > 0 ? (
-                          // `info`, not a failed tick: this is a thing that might
-                          // happen, not a thing that is wrong.
-                          <ChecklistItem info>
-                            May be refused by existing rows · {mightFailKinds} in{" "}
-                            {countOf(mightFailScripts.length, "script")} · rolls back if
-                            it is
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>
-                            Nothing in this run can be refused by existing rows
-                          </ChecklistItem>
-                        )}
-                        {enumAdditions.length > 0 && (
-                          <ChecklistItem info>
-                            {countOf(enumAdditions.length, "enum value")}{" "}
-                            {enumAdditions.length === 1 ? "commits" : "commit"} before the
-                            transaction · not undone by a rollback
-                          </ChecklistItem>
-                        )}
-                        {askToRun &&
-                          (approvalsReadError && !approvedRun ? (
-                            // "not requested yet" would be a reading of a list
-                            // this page never managed to read.
-                            <ChecklistItem info>Approval · could not be read</ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={Boolean(approvedRun)}>
-                              {approvedRun
-                                ? `Approved by ${approvedRun.decided_by ?? "an Admin"}`
-                                : pendingRun
-                                  ? "Approval requested · waiting for an Admin"
-                                  : "Approval · not requested yet"}
-                            </ChecklistItem>
-                          ))}
-                        {preflightResult.needsInit ? (
-                          <ChecklistItem info>
-                            {/* The apply route creates it before BEGIN, so it is
-                                not covered by the run's rollback either. */}
-                            Ledger table will be created on first deploy. It is
-                            created before the transaction opens, so it stays even if
-                            the run fails
-                          </ChecklistItem>
-                        ) : (
-                          <ChecklistItem ok>Ledger table present · <span className="mono">script_patch</span></ChecklistItem>
-                        )}
-                        {driftPhase === "loading" && (
-                          <ChecklistItem info>Drift check · checking the target…</ChecklistItem>
-                        )}
-                        {driftPhase === "untracked" && (
-                          <ChecklistItem stub>Drift check · target not tracked</ChecklistItem>
-                        )}
-                        {driftPhase === "error" &&
-                          (driftGateFromRecord ? (
-                            <ChecklistItem ok={false}>
-                              Drift check · check failed, and the last check on record found
-                              the target {driftGateStatus === "drifted" ? "drifted" : "unreachable"}
-                            </ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
-                          ))}
-                        {driftPhase === "ready" && driftResult && (
-                          driftResult.status === "in_sync" ? (
-                            <ChecklistItem ok>
-                              Drift check · in sync
-                              {driftResult.expectedVersion ? (
-                                <> with lineage <span className="mono">{vLabel(driftResult.expectedVersion)}</span></>
-                              ) : null}
-                            </ChecklistItem>
-                          ) : driftResult.status === "drifted" ? (
-                            <ChecklistItem ok={false}>Drift check · live schema has drifted</ChecklistItem>
-                          ) : (
-                            <ChecklistItem ok={false}>Drift check · target unreachable</ChecklistItem>
-                          )
-                        )}
-                        {driftPhase === "idle" && (
-                          <ChecklistItem stub>Drift check · run a check to see status</ChecklistItem>
-                        )}
-                      </ul>
-                    </div>
+                    <ShipChecklist
+                      activeConn={activeConn}
+                      targetIsReadOnly={targetIsReadOnly}
+                      askToRun={askToRun}
+                      approvedRun={approvedRun}
+                      roleLabel={roleLabel}
+                      mayExecuteOnTarget={mayExecuteOnTarget}
+                      targetExecuteRole={targetExecuteRole}
+                      preflightResult={preflightResult}
+                      blockedByApplication={blockedByApplication}
+                      addressedElsewhere={addressedElsewhere}
+                      hasTxnViolation={hasTxnViolation}
+                      txnViolationScripts={txnViolationScripts}
+                      breakingCount={breakingCount}
+                      louderCount={louderCount}
+                      dataLossScripts={dataLossScripts}
+                      dataLossSure={dataLossSure}
+                      dataLossKinds={dataLossKinds}
+                      dataLoss={dataLoss}
+                      mightFailScripts={mightFailScripts}
+                      mightFailKinds={mightFailKinds}
+                      enumAdditions={enumAdditions}
+                      approvalsReadError={approvalsReadError}
+                      pendingRun={pendingRun}
+                      driftPhase={driftPhase}
+                      driftGateFromRecord={driftGateFromRecord}
+                      driftGateStatus={driftGateStatus}
+                      driftResult={driftResult}
+                    />
                   </div>
 
                   {/* Right: the run */}
                   <aside className="dp-col">
-                    <div className="card dp-card dp-run" ref={runPanelRef} tabIndex={-1}>
-                      <div className="dp-card-top">
-                        <h2 className="dp-h">Run it</h2>
-                      </div>
-                      <div className="dp-route mt-3">
-                        <span className="dp-chip">{currentLabel}</span>
-                        <ChevronRightIcon size={16} />
-                        <span className="dp-chip dp-next"><b>{selectionLastLabel}</b></span>
-                      </div>
-                      <dl className="dp-kv">
-                        {/* The target is named at the top of the page, which is
-                            not where the button is. */}
-                        <dt>Target</dt>
-                        <dd className="mono">{schema} @ {activeConn.name}</dd>
-                        <dt>Database</dt>
-                        <dd className="mono">
-                          {activeConn.host}:{activeConn.port}/{activeConn.database_name}
-                        </dd>
-                        <dt>Migrations</dt>
-                        <dd className="mono">{scriptsUpToTarget.length}</dd>
-                        <dt title="What the migrations' change types call for: major = breaking, minor = additive, patch = small change. A version number that says otherwise is noted on its row.">
-                          Bump
-                        </dt>
-                        <dd>{bumps}</dd>
-                        {/* Two rows, because they are two questions. Breaking
-                            is what stops working after this succeeds; deletes
-                            rows is what you need a backup for. A rename is the
-                            first and not the second. */}
-                        <dt title="Migrations marked breaking, or containing SQL that is always breaking">
-                          Breaking
-                        </dt>
-                        <dd className="mono">{breakingCount}</dd>
-                        <dt>
-                          {dataLossScripts.length > 0 && !dataLossSure ? "May delete rows" : "Deletes rows"}
-                        </dt>
-                        <dd className="mono">{dataLossScripts.length}</dd>
-                        <dt>Lines of SQL</dt>
-                        <dd className="mono">{linesOfSql}</dd>
-                        <dt>Strategy</dt>
-                        <dd>one transaction</dd>
-                      </dl>
-
-                      <div className="dp-gates" data-tour="deploy-checklist">
-                        {breakingCount > 0 && (
-                          <RiskGate
-                            tone="break"
-                            title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
-                            body={
-                              // "Breaking" grades a contract break, not data loss,
-                              // a rename is breaking and loses nothing. The rows
-                              // question belongs to the deletes-rows warning below,
-                              // which names its own backup.
-                              "A breaking migration drops or rewrites structure that is " +
-                              "already there. Anything reading the old shape (an app, a " +
-                              "view, a report) stops working the moment this commits. The " +
-                              "breaking ones in the list on the left are open already, " +
-                              "showing the statements they will run." +
-                              (louderCount === 0
-                                ? ""
-                                : louderCount === 1
-                                  ? " One of them is marked less than breaking but has a " +
-                                    "statement that is always breaking, so it is counted here."
-                                  : ` ${louderCount} of them are marked less than breaking but ` +
-                                    "have a statement that is always breaking, so they are " +
-                                    "counted here.")
-                            }
-                          />
-                        )}
-                        {dataLossScripts.length > 0 && (
-                          <RiskGate
-                            tone="break"
-                            title={
-                              dataLossSure
-                                ? `${dataLossScripts.length} ${dataLossScripts.length === 1 ? "migration deletes" : "migrations delete"} rows`
-                                : `${countOf(dataLossScripts.length, "migration")} may delete rows`
-                            }
-                            body={
-                              (dataLossSure
-                                ? `This run contains ${dataLossKinds}. Those take rows out of ` +
-                                  "a live table, and no rollback puts them back: a down " +
-                                  "script rebuilds structure, not data. "
-                                : "") +
-                              (dataLoss.unread ? UNREAD_SQL_SENTENCE : "") +
-                              (dataLossSure
-                                ? ""
-                                : "No rollback puts deleted rows back: a down script " +
-                                  "rebuilds structure, not data. ") +
-                              (unflaggedDataLossKinds.length === 0
-                                ? ""
-                                : unflaggedDataLossKinds.length === 1
-                                  ? `A ${unflaggedDataLossKinds[0]} changes no structure, so it is never ` +
-                                    "graded breaking and gets no breaking pill, so this box is the only " +
-                                    "warning it gets. "
-                                  : `${unflaggedDataLossKinds.join(" and ")} change no structure, so they ` +
-                                    "are never graded breaking and get no breaking pill, so this box is " +
-                                    "the only warning they get. ") +
-                              "Have a backup you can restore from before running this."
-                            }
-                          />
-                        )}
-                        {mightFailScripts.length > 0 && (
-                          // A quieter line. See the mightFailScripts comment above:
-                          // the whole run is one transaction, so this is the risk
-                          // that costs nothing when it happens.
-                          <div className="warn-inline">
-                            <span className="ico">
-                              <AlertTriangleIcon size={14} />
-                            </span>
-                            <span>
-                              <b>
-                                {countOf(mightFailScripts.length, "migration")} may be
-                                refused by the data already in the table.
-                              </b>{" "}
-                              This run contains {mightFailKinds}. Those are valid SQL
-                              that PostgreSQL checks against every existing row, one
-                              NULL, one duplicate or one value that will not cast and
-                              the statement stops. Nothing is half-applied if that
-                              happens: the run is one transaction, so it rolls back and
-                              the target is left as it is now.
-                            </span>
-                          </div>
-                        )}
-                        {enumAdditions.length > 0 && (
-                          <RiskGate
-                            tone="drift"
-                            title={
-                              enumAdditions.length === 1
-                                ? "1 enum value runs before the transaction"
-                                : `${enumAdditions.length} enum values run before the transaction`
-                            }
-                            body={
-                              "PostgreSQL will not let a value added by ALTER TYPE … ADD " +
-                              "VALUE be used by another statement in the same transaction, " +
-                              "so the run adds " +
-                              (enumAdditions.length === 1 ? "this one" : "these") +
-                              " first, on their own. They commit straight away. If the run " +
-                              "then fails, everything else is rolled back and " +
-                              (enumAdditions.length === 1 ? "this stays" : "these stay") +
-                              ": there is no statement in PostgreSQL that removes an enum " +
-                              "value, so it cannot be undone by hand either. A label " +
-                              "nothing uses does no harm; it is simply the one part of the " +
-                              "run that is not all-or-nothing. A dry run cannot lift them " +
-                              "out without leaving them behind, so it runs them inside the " +
-                              "transaction instead, which is why rehearsing a script that " +
-                              "uses its own new value fails where the real run succeeds."
-                            }
-                          />
-                        )}
-                        {driftGateStatus !== null && (
-                          <RiskGate
-                            tone="drift"
-                            title={
-                              driftGateFromRecord
-                                ? driftGateStatus === "drifted"
-                                  ? "The last drift check found the target drifted"
-                                  : "The last drift check could not reach the target"
-                                : driftGateStatus === "drifted"
-                                  ? "The target has drifted"
-                                  : "The target could not be checked"
-                            }
-                            body={
-                              driftGateFromRecord
-                                ? "This drift check failed, so nothing here has confirmed " +
-                                  "what state the target is in now, and the last check on " +
-                                  "record found it " +
-                                  (driftGateStatus === "drifted"
-                                    ? "different from the snapshot these migrations were written against. "
-                                    : "unreachable. ") +
-                                  "Press Check database to run the drift check again before you run this."
-                                : driftGateStatus === "drifted"
-                                  ? "The live schema no longer matches the snapshot these " +
-                                    "migrations were written against, so a migration may hit " +
-                                    "an object that is not the one it expects. Read the drift " +
-                                    "report on the left before running this."
-                                  : "The drift check could not reach the target, so nothing " +
-                                    "here has confirmed what state it is in. The run will " +
-                                    "still connect. This only means it starts unverified."
-                            }
-                          />
-                        )}
-                        {connectionId && scriptsUpToTarget.length > 0 && (
-                          <MigrationReviewPanel
-                            connectionId={Number(connectionId)}
-                            schemaName={schema}
-                            action="deploy"
-                            scripts={reviewScripts}
-                            resetKey={`${connectionId}|${schema}|${selectionBody}`}
-                          />
-                        )}
-                        {/* The asker's own panel, and the answer panel for
-                            somebody else's ask of this exact run. */}
-                        {[
-                          askToRun
-                            ? { key: "own", own: true, approved: approvedRun, pending: pendingRun, latest: latestRun }
-                            : null,
-                          runAsk ? { key: "ask", own: false, approved: null, pending: runAsk, latest: runAsk } : null,
-                        ].map(
-                          (panel) =>
-                            panel && (
-                              <ApprovalPanel
-                                key={panel.key}
-                                migrationCount={scriptsUpToTarget.length}
-                                targetVersion={targetVersion}
-                                hashReady={runHash !== null}
-                                hashError={hashError}
-                                loading={approvalsLoading}
-                                error={approvalError ?? approvalsReadError}
-                                unreadable={approvalsReadError !== null && approvals.length === 0}
-                                busy={approvalBusy}
-                                approved={panel.approved}
-                                pending={panel.pending}
-                                latest={panel.latest}
-                                viewerEmail={user?.email ?? ""}
-                                roleLabel={roleLabel}
-                                askToRun={panel.own}
-                                mayApprove={mayApprove}
-                                bypass={bypass}
-                                note={approvalNote}
-                                onNoteChange={setApprovalNote}
-                                onRequest={handleRequestApproval}
-                                onDecide={(id, decision) => void handleDecideApproval(id, decision, "deploy")}
-                                otherApproval={panel.own ? otherApproval : null}
-                                onSelectOther={
-                                  otherApprovalVersion ? () => selectRun(otherApprovalVersion) : undefined
-                                }
-                                runButton={deployLabel}
-                              />
-                            )
-                        )}
-                      </div>
-
-                      <div className="dp-zone" data-tour="deploy-run">
-                        <h3 className="dp-h-sm">Rehearse</h3>
-                        <p>
-                          Runs this SQL on the target inside one transaction, then rolls it
-                          back. Nothing is written.
-                        </p>
-                        {/* A rehearsal writes nothing, but it really runs the SQL,
-                            including any statement that takes a heavy lock, so it
-                            needs the same permission as a real run. */}
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          disabled={dryRunBlocked}
-                          onClick={() => handleRun(true)}
-                        >
-                          <EyeIcon size={14} />
-                          {dryRunLabel}
-                        </button>
-                      </div>
-                      <div className="dp-or">then</div>
-                      <div className={deployBlocked ? "dp-zone dp-live" : "dp-zone dp-live dp-armed"}>
-                        <h3 className="dp-h-sm">Ship for real</h3>
-                        <p>
-                          Writes to <span className="mono">{schema}</span>. This is the real run.
-                        </p>
-                        <button
-                          type="button"
-                          className="btn btn-lg btn-primary"
-                          disabled={deployBlocked}
-                          onClick={() => handleRun(false)}
-                          ref={deployButtonRef}
-                        >
-                          <DeployIcon size={14} />
-                          {/* Names the range it deploys, as the "Run …" button that
-                              picked it did: "Deploy v5.0.1 → v5.0.2 (2)". */}
-                          {deployLabel}
-                        </button>
-                      </div>
-                      {/* Why the buttons are off, or what pressing them does. */}
-                      <p className="dp-why">
-                        {targetIsReadOnly
-                          ? "This connection is marked read-only on Connections, so nothing " +
-                            "here will run against it, not a deploy and not a dry run"
-                          : !mayExecuteOnTarget && !askToRun
-                          ? `Running migrations on this connection ${executeBlockedWhy}`
-                          : blockedByApplication.length > 0
-                          ? `${versionRange(
-                              blockedByApplication.map((script) => script.version)
-                            )} is restricted, and nothing here can confirm this database is ` +
-                            "one of the applications named. Name this database's application " +
-                            "table on its connection, or take the restriction out of the script"
-                          : hasTxnViolation
-                          ? "Remove the COMMIT or ROLLBACK from the versions named in " +
-                            "the checklist, then pull again"
-                          : driftChecking
-                            ? "Checking the target for drift first. These unlock when the check finishes"
-                            : askToRun && !approvedRun
-                              ? "Your role may not run migrations here by itself, so the deploy waits " +
-                                "for an Admin to approve it. A dry run is not open to you here"
-                              : enumAdditions.length > 0
-                              ? "All migrations run in one transaction: all of them or " +
-                                "none, apart from the enum values noted above"
-                              : "All migrations run in one transaction: all of them or none"}
-                      </p>
-                    </div>
+                    <RunPanel
+                      runPanelRef={runPanelRef}
+                      currentLabel={currentLabel}
+                      selectionLastLabel={selectionLastLabel}
+                      schema={schema}
+                      activeConn={activeConn}
+                      scriptsUpToTarget={scriptsUpToTarget}
+                      bumps={bumps}
+                      breakingCount={breakingCount}
+                      dataLossScripts={dataLossScripts}
+                      dataLossSure={dataLossSure}
+                      linesOfSql={linesOfSql}
+                      louderCount={louderCount}
+                      dataLossKinds={dataLossKinds}
+                      dataLoss={dataLoss}
+                      unflaggedDataLossKinds={unflaggedDataLossKinds}
+                      mightFailScripts={mightFailScripts}
+                      mightFailKinds={mightFailKinds}
+                      enumAdditions={enumAdditions}
+                      driftGateStatus={driftGateStatus}
+                      driftGateFromRecord={driftGateFromRecord}
+                      connectionId={connectionId}
+                      reviewScripts={reviewScripts}
+                      selectionBody={selectionBody}
+                      askToRun={askToRun}
+                      approvedRun={approvedRun}
+                      pendingRun={pendingRun}
+                      latestRun={latestRun}
+                      runAsk={runAsk}
+                      targetVersion={targetVersion}
+                      runHash={runHash}
+                      hashError={hashError}
+                      approvalsLoading={approvalsLoading}
+                      approvalError={approvalError}
+                      approvalsReadError={approvalsReadError}
+                      approvals={approvals}
+                      approvalBusy={approvalBusy}
+                      user={user}
+                      roleLabel={roleLabel}
+                      mayApprove={mayApprove}
+                      bypass={bypass}
+                      approvalNote={approvalNote}
+                      setApprovalNote={setApprovalNote}
+                      handleRequestApproval={handleRequestApproval}
+                      handleDecideApproval={handleDecideApproval}
+                      otherApproval={otherApproval}
+                      otherApprovalVersion={otherApprovalVersion}
+                      selectRun={selectRun}
+                      deployLabel={deployLabel}
+                      dryRunBlocked={dryRunBlocked}
+                      handleRun={handleRun}
+                      dryRunLabel={dryRunLabel}
+                      deployBlocked={deployBlocked}
+                      deployButtonRef={deployButtonRef}
+                      targetIsReadOnly={targetIsReadOnly}
+                      mayExecuteOnTarget={mayExecuteOnTarget}
+                      executeBlockedWhy={executeBlockedWhy}
+                      blockedByApplication={blockedByApplication}
+                      hasTxnViolation={hasTxnViolation}
+                      driftChecking={driftChecking}
+                    />
 
                   </aside>
                 </div>
@@ -4581,80 +2826,20 @@ function DeployBody() {
       {/* ═══════════════════ STAGE 2: RUN ═══════════════════ */}
       {stage === 2 && (
         <section className="dp-stage">
-          <div className="card dp-card">
-            <div className="dp-run-head">
-              <div>
-                <h2 className="dp-h">
-                {/* "nothing was applied" is a verdict, and on an unknown outcome
-                    it is the wrong one, it used to sit directly above an error
-                    saying the run may still have landed. */}
-                {isDeploying
-                  ? runIsDryRun
-                    ? "Rehearsing migrations…"
-                    : "Applying migrations…"
-                  : runOutcomeUnknown
-                    ? "Run outcome not known. Check the target before retrying"
-                    : allApplied
-                      ? "Run finished"
-                      : allRehearsed
-                        ? "Dry run finished, nothing was written"
-                        : runRefused
-                          ? runIsDryRun
-                            ? "Dry run refused, nothing was run"
-                            : "Run refused, nothing was applied"
-                          : runNotStarted
-                            ? runIsDryRun
-                              ? "Dry run did not start, nothing was run"
-                              : "Run did not start, nothing was applied"
-                            : runIsDryRun
-                              ? "Dry run halted"
-                              : "Run halted, nothing was applied"}
-                </h2>
-                <p className="dp-sub">
-                {/* The enum values are lifted out and committed before the
-                    transaction opens, so the unqualified promise is false for
-                    exactly this run, the same exception the gate above states.
-                    A refused run or one that did not start stopped before that
-                    step (the only refusal after it names its enum values in its
-                    own card below), so the exception would claim a commit that
-                    never happened. */}
-                {runIsDryRun
-                  ? "Every migration really runs against the target, inside one transaction that always ends in ROLLBACK."
-                  : enumAdditions.length > 0 && !runRefused && !runNotStarted
-                    ? "Every migration runs inside one transaction. A failure rolls " +
-                      "the whole run back: all of them or none, apart from the enum " +
-                      "values that were committed first."
-                    : "Every migration runs inside one transaction. A failure rolls the whole run back: all of them or none."}
-                </p>
-              </div>
-              <div className="dp-pills">
-                {runIsDryRun && (
-                  <span className="pill pill-neutral">
-                    <span className="dot" />
-                    dry run
-                  </span>
-                )}
-                <span className="dp-elapsed">elapsed {fmtSecs(elapsedMs)}</span>
-                {/* Stop rolls the run back on the server, as a failure would. */}
-                {isDeploying && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={stopBusy}
-                    onClick={() => void stopActiveRun()}
-                  >
-                    <XIcon size={13} />
-                    {stopBusy ? "Stopping…" : "Stop"}
-                  </button>
-                )}
-              </div>
-            </div>
-            {/* The app is not told about each statement as it runs, so while a
-                run is going the bar only shows that it is going. */}
-            <div className={`dp-prog ${runTone}`} aria-hidden="true">
-              <i />
-            </div>
-          </div>
+          <RunHead
+            isDeploying={isDeploying}
+            runIsDryRun={runIsDryRun}
+            runOutcomeUnknown={runOutcomeUnknown}
+            allApplied={allApplied}
+            allRehearsed={allRehearsed}
+            runRefused={runRefused}
+            runNotStarted={runNotStarted}
+            enumAdditions={enumAdditions}
+            elapsedMs={elapsedMs}
+            stopBusy={stopBusy}
+            stopActiveRun={stopActiveRun}
+            runTone={runTone}
+          />
 
           {/* A failure that belongs to the run, not to any one migration. */}
           {/* A saved password the server can't open gets the notice with
@@ -4669,239 +2854,44 @@ function DeployBody() {
               </div>
             ))}
 
-          <div className="card dp-card">
-          <div className="dp-mig-list">
-            {runScripts.map((script, i) => {
-              // The same reading as the pending list: the pill is the recorded
-              // level, and a script counted as breaking for its SQL says so.
-              const reading = describeChangeType(script.sql_content);
-              const kind = reading.recorded;
-              const cell = runStatus[scriptKey(script)] ?? { status: "queued" };
-              const ran = cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : "";
-              const subByStatus: Record<RunStatus, string> = {
-                queued: "queued · waiting",
-                // Only the pending list can produce this one; stage 2 renders
-                // the captured batch, and everything in it is in the run.
-                "not-in-run": "not in this run",
-                running: "running · in the run's transaction",
-                applied: `applied · committed with the run${ran}`,
-                rehearsed: `rehearsed · rolled back with the run${ran}`,
-                // The row says what happened; the dp-err below says what
-                // Postgres said, one each, not both twice.
-                // A refused run, or one that never started, never got going,
-                // so there is nothing to have rolled back; the row names what
-                // happened instead.
-                failed: runRefused
-                  ? "refused · the server's reason is below"
-                  : runNotStarted
-                    ? "not run · the server's reason is below"
-                    : "failed · the whole run was rolled back",
-                skipped: runRefused
-                  ? "skipped · the server refused the run, and nothing in it was applied"
-                  : runNotStarted
-                    ? "skipped · the run never started, so nothing in it ran"
-                    : "skipped · the run rolled back before this one could commit",
-                unknown: "not known · the commit never reported back, read script_patch",
-              };
-              return (
-                <MigRow
-                  key={scriptKey(script)}
-                  seq={String(i + 1).padStart(2, "0")}
-                  name={script.script_name}
-                  kind={kind}
-                  sub={subByStatus[cell.status]}
-                  rightPill={vLabel(script.version)}
-                  cell={cell}
-                  sql={script.sql_content}
-                  notes={reading.louderNote ? [{ text: reading.louderNote, warn: true }] : undefined}
-                />
-              );
-            })}
-          </div>
+          <RunList
+            runScripts={runScripts}
+            runStatus={runStatus}
+            runRefused={runRefused}
+            runNotStarted={runNotStarted}
+            runOutcomeUnknown={runOutcomeUnknown}
+            runProgress={runProgress}
+            runIsDryRun={runIsDryRun}
+            totalStatements={totalStatements}
+            schema={schema}
+            activeConn={activeConn}
+          />
 
-          <div className="dp-foot">
-            <span>
-              {runOutcomeUnknown
-                ? `outcome of ${countOf(runScripts.length, "migration")} not known`
-                : `${runProgress} of ${runScripts.length} ${runIsDryRun ? "rehearsed" : "applied"}`}
-              {totalStatements > 0 ? ` · ${fmtStatements(totalStatements)}` : ""} ·{" "}
-              <span className="mono">{schema} @ {activeConn?.name}</span>
-            </span>
-            <span>
-              {runOutcomeUnknown
-                ? "one transaction · but nothing here saw how it ended"
-                : "one transaction · a failure rolls the whole run back"}
-            </span>
-          </div>
-          </div>
-
-          {/* The GitHub registry, when the run changed it or failed to (spec 07).
-              Normally silent: Deploy's scripts came out of the registry, so it
-              already lists them and there is nothing to record. */}
-          {runComplete && runRegistry?.saved && (
-            <div className="warn-inline">
-              <CheckIcon size={16} className="ico dp-good-text" />
-              <div className="body">
-                <div className="title">Recorded in GitHub</div>
-                <div>{runRegistry.saved}</div>
-              </div>
-            </div>
-          )}
-          {runComplete && runRegistry?.problem && (
-            <div className="warn-inline">
-              <AlertTriangleIcon size={16} className="ico" />
-              <div className="body">
-                {/* Not an error: the migrations applied. What is wrong is that
-                    GitHub does not list them, so the next reader of the
-                    registry would not know this database has them. */}
-                <div className="title">Applied, but not recorded in GitHub</div>
-                <div>{runRegistry.problem}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Clean rehearsal, say what it proved, and offer the real thing. */}
-          {runComplete && allRehearsed && (
-            <div className="dp-result dp-good">
-              <h3>
-                <CheckIcon size={20} />
-                  Rehearsal clean: the target accepted every migration.
-              </h3>
-              <p>
-                  Then it was rolled back: no ledger rows, no lineage advance, no schema
-                  change.{" "}
-                  {ledgerReread === "read" ? (
-                    <>
-                      The ledger has been re-read and still reads{" "}
-                      <span className="mono">
-                        {preflightResult?.currentVersion ? vLabel(preflightResult.currentVersion) : "no versions yet"}
-                      </span>.
-                    </>
-                  ) : ledgerReread === "reading" ? (
-                    "Reading the ledger again…"
-                  ) : (
-                    ledgerRereadFailed
-                  )}
-              </p>
-                {askToRun && !approvedRun && (
-                  <div className="dp-warn-text">
-                    A clean rehearsal is not an approval. Go back to Pre-flight to
-                    ask for approval of the real run.
-                  </div>
-                )}
-                {/* Deploy for real deploys the selection, not the batch above,
-                    so it waits while the two differ: another range picked, the
-                    SQL re-pulled, or the re-read ledger moved what is pending. */}
-                {rehearsalChange !== null && (
-                  <div className="dp-warn-text">
-                    {rehearsalChange === "range"
-                      ? `You rehearsed ${ranName}; the selection is now ${nowName}. Rehearse this selection, or pick the rehearsed range again.`
-                      : rehearsalChange === "scripts"
-                        ? `The registry’s copy of ${runRange} has changed since you rehearsed it, so this rehearsal no longer covers what would run. Go back to Pre-flight and rehearse it again.`
-                        : `You rehearsed ${runRange}, but nothing is selected to deploy now. Go back to Pre-flight to see what is pending.`}
-                  </div>
-                )}
-              <div className="dp-row">
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={deployBlocked || rehearsalChange !== null}
-                onClick={() => handleRun(false)}
-              >
-                <DeployIcon size={13} />
-                {/* The drift check re-runs after every run (see driftChecking). */}
-                {driftChecking ? "Checking the target for drift…" : "Deploy for real"}
-              </button>
-              <button type="button" className="btn btn-secondary" onClick={() => setStage(1)}>
-                Back to Pre-flight
-              </button>
-              </div>
-            </div>
-          )}
-
-          {/* Recovery bar, only after a failed run */}
-          {runComplete && !allApplied && !allRehearsed && (
-            <div className={runOutcomeUnknown ? "dp-result dp-mid" : "dp-result dp-bad"}>
-              <h3>
-                <AlertCircleIcon size={20} />
-                  {runOutcomeUnknown
-                    ? "Run outcome not known."
-                    : runRefused
-                      ? "Run refused."
-                      : runNotStarted
-                        ? "Run did not start."
-                        : "Run did not complete."}
-              </h3>
-              <p>
-                  {/* Only a response we actually read licenses the claim that
-                      nothing changed. "Fix the script" is gone too, a lock
-                      timeout and a duplicate version have no script to fix, and
-                      the server's own instruction is already in the card above. */}
-                  {runOutcomeUnknown
-                    ? "This page never saw the run finish, so it cannot say what the " +
-                      "target has now. Press Check database on Pre-flight and read the " +
-                      "ledger before you run this again."
-                    : runRefused || runNotStarted
-                    ? (runRefused
-                        ? "The server refused this run, so none of the migrations above " +
-                          "are applied. Its reason is in the card above."
-                        : "The server stopped before the run started, so nothing was " +
-                          "written to the target. Its reason is in the card above.") +
-                      // Nothing ran, so the re-read is only news when it failed:
-                      // then Pre-flight has nothing pending, and this says why.
-                      (ledgerReread === "failed" ? ` ${ledgerRereadFailed}` : "")
-                    : (runIsDryRun
-                        ? "The dry run rolled back, so nothing was written to the target."
-                        : "The run rolled back, so none of the migrations above are " +
-                          "applied. Anything that had to commit before the transaction " +
-                          "opened is still there: the ledger table on a first deploy, and " +
-                          "any enum value listed on Pre-flight.") +
-                      (ledgerReread === "read"
-                        ? " The ledger has been re-read."
-                        : ledgerReread === "reading"
-                          ? " Reading the ledger again…"
-                          : ` ${ledgerRereadFailed}`)}
-              </p>
-                {/* Run again starts the selection, not the batch above, so it
-                    waits while the two differ. That also keeps a run whose
-                    commit may have landed from going out twice: the re-read
-                    ledger moves what is pending, and with it the selection. */}
-                {/* After a failed re-read nothing is pending because the ledger
-                    could not be read, and the line above already says to press
-                    Check database. "Nothing is selected" would hide that. */}
-                {repeatChange !== null && !(repeatChange === "nothing" && ledgerReread === "failed") && (
-                  <div className="dp-warn-text">
-                    {repeatChange === "range"
-                      ? `Pre-flight now selects ${nowName}, and this ${runIsDryRun ? "rehearsal" : "run"} was ${ranName}, so it cannot be repeated from here. Go back to Pre-flight to start the one you want.`
-                      : repeatChange === "scripts"
-                        ? `The registry’s copy of ${runRange} has changed since this ${runIsDryRun ? "rehearsal" : "run"}, so it cannot be repeated from here. Go back to Pre-flight to read the new SQL and start it from there.`
-                        : `Nothing is selected to run now, so this ${runIsDryRun ? "rehearsal" : "run"} cannot be repeated from here. Go back to Pre-flight to see what is pending.`}
-                  </div>
-                )}
-                {repeatChange === null && !driftChecking && !runIsDryRun && askToRun && !approvedRun && (
-                  <div className="dp-warn-text">
-                    This deploy needs an Admin&apos;s approval first. Go back to Pre-flight to ask for one.
-                  </div>
-                )}
-              <div className="dp-row">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={(runIsDryRun ? dryRunBlocked : deployBlocked) || repeatChange !== null}
-                onClick={() => handleRun(runIsDryRun)}
-              >
-                {driftChecking
-                  ? "Checking the target for drift…"
-                  : runIsDryRun
-                    ? "Rehearse again"
-                    : "Run again"}
-              </button>
-              <button type="button" className="btn btn-primary" onClick={() => setStage(1)}>
-                Back to Pre-flight
-              </button>
-              </div>
-            </div>
-          )}
+          <RunResults
+            runComplete={runComplete}
+            runRegistry={runRegistry}
+            allRehearsed={allRehearsed}
+            ledgerReread={ledgerReread}
+            preflightResult={preflightResult}
+            ledgerRereadFailed={ledgerRereadFailed}
+            askToRun={askToRun}
+            approvedRun={approvedRun}
+            rehearsalChange={rehearsalChange}
+            ranName={ranName}
+            nowName={nowName}
+            runRange={runRange}
+            deployBlocked={deployBlocked}
+            handleRun={handleRun}
+            driftChecking={driftChecking}
+            setStage={setStage}
+            allApplied={allApplied}
+            runOutcomeUnknown={runOutcomeUnknown}
+            runRefused={runRefused}
+            runNotStarted={runNotStarted}
+            runIsDryRun={runIsDryRun}
+            repeatChange={repeatChange}
+            dryRunBlocked={dryRunBlocked}
+          />
         </section>
       )}
 
@@ -4916,128 +2906,25 @@ function DeployBody() {
             connectionName={activeConn?.name}
             connectionId={connectionId}
           />
-          <div className="dp-result dp-good dp-hero">
-              <div className="dp-big-check">
-                <CheckIcon size={28} />
-              </div>
-              <div >
-                <div className="section-title">
-                  Deployed
-                </div>
-                <h2>
-                  Migrations applied to the target.
-                </h2>
-                {preflightResult ? (
-                  <p>
-                    <span className="mono" style={{ color: "var(--ink)" }}>{schema}</span> on{" "}
-                    <span className="mono" style={{ color: "var(--ink)" }}>{activeConn?.name}</span>{" "}
-                    now reports{" "}
-                    <span className="mono" style={{ color: "var(--ink)" }}>
-                      {preflightResult.currentVersion
-                        ? vLabel(preflightResult.currentVersion)
-                        : "no versions yet"}
-                    </span>{" "}
-                    in its migration ledger.
-                  </p>
-                ) : (
-                  <p>
-                    The deploy committed, but the ledger could not be read back
-                    afterwards. This page cannot confirm what the target now
-                    reports.
-                  </p>
-                )}
-                <div className="dp-pills mt-4">
-                  <span className="dp-chip">{runFromVersion}</span>
-                  <ChevronRightIcon size={16} />
-                  {/* The batch that ran, not the selection: Pre-flight can move
-                      the selection after a deploy. */}
-                  <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "None"}</b></span>
-                  <span className="dp-quiet text-[12px]">
-                    {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
-                  </span>
-                </div>
-                <div className="dp-row">
-                  <button type="button" className="btn btn-primary" onClick={handlePreflight}>
-                    Re-check target
-                  </button>
-                  <button type="button" className="btn btn-secondary" onClick={() => setStage(1)}>
-                    Back to Pre-flight
-                  </button>
-                  {/* Both buttons above lead back into this same screen, which
-                      left a finished deploy with no way onward except the
-                      sidebar. These are the two things that actually happen
-                      next: record the version against the schema, and start
-                      watching the database that just changed, the moment it is
-                      most likely to drift is right after somebody changed it.
-
-                      Links and not primary buttons: the deploy is finished, so
-                      neither of these is owed. */}
-                  <Link href={orgPath("/versionsync")} className="btn btn-ghost">
-                    Record it on Version Sync
-                  </Link>
-                  <Link href={orgPath("/drift")} className="btn btn-ghost">
-                    Watch it on Drift
-                  </Link>
-                </div>
-              </div>
-          </div>
-
-          {/* Spec feature 11: the patches, offered rather than started. The
-              button only takes the reader back to Pre-flight with the rest
-              selected: running them is a deploy like any other, with the same
-              preview and the same approval, and chaining straight on would
-              turn one confirmed run into two. */}
-          {afterInitPrompt && (
-            <div className="card dp-card">
-              <div className="section-title mb-1">Next</div>
-              <div className="dp-h-sm">{afterInitPrompt.title}</div>
-              <p className="help mt-1">{afterInitPrompt.body}</p>
-              <div className="dp-row">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    selectRun(pendingScripts[pendingScripts.length - 1].version);
-                    setStage(1);
-                  }}
-                >
-                  {`Review ${afterInitPrompt.remaining === 1 ? "it" : `all ${afterInitPrompt.remaining}`} on Pre-flight`}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="dp-two">
-            <div className="card dp-card">
-              <h2 className="dp-h-sm">What was applied</h2>
-              <div className="mt-2">
-                {appliedScripts.map((s, i) => (
-                  <div key={scriptKey(s)} className="dp-applied">
-                    <span className="mono">
-                      <span style={{ color: "var(--ink-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
-                      {s.script_name} <span style={{ color: "var(--ink-3)" }}>{vLabel(s.version)}</span>
-                    </span>
-                    <span className="pill pill-sync">
-                      <span className="dot" />
-                      applied · {fmtStatements(runStatus[scriptKey(s)]?.statements ?? 0)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Verify re-diff, real lineage compare when the target is tracked */}
-            <div className="card dp-card">
-              <h2 className="dp-h-sm mb-3">Verify diff</h2>
-              <DriftPanel
-                phase={driftPhase}
-                result={driftResult}
-                error={driftError}
-                context="verify"
-                targetVersion={runLastVersion}
-              />
-            </div>
-          </div>
+          <VerifyCards
+            preflightResult={preflightResult}
+            schema={schema}
+            activeConn={activeConn}
+            runFromVersion={runFromVersion}
+            runLastVersion={runLastVersion}
+            elapsedMs={elapsedMs}
+            appliedScripts={appliedScripts}
+            handlePreflight={handlePreflight}
+            setStage={setStage}
+            orgPath={orgPath}
+            afterInitPrompt={afterInitPrompt}
+            selectRun={selectRun}
+            pendingScripts={pendingScripts}
+            runStatus={runStatus}
+            driftPhase={driftPhase}
+            driftResult={driftResult}
+            driftError={driftError}
+          />
         </section>
       )}
 
@@ -5049,149 +2936,6 @@ function DeployBody() {
         </div>
       )}
     </div>
-  );
-}
-
-// Drift pre-check panel (Phase 6). Renders the real lineage drift state for the
-// chosen target, or an honest "not tracked" message, in place of the old stub.
-// Shared by the stage-1 pre-check, the stage-3 post-deploy verify and the check
-// after a rollback; the copy shifts slightly via `context`.
-function DriftPanel({
-  phase,
-  result,
-  error,
-  context,
-  targetVersion,
-}: {
-  phase: DriftPhase;
-  result: DriftResult | null;
-  error: string | null;
-  /**
-   * "precheck" before a deploy, "verify" after one, "rollback" after a
-   * rollback. The last two re-read a schema that has just changed.
-   */
-  context: "precheck" | "verify" | "rollback";
-  targetVersion: string;
-}) {
-  // Defaults cover the loading state; each case below overrides what it needs.
-  let icon = <span className="spin" />;
-  // The colour of the round icon: plain, good (dp-good) or a warning (dp-warn).
-  let tone = "";
-  let title =
-    context === "precheck" ? "Checking the target for drift…" : "Re-checking the schema…";
-  let body: React.ReactNode = "Comparing the live schema against its tracked snapshot.";
-  let pillClass = "pill pill-neutral";
-  let pillText = "checking";
-
-  if (phase === "idle") {
-    icon = <DriftIcon size={16} />;
-    title = "Drift check not run yet";
-    body = "Run a database check to compare the live schema against its tracked snapshot.";
-    pillText = "idle";
-  } else if (phase === "untracked") {
-    icon = <DriftIcon size={16} />;
-    title = "Target schema isn't tracked";
-    body =
-      "Track this schema on the Dashboard to capture a baseline snapshot. Drift checks then compare the live structure against it. Until then Deploy assumes the target matches its migration ledger.";
-    pillText = "not tracked";
-  } else if (phase === "error") {
-    icon = <AlertCircleIcon size={16} />;
-    title = "Drift check couldn't run";
-    body = error ?? "Something went wrong running the drift check.";
-    pillText = "error";
-  } else if (phase === "ready" && result) {
-    // The snapshot's number is Schema Studio's lineage counter, not a script
-    // version, so it says so, the way the dashboard labels it.
-    const v = result.expectedVersion ? `lineage ${displayVersion(result.expectedVersion, true)}` : "its snapshot";
-    if (result.status === "unreachable") {
-      icon = <AlertTriangleIcon size={16} />;
-      tone = "dp-warn";
-      title = "Target unreachable";
-      body = result.summary;
-      pillText = "unreachable";
-    } else if (result.status === "in_sync") {
-      icon = <CheckIcon size={16} />;
-      tone = "dp-good";
-      title =
-        context === "precheck"
-          ? `No drift: target matches ${v}`
-          : `Verified: live schema matches ${v}`;
-      body = result.summary;
-      pillClass = "pill pill-sync";
-      pillText = "in sync";
-    } else {
-      // drifted
-      icon = <DriftIcon size={16} />;
-      tone = "dp-warn";
-      title = "Schema drift detected";
-      body = (
-        <>
-          {result.summary}{" "}
-          {context === "verify" ? (
-            <>
-              Re-snapshot the target on the Dashboard to record its structure after{" "}
-              <span className="mono">{vLabel(targetVersion)}</span> as the new expected baseline.
-            </>
-          ) : context === "rollback" ? (
-            /* The revert route records the structure it leaves as the new
-               baseline, and its message says "Lineage advanced to ..." when it
-               did, so drift seen here is not the rollback itself. */
-            "A rollback records the structure it leaves as the new baseline, so this " +
-            "drift is not the rollback itself. Either that record failed (the message " +
-            "above says “Lineage advanced to …” when it worked), or something changed " +
-            "the schema outside Schema Studio. Check the difference on the Dashboard " +
-            "before re-snapshotting the target there."
-          ) : (
-            "Review before deploying: the live structure differs from its tracked snapshot."
-          )}
-        </>
-      );
-      pillClass = "pill pill-pending";
-      pillText = "drift";
-    }
-  }
-
-  return (
-    <div className="dp-drift">
-      <div className={`dp-drift-i ${tone}`}>{icon}</div>
-      <div className="dp-drift-text">
-        <b>{title}</b>
-        <div>{body}</div>
-      </div>
-      <span className={pillClass}>{pillText}</span>
-    </div>
-  );
-}
-
-// Small checklist line: green check (ok), warn (ok=false), info, or stub.
-function ChecklistItem({
-  ok,
-  info,
-  stub,
-  children,
-}: {
-  ok?: boolean;
-  info?: boolean;
-  stub?: boolean;
-  children: React.ReactNode;
-}) {
-  let iconClass = "dp-ic dp-ok-i";
-  let icon: React.ReactNode = <CheckIcon size={12} />;
-  if (stub) {
-    iconClass = "dp-ic dp-stub-i";
-    icon = null;
-  } else if (info) {
-    iconClass = "dp-ic dp-wait-i";
-    icon = <InfoIcon size={12} />;
-  } else if (ok === false) {
-    iconClass = "dp-ic dp-bad-i";
-    icon = <AlertTriangleIcon size={12} />;
-  }
-  return (
-    <li className={stub ? "dp-stub" : undefined}>
-      <span className={iconClass}>{icon}</span>
-      <span>{children}</span>
-    </li>
   );
 }
 
