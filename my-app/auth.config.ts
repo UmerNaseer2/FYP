@@ -1,7 +1,7 @@
 import type { NextAuthConfig, Profile } from "next-auth";
 import GitHub from "next-auth/providers/github";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
-import { isPlaceholderSecret } from "./lib/placeholder-secrets";
+import { isPlaceholderSecret } from "./lib/auth/placeholder-secrets";
 
 /**
  * The edge-safe half of the NextAuth configuration.
@@ -40,7 +40,7 @@ export const entraConfigured = Boolean(
  * in the admin guide. Who may do what is unchanged either way: someone from
  * outside the home tenant gets an account and nothing more until an admin
  * invites them or they start an organization of their own
- * (lib/accounts-db.ts).
+ * (lib/auth/accounts-db.ts).
  */
 export const entraAnyAccount = process.env.AZURE_AD_ANY_ACCOUNT === "true";
 
@@ -64,7 +64,7 @@ export const githubConfigured = Boolean(
  *
  * The placeholder docker-compose.yml used to fill in does not count: it is
  * written in this repository, so anyone could sign a session cookie with it
- * and be let in as whoever they liked (lib/placeholder-secrets.ts).
+ * and be let in as whoever they liked (lib/auth/placeholder-secrets.ts).
  */
 export const secretConfigured =
   Boolean(process.env.NEXTAUTH_SECRET) && !isPlaceholderSecret(process.env.NEXTAUTH_SECRET);
@@ -86,7 +86,7 @@ export const authUsable =
  * list of addresses only when there is none, and keeps nothing about whether
  * an address was ever confirmed. This always asks for the list, takes the one
  * marked primary (the one GitHub sends mail to), and records its "verified"
- * flag as email_verified. lib/accounts-db.ts makes a new account only for a
+ * flag as email_verified. lib/auth/accounts-db.ts makes a new account only for a
  * checked address, because the address is what an invitation is sent to and
  * what another way of signing in would be matched on later. An unchecked one
  * could be anybody's.
@@ -180,7 +180,7 @@ export const authConfig = {
     /**
      * Consulted by the edge proxy for page requests. Permissions are NOT checked
      * here: the edge runtime cannot reach the database, so this only answers "is
-     * there a session at all". Permission checks happen in lib/auth-guard.ts, on
+     * there a session at all". Permission checks happen in lib/auth/guard.ts, on
      * the node side, where what each role may do is readable.
      */
     authorized({ auth }) {

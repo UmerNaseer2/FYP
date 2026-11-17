@@ -9,7 +9,7 @@
 // on the server's settings.
 //
 // It lives in the organization's organization_ai row, next to the AI switch.
-// The key is stored encrypted with the server's key (lib/secret-store.ts) and
+// The key is stored encrypted with the server's key (lib/connections/secret-store.ts) and
 // never leaves the server: the screens only learn which service it is for and
 // its last four characters. A server with no encryption key refuses to save
 // one, because the alternative is a key sitting in the database as plain text.
@@ -17,9 +17,9 @@
 // Every change is written to the change log in the same transaction as the
 // change, as kind "ai-settings" with the subject AI_KEY_LOG_SUBJECT. The log
 // names the service, never any part of the key.
-import pool, { syncMetadataTables } from "../version-db";
-import { logRoleChanges } from "../roles-db";
-import { decryptSecret, encryptSecret, isEncrypted } from "../secret-store";
+import pool, { syncMetadataTables } from "../db/version-db";
+import { logRoleChanges } from "../roles/roles-db";
+import { decryptSecret, encryptSecret, isEncrypted } from "../connections/secret-store";
 import { AI_KEY_LOG_SUBJECT, AI_KEY_PROVIDERS, isAiKeyProvider, type AiKeyProvider } from "./key-providers";
 import type { AiActor } from "./settings";
 

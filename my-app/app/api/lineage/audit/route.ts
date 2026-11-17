@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { listDriftEvents } from "@/lib/lineage-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { listDriftEvents } from "@/lib/versions/lineage-db";
 
-/** Rows returned when no ?limit is given — the same default lib/lineage-db uses. */
+/** Rows returned when no ?limit is given — the same default lib/versions/lineage-db uses. */
 const DEFAULT_LIMIT = 200;
 
 /**

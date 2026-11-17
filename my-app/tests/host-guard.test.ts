@@ -14,8 +14,8 @@
 // is saved, and again inside getPoolForConfig before any pool is built. Nothing
 // here reaches a real database — the pg module is a stand-in that fails the
 // test if it is ever constructed.
-import { BlockedHostError, checkConnectableHost } from "@/lib/host-guard";
-import { checkConnectionTarget, describeDbError } from "@/lib/connection-config";
+import { BlockedHostError, checkConnectableHost } from "@/lib/connections/host-guard";
+import { checkConnectionTarget, describeDbError } from "@/lib/connections/config";
 import { fetchSchemaNames, getPoolForConfig } from "@/lib/postgres";
 
 /** Every real pool this file's code builds, so the tests can say "none". */

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import type { PoolClient } from "pg";
 import {
@@ -13,10 +13,10 @@ import {
   summarizeActivity,
   type ActivityRow,
   type ActivitySession,
-} from "@/lib/db-activity";
-import { evaluateThresholds, type ThresholdBreach, type ThresholdReading } from "@/lib/perf-thresholds";
-import { DB_HEALTH_SQL, readDbHealth, dbHealthReadings, type DbHealth, type DbHealthRow } from "@/lib/db-health";
-import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
+} from "@/lib/performance/db-activity";
+import { evaluateThresholds, type ThresholdBreach, type ThresholdReading } from "@/lib/performance/thresholds";
+import { DB_HEALTH_SQL, readDbHealth, dbHealthReadings, type DbHealth, type DbHealthRow } from "@/lib/performance/db-health";
+import { getThresholdsOrDefaults } from "@/lib/performance/thresholds-db";
 
 /**
  * GET /api/performance/activity?connectionId=<id>&schema=<name>
@@ -31,7 +31,7 @@ import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
  *
  * `schema` is not a filter here: a session has no schema. The list is the
  * sessions of the chosen connection's database only (pg_stat_activity covers
- * the whole server, and lib/db-activity.ts narrows it to current_database()).
+ * the whole server, and lib/performance/db-activity.ts narrows it to current_database()).
  * `schema` is carried because the alert threshold for what counts as
  * long-running is stored per connection-and-schema, and the screen already has
  * a schema selected.
@@ -67,7 +67,7 @@ export type ActivityView = {
  * What counts as long-running when nobody has set a rule.
  *
  * Only used for the colour on the screen, never to fire an alert — an unset
- * threshold fires nothing (see lib/perf-thresholds.ts). Sixty seconds because
+ * threshold fires nothing (see lib/performance/thresholds.ts). Sixty seconds because
  * a minute is the point at which somebody watching a page starts reloading it.
  */
 const FALLBACK_LONG_RUNNING_SECONDS = 60;
@@ -237,7 +237,7 @@ export async function GET(request: NextRequest) {
     // The cache hit ratio is the one database-wide number the threshold
     // catalogue has a key for. Until this read existed nothing ever produced a
     // reading for it, so the setting could be filled in and switched on and
-    // would never fire — see lib/db-health.ts.
+    // would never fire — see lib/performance/db-health.ts.
     ...(health ? dbHealthReadings(health) : []),
   ];
 
@@ -245,7 +245,7 @@ export async function GET(request: NextRequest) {
     connectionName: conn.name,
     database: conn.database_name,
     // The app's clock, and only for "when did I ask" — every duration in the
-    // list was computed by the server itself. See lib/db-activity.ts.
+    // list was computed by the server itself. See lib/performance/db-activity.ts.
     takenAt: new Date().toISOString(),
     longRunningSeconds,
     thresholdConfigured: Boolean(longRunning?.enabled),

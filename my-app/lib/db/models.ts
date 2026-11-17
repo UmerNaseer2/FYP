@@ -7,10 +7,10 @@ import {
   type CreationOptional,
 } from "sequelize";
 import { sequelize } from "./sequelize";
-import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
-import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
-import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connection-access";
-import { ROLE_CHANGE_KINDS } from "../permissions";
+import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift/schedule";
+import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift/source";
+import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connections/access";
+import { ROLE_CHANGE_KINDS } from "../roles/permissions";
 
 /**
  * The app's own tables, as Sequelize models.
@@ -150,7 +150,7 @@ export class Connection extends Model<
   declare database_name: CreationOptional<string>;
   declare type: CreationOptional<string>;
   declare username: string;
-  /** Encrypted at rest by lib/secret-store — never a plaintext password. */
+  /** Encrypted at rest by lib/connections/secret-store — never a plaintext password. */
   declare password: string;
   declare connection_string: CreationOptional<string | null>;
   /** Superseded by ssl_mode; kept in step so an older build still reads right. */
@@ -165,12 +165,12 @@ export class Connection extends Model<
    * Spec feature 11 asks that scripts restricted to an application only run
    * against that application's databases; this is where the name of the
    * client's own ApplicationTable is kept, because it is a property of the
-   * database rather than of this app. See lib/application-targeting.ts.
+   * database rather than of this app. See lib/deploy/application-targeting.ts.
    */
   declare application_table: CreationOptional<string | null>;
   /**
    * Which role may run a migration against this database — "none", "editor" or
-   * "admin". See lib/connection-access.ts for the rule and for why "none" is
+   * "admin". See lib/connections/access.ts for the rule and for why "none" is
    * not simply the weakest of the three.
    *
    * Spec feature 02's "execution permission control": a role on its own says
@@ -198,7 +198,7 @@ export class Connection extends Model<
   /**
    * Goes up by one on every save. A save names the version it started from, and
    * one that started from an older version is turned down instead of silently
-   * overwriting someone else's change (lib/connection-writes.ts).
+   * overwriting someone else's change (lib/connections/writes.ts).
    */
   declare version: CreationOptional<number>;
   /** When and by whom the row was last saved, for the "someone changed this" message. */
@@ -273,7 +273,7 @@ export class Profile extends Model<
   /**
    * The organization this person last opened, so an address that names none
    * (an old bookmark, the way back from signing in) takes them there again.
-   * Only a hint: lib/orgs-db.ts ignores it once they no longer belong there,
+   * Only a hint: lib/orgs/orgs-db.ts ignores it once they no longer belong there,
    * and deleting the organization empties it (the key is added by
    * lib/db/bootstrap.ts, with the other keys to `organizations`).
    */
@@ -348,7 +348,7 @@ Membership.init(
  *
  * `email` and `email_verified` are what the provider said at the latest
  * sign-in. Only a verified address is trusted for anything, which today means
- * accepting an invitation sent to it (lib/accounts-db.ts says who counts as
+ * accepting an invitation sent to it (lib/auth/accounts-db.ts says who counts as
  * verified). The key to `profiles` is added by lib/db/bootstrap.ts with the
  * other keys between people and organizations, and deleting a profile removes
  * its identities.
@@ -399,7 +399,7 @@ Identity.init(
  * at worst let a stranger read, never change anything.
  *
  * The link itself is never stored, only `token_hash`, the SHA-256 of the
- * random part (lib/invites-db.ts). Someone who reads this table, or a backup
+ * random part (lib/orgs/invites-db.ts). Someone who reads this table, or a backup
  * of it, learns who was invited but cannot accept anything.
  *
  * The keys to `organizations`, `roles` and `profiles`, and the checks, are
@@ -455,7 +455,7 @@ Invite.init(
 );
 
 /**
- * Someone asking for something their role can't do (lib/access-requests.ts).
+ * Someone asking for something their role can't do (lib/roles/access-requests.ts).
  *
  * The asker is kept as an email and a name, the way deploy_approvals keeps one,
  * rather than a profile id: a request should still read properly after the
@@ -480,7 +480,7 @@ export class AccessRequest extends Model<
   declare created_at: CreationOptional<Date>;
   /**
    * Set when the answer was "just this person, for a while": until then they
-   * hold the permission they asked for on top of their role (lib/auth-guard.ts
+   * hold the permission they asked for on top of their role (lib/auth/guard.ts
    * reads it on every request). Null for every other answer.
    */
   declare granted_until: CreationOptional<Date | null>;
@@ -514,7 +514,7 @@ AccessRequest.init(
 
 /**
  * One row every copy of the app can see: who holds the drift checker's tick (the
- * lease in lib/drift-scheduler.ts) and what the last tick did. One loop serves
+ * lease in lib/drift/scheduler.ts) and what the last tick did. One loop serves
  * every organization, so the row is not any one organization's.
  */
 export class DriftSchedulerState extends Model<
@@ -543,9 +543,9 @@ DriftSchedulerState.init(
 
 /**
  * The GitHub repository an organization keeps its scripts in, and the access
- * token the app uses for it (lib/org-github-store.ts). One row per
+ * token the app uses for it (lib/github/org-store.ts). One row per
  * organization at most, set on the Admin screen or when the organization is
- * made. The token is encrypted with the server's key (lib/secret-store.ts) and
+ * made. The token is encrypted with the server's key (lib/connections/secret-store.ts) and
  * never leaves the server: the screens only learn whether one is saved.
  */
 export class OrganizationGitHubRow extends Model<
@@ -781,7 +781,7 @@ BootStamp.init(
 // ---------------------------------------------------------------------------
 // Roles, and what each one may do.
 //
-// A role is a named set of permissions from the catalogue in lib/permissions.ts,
+// A role is a named set of permissions from the catalogue in lib/roles/permissions.ts,
 // and it belongs to one organization. Every organization has the three
 // built-in roles (seedBuiltInRoles in lib/db/bootstrap.ts writes them), and its
 // admins can add more from the Admin screen.
@@ -879,7 +879,7 @@ export class RoleChange extends Model<
    * of who deleted it.
    */
   declare role: string;
-  /** One of ROLE_CHANGE_KINDS in lib/permissions.ts. */
+  /** One of ROLE_CHANGE_KINDS in lib/roles/permissions.ts. */
   declare kind: string;
   /** For a grant or a revoke: which permission. */
   declare feature: CreationOptional<string | null>;
@@ -940,7 +940,7 @@ export class TrackedSchema extends Model<
   /**
    * How often the scheduler re-checks this schema for drift, in minutes.
    * 0 means never — the schema is checked only when somebody presses the
-   * button. See lib/drift-schedule.ts for the cadences the UI offers.
+   * button. See lib/drift/schedule.ts for the cadences the UI offers.
    */
   declare drift_check_interval_minutes: CreationOptional<number>;
   /**
@@ -1017,7 +1017,7 @@ Snapshot.init(
     sequelize,
     tableName: "snapshots",
     // Two jobs, one index. Every read is "the newest snapshot for this tracked
-    // schema" (lib/lineage-db), and deleting a tracked schema cascades to every
+    // schema" (lib/versions/lineage-db), and deleting a tracked schema cascades to every
     // row here — without a leading tracked_schema_id, that delete has to read
     // the whole table, and this is the table that holds a JSON document per row.
     //
@@ -1101,7 +1101,7 @@ export class DriftEvent extends Model<
   /** Set when someone has looked at this drift and decided it is expected. */
   declare acknowledged_at: CreationOptional<Date | null>;
   /**
-   * What ran this check — see DRIFT_SOURCES in lib/drift-source.ts.
+   * What ran this check — see DRIFT_SOURCES in lib/drift/source.ts.
    *
    * Without it the audit feed cannot tell an automatic check from somebody
    * pressing the button, which is exactly the question a user asks when the app
@@ -1110,7 +1110,7 @@ export class DriftEvent extends Model<
   declare source: CreationOptional<string>;
   /**
    * A short hash of WHICH differences this check found — see
-   * lib/drift-fingerprint.ts.
+   * lib/drift/fingerprint.ts.
    *
    * The scheduler only writes an event when a check says something the last one
    * did not, and that used to be decided on `status` alone. A schema that was
@@ -1148,7 +1148,7 @@ DriftEvent.init(
     tableName: "drift_events",
     indexes: [
       // "The newest event for this schema" is asked five separate ways across
-      // lib/lineage-db and lib/drift-runner, always as
+      // lib/versions/lineage-db and lib/drift/runner, always as
       // `WHERE tracked_schema_id = $1 ORDER BY detected_at DESC, id DESC`. This
       // is that query, and it is also what stops a tracked schema's delete from
       // scanning the longest table in the app.
@@ -1180,7 +1180,7 @@ DriftEvent.init(
  *     structure does not, so a role that can introspect but not measure gets a
  *     row with real counts and null sizes — which the chart draws as a gap.
  *     Writing 0 there would say the schema was empty.
- *   • Rows are pruned. lib/schema-metrics keeps a bounded window; without that
+ *   • Rows are pruned. lib/performance/schema-metrics keeps a bounded window; without that
  *     a quarter-hourly cadence writes about ten thousand rows per schema per
  *     season, and a table nobody ever deletes from is a table that eventually
  *     costs more than the thing it measures.
@@ -1278,7 +1278,7 @@ export class QueryHistory extends Model<
   declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
-  /** The SQL as submitted, cut at STORED_SQL_LIMIT (lib/query-history.ts). */
+  /** The SQL as submitted, cut at STORED_SQL_LIMIT (lib/performance/query-history.ts). */
   declare query_text: string;
   /** Groups re-runs of the same query — see fingerprintQuery. */
   declare fingerprint: string;
@@ -1299,7 +1299,7 @@ export class QueryHistory extends Model<
   declare captured_at: CreationOptional<Date>;
   /**
    * Which columns of which tables this query searched on, read off its plan —
-   * see ColumnSearch in lib/composite-index.ts. NULL for a row stored before
+   * see ColumnSearch in lib/performance/composite-index.ts. NULL for a row stored before
    * this was recorded, which is not the same as "it searched on nothing", so
    * the aggregate skips those rows rather than counting them as empty.
    */
@@ -1371,7 +1371,7 @@ QueryHistory.init(
  *
  * Spec feature 10 — "Allow custom alert thresholds for performance issues."
  * What may be set, the ranges, and how a breach is decided all live in
- * lib/perf-thresholds.ts; this table only stores the answers.
+ * lib/performance/thresholds.ts; this table only stores the answers.
  *
  * One row per (connection, schema, key), enforced by a unique index rather than
  * by the writer remembering to check: the settings screen saves the whole set
@@ -1385,7 +1385,7 @@ export class PerfThreshold extends Model<
   declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
-  /** A ThresholdKey — see lib/perf-thresholds.ts. */
+  /** A ThresholdKey — see lib/performance/thresholds.ts. */
   declare threshold_key: string;
   /** DOUBLE because two of the keys are ratios stored 0–1. */
   declare threshold_value: number;
@@ -1566,7 +1566,7 @@ export class ComparisonRun extends Model<
    * a pair whose findings run past the stored list.
    */
   declare fingerprint: string;
-  /** A RunSnapshot — see lib/comparison-history's readRunSnapshot. */
+  /** A RunSnapshot — see lib/compare/history's readRunSnapshot. */
   declare findings: object;
 }
 
@@ -1644,13 +1644,13 @@ export class DeployApproval extends Model<
   declare self_approved: CreationOptional<boolean>;
   declare note: CreationOptional<string | null>;
   declare used_at: CreationOptional<Date | null>;
-  /** "deploy" or "revert": which route may spend this approval (ApprovalAction in lib/approvals-db). */
+  /** "deploy" or "revert": which route may spend this approval (ApprovalAction in lib/deploy/approvals-db). */
   declare action: CreationOptional<string>;
   /** When the approval stops authorising the run. Null on a row decided before expiry existed. */
   declare expires_at: CreationOptional<Date | null>;
   /**
    * A copy of the run's SQL, kept with the request
-   * (ApprovalScript[] in lib/approval-fingerprint). Null when the run was too
+   * (ApprovalScript[] in lib/deploy/approval-fingerprint). Null when the run was too
    * big to keep, and on a row asked for before the copy was kept.
    */
   declare scripts: CreationOptional<unknown | null>;
@@ -1691,13 +1691,13 @@ DeployApproval.init(
       defaultValue: "deploy",
       validate: { isIn: [["deploy", "revert"]] },
     },
-    // Set when the approval is given, by the UPDATE in lib/approvals-db, not by
+    // Set when the approval is given, by the UPDATE in lib/deploy/approvals-db, not by
     // a column default: the window runs from the decision, and a row that was
     // never approved has nothing to expire. Nullable on purpose — rows decided
     // before this column existed stay good, because inventing an expiry for a
     // decision somebody already made would be the tool answering for them.
     expires_at: { type: DataTypes.DATE, allowNull: true },
-    // Written with the request by lib/approvals-db, or later from the same
+    // Written with the request by lib/deploy/approvals-db, or later from the same
     // SQL when an older open request is asked for again. Only for reading:
     // run_fingerprint still pins what an approval covers. JSONB like
     // deploy_attempts.scripts, read and written whole. Nullable because a run
@@ -1705,7 +1705,7 @@ DeployApproval.init(
     scripts: { type: DataTypes.JSONB, allowNull: true },
     // Set when the person asking may not run the run themselves (their role,
     // or the connection's "who may run"). Such an approval is a one-off for
-    // them, and lib/approvals-db lets nobody else spend it.
+    // them, and lib/deploy/approvals-db lets nobody else spend it.
     run_by_requester: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   },
   {

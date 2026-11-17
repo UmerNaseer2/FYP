@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { findTrackedSchema } from "@/lib/lineage-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { findTrackedSchema } from "@/lib/versions/lineage-db";
 
 /**
  * GET /api/lineage/lookup?connectionId=&schemaName=

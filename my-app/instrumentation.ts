@@ -11,7 +11,7 @@
  *
  *   • NEXT_RUNTIME — this file is also evaluated in the Edge runtime, where
  *     there is no `pg`, no TCP and no timer worth starting. Only Node runs it.
- *   • A dynamic import — lib/drift-scheduler reaches lib/db/sequelize, which
+ *   • A dynamic import — lib/drift/scheduler reaches lib/db/sequelize, which
  *     throws at module scope when DATABASE_URL_A is missing. A static import
  *     would make a missing environment variable a server that will not boot at
  *     all, rather than a server whose pages explain what is missing.
@@ -23,14 +23,14 @@ export async function register() {
   // Local connections' passwords (only with LOCAL_DATABASE_URL), read before
   // the drift scheduler's first tick needs them. It never throws.
   try {
-    const { ensureLocalSecrets } = await import("./lib/local-store");
+    const { ensureLocalSecrets } = await import("./lib/connections/local-store");
     await ensureLocalSecrets();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Local password store — could not start: ${message}`);
   }
   try {
-    const { startDriftScheduler } = await import("./lib/drift-scheduler");
+    const { startDriftScheduler } = await import("./lib/drift/scheduler");
     startDriftScheduler();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

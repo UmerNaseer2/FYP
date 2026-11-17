@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Fragment, type CSSProperties, type ReactNode } from "react";
-import { APP_VERSION } from "@/lib/app-version";
+import { APP_VERSION } from "@/lib/ui/app-version";
 import {
   CompareIcon,
   DeployIcon,
@@ -39,7 +39,7 @@ export type LandingPageProps = {
   createAccountHref: string;
   /** Where "Log in" goes. */
   logInHref: string;
-  /** True when this server encrypts the database passwords it stores (lib/secret-store.ts). */
+  /** True when this server encrypts the database passwords it stores (lib/connections/secret-store.ts). */
   encryptsPasswords: boolean;
   /** A demo server with sign-in switched off, where both buttons open the studio. */
   demo?: boolean;

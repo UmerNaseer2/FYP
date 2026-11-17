@@ -7,7 +7,7 @@ import {
   selectionToQuery,
   swapSourceWithTarget,
   type CurrentSelection,
-} from "@/lib/compare-selection";
+} from "@/lib/compare/selection";
 
 /**
  * The Compare screen's picker decisions. None of these touch a database, which

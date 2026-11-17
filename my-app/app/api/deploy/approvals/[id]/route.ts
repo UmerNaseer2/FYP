@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth/guard";
 import {
   decideApproval,
   decisionBlockReason,
   mayDecideOwn,
   getApproval,
-} from "@/lib/approvals-db";
+} from "@/lib/deploy/approvals-db";
 
 /**
  * Approve or reject one deploy or rollback request. The row's `action` says
@@ -20,7 +20,7 @@ import {
  *     AND as a CHECK constraint on the table, because a rule enforced only in
  *     application code is one refactor away from not being enforced at all.
  *
- * There is one documented exception (mayDecideOwn in lib/approvals-db). With
+ * There is one documented exception (mayDecideOwn in lib/deploy/approvals-db). With
  * NEXT_PUBLIC_AUTH_BYPASS on there is exactly one principal, so nobody else
  * could decide and the whole path would be untestable. The row records that
  * it happened, in `self_approved`, so it never looks like an approval

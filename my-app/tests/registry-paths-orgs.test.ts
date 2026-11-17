@@ -11,7 +11,7 @@ import {
   isOrganizationFolder,
   registryRoot,
   reservedFolderProblem,
-} from "@/lib/registry-paths";
+} from "@/lib/github/registry-paths";
 
 describe("registryRoot", () => {
   it("is the repository root for the default organization", () => {

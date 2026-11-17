@@ -14,13 +14,13 @@
 // numeric: before, the rebuilt view was owned by the role that ran the script
 // and granted to nobody, and comparing again still showed its grants as
 // different; after, the owner and the grant are back and nothing differs.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   generateRollback,
   statementsThatRun,
   type MigrationOptions,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import type { PrivilegeGrant, PrivilegeSnapshot, SchemaSnapshot, ViewSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

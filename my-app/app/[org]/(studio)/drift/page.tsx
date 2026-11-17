@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
-import { displayVersion } from "@/lib/version-timeline";
+import { displayVersion } from "@/lib/versions/timeline";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -22,9 +22,9 @@ import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { StatusChip, StatusGlyph } from "@/components/ui/StatusChip";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
-import { statusLook } from "@/lib/status-look";
-import { describeCadence } from "@/lib/drift-schedule";
-import { utcStamp } from "@/lib/format-date";
+import { statusLook } from "@/lib/ui/status-look";
+import { describeCadence } from "@/lib/drift/schedule";
+import { utcStamp } from "@/lib/ui/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
@@ -34,10 +34,10 @@ import type {
   DriftCounts,
   DriftEventFeedItem,
   TrackedSchemaListItem,
-} from "@/lib/lineage-db";
+} from "@/lib/versions/lineage-db";
 // The detail read adds a fingerprint of the differences it found.
 import type { DriftDetailAnswer } from "@/app/api/lineage/drift/route";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import "@/app/styles/atelier-drift.css";
 
 /**

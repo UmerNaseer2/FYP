@@ -1,0 +1,768 @@
+// How a script's change type is decided, in one place.
+//
+// The deploy screen only ever sees a script as text — it pulls the .sql file
+// out of GitHub — so for a long time it worked the type out by searching that
+// text for "drop table" and friends. Two things were wrong with that. The
+// search ran over the comments as well as the SQL, and a safe-mode script says
+// "(DROP TABLE / DROP COLUMN) are commented out below" in its own header, so a
+// migration that only ADDS things graded itself breaking and forced a major
+// version bump. And the accurate answer already existed: the generator knows
+// exactly which statements it wrote and how severe each one is, and then threw
+// that away at render time.
+//
+// So the generator now stamps its answer into the script header, and this
+// module reads it. The SQL reader is still here, because a hand-written script
+// or one from an older version has no stamp — but it runs on a masked copy with
+// every comment, literal and quoted identifier blanked out.
+//
+// There used to be three readers: this one, a plain substring search in the
+// Script Editor, and the generator's own grading. They disagreed — DROP VIEW
+// was patch in the editor and breaking here — so the same file could get a
+// different version bump on each screen. gradeSql below is now the only SQL
+// reader, and it follows the generator's rules statement by statement.
+//
+// Client-safe on purpose: it imports only the pure helpers in sql-guard and
+// change-level, because the deploy screen and the Script Editor run it in the
+// browser.
+import {
+  doBlockBodies,
+  dropsColumnWithoutKeyword,
+  maskNonCode,
+  runsSqlFromString,
+  splitStatements,
+} from "../sql/guard";
+import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
+
+/**
+ * The header line the generator writes and this module reads back.
+ *
+ * A comment, so it is inert SQL wherever the script ends up, and a fixed key so
+ * reading it never depends on the prose around it.
+ */
+export const CHANGE_TYPE_HEADER_KEY = "Change-type";
+
+/**
+ * What a script can be graded as.
+ *
+ * "unknown" is a reading of somebody else's version table — it is never a
+ * verdict this module reaches, so callers do not have to handle it.
+ */
+export type ScriptChangeType = Exclude<ChangeLevel, "unknown">;
+
+/** Write the stamp the generator puts in a rendered script header. */
+export function changeTypeHeaderLine(level: ChangeLevel): string {
+  return `-- ${CHANGE_TYPE_HEADER_KEY}: ${level}`;
+}
+
+// One pattern for the stamp, shared by the reader and the writer below, so the
+// two can never disagree about which line is the stamp.
+const HEADER_PATTERN = new RegExp(`^\\s*--\\s*${CHANGE_TYPE_HEADER_KEY}\\s*:\\s*(\\w+)`, "i");
+
+/**
+ * Which line of the header holds the stamp, or -1 when there is none.
+ *
+ * Only the header is searched — the first lines, before any statement — so a
+ * stray line of the same shape further down cannot restate the answer.
+ */
+function headerLineIndex(lines: string[]): number {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (HEADER_PATTERN.test(line)) return index;
+    // Stop at the first line that is neither blank nor a comment: everything
+    // after that is the body, and the stamp belongs to the header.
+    const trimmed = line.trim();
+    if (trimmed.length > 0 && !trimmed.startsWith("--")) return -1;
+  }
+  return -1;
+}
+
+/**
+ * Read the stamped grading back out of a script, or null when the script does
+ * not carry one (or carries a word that is not a level).
+ */
+export function readChangeTypeHeader(sql: string): ScriptChangeType | null {
+  const lines = sql.split(/\r?\n/);
+  const index = headerLineIndex(lines);
+  if (index === -1) return null;
+  const match = lines[index].match(HEADER_PATTERN);
+  const level = normalizeChangeLevel(match ? match[1] : null);
+  return level === "unknown" ? null : level;
+}
+
+/**
+ * Put the author's level into the script's header.
+ *
+ * When the header already has a "-- Change-type:" line — the generator writes
+ * one, and an author may have typed one — that line is replaced, so a stale
+ * value can never survive next to the new one. Otherwise the stamp becomes the
+ * first line. Stamping a script with the level it already carries changes
+ * nothing, byte for byte.
+ */
+export function stampChangeType(sql: string, level: ScriptChangeType): string {
+  const lines = sql.split("\n");
+  const index = headerLineIndex(lines);
+  if (index === -1) return `${changeTypeHeaderLine(level)}\n${sql}`;
+  // Keep a Windows line ending if the file used one.
+  const carriageReturn = lines[index].endsWith("\r") ? "\r" : "";
+  lines[index] = `${changeTypeHeaderLine(level)}${carriageReturn}`;
+  return lines.join("\n");
+}
+
+// ── Reading the SQL itself ─────────────────────────────────────────────────
+
+/**
+ * What the SQL of a script says about its change level.
+ *
+ * - level: the reader's answer, counting "breaking unless…" statements as
+ *   breaking. This is what a script with no stamp is graded as.
+ * - sureLevel: the answer when only statements that are breaking whatever the
+ *   context count. Deploy uses it to spot a stamped script whose SQL is louder
+ *   than its label.
+ * - because: the statement words that made it breaking, e.g. "DROP TABLE" or
+ *   "ALTER COLUMN … TYPE". Null when nothing breaking was found.
+ * - unless: for a "breaking unless…" statement, the plain sentence saying when
+ *   it is not really breaking. Null otherwise.
+ */
+export type SqlGrade = {
+  level: ScriptChangeType;
+  sureLevel: ScriptChangeType;
+  because: string | null;
+  unless: string | null;
+};
+
+/** One statement shape the reader knows, and what it means. */
+type GradeRule = {
+  /** The statement words shown to the user, e.g. "DROP TABLE". */
+  label: string;
+  /** When the SQL alone cannot settle it: when it is NOT breaking. */
+  unless: string | null;
+  /**
+   * Tested against one masked, lower-cased, single-spaced statement.
+   * inDoBlock says whether the statement sits inside a DO block.
+   */
+  matches: (statement: string, inDoBlock: boolean) => boolean;
+};
+
+/** A rule that matches its pattern anywhere in the statement. */
+function anywhere(pattern: RegExp): (statement: string) => boolean {
+  return (statement) => pattern.test(statement);
+}
+
+function isAlterTable(statement: string): boolean {
+  return /^alter table\b/.test(statement);
+}
+
+/**
+ * A rule that only applies to ALTER TABLE, tested with the leading "alter
+ * table" words taken off. Without that, the table-level words could satisfy a
+ * column pattern on their own.
+ */
+function inAlterTable(pattern: RegExp): (statement: string) => boolean {
+  return (statement) =>
+    isAlterTable(statement) && pattern.test(statement.replace(/^alter table /, ""));
+}
+
+/**
+ * Every object a DROP can take away that another object or another app may be
+ * depending on — the generator grades each of these breaking every time.
+ *
+ * INDEX and CONSTRAINT are deliberately missing: whether dropping one breaks
+ * anything depends on what it was (a unique index, a foreign key), which the
+ * DROP statement does not say. They are in BREAKING_UNLESS below.
+ *
+ * The second half of the list is objects the generator never drops. A
+ * hand-written script can, and DROP ROUTINE or DROP OWNED BY used to grade
+ * patch because nothing here knew the words.
+ */
+const DROPPED_OBJECTS = [
+  "table",
+  "column",
+  "materialized view",
+  "view",
+  "sequence",
+  "function",
+  "procedure",
+  "trigger",
+  "type",
+  "domain",
+  "schema",
+  "database",
+  "extension",
+  "rule",
+  "policy",
+  "collation",
+  // Hand-written scripts only.
+  "routine",
+  "aggregate",
+  "foreign table",
+  "owned",
+  "event trigger",
+  "operator",
+  "cast",
+  "publication",
+  "server",
+  "text search",
+];
+
+/**
+ * Statements that are breaking whatever the context. The generator grades each
+ * of these breaking every time it writes one, so a label can never outrank
+ * them: Deploy counts them in its breaking checks even under a quieter stamp.
+ */
+const ALWAYS_BREAKING: GradeRule[] = [
+  ...DROPPED_OBJECTS.map((object) => ({
+    label: `DROP ${object.toUpperCase()}`,
+    unless: null,
+    matches: anywhere(new RegExp(`\\bdrop ${object}\\b`)),
+  })),
+  { label: "DROP COLUMN", unless: null, matches: dropsColumnWithoutKeyword },
+  { label: "RENAME", unless: null, matches: anywhere(/\brename\b/) },
+  { label: "SET NOT NULL", unless: null, matches: anywhere(/\bset not null\b/) },
+  { label: "CREATE UNIQUE INDEX", unless: null, matches: anywhere(/\bcreate unique index\b/) },
+  {
+    label: "ENABLE ROW LEVEL SECURITY",
+    unless: null,
+    matches: anywhere(/\benable row level security\b/),
+  },
+  {
+    label: "DISABLE ROW LEVEL SECURITY",
+    unless: null,
+    matches: anywhere(/\bdisable row level security\b/),
+  },
+  // Also catches NO FORCE ROW LEVEL SECURITY, which is just as breaking.
+  { label: "FORCE ROW LEVEL SECURITY", unless: null, matches: anywhere(/\bforce row level security\b/) },
+  { label: "CREATE POLICY", unless: null, matches: anywhere(/\bcreate policy\b/) },
+  { label: "ALTER POLICY", unless: null, matches: anywhere(/\balter policy\b/) },
+  { label: "REVOKE", unless: null, matches: anywhere(/\brevoke\b/) },
+  // The rest are statements the generator never writes. Each one takes
+  // something away from whoever reads the table, so a hand-written script that
+  // holds one is breaking.
+  // ALTER … SET SCHEMA moves the object out from under its old name. A bare
+  // SET SCHEMA 'x' only sets the search path, so the statement must be an ALTER.
+  { label: "SET SCHEMA", unless: null, matches: anywhere(/^alter\b.*\bset schema\b/) },
+  { label: "DETACH PARTITION", unless: null, matches: anywhere(/\bdetach partition\b/) },
+  { label: "DROP ATTRIBUTE", unless: null, matches: anywhere(/\bdrop attribute\b/) },
+  { label: "DISABLE TRIGGER", unless: null, matches: anywhere(/\bdisable trigger\b/) },
+  // ALTER TABLE child NO INHERIT parent: the child's rows leave the parent.
+  // CHECK (…) NO INHERIT is a constraint option, not this, and always follows
+  // a closing bracket.
+  { label: "NO INHERIT", unless: null, matches: inAlterTable(/(?:^|[^)] )no inherit\b/) },
+  // A rule rewrites every query on its table: DO INSTEAD NOTHING makes an
+  // INSERT store nothing and report no error.
+  { label: "CREATE RULE", unless: null, matches: anywhere(/\bcreate (or replace )?rule\b/) },
+];
+
+/**
+ * Statements the SQL alone cannot settle. The generator decides these from
+ * context the text does not carry — the old column type, whether an index was
+ * unique, whether the table was created earlier in the same script — so a
+ * reader must treat them as "breaking unless…", never as certain. Each one
+ * says, in plain words, when it is not breaking.
+ */
+const BREAKING_UNLESS: GradeRule[] = [
+  {
+    label: "ALTER COLUMN … TYPE",
+    unless: "it only widens the column, for example varchar(100) to varchar(200)",
+    matches: inAlterTable(/\balter (column )?(\S+ )?(set data )?type\b/),
+  },
+  {
+    label: "ALTER COLUMN … GENERATED/IDENTITY",
+    unless: "no insert relies on how the column fills itself",
+    matches: inAlterTable(
+      /\balter (column )?(\S+ )?(add generated|set generated|drop identity|drop expression|set expression)\b/
+    ),
+  },
+  {
+    label: "ADD CONSTRAINT",
+    unless: "the table is created earlier in this same script",
+    matches: anywhere(/\badd (constraint|primary key|unique|foreign key|check|exclude)\b/),
+  },
+  {
+    label: "DROP INDEX",
+    unless: "the index was not unique",
+    matches: anywhere(/\bdrop index\b/),
+  },
+  {
+    label: "DROP CONSTRAINT",
+    unless:
+      "it is a CHECK constraint — dropping a primary key, unique or foreign key is always breaking",
+    matches: anywhere(/\bdrop constraint\b/),
+  },
+  {
+    label: "OWNER TO",
+    unless: "no app connects as the old owner",
+    matches: anywhere(/\bowner to\b/),
+  },
+  {
+    // EXECUTE in a DO block runs SQL from a string, and the mask blanks every
+    // string, so EXECUTE 'DROP TABLE orders' looks the same as a harmless one.
+    label: "EXECUTE in a DO block",
+    unless: "the SQL it runs changes nothing that exists",
+    matches: (statement, inDoBlock) => inDoBlock && runsSqlFromString(statement),
+  },
+  {
+    // Any other DROP: an object kind no rule above names. Last on purpose, so
+    // DROP INDEX keeps its own sentence.
+    label: "DROP",
+    unless: "nothing else uses what it drops",
+    matches: anywhere(/^drop\b/),
+  },
+];
+
+// The words that can follow ADD inside ALTER TABLE without it being a column.
+const NOT_A_COLUMN_AFTER_ADD = new Set([
+  "constraint",
+  "primary",
+  "unique",
+  "foreign",
+  "check",
+  "exclude",
+  "value",
+  // ALTER COLUMN a ADD GENERATED … changes an existing column.
+  "generated",
+]);
+
+const CREATES_SOMETHING =
+  /\bcreate (or replace )?(temp |temporary |unlogged )?(table|view|materialized view|index|sequence|type|domain|function|procedure|trigger|constraint trigger|schema|extension|collation)\b/;
+
+/**
+ * Whether a statement adds something new. Only asked when nothing breaking
+ * matched. What stays patch, matching the generator: ALTER TYPE … ADD VALUE,
+ * GRANT, COMMENT, SET/DROP DEFAULT, DROP NOT NULL, TRUNCATE and plain DML.
+ */
+function addsSomething(statement: string): boolean {
+  if (CREATES_SOMETHING.test(statement)) return true;
+  if (/\badd column\b/.test(statement)) return true;
+  if (!isAlterTable(statement)) return false;
+  // ALTER TABLE t ADD note text — a column added without the COLUMN keyword.
+  for (const match of statement.matchAll(/\badd (\w+)/g)) {
+    if (!NOT_A_COLUMN_AFTER_ADD.has(match[1])) return true;
+  }
+  return false;
+}
+
+/** One statement that will run, read two ways. */
+interface RunningStatement {
+  /** Masked, lower-cased and single-spaced, for the rules above. */
+  code: string;
+  /**
+   * The same statement with comments and string literals blanked but quoted
+   * names kept as written, for isReplacedByNext. Case matters in a quoted name:
+   * "Audit" and audit are two different triggers. Null for a statement inside a
+   * DO block, whose body only comes masked. The generator never replaces a
+   * trigger or an index there, so such a DROP simply counts on its own.
+   */
+  names: string | null;
+  /** Whether the statement sits inside a DO block. */
+  inDoBlock: boolean;
+}
+
+/**
+ * The words of a statement as SQL reads them: a "quoted name" (kept whole,
+ * spaces and all), a bare word, or a single symbol such as . or (.
+ */
+function sqlWords(text: string): string[] {
+  return text.match(/"(?:[^"]|"")*"|[\w$\u0080-\uffff]+|\S/g) ?? [];
+}
+
+/**
+ * Reads a statement's words from the left. Each helper moves past what it
+ * reads, so the readers below can follow the SQL grammar step by step.
+ */
+function readWords(text: string) {
+  const words = sqlWords(text);
+  let at = 0;
+
+  /** One name, as PostgreSQL stores it: quoted keeps its case, bare folds to lower. */
+  function name(): string | null {
+    const word = words[at];
+    if (word === undefined) return null;
+    if (/^"(?:[^"]|"")+"$/.test(word)) {
+      at += 1;
+      return word.slice(1, -1).replace(/""/g, '"');
+    }
+    if (/^[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(word)) {
+      at += 1;
+      return word.toLowerCase();
+    }
+    return null;
+  }
+
+  return {
+    /** Move past these keywords when they come next, and say whether they did. */
+    skip(...keywords: string[]): boolean {
+      const next = words.slice(at, at + keywords.length).map((word) => word.toLowerCase());
+      if (next.join(" ") !== keywords.join(" ")) return false;
+      at += keywords.length;
+      return true;
+    },
+    /** Move past the first bare word equal to keyword. A quoted "on" is a name, not ON. */
+    skipPast(keyword: string): boolean {
+      const found = words.findIndex((word, i) => i >= at && word.toLowerCase() === keyword);
+      if (found === -1) return false;
+      at = found + 1;
+      return true;
+    },
+    name,
+    /** A name that may carry a schema in front: public.orders reads as ["public", "orders"]. */
+    qualifiedName(): string[] | null {
+      const first = name();
+      if (first === null) return null;
+      const parts = [first];
+      while (words[at] === ".") {
+        at += 1;
+        const part = name();
+        if (part === null) return null;
+        parts.push(part);
+      }
+      return parts;
+    },
+    /** Whether every word has been read. */
+    done(): boolean {
+      return at === words.length;
+    },
+  };
+}
+
+/** DROP TRIGGER [IF EXISTS] name ON table [CASCADE | RESTRICT]: what it drops. */
+function droppedTrigger(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("drop", "trigger")) return null;
+  words.skip("if", "exists");
+  const name = words.name();
+  if (name === null || !words.skip("on")) return null;
+  const table = words.qualifiedName();
+  if (table === null) return null;
+  if (!words.skip("cascade")) words.skip("restrict");
+  return words.done() ? { name, table } : null;
+}
+
+/** CREATE [OR REPLACE] [CONSTRAINT] TRIGGER name … ON table …: what it creates. */
+function createdTrigger(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("create")) return null;
+  words.skip("or", "replace");
+  words.skip("constraint");
+  if (!words.skip("trigger")) return null;
+  const name = words.name();
+  // The events sit between the name and ON (AFTER INSERT OR UPDATE OF a, b).
+  // None of them can be a bare ON, because ON is a reserved word.
+  if (name === null || !words.skipPast("on")) return null;
+  const table = words.qualifiedName();
+  return table === null ? null : { name, table };
+}
+
+/** DROP INDEX [CONCURRENTLY] [IF EXISTS] name [CASCADE | RESTRICT]: what it drops. */
+function droppedIndex(text: string): string[] | null {
+  const words = readWords(text);
+  if (!words.skip("drop", "index")) return null;
+  words.skip("concurrently");
+  words.skip("if", "exists");
+  const index = words.qualifiedName();
+  if (index === null) return null;
+  if (!words.skip("cascade")) words.skip("restrict");
+  // A comma list drops several indexes, which is never one replacement.
+  return words.done() ? index : null;
+}
+
+/** CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] name ON [ONLY] table …: what it creates. */
+function createdIndex(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("create")) return null;
+  words.skip("unique");
+  if (!words.skip("index")) return null;
+  words.skip("concurrently");
+  words.skip("if", "not", "exists");
+  // An index created without a name gets a new one, so it replaces nothing.
+  if (words.skip("on")) return null;
+  const name = words.name();
+  if (name === null || !words.skip("on")) return null;
+  words.skip("only");
+  const table = words.qualifiedName();
+  return table === null ? null : { name, table };
+}
+
+/**
+ * Whether two names can mean the same object. The last parts must match, and a
+ * schema is compared only when both sides spell one out: the generator writes
+ * DROP TRIGGER … ON "orders" but recreates the trigger from PostgreSQL's own
+ * text, which says ON public.orders.
+ */
+function sameName(a: string[], b: string[]): boolean {
+  if (a[a.length - 1] !== b[b.length - 1]) return false;
+  if (a.length > 1 && b.length > 1) return a[a.length - 2] === b[b.length - 2];
+  return true;
+}
+
+/**
+ * The generator's replace idiom: a changed trigger is written as DROP TRIGGER
+ * directly followed by CREATE TRIGGER, and a changed index as DROP INDEX
+ * directly followed by CREATE INDEX. The generator grades the pair by what is
+ * created, so the DROP half is skipped here. The CREATE half is still graded on
+ * its own, which keeps a CREATE UNIQUE INDEX breaking.
+ *
+ * Only a pair that recreates the SAME trigger on the same table, or the same
+ * index, is a replacement. "DROP TRIGGER audit ON orders; CREATE TRIGGER other
+ * ON orders" removes audit for good, so its DROP still counts. Anything this
+ * cannot read is not taken for a replacement, which errs loud.
+ */
+function isReplacedByNext(statement: RunningStatement, next: RunningStatement | undefined): boolean {
+  if (next === undefined || statement.names === null || next.names === null) return false;
+  if (/^drop trigger\b/.test(statement.code)) {
+    const dropped = droppedTrigger(statement.names);
+    const created = createdTrigger(next.names);
+    return (
+      dropped !== null &&
+      created !== null &&
+      dropped.name === created.name &&
+      sameName(dropped.table, created.table)
+    );
+  }
+  if (/^drop index\b/.test(statement.code)) {
+    const dropped = droppedIndex(statement.names);
+    const created = createdIndex(next.names);
+    // CREATE INDEX never takes a schema on the index's name: the index goes
+    // into its table's schema. So that is the schema a DROP INDEX s.i must name.
+    return (
+      dropped !== null &&
+      created !== null &&
+      sameName(dropped, [...created.table.slice(0, -1), created.name])
+    );
+  }
+  return false;
+}
+
+/** Lower-case and squeeze all whitespace to single spaces. */
+function tidy(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The statements that will actually run, in order, each masked, lower-cased and
+ * single-spaced so the rules above can be simple.
+ *
+ * The inside of a DO block is read as well. maskNonCode blanks it whole, and a
+ * generated script puts some statements there, behind a lookup that skips them
+ * on a second run (see onlyIfMissing in lib/sql/generate.ts). A column rename
+ * written that way is still a rename. Inside the block, BEGIN / THEN / ELSE /
+ * LOOP also end a piece, so "IF … THEN ALTER TABLE …" is read as a statement
+ * starting with ALTER TABLE.
+ */
+function statementsThatRun(sql: string): RunningStatement[] {
+  const out: RunningStatement[] = [];
+  for (const statement of splitStatements(sql)) {
+    const code = tidy(maskNonCode(statement));
+    if (/^do\b/.test(code)) {
+      const body = doBlockBodies(statement).replace(/\b(begin|then|else|loop)\b/gi, ";");
+      for (const piece of body.split(";")) {
+        const inner = tidy(piece);
+        if (inner) out.push({ code: inner, names: null, inDoBlock: true });
+      }
+    } else if (code) {
+      out.push({ code, names: maskNonCode(statement, { keepQuotedNames: true }), inDoBlock: false });
+    }
+  }
+  return out;
+}
+
+/**
+ * Grade a script by reading the SQL it will actually run.
+ *
+ * The one SQL reader in the app: the Script Editor's suggestion, Deploy's
+ * grading of a script with no stamp, and Deploy's "louder than its label"
+ * check all come from here, so the same SQL gets the same grade on every
+ * screen.
+ *
+ * It reads a masked copy, so a keyword inside a comment, a string literal, a
+ * quoted identifier or a function body counts for nothing — which is what makes
+ * a safe-mode script, whose drops are all commented out, grade as what it
+ * really does rather than as what it describes.
+ *
+ * It is a reader, not a parser, and it cannot know:
+ * - the old type of a column (a varchar widening is safe, a narrowing is not);
+ * - whether a dropped index was unique, or a dropped constraint was a CHECK;
+ * - whether an ADD CONSTRAINT is for a table created earlier in the same script;
+ * - whether anything still connects as the owner an OWNER TO replaces;
+ * - what EXECUTE in a DO block runs, because the SQL it runs is a string;
+ * - whether anything uses an object dropped by a DROP it has no rule for.
+ * Those come back as "breaking unless…" with the reason, and never override a
+ * stamp (see describeChangeType). It also errs loud in one known way: an
+ * unquoted column literally named "type" whose default changes reads as a type
+ * change.
+ */
+export function gradeSql(sql: string): SqlGrade {
+  const statements = statementsThatRun(sql);
+  let firstAlways: GradeRule | null = null;
+  let firstUnless: GradeRule | null = null;
+  let adds = false;
+
+  for (let index = 0; index < statements.length; index += 1) {
+    if (isReplacedByNext(statements[index], statements[index + 1])) continue;
+    const statement = statements[index].code;
+    const inDoBlock = statements[index].inDoBlock;
+
+    if (firstAlways === null) {
+      firstAlways = ALWAYS_BREAKING.find((rule) => rule.matches(statement, inDoBlock)) ?? null;
+    }
+    if (firstUnless === null) {
+      firstUnless = BREAKING_UNLESS.find((rule) => rule.matches(statement, inDoBlock)) ?? null;
+    }
+    if (!adds && addsSomething(statement)) adds = true;
+  }
+
+  // What the script is when nothing breaking counts.
+  const quiet: ScriptChangeType = adds ? "additive" : "patch";
+  // The statement named to the user: a certain one before an uncertain one.
+  const named = firstAlways ?? firstUnless;
+
+  return {
+    level: named ? "breaking" : quiet,
+    sureLevel: firstAlways ? "breaking" : quiet,
+    because: named ? named.label : null,
+    unless: named ? named.unless : null,
+  };
+}
+
+/** The reader's answer for a script with no stamp. Same as gradeSql(sql).level. */
+export function inferChangeTypeFromSql(sql: string): ScriptChangeType {
+  return gradeSql(sql).level;
+}
+
+/**
+ * The one ranking of change levels, quietest first: unknown, patch, additive,
+ * breaking. Every "which level is louder" question in the app reads this table
+ * (the level a deploy records, the level a rollback records, the push screens'
+ * quieter-level tick), so no two places can rank the levels differently.
+ *
+ * "unknown" is the lowest because it is not really a level: it is what a legacy
+ * script_patch row, or a caller that sent nothing, carries. A missing answer
+ * never outranks a real one.
+ */
+export const CHANGE_LEVEL_RANK: Readonly<Record<ChangeLevel, number>> = {
+  unknown: 0,
+  patch: 1,
+  additive: 2,
+  breaking: 3,
+};
+
+/**
+ * The louder of two levels, by CHANGE_LEVEL_RANK. On a tie it keeps the first
+ * one, so pass what the SQL says first and what a caller supplied second: the
+ * supplied level can raise the answer but never lower it. For example
+ * louderChangeType("patch", "unknown") is "patch".
+ *
+ * Generic so it takes either kind of level: two ScriptChangeTypes give back a
+ * ScriptChangeType, and a pair that may hold "unknown" gives back a ChangeLevel.
+ */
+export function louderChangeType<Level extends ChangeLevel>(computed: Level, supplied: Level): Level {
+  return CHANGE_LEVEL_RANK[supplied] > CHANGE_LEVEL_RANK[computed] ? supplied : computed;
+}
+
+/**
+ * The loudest level in a list, for recording one level for a whole run (a
+ * deploy of several migrations, or a rollback of several versions). A run that
+ * holds one breaking migration is a breaking run. An empty list is "unknown".
+ */
+export function loudestChangeLevel(levels: ReadonlyArray<ChangeLevel>): ChangeLevel {
+  let loudest: ChangeLevel = "unknown";
+  for (const level of levels) loudest = louderChangeType(loudest, level);
+  return loudest;
+}
+
+/**
+ * True for the three levels a script can carry. False for "unknown" and for
+ * anything that is not a level at all, such as a typo in a request body.
+ */
+export function isScriptChangeType(value: unknown): value is ScriptChangeType {
+  return value === "breaking" || value === "additive" || value === "patch";
+}
+
+/**
+ * The tick both push screens (Migration Workbench, Script Editor) show when
+ * someone picks a QUIETER level than the SQL was graded, e.g. publishes a
+ * DROP TABLE as "additive". Picking quieter is allowed, but only knowingly:
+ * the version number is how everyone downstream judges how risky a version
+ * is, and a quieter level makes it understate the change.
+ *
+ * Returns the tick's label, or null when no tick is needed (the chosen level
+ * is the same as the grade or louder; louder only overstates, which is safe).
+ * `because` names the statement behind a breaking grade, e.g. "DROP TABLE";
+ * it is only mentioned for a breaking grade, since additive and patch have no
+ * single statement to blame. `firstVersion` is true when the family has no
+ * version yet: it becomes 1.0.0 whatever the level, so the label blames the
+ * level recorded with the file instead of the version number.
+ */
+export function quieterLevelWarning(
+  graded: ScriptChangeType,
+  chosen: ScriptChangeType,
+  because: string | null,
+  firstVersion = false,
+): string | null {
+  if (louderChangeType(graded, chosen) === chosen) return null;
+  const why = graded === "breaking" && because ? ` because of ${because}` : "";
+  // A family's first version is 1.0.0 at every level, so there the number
+  // can't understate anything; only the level recorded with the file can.
+  const understated = firstVersion ? "the level recorded with it" : "the version number";
+  return `This is graded ${graded}${why}. Publish it as ${chosen} anyway — ${understated} will understate the change.`;
+}
+
+/**
+ * A level with its article, for sentences like "Recorded as an additive
+ * change": "a breaking", "an additive", "a patch". One place, so no screen
+ * writes "a additive".
+ */
+export function levelWithArticle(level: ScriptChangeType): string {
+  return level === "additive" ? "an additive" : `a ${level}`;
+}
+
+/**
+ * The change type of a script: what its stamp says if it has one, otherwise
+ * what the SQL itself says. Same as describeChangeType(sql).recorded.
+ */
+export function changeTypeOf(sql: string): ScriptChangeType {
+  return readChangeTypeHeader(sql) ?? inferChangeTypeFromSql(sql);
+}
+
+/** Everything Deploy needs to know about one script's level. */
+export type ChangeTypeReading = {
+  /** The stamp in the header, or null when there is none. */
+  declared: ScriptChangeType | null;
+  /** What the SQL itself says. */
+  grade: SqlGrade;
+  /** The level to show, to bump the version by, and to record in script_patch. */
+  recorded: ScriptChangeType;
+  /** Whether the script counts in the breaking checks. */
+  countsAsBreaking: boolean;
+  /** Set when the SQL is certainly louder than the stamp. Shown to the user. */
+  louderNote: string | null;
+};
+
+/**
+ * The one rule for how a script's level is decided, and whether it counts as
+ * breaking. The apply route is meant to call this same helper server-side.
+ *
+ * - The stamp wins for the level. Whoever wrote it — the generator or the
+ *   author at push time — had context the SQL lacks, so `recorded` is the
+ *   stamp when there is one and the SQL reading otherwise (exactly what
+ *   changeTypeOf returns, so script_patch.change_type does not move).
+ * - The breaking checks count the script when it is stamped breaking, when its
+ *   SQL has a statement that is ALWAYS breaking (whatever the stamp says), or
+ *   when it has no stamp and the reader grades it breaking.
+ * - A "breaking unless…" statement never overrides a stamp: a widening ALTER
+ *   COLUMN TYPE under an additive stamp is not flagged.
+ */
+export function describeChangeType(sql: string): ChangeTypeReading {
+  const declared = readChangeTypeHeader(sql);
+  const grade = gradeSql(sql);
+  const recorded = declared ?? grade.level;
+  const countsAsBreaking =
+    declared === "breaking" ||
+    grade.sureLevel === "breaking" ||
+    (declared === null && grade.level === "breaking");
+  const louderNote =
+    declared !== null && declared !== "breaking" && grade.sureLevel === "breaking"
+      ? `Marked ${declared}, but its SQL has ${grade.because}, which is always breaking — ` +
+        "it is counted in the breaking checks."
+      : null;
+  return { declared, grade, recorded, countsAsBreaking, louderNote };
+}

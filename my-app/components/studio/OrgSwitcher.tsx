@@ -4,16 +4,16 @@ import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { useOrg } from "@/hooks/useOrg";
-import { apiFetch } from "@/lib/api-fetch";
-import { isOrgListing, type OrgListing } from "@/lib/organization-list";
-import { orgHref } from "@/lib/org-slug";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { isOrgListing, type OrgListing } from "@/lib/orgs/list";
+import { orgHref } from "@/lib/orgs/slug";
 
 /**
  * The option that leaves for "Your organizations" to make a new one.
  *
  * It sits in the same list as the organizations' addresses, so it needs a
  * value no address can ever be. Addresses are lowercase letters, digits and
- * hyphens (ORG_SLUG_PATTERN in lib/org-slug.ts), so a colon can never start
+ * hyphens (ORG_SLUG_PATTERN in lib/orgs/slug.ts), so a colon can never start
  * one.
  */
 const NEW_ORGANIZATION = ":new";

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSignedIn } from "@/lib/auth-guard";
-import { acceptInvite, type InviteAcceptance } from "@/lib/invites-db";
+import { requireSignedIn } from "@/lib/auth/guard";
+import { acceptInvite, type InviteAcceptance } from "@/lib/orgs/invites-db";
 
 /**
  * Take an invitation: join the organization it is for.
@@ -9,7 +9,7 @@ import { acceptInvite, type InviteAcceptance } from "@/lib/invites-db";
  * presses Join. It opens with requireSignedIn rather than a gate on an
  * organization, because the person asking is not in the organization yet:
  * that is the point of asking. The invitation decides which organization, and
- * lib/invites-db.ts acceptInvite checks everything about it again inside the
+ * lib/orgs/invites-db.ts acceptInvite checks everything about it again inside the
  * transaction that joins, so nothing the page showed is trusted.
  *
  * The answers, by what acceptInvite found:

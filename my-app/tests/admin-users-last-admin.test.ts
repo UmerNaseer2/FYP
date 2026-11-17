@@ -131,7 +131,7 @@ const mockConnect = async () => {
   };
 };
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockQuery(text, values),
@@ -144,7 +144,7 @@ jest.mock("../lib/version-db", () => ({
 // The last block moves them into another organization with mockPrincipalOver,
 // and the rank rule's block gives them another role with it.
 let mockPrincipalOver: Partial<Principal> = {};
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("admin", {
@@ -157,7 +157,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 import { GET, PUT, DELETE } from "@/app/api/admin/users/route";
-import type { Principal } from "@/lib/auth-guard";
+import type { Principal } from "@/lib/auth/guard";
 import { TEST_ORG } from "./helpers/principals";
 
 /** Just the statement texts, collapsed to one line each. */

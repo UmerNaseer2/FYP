@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
-import { normalizeChangeLevel } from "@/lib/change-level";
-import type { LedgerEntry } from "@/lib/version-sync";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
+import { normalizeChangeLevel } from "@/lib/versions/change-level";
+import type { LedgerEntry } from "@/lib/versions/sync";
 
 // GET /api/versionsync/ledger?connectionId=<id>&schema=<name>
 //

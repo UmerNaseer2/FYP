@@ -1,7 +1,7 @@
 "use client";
 
 import { Pill, type PillTone } from "@/components/ui/Pill";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import {
   isCitedChanges,
   isCompareSummaryAnswer,

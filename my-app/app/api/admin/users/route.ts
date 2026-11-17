@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { ADMIN_ROLE, canHandOut } from "@/lib/permissions";
-import { listRoles, lockRoles, logRoleChanges } from "@/lib/roles-db";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { ADMIN_ROLE, canHandOut } from "@/lib/roles/permissions";
+import { listRoles, lockRoles, logRoleChanges } from "@/lib/roles/roles-db";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import type { MetadataClient } from "@/lib/db/sequelize";
 
 /**
@@ -12,12 +12,12 @@ import type { MetadataClient } from "@/lib/db/sequelize";
  * This route previously opened its own `new Pool({ connectionString:
  * process.env.DATABASE_URL })`. That variable is never set anywhere in this
  * project — the metadata database is `DATABASE_URL_A` — so every query here
- * failed at connect time. It now shares the one pool in lib/version-db, which
+ * failed at connect time. It now shares the one pool in lib/db/version-db, which
  * is also the pool that creates the `profiles` table.
  *
  * Each method has its own permission under Users (Read, Update, Delete),
  * which an Admin can give to other roles. The rank rule (canHandOut in
- * lib/permissions.ts) keeps that from being a way up: nobody can give a role
+ * lib/roles/permissions.ts) keeps that from being a way up: nobody can give a role
  * that can do something theirs can't, move someone out of one, or remove
  * someone who holds one. So only an Admin can touch an Admin.
  *

@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import type { CompareReport } from "@/lib/compare-types";
+import { requirePermission } from "@/lib/auth/guard";
+import type { CompareReport } from "@/lib/compare/types";
 import {
   getDriftDetail,
   type DriftCounts,
   type DriftDetailView,
   type DriftStatus,
-} from "@/lib/lineage-db";
-import { runDriftCheck } from "@/lib/drift-runner";
-import { driftFingerprint } from "@/lib/drift-fingerprint";
+} from "@/lib/versions/lineage-db";
+import { runDriftCheck } from "@/lib/drift/runner";
+import { driftFingerprint } from "@/lib/drift/fingerprint";
 
 // Re-export so existing callers can keep importing these from here.
 export type { DriftCounts, DriftDetailView };
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
  *
  * Compare a tracked schema's EXPECTED structure (the snapshot at lineage HEAD)
  * against its ACTUAL live structure right now, via the shared recompute in
- * `lib/lineage-db` (the same engine /compare uses). Records a drift_events row
+ * `lib/versions/lineage-db` (the same engine /compare uses). Records a drift_events row
  * and returns the status plus the full report for the drift detail screen.
  *
  * "Unreachable" (can't connect / read the schema) is returned cleanly with a
@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
   }
 
   // The check and its audit row are one operation, shared with the scheduler
-  // (lib/drift-runner.ts) so an automatic check and a button press can never
+  // (lib/drift/runner.ts) so an automatic check and a button press can never
   // record themselves differently. It runs inside the caller's organization,
   // so another organization's schema comes back not_found.
   const outcome = await runDriftCheck(gate.principal.orgId, trackedSchemaId, "manual");

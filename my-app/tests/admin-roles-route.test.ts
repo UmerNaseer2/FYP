@@ -2,15 +2,15 @@
 // (app/api/admin/roles/route.ts).
 //
 // The rules about roles themselves (a name already taken, a role still held,
-// Admin can't be changed) live in lib/roles-db.ts and are tested in
-// tests/roles-db.test.ts. Here lib/roles-db is replaced, so these tests cover
+// Admin can't be changed) live in lib/roles/roles-db.ts and are tested in
+// tests/roles-db.test.ts. Here lib/roles/roles-db is replaced, so these tests cover
 // only what the route adds on top:
 //
 //   - Each method asks for its own Roles & permissions box before it reads
 //     anything, and a refusal goes back exactly as the gate made it.
 //   - A body of the wrong shape is turned down in words a person can act on,
 //     and nothing is passed on.
-//   - A refusal from lib/roles-db reaches the screen with the status and words
+//   - A refusal from lib/roles/roles-db reaches the screen with the status and words
 //     it chose, not as a generic failure.
 //   - Every change is credited to whoever made it. While sign-in is off that
 //     is "(authentication bypassed)", not a made-up email.
@@ -19,14 +19,14 @@
 //     Nothing in the body can point a call at another one.
 //   - A database that is down reads as "try again", never as a stack trace.
 import { NextRequest, NextResponse } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
+import type { Gate } from "@/lib/auth/guard";
 import { bypassAdminPrincipal, principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -43,7 +43,7 @@ const mockRolesDb = {
   resetRolePermissions: jest.fn(),
   setRolePermissions: jest.fn(),
 };
-jest.mock("../lib/roles-db", () => ({
+jest.mock("../lib/roles/roles-db", () => ({
   createRole: (...args: unknown[]) => mockRolesDb.createRole(...args),
   deleteRole: (...args: unknown[]) => mockRolesDb.deleteRole(...args),
   listRoleChanges: (...args: unknown[]) => mockRolesDb.listRoleChanges(...args),
@@ -68,7 +68,7 @@ const QA_LEAD = {
   permissions: ["dashboard:read", "compare:read"],
 };
 
-/** One call of each write that succeeds, with what lib/roles-db answers it. */
+/** One call of each write that succeeds, with what lib/roles/roles-db answers it. */
 const WRITES = [
   ["POST", { label: "QA Lead" }, "createRole", { ok: true, role: QA_LEAD }],
   ["PUT", { role: "editor", permissions: [] }, "setRolePermissions", { ok: true, permissions: [], changes: 0 }],
@@ -233,7 +233,7 @@ describe("POST: making a role", () => {
   });
 
   test("passes the name, description and role to copy on as they were sent", async () => {
-    // Trimming and the length rules are lib/roles-db's, so the route leaves
+    // Trimming and the length rules are lib/roles/roles-db's, so the route leaves
     // the spaces for it to deal with.
     mockRolesDb.createRole.mockResolvedValue({ ok: true, role: QA_LEAD });
     const longestKey = "k".repeat(64);
@@ -263,7 +263,7 @@ describe("POST: making a role", () => {
     [400, "Give the role a name with at least one letter from A to Z, or a number."],
     [400, "The role to copy from no longer exists. Refresh the page and try again."],
     [409, 'There is already a role called "QA Lead". Pick a different name.'],
-  ])("passes on a %i refusal from lib/roles-db as it came", async (status, error) => {
+  ])("passes on a %i refusal from lib/roles/roles-db as it came", async (status, error) => {
     mockRolesDb.createRole.mockResolvedValue({ ok: false, status, error });
     expect(await answer(await POST(json("POST", { label: "QA Lead" })))).toEqual([
       status,
@@ -383,7 +383,7 @@ describe("PUT: changing what a role can do", () => {
   test.each([
     ["saving a list", { role: "admin", permissions: [] }, "setRolePermissions"],
     ["a reset", { role: "admin", reset: true }, "resetRolePermissions"],
-  ] as const)("passes on a refusal from lib/roles-db as it came, for %s", async (_name, body, fn) => {
+  ] as const)("passes on a refusal from lib/roles/roles-db as it came, for %s", async (_name, body, fn) => {
     const error = "The admin role can always do everything, so its permissions can't be changed.";
     mockRolesDb[fn].mockResolvedValue({ ok: false, status: 400, error });
     expect(await answer(await PUT(json("PUT", body)))).toEqual([400, { error }]);
@@ -432,7 +432,7 @@ describe("DELETE: deleting a role", () => {
     [400, "Viewer, Editor and Admin are built in and can't be deleted."],
     [404, "That role no longer exists. Refresh the page."],
     [409, "2 people have this role. Give them another role on the Users tab first."],
-  ])("passes on a %i refusal from lib/roles-db as it came", async (status, error) => {
+  ])("passes on a %i refusal from lib/roles/roles-db as it came", async (status, error) => {
     mockRolesDb.deleteRole.mockResolvedValue({ ok: false, status, error });
     expect(await answer(await DELETE(json("DELETE", { role: "qa-lead" })))).toEqual([
       status,

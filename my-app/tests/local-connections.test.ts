@@ -1,20 +1,20 @@
 // Local connections (docs/cross-site-sync-plan.md): a connection only one
 // machine can reach is listed in the shared database by name, with a marker
 // where its password would be; the password itself stays in that machine's own
-// store (lib/local-store).
+// store (lib/connections/local-store).
 //
 // This covers the pieces that need no database: the marker, the "is this
 // address local" guess, what the browser is told about a row, where an edit's
 // saved secrets come from, how a marker becomes a driver config, and the rule
 // that nobody may type a marker. Every value here is made up.
-import type { Principal } from "@/lib/auth-guard";
+import type { Principal } from "@/lib/auth/guard";
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: async () => ({ rows: [] }) },
   syncMetadataTables: async () => undefined,
 }));
-jest.mock("../lib/lineage-db", () => ({ getConnectionDependents: async () => null }));
+jest.mock("../lib/versions/lineage-db", () => ({ getConnectionDependents: async () => null }));
 
 void (null as unknown as Principal);
 
@@ -28,12 +28,12 @@ import {
   resolveLocalMarker,
   typedLocalMarker,
   type LocalEntry,
-} from "@/lib/local-secrets";
-import { isPrivateHost } from "@/lib/host-guard";
-import { publicRow, savedSecrets } from "@/lib/connection-writes";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage, encryptSecret, UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
-import { validateConnection } from "@/lib/connection-validate";
+} from "@/lib/connections/local-secrets";
+import { isPrivateHost } from "@/lib/connections/host-guard";
+import { publicRow, savedSecrets } from "@/lib/connections/writes";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage, encryptSecret, UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
+import { validateConnection } from "@/lib/connections/validate";
 
 const HERE = "Swinburne server";
 const KEY = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";

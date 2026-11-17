@@ -13,7 +13,7 @@ import {
   versionRange,
   versionsToUndo,
   vLabel,
-} from "@/lib/rollback-plan";
+} from "@/lib/deploy/rollback-plan";
 
 describe("resolveRollback", () => {
   it("prefers the copy stored in the ledger", () => {

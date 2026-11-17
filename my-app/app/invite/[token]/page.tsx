@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import { InvitePage, type InviteView } from "@/components/invite/InvitePage";
-import { requireSignedIn } from "@/lib/auth-guard";
-import { inspectInvite } from "@/lib/invites-db";
+import { requireSignedIn } from "@/lib/auth/guard";
+import { inspectInvite } from "@/lib/orgs/invites-db";
 
 /**
  * An invitation: the page an invitation link opens.
  *
  * An Admin makes the link on the Users tab and sends it themselves
- * (lib/invites.ts). Whoever opens it is signed in by the time this runs,
+ * (lib/orgs/invites.ts). Whoever opens it is signed in by the time this runs,
  * because the proxy sends a signed-out visitor to sign in first and back here
- * afterwards (lib/callback-url.ts). The page then looks the invitation up for
+ * afterwards (lib/auth/callback-url.ts). The page then looks the invitation up for
  * that person, changing nothing, and the client half shows what it found: the
  * organization and role with a Join button, or why it cannot be taken.
  * Joining is a separate request (app/api/invites/accept/route.ts), which

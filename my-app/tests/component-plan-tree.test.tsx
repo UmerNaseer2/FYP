@@ -44,7 +44,7 @@ import "@testing-library/jest-dom";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
 import { PlanTree, ShareMeter } from "@/components/studio/PlanTree";
-import { readPlan, type PlanSummary, type QueryFinding } from "@/lib/query-analysis";
+import { readPlan, type PlanSummary, type QueryFinding } from "@/lib/performance/query-analysis";
 
 /** readPlan, or a loud failure — a broken fixture must not read as a pass. */
 function plan(raw: unknown): PlanSummary {
@@ -212,7 +212,7 @@ const NEVER_RAN = [
   },
 ];
 
-/** A finding of the shape the rules in lib/query-analysis really produce. */
+/** A finding of the shape the rules in lib/performance/query-analysis really produce. */
 function finding(stepId: number | null, over: Partial<QueryFinding> = {}): QueryFinding {
   return {
     id: `f${stepId ?? "x"}`,

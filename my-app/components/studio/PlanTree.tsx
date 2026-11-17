@@ -3,8 +3,8 @@
 import { Pill } from "@/components/ui";
 import { SEVERITY_META, type FindingSeverity } from "./FindingCard";
 // Type-only: erased at build time. The shapes have one definition, in
-// lib/query-analysis.ts, shared with the route that produces them.
-import type { PlanStep, PlanSummary, QueryFinding } from "@/lib/query-analysis";
+// lib/performance/query-analysis.ts, shared with the route that produces them.
+import type { PlanStep, PlanSummary, QueryFinding } from "@/lib/performance/query-analysis";
 // Pure helpers from the same module (it opens no connections, so it is safe in
 // the browser). The step list uses the same ones, so a box and its row can
 // never word a number differently.
@@ -15,7 +15,7 @@ import {
   shareText,
   stepFigures,
   subqueryCaption,
-} from "@/lib/query-analysis";
+} from "@/lib/performance/query-analysis";
 
 /**
  * The plan as a tree of boxes. The box at the top hands the query its rows;

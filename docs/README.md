@@ -45,9 +45,9 @@ moved past them.
 - **The project plan maps Microsoft Entra ID groups to application roles.**
   Roles are given to people on the Admin page instead, where an admin also
   decides what each role may do, feature by feature, and can add roles of their
-  own. See `my-app/lib/permissions.ts` and section 11 of the user manual.
+  own. See `my-app/lib/roles/permissions.ts` and section 11 of the user manual.
 - **The project plan lists rollback and query analysis as later work.** Both are
-  built. See `my-app/lib/query-analysis.ts`, `my-app/lib/perf-advice.ts` and the
+  built. See `my-app/lib/performance/query-analysis.ts`, `my-app/lib/performance/advice.ts` and the
   `/api/scripts/revert` route.
 - **The project plan describes signing in with a Microsoft work account.** The sign-in flow is built, with GitHub as a second way in, but this
   repository carries no credentials for either. Until a server is given them,
@@ -56,7 +56,7 @@ moved past them.
   an admin (or as the role picked in View as) and says so on screen — an "auth
   off" pill in the sidebar. Without that line authentication is enforced and an
   unconfigured checkout is shut, not open: see the reasoning at the top of
-  `my-app/lib/auth-mode.ts`.
+  `my-app/lib/auth/mode.ts`.
 
 Two entries left this list on 2026-09-18, when the user manual was re-read
 against the code: it described two roles where there are three, and it had no

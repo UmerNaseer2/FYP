@@ -12,10 +12,10 @@
  */
 import { NextResponse } from "next/server";
 import type { PoolConfig } from "pg";
-import pool, { syncMetadataTables } from "../version-db";
+import pool, { syncMetadataTables } from "../db/version-db";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "../postgres";
-import { buildPgConfig } from "../connection-config";
-import { credentialsMessage } from "../secret-store";
+import { buildPgConfig } from "../connections/config";
+import { credentialsMessage } from "../connections/secret-store";
 
 /** How long the schema capture waits for a lock on the target. */
 export const SNAPSHOT_LOCK_TIMEOUT_MS = 2_000;

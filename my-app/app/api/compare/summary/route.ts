@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import { runComparison } from "@/lib/compare-run";
-import { MAX_COMPARISON_TARGETS } from "@/lib/comparison-set-rules";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
+import { runComparison } from "@/lib/compare/run";
+import { MAX_COMPARISON_TARGETS } from "@/lib/compare/set-rules";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
 import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { buildCompareSummaryTask, citedChanges } from "@/lib/ai/features/compare-summary";

@@ -12,7 +12,7 @@
 // contains "test". tests/invites-db.test.ts shows how to start one locally.
 import { Client } from "pg";
 import { metadataWantsSsl } from "@/lib/db/metadata-ssl";
-import { ORG_SLUG_PATTERN, RESERVED_SLUGS, isOrgSlug } from "@/lib/org-slug";
+import { ORG_SLUG_PATTERN, RESERVED_SLUGS, isOrgSlug } from "@/lib/orgs/slug";
 import { testDatabaseUrl } from "./helpers/test-database";
 
 type Source = object;
@@ -60,7 +60,7 @@ type MoveTool = {
   safeMessage(error: unknown): string;
   sameDatabase(first: Client, second: Client): Promise<boolean>;
 };
-type SecretStore = typeof import("@/lib/secret-store");
+type SecretStore = typeof import("@/lib/connections/secret-store");
 
 const tool = require("../scripts/move-data.cjs") as MoveTool;
 
@@ -132,7 +132,7 @@ function withSiteKeys<T>(keys: { APP_ENCRYPTION_KEY?: string; NEXTAUTH_SECRET?: 
   try {
     let result: T | undefined;
     jest.isolateModules(() => {
-      result = run(require("../lib/secret-store") as SecretStore);
+      result = run(require("../lib/connections/secret-store") as SecretStore);
     });
     return result as T;
   } finally {

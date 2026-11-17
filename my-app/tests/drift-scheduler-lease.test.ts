@@ -21,7 +21,7 @@ import {
   runSchedulerTick,
   startDriftScheduler,
   stopDriftScheduler,
-} from "@/lib/drift-scheduler";
+} from "@/lib/drift/scheduler";
 
 /** One row of the schedule, as loadEntries reads it. */
 type ScheduledRow = {
@@ -87,7 +87,7 @@ const mockDb = {
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, params?: unknown[]) => mockDb.query(text, params),
@@ -103,10 +103,10 @@ jest.mock("../lib/version-db", () => ({
 const mockCheck = jest.fn<Promise<{ ok: true; run: { status: string } }>, unknown[]>(
   async () => ({ ok: true, run: { status: "in_sync" } })
 );
-jest.mock("../lib/drift-runner", () => ({
+jest.mock("../lib/drift/runner", () => ({
   runDriftCheck: (...args: unknown[]) => mockCheck(...args),
 }));
-jest.mock("../lib/schema-metrics", () => ({
+jest.mock("../lib/performance/schema-metrics", () => ({
   pruneSchemaMetrics: async () => 0,
   METRIC_RETENTION_DAYS: 90,
 }));

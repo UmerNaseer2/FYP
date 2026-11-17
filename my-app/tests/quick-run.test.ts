@@ -1,9 +1,9 @@
 // Quick run on Deploy: the parts the panel works out before it sends anything
-// (lib/quick-run.ts), and the AI rollback writer for SQL the person typed
+// (lib/deploy/quick-run.ts), and the AI rollback writer for SQL the person typed
 // (lib/ai/features/rollback-write.ts), with a fake trial and a fake model.
 // No database and no model are reached.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
@@ -25,7 +25,7 @@ import type { TrialHook } from "@/lib/ai/features/sql-generate";
 import { MockProvider } from "@/lib/ai/mock";
 import { runAiTask, type AiDeps } from "@/lib/ai/run";
 import { AI_OFF } from "@/lib/ai/settings";
-import { readChangeTypeHeader } from "@/lib/change-type";
+import { readChangeTypeHeader } from "@/lib/versions/change-type";
 import {
   MAX_QUICK_SQL_CHARS,
   nextQuickVersion,
@@ -35,7 +35,7 @@ import {
   quickRunLevel,
   quickRunSql,
   quickSqlProblem,
-} from "@/lib/quick-run";
+} from "@/lib/deploy/quick-run";
 import { column, schema, table } from "./helpers/snapshots";
 
 const ADD = "ALTER TABLE books ADD COLUMN gift_note text;";

@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { APP_VERSION } from "../lib/app-version";
+import { APP_VERSION } from "../lib/ui/app-version";
 
 /** The "version" field of a package.json, from this test's folder. */
 function packageVersion(relative: string): unknown {

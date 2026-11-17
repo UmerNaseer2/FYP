@@ -24,7 +24,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import ComparePage from "@/app/[org]/(studio)/compare/page";
-import type { CompareScreen } from "@/lib/compare-run";
+import type { CompareScreen } from "@/lib/compare/run";
 import { flushAsync, holdNext, render, resetPageState, setRoutes } from "./helpers/render-page";
 
 const CONNECTIONS = [

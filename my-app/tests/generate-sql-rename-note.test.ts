@@ -1,5 +1,5 @@
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, statementsThatRun } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, statementsThatRun } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 
 // The comparison can be unsure whether a new column (or table) is an old one

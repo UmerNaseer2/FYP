@@ -33,8 +33,8 @@
 
 import type { ClientConfig, PoolClient } from "pg";
 import { getPoolForConfig } from "../../postgres";
-import { currentTransactionId, readStringsTheStandardWay } from "../../script-transaction";
-import { splitStatements } from "../../sql-guard";
+import { currentTransactionId, readStringsTheStandardWay } from "../../deploy/script-transaction";
+import { splitStatements } from "../../sql/guard";
 import type { TrialHook, TrialOutcome } from "./sql-generate";
 
 export const TRIAL_LOCK_TIMEOUT_MS = 2_000;

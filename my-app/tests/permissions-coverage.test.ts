@@ -13,7 +13,7 @@
 //
 // Both are read from the source by tests/helpers/route-gates.ts, so they hold
 // for routes nobody has written a test for yet.
-import { ALL_PERMISSIONS, isPermissionKey } from "@/lib/permissions";
+import { ALL_PERMISSIONS, isPermissionKey } from "@/lib/roles/permissions";
 import {
   allHandlers,
   hasPermissionLiterals,
@@ -294,7 +294,7 @@ describe("every permission", () => {
   test("on the admin grid is checked by at least one route", () => {
     const checked = new Set([...gateKeys, ...laterKeys]);
     // A failure names the box that does nothing. Either a route should ask for
-    // it, or it should come off the grid (FEATURES in lib/permissions.ts).
+    // it, or it should come off the grid (FEATURES in lib/roles/permissions.ts).
     //
     // Two boxes are known to do nothing yet. No route asks for either one:
     // asking for an approval is let in on Deploy: Read, and no screen can

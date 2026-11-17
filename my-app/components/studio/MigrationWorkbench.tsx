@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { deployLinkQuery } from "@/lib/deploy-link";
+import { deployLinkQuery } from "@/lib/deploy/link";
 import { useEffect, useId, useState } from "react";
 import {
   ClipboardIcon,
@@ -11,13 +11,13 @@ import {
   AlertTriangleIcon,
 } from "@/components/ui/icons";
 import { ScriptFullScreen } from "@/components/studio/ScriptFullScreen";
-import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
-import { countOf } from "@/lib/plural";
-import { vLabel } from "@/lib/rollback-plan";
-import { displayVersion } from "@/lib/version-timeline";
-import { gradeSql, levelWithArticle, louderChangeType, quieterLevelWarning } from "@/lib/change-type";
-import { bumpVersion, highestVersion, levelToBump } from "@/lib/script-status";
-import { readAppliedVersion, readFamilyVersions } from "@/lib/family-reads";
+import { containsTransactionControl, hasExecutableSql } from "@/lib/sql/guard";
+import { countOf } from "@/lib/ui/plural";
+import { vLabel } from "@/lib/deploy/rollback-plan";
+import { displayVersion } from "@/lib/versions/timeline";
+import { gradeSql, levelWithArticle, louderChangeType, quieterLevelWarning } from "@/lib/versions/change-type";
+import { bumpVersion, highestVersion, levelToBump } from "@/lib/versions/script-status";
+import { readAppliedVersion, readFamilyVersions } from "@/lib/versions/family-reads";
 import {
   CHANGE_LEVELS,
   describePush,
@@ -25,16 +25,16 @@ import {
   rollbackChoiceProblem,
   rollbackToSend,
   validateScriptName,
-} from "@/lib/registry-push";
+} from "@/lib/github/registry-push";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 // Type-only imports: compare-run opens the metadata database (pg) and
 // version-detection reads target databases, so a value import would drag
 // server code into the browser bundle.
-import type { DetectedVersion } from "@/lib/compare-run";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
-import { backwardsWarning } from "@/lib/compare-timeline";
-import { apiFetch } from "@/lib/api-fetch";
+import type { DetectedVersion } from "@/lib/compare/run";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
+import { backwardsWarning } from "@/lib/compare/timeline";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 // The change level a migration is published as. compare-run imports this name.

@@ -1,9 +1,9 @@
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   migrationChangeLevel,
   renderMigrationScript,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import {
   changeTypeOf,
   describeChangeType,
@@ -16,7 +16,7 @@ import {
   quieterLevelWarning,
   readChangeTypeHeader,
   stampChangeType,
-} from "@/lib/change-type";
+} from "@/lib/versions/change-type";
 import type {
   ForeignKeySnapshot,
   IndexSnapshot,

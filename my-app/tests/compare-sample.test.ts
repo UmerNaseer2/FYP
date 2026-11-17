@@ -6,7 +6,7 @@ import {
   SAMPLE_ROW_LIMIT,
   SAMPLE_SCAN_ROWS,
   type RowSample,
-} from "@/lib/compare-sample";
+} from "@/lib/compare/sample";
 
 /**
  * The rules behind "which rows differ" (spec 04 — sample mismatched rows).

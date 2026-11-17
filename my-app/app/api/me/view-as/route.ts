@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireMember } from "@/lib/auth-guard";
-import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth-mode";
-import { ADMIN_ROLE, BUILT_IN_ROLE_INFO } from "@/lib/permissions";
-import { getRoleAccess, listRoles } from "@/lib/roles-db";
+import { requireMember } from "@/lib/auth/guard";
+import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth/mode";
+import { ADMIN_ROLE, BUILT_IN_ROLE_INFO } from "@/lib/roles/permissions";
+import { getRoleAccess, listRoles } from "@/lib/roles/roles-db";
 
 /**
  * The "View as" switcher on the studio rail (components/studio/ViewAsSwitcher).
  *
  * GET lists the roles there are to pick from. POST picks one, by leaving the
- * cookie that bypassPrincipal in lib/auth-guard.ts reads on every request, or
+ * cookie that bypassPrincipal in lib/auth/guard.ts reads on every request, or
  * clears it to go back to the full admin. The roles are the default
  * organization's, the one the bypass acts in.
  *

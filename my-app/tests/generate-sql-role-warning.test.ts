@@ -6,8 +6,8 @@
 // and a role the script only revoked from was listed as one to create, though
 // the target's own snapshot is where that role came from. The note about OWNER
 // TO statements near the end also showed when there were none.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration } from "@/lib/sql/generate";
 import type { PrivilegeGrant, PrivilegeSnapshot, SchemaSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

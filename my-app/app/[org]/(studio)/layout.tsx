@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 import { StudioShell } from "@/components/studio/StudioShell";
 import { ViewAsCookie } from "@/components/ViewAsCookie";
-import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth-mode";
+import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth/mode";
 
 // Every route in the (studio) group renders inside the new design-system shell.
 // This is additive: legacy pages outside this group keep their own layout.

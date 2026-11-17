@@ -8,7 +8,7 @@
 // flag and whether sign-in is configured at all — are captured at import time.
 
 import { NextRequest } from "next/server";
-import { isPublicPath } from "../lib/public-paths";
+import { isPublicPath } from "../lib/auth/public-paths";
 
 // next-auth and its provider ship as ESM, which Jest's CommonJS runtime cannot
 // require, so both are stand-ins. The stand-in `auth()` does what the real one

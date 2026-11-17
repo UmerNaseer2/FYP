@@ -10,7 +10,7 @@
 //
 // A step can also name the control it is about, which gives it a "Show me"
 // link in the Help panel. See ./steps.
-import { orgSlugFromPath } from "@/lib/org-slug";
+import { orgSlugFromPath } from "@/lib/orgs/slug";
 import type { HelpTopic } from "./types";
 import { generalHelp } from "./general";
 import { studioHelp } from "./studio";

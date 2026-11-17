@@ -10,14 +10,14 @@
 // The check reads the rendered script the way PostgreSQL does: comments,
 // strings and quoted names are blanked out (maskNonCode), and the hostile text
 // must not be left in what remains.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   generateRollback,
   renderMigrationScript,
   renderRollbackScript,
-} from "@/lib/generate-sql";
-import { maskNonCode } from "@/lib/sql-guard";
+} from "@/lib/sql/generate";
+import { maskNonCode } from "@/lib/sql/guard";
 import { column, schema, table } from "./helpers/snapshots";
 
 const PAYLOAD = "DROP TABLE customers";

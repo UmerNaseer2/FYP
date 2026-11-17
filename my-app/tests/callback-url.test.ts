@@ -19,7 +19,7 @@ import {
   loginHref,
   safeCallbackUrl,
   wantsAccountPicker,
-} from "@/lib/callback-url";
+} from "@/lib/auth/callback-url";
 
 const ORIGIN = "https://studio.example";
 

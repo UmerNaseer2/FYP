@@ -1,9 +1,9 @@
 import NextAuth from "next-auth";
 import { NextResponse, type NextRequest } from "next/server";
 import { authConfig, authUsable } from "./auth.config";
-import { BYPASS_AUTH } from "./lib/auth-mode";
-import { isPublicPath } from "./lib/public-paths";
-import { refreshesSession } from "./lib/session-cookie";
+import { BYPASS_AUTH } from "./lib/auth/mode";
+import { isPublicPath } from "./lib/auth/public-paths";
+import { refreshesSession } from "./lib/auth/session-cookie";
 
 /**
  * The edge proxy: the first line of defence for both pages and API routes.
@@ -20,11 +20,11 @@ import { refreshesSession } from "./lib/session-cookie";
  * It answers ONE question: is there a session? Permissions are not checked
  * here, because the edge runtime cannot open a Postgres connection to read what
  * the role may do. The permission check on each API route lives in
- * lib/auth-guard.ts, which runs in the node runtime. Both read the same
+ * lib/auth/guard.ts, which runs in the node runtime. Both read the same
  * BYPASS_AUTH switch.
  *
  * The one page that opens without a session is the landing page at "/" (see
- * lib/public-paths.ts). It still passes through here, and is let through.
+ * lib/auth/public-paths.ts). It still passes through here, and is let through.
  *
  * It never hands the browser a session cookie. Auth.js would add a refreshed
  * one to every answer that passes through here, and that broke Sign out: a
@@ -53,7 +53,7 @@ function getEnforcer(): EdgeHandler {
       // next-auth 5.0.0-beta.32 was about exactly that), and a check for "is
       // there anything here" would let it through. Same rule as the
       // `authorized` callback in auth.config.ts. On the server, the gates in
-      // lib/auth-guard.ts ask for more: the user's email, and a membership in
+      // lib/auth/guard.ts ask for more: the user's email, and a membership in
       // the organization the request acts in.
       if (request.auth?.user) return NextResponse.next();
 

@@ -4,16 +4,16 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { AlertTriangleIcon, CheckIcon, ChevronDownIcon, TrashIcon } from "@/components/ui/icons";
-import { timeAgo } from "@/lib/time-ago";
+import { timeAgo } from "@/lib/ui/time-ago";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 import {
   MAX_NAME_LENGTH,
   saveButtonLabel,
   setOptionLabel,
-} from "@/lib/comparison-set-rules";
-import { selectionToQuery, type CurrentSelection } from "@/lib/compare-selection";
-import { apiFetch } from "@/lib/api-fetch";
+} from "@/lib/compare/set-rules";
+import { selectionToQuery, type CurrentSelection } from "@/lib/compare/selection";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -308,12 +308,12 @@ export function ComparisonSetBar({
   // A role that may not open saved sets has no use for this bar, so it is
   // left out, the way the rail leaves out a screen the role may not open. It
   // may not save one either: every box on the Roles tab brings its feature's
-  // Read with it (effectivePermissions in lib/permissions). A link to a saved
+  // Read with it (effectivePermissions in lib/roles/permissions). A link to a saved
   // set still says why it did not open: the page says so under the pickers.
   if (!loading && !mayRead) return null;
 
   // Save is one button for two boxes, so which one it needs depends on the
-  // name, decided the way saveComparisonSet (lib/comparison-sets) decides it:
+  // name, decided the way saveComparisonSet (lib/compare/sets) decides it:
   // a name no saved set has makes a new set (Create), and a name a set already
   // has, whatever its capitals, saves over that set (Update), whether it is
   // the open one or another. It follows the name as it is typed, so a role

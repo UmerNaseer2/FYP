@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { AlertCircleIcon } from "@/components/ui/icons";
-import type { ThresholdBreach } from "@/lib/perf-thresholds";
+import type { ThresholdBreach } from "@/lib/performance/thresholds";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -18,7 +18,7 @@ import { useOrgHref } from "@/hooks/useOrg";
  * exactly what was asked and is reporting the answer.
  *
  * Nothing renders when the list is empty, which is the normal case: every
- * threshold ships switched off (see lib/perf-thresholds.ts), so this is silent
+ * threshold ships switched off (see lib/performance/thresholds.ts), so this is silent
  * until somebody asks for it.
  */
 export function ThresholdBanner({

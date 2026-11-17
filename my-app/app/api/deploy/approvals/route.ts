@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/roles/permissions";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import {
   createApprovalRequest,
   isApprovalAction,
   listApprovals,
   type ApprovalAction,
   type ApprovalScript,
-} from "@/lib/approvals-db";
-import { MAX_ROLLBACK_VERSIONS } from "@/lib/rollback-plan";
-import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
+} from "@/lib/deploy/approvals-db";
+import { MAX_ROLLBACK_VERSIONS } from "@/lib/deploy/rollback-plan";
+import { analyseRunRisk, type RiskScript } from "@/lib/deploy/risk";
 
 /**
  * Ask for, and read, approval to run one exact deploy or rollback.
@@ -31,7 +31,7 @@ import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
  * first, exactly as the revert route will claim it.
  *
  * The breaking count the approver is shown is worked out here, from the SQL
- * (lib/deploy-risk), and never taken from the caller: for a deploy it is the
+ * (lib/deploy/risk), and never taken from the caller: for a deploy it is the
  * migrations that count as breaking, for a rollback the rollbacks that delete
  * rows. Each script may carry an optional `change_type`, which can raise its
  * grade but never lower it, so a screen can make a run look riskier to the

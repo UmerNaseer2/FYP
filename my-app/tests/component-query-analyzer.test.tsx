@@ -17,10 +17,10 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import { QueryAnalyzer } from "@/components/studio/QueryAnalyzer";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
-import { readPlan } from "@/lib/query-analysis";
-import type { AnalyzeView } from "@/lib/query-analysis";
-import { scoreQuery } from "@/lib/query-score";
-import { presetFor } from "@/lib/permissions";
+import { readPlan } from "@/lib/performance/query-analysis";
+import type { AnalyzeView } from "@/lib/performance/query-analysis";
+import { scoreQuery } from "@/lib/performance/query-score";
+import { presetFor } from "@/lib/roles/permissions";
 import {
   fetchCalls,
   flushAsync,

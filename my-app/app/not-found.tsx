@@ -22,7 +22,7 @@ import "@/app/styles/atelier-onboarding.css";
 // address nobody has. Saying "you are not a member" would tell a stranger
 // which organizations exist. The two buttons go to addresses with no
 // organization in them, which take a signed-in person on to the last
-// organization they opened (lib/org-redirect.ts).
+// organization they opened (lib/orgs/redirect.ts).
 // ---------------------------------------------------------------------------
 
 export default function NotFound() {

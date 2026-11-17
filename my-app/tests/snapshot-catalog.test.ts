@@ -264,8 +264,8 @@ describe("fetchSchemaSnapshot — indexes", () => {
   // indkey holds more than the columns a lookup can use, and the query used to
   // hand all of it over as `columns`. A fake client cannot run SQL, so the
   // clauses that cut it down are pinned here; what they mean is spelled out
-  // beside the query in lib/postgres.ts, and the rules that read `columns`
-  // (the foreign-key rule in lib/perf-advice.ts) are tested against it there.
+  // beside the query in lib/postgres/, and the rules that read `columns`
+  // (the foreign-key rule in lib/performance/advice.ts) are tested against it there.
   it("asks the server for the leading key columns only, not the whole of indkey", async () => {
     const { client } = await snapshotWith([]);
     const texts = client.queries.map((query) => query.text.replace(/\s+/g, " "));

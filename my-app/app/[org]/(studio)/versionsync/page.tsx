@@ -24,9 +24,9 @@ import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
-import { refusalMessage } from "@/lib/permissions";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
 import {
   cutForwardOnly,
   diffLedgers,
@@ -36,27 +36,27 @@ import {
   type LedgerEntry,
   type ReplayAnswer,
   type ReplayOutcome,
-} from "@/lib/version-sync";
-import { describeRegistry, type RegistryNote } from "@/lib/registry-report";
+} from "@/lib/versions/sync";
+import { describeRegistry, type RegistryNote } from "@/lib/github/registry-report";
 import {
   displayVersion,
   ledgerTimelineEntries,
   mergeTimelines,
   outdatedSideOfEntries,
   versionTitle,
-} from "@/lib/version-timeline";
-import { analyseRunRisk, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
-import { changeLevelWord, normalizeChangeLevel } from "@/lib/change-level";
-import { EXECUTE_CANNOT_BE_READ, ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
-import { fingerprintBody } from "@/lib/approval-fingerprint";
-import { countOf } from "@/lib/plural";
-import { utcStamp } from "@/lib/format-date";
-import { apiFetch } from "@/lib/api-fetch";
+} from "@/lib/versions/timeline";
+import { analyseRunRisk, readScriptLevel, scriptLabel } from "@/lib/deploy/risk";
+import { changeLevelWord, normalizeChangeLevel } from "@/lib/versions/change-level";
+import { EXECUTE_CANNOT_BE_READ, ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql/guard";
+import { fingerprintBody } from "@/lib/deploy/approval-fingerprint";
+import { countOf } from "@/lib/ui/plural";
+import { utcStamp } from "@/lib/ui/format-date";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { VersionLine, type LineStep } from "./VersionLine";
 import "@/app/styles/atelier-versionsync.css";
 
 // Version Sync (version replay). Pick a Source (ahead) and a Target (behind).
-// The page compares their applied-script ledgers (lib/version-sync) and shows:
+// The page compares their applied-script ledgers (lib/versions/sync) and shows:
 //   - the versions the Target is missing and can still take, each with the SQL
 //     the Source's ledger stored for it (read-only: it is history);
 //   - the versions the Target lacks but is already past ("Cannot be replayed
@@ -76,7 +76,7 @@ type Connection = {
   name: string;
   host: string;
   database_name: string;
-  /** Who may run migrations on it (lib/connection-access). */
+  /** Who may run migrations on it (lib/connections/access). */
   execute_role?: string | null;
 };
 type Phase = "idle" | "loading" | "error" | "ready";
@@ -190,7 +190,7 @@ type Reach = {
  *   - "no-sql": the Source applied the version before this tool stored the SQL
  *     it ran, so there is nothing to send (the route refuses blank SQL);
  *   - "out-of-order": the version does not move its script group forward
- *     (cutForwardOnly in lib/version-sync, which follows the route's rule).
+ *     (cutForwardOnly in lib/versions/sync, which follows the route's rule).
  * Whichever comes first in the list is the one the run stops before.
  */
 function reachOf(entries: LedgerEntry[], targetEntries: LedgerEntry[]): Reach {
@@ -227,8 +227,8 @@ function stopSentence(reach: Reach): string {
  * Send versions to the apply route as ONE run, which it applies in ONE
  * transaction: every version in it applies, or none does.
  *
- * The answer is read by readReplayAnswer (lib/version-sync), which reads a
- * failure with readApplyFailure (lib/apply-failure), the same reading Deploy
+ * The answer is read by readReplayAnswer (lib/versions/sync), which reads a
+ * failure with readApplyFailure (lib/deploy/apply-failure), the same reading Deploy
  * uses:
  *   refused      a 4xx other than 422: the route turned the run away and none
  *                of its versions were applied;
@@ -1240,7 +1240,7 @@ function ReplayBody({
   // ── Approval ──────────────────────────────────────────────────────────────
   // The route claims an approval by the run's fingerprint: these exact
   // scripts, in this order, on this schema. Worked out here the same way
-  // (lib/approval-fingerprint), so the panel can say whether one covers it.
+  // (lib/deploy/approval-fingerprint), so the panel can say whether one covers it.
   const fingerprint = useMemo(
     () =>
       fingerprintBody(

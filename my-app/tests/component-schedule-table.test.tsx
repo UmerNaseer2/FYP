@@ -22,7 +22,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { ScheduleTable, type ScheduleRow } from "@/components/studio/ScheduleTable";
-import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
+import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift/schedule";
 import {
   fetchCalls,
   flushAsync,

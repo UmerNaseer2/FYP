@@ -1,8 +1,8 @@
 "use client";
 
-import { ADMIN_ROLE, type Permission } from "@/lib/permissions";
-import type { RoleSummary } from "@/lib/roles-db";
-import { ADMIN_ONLY_TABS, SCREEN_GROUPS, capitalise, glance } from "@/lib/role-summary";
+import { ADMIN_ROLE, type Permission } from "@/lib/roles/permissions";
+import type { RoleSummary } from "@/lib/roles/roles-db";
+import { ADMIN_ONLY_TABS, SCREEN_GROUPS, capitalise, glance } from "@/lib/roles/summary";
 import { CheckIcon } from "@/components/ui";
 
 // ---------------------------------------------------------------------------

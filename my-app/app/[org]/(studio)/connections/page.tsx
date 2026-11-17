@@ -9,8 +9,8 @@ import { HelpHint } from "@/components/ui/HelpHint";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
-import { hasPostgresScheme, parsePostgresUri, uriToFields } from "@/lib/parse-uri";
-import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
+import { hasPostgresScheme, parsePostgresUri, uriToFields } from "@/lib/connections/parse-uri";
+import { APPLIES_TO_HEADER_KEY } from "@/lib/deploy/application-targeting";
 import {
   DEFAULT_SSL_MODE,
   PORT_MAX,
@@ -22,15 +22,15 @@ import {
   validateConnection,
   type FieldErrors,
   type SslMode,
-} from "@/lib/connection-validate";
+} from "@/lib/connections/validate";
 import {
   DEFAULT_EXECUTE_ROLE,
   EXECUTE_ROLES,
   describeExecuteRole,
   toExecuteRole,
   type ExecuteRole,
-} from "@/lib/connection-access";
-import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
+} from "@/lib/connections/access";
+import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/roles/permissions";
 import Link from "next/link";
 import {
   LogoIcon,
@@ -50,9 +50,9 @@ import {
   SearchIcon,
 } from "@/components/ui/icons";
 import { ExecuteRolePill, FilterPill } from "@/components/ui";
-import { timeAgo } from "@/lib/time-ago";
-import { apiFetch } from "@/lib/api-fetch";
-import { isPrivateHost } from "@/lib/host-guard";
+import { timeAgo } from "@/lib/ui/time-ago";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { isPrivateHost } from "@/lib/connections/host-guard";
 import "@/app/styles/atelier-connections.css";
 
 // ——— Data shapes ———
@@ -73,7 +73,7 @@ type Connection = {
   ssl_mode?: string | null;
   // The client's own ApplicationTable, which says which applications this
   // database hosts. Null on every row until somebody names it. See
-  // lib/application-targeting.ts for what reads it.
+  // lib/deploy/application-targeting.ts for what reads it.
   application_table?: string | null;
   // Who may run migrations against this database: "none" (read-only),
   // "editor" or "admin". "editor" is the stored word for the default, which

@@ -137,7 +137,7 @@ const LAST_TEST_COLUMNS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Addresses of organizations. A copy of lib/org-slug.ts, which this plain script
+// Addresses of organizations. A copy of lib/orgs/slug.ts, which this plain script
 // cannot import. tests/move-data-db.test.ts fails if the two disagree.
 // ---------------------------------------------------------------------------
 
@@ -156,7 +156,7 @@ function isOrgSlug(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Passwords. A copy of lib/secret-store.ts, for the same reason, and pinned the
+// Passwords. A copy of lib/connections/secret-store.ts, for the same reason, and pinned the
 // same way: the test opens this file's output with the app's code and the other
 // way around.
 // ---------------------------------------------------------------------------
@@ -550,7 +550,7 @@ async function movePeople(context) {
 }
 
 /**
- * Who can sign in afterwards, which follows from lib/accounts-db.ts. A known
+ * Who can sign in afterwards, which follows from lib/auth/accounts-db.ts. A known
  * (provider, subject) signs in. An address that already has a person links only
  * for a Microsoft sign-in from the site's own directory, and only while that
  * person has no linked accounts at all; anything else answers "taken".

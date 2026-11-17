@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireMember } from "@/lib/auth-guard";
-import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth-mode";
+import { requireMember } from "@/lib/auth/guard";
+import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth/mode";
 
 /**
  * What the caller may do, in the same words the API routes use to decide.
@@ -8,7 +8,7 @@ import { BYPASS_AUTH, VIEW_AS_COOKIE } from "@/lib/auth-mode";
  * Every screen asks this, with real sign-in as much as with the bypass. The
  * sign-in session only says who someone is (see auth.ts). Their role is on
  * their membership, and this answer comes from the same gate every API route
- * calls (lib/auth-guard.ts), read fresh each time, so the screens show exactly
+ * calls (lib/auth/guard.ts), read fresh each time, so the screens show exactly
  * what the server will allow rather than whatever was true at sign-in.
  *
  * It names the organization the answer is about, so a screen can say where

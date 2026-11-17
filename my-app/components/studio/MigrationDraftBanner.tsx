@@ -7,8 +7,8 @@ import {
   clearMigrationDraft,
   draftStatementCount,
   type MigrationDraft,
-} from "@/lib/migration-draft";
-import { countOf } from "@/lib/plural";
+} from "@/lib/versions/migration-draft";
+import { countOf } from "@/lib/ui/plural";
 
 /**
  * The Script Editor's offer to load a migration saved on a Performance tab
@@ -17,7 +17,7 @@ import { countOf } from "@/lib/plural";
  * Offered, never loaded by itself: the editor may already hold someone's
  * unsaved work, and a script that replaced it without asking would lose it.
  * Load fills in the editor through `onLoad` (the page's own setters, via
- * planDraftLoad in lib/migration-draft.ts) and forgets the draft; Discard only
+ * planDraftLoad in lib/versions/migration-draft.ts) and forgets the draft; Discard only
  * forgets it. Either way the offer goes.
  */
 export function MigrationDraftBanner({

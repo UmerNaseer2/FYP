@@ -5,8 +5,8 @@ import {
   ratio,
   readDbHealth,
   type DbHealthRow,
-} from "@/lib/db-health";
-import { evaluateThresholds, THRESHOLD_KEYS, type ThresholdSetting } from "@/lib/perf-thresholds";
+} from "@/lib/performance/db-health";
+import { evaluateThresholds, THRESHOLD_KEYS, type ThresholdSetting } from "@/lib/performance/thresholds";
 
 /**
  * Database health is a screen that tells somebody their server is unwell, so

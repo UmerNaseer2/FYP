@@ -1,10 +1,10 @@
 /** @jest-environment jsdom */
 
-// The recents list (lib/recents.ts): the last few pages, schemas and actions,
+// The recents list (lib/ui/recents.ts): the last few pages, schemas and actions,
 // kept in this browser for the command bar. What matters is that it never
 // throws, never repeats itself, stays short and keeps organizations apart.
 
-import { MAX_RECENTS, clearRecents, forgetAllRecents, readRecents, recordRecent } from "@/lib/recents";
+import { MAX_RECENTS, clearRecents, forgetAllRecents, readRecents, recordRecent } from "@/lib/ui/recents";
 
 beforeEach(() => localStorage.clear());
 

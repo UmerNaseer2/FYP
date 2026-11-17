@@ -1,5 +1,5 @@
 /**
- * lib/organization-list.ts: the checks a screen runs on what the server
+ * lib/orgs/list.ts: the checks a screen runs on what the server
  * answered before drawing from it. GET /api/organizations answers with the
  * whole list, and taking an invitation (POST /api/invites/accept) with the one
  * organization to open.
@@ -8,7 +8,7 @@
  * looks right, and a list drawn from that would break halfway through drawing,
  * so anything short of the promised shape is turned down whole.
  */
-import { isOrgListing, isOrgSummary } from "@/lib/organization-list";
+import { isOrgListing, isOrgSummary } from "@/lib/orgs/list";
 
 const ACME = { slug: "acme", name: "Acme" };
 const BETA = { slug: "beta-ops", name: "Beta Ops" };

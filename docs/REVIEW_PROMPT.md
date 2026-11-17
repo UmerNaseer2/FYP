@@ -34,7 +34,7 @@ Please do not spend findings on any of these. They are known, they are
 intentional or already in hand, and reporting them costs you review budget that
 would be better spent elsewhere.
 
-**1. The authentication bypass.** `my-app/lib/auth-mode.ts` sets `BYPASS_AUTH`
+**1. The authentication bypass.** `my-app/lib/auth/mode.ts` sets `BYPASS_AUTH`
 from an allow-list — `true`, `1`, `yes`, `on`, and nothing else — and this
 checkout turns it ON explicitly for local development, in `.env.local`
 (`docker-compose.yml` only when asked, and the server image and Vercel never).
@@ -44,7 +44,7 @@ so the tool can be worked on without a Microsoft tenant.
 
 Review the authorisation code **behind** the switch, on the assumption that the
 switch is off and the credentials exist. The role model, the gate design in
-`lib/auth-guard.ts`, per-route gate correctness, the edge/server/client layering,
+`lib/auth/guard.ts`, per-route gate correctness, the edge/server/client layering,
 and the role-lookup-per-request behaviour in `auth.ts` are all fair game and I
 want your judgement on them. The switch's current position is not.
 
@@ -68,11 +68,11 @@ Weight your effort roughly in this order.
 rollback path is the product; everything else is scaffolding around it. Three
 things specifically:
 
-- `lib/compare.ts` — rename detection. It scores candidate table and column
+- `lib/compare/diff.ts` — rename detection. It scores candidate table and column
   pairs on weighted similarity and applies `tableNameRenameGuard` to demote
   structurally-similar-but-unrelated names. Where does this get it wrong, and
   what does a wrong answer cost?
-- `lib/generate-sql.ts` — is the generated SQL correct, and is the *rollback*
+- `lib/sql/generate.ts` — is the generated SQL correct, and is the *rollback*
   genuinely the inverse of the migration? `generateRollback` works by re-running
   the comparison backwards. Where does that reasoning break?
 - Ordering and dependency: does generated DDL respect foreign keys, inheritance
@@ -88,7 +88,7 @@ it, since they share the ledger and the approval mechanics.
 
 **3. SQL injection and input handling.** Schema and table names flow from user
 input into introspection queries, generated DDL and the deploy path. Identifier
-quoting is the risk surface. `lib/sql-guard.ts` does statement splitting and
+quoting is the risk surface. `lib/sql/guard.ts` does statement splitting and
 comment/string masking; `/api/performance/analyze` executes caller-supplied SQL
 inside `BEGIN READ ONLY` with a statement timeout and an unconditional rollback.
 Is that containment actually sound?

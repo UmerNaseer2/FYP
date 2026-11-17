@@ -17,8 +17,8 @@ import { OrgProvider } from "@/components/OrgProvider";
 import { AiPanel, AI_SUGGESTION_LABEL, resetAiStatus } from "@/components/studio/AiPanel";
 import { RiskRow } from "@/components/studio/CompareSummaryPanel";
 import type { SummaryLevel } from "@/lib/ai/features/compare-summary-view";
-import { apiFetch } from "@/lib/api-fetch";
-import { ORG_HEADER } from "@/lib/org-slug";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { ORG_HEADER } from "@/lib/orgs/slug";
 import {
   fetchCalls,
   flushAsync,

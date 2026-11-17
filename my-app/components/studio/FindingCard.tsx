@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Card, Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 // Type-only: erased at build time, so nothing from lib/ reaches the browser.
-import type { FixKind } from "@/lib/perf-sql";
+import type { FixKind } from "@/lib/performance/sql";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -152,7 +152,7 @@ export function OriginBadge({ label, help }: { label: string; help: string }) {
 /**
  * What the heading above each kind of fix says, so the reader knows what
  * running it would do before copying anything. The kinds themselves are
- * defined, with what each one means, in lib/perf-sql.ts.
+ * defined, with what each one means, in lib/performance/sql.ts.
  */
 export const FIX_KIND_HEADING: Record<FixKind, string> = {
   change: "Schema change: save it as a migration",

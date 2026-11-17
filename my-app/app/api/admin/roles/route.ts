@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
 import {
   createRole,
   deleteRole,
@@ -8,7 +8,7 @@ import {
   listRoles,
   resetRolePermissions,
   setRolePermissions,
-} from "@/lib/roles-db";
+} from "@/lib/roles/roles-db";
 
 /**
  * The roles themselves and what each one may do: the Roles & permissions tab
@@ -20,7 +20,7 @@ import {
  * itself an admin.
  *
  * The rules themselves (a name already taken, a role still in use, Admin can't
- * be edited) live in lib/roles-db.ts. It answers `{ ok: false, status, error }`
+ * be edited) live in lib/roles/roles-db.ts. It answers `{ ok: false, status, error }`
  * for anything the person can fix, and this route passes that straight back.
  * What is checked here is only the shape of what was sent. Anything thrown
  * (the database is down) becomes a 500 with a message a person can act on.
@@ -53,7 +53,7 @@ function badRequest(error: string) {
   return NextResponse.json({ error }, { status: 400 });
 }
 
-/** A refusal from lib/roles-db, sent on with the status it chose. */
+/** A refusal from lib/roles/roles-db, sent on with the status it chose. */
 function refused(result: { status: number; error: string }) {
   return NextResponse.json({ error: result.error }, { status: result.status });
 }

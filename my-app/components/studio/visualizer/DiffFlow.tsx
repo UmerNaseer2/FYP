@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { CompareReport } from "@/lib/compare";
+import type { CompareReport } from "@/lib/compare/diff";
 import { buildDiffGraph, type DiffGraph, type DiffNodeData, type DiffStatus } from "./diff-graph";
 import { DiffTableNode } from "./DiffTableNode";
 

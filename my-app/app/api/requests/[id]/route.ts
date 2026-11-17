@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireMember } from "@/lib/auth-guard";
+import { requireMember } from "@/lib/auth/guard";
 import {
   canAnswerRequests,
   grantProblem,
   REQUEST_ANSWERS,
   REQUEST_TEXT_MAX,
   type RequestAnswer,
-} from "@/lib/access-requests";
+} from "@/lib/roles/access-requests";
 import {
   answerAccessRequest,
   endGrant,
   getAccessRequest,
   grantAccessRequest,
   withdrawAccessRequest,
-} from "@/lib/access-requests-db";
+} from "@/lib/roles/access-requests-db";
 
 const UNKNOWN = "That request does not exist.";
 const ALREADY = "That request has already been answered.";
@@ -29,7 +29,7 @@ const ALREADY = "That request has already been answered.";
  * "answer" only records what happened. Allowing something for a whole role is
  * done first, through the Roles or Users routes with their own guards, by the
  * page that calls this. "grant" is the change itself: the asker holds the
- * permission on top of their role until the grant ends (lib/auth-guard.ts).
+ * permission on top of their role until the grant ends (lib/auth/guard.ts).
  *
  * Membership is the gate because anyone may withdraw their own, so answering
  * asks for its rights below. Another organization's request answers 404, the

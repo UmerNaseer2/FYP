@@ -4,8 +4,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui";
 import { RefreshIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
-import { apiFetch } from "@/lib/api-fetch";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { AskAdmin } from "./AskAdmin";
 
 /**

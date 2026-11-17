@@ -7,7 +7,7 @@
 // organization: every statement names it, and a request can only be written
 // for a connection the caller's organization owns.
 //
-// lib/version-db is replaced with a stand-in pool, so nothing reaches the
+// lib/db/version-db is replaced with a stand-in pool, so nothing reaches the
 // metadata database (or pulls in Sequelize).
 import { NextRequest } from "next/server";
 import {
@@ -20,20 +20,20 @@ import {
   releaseApproval,
   runFingerprint,
   type DeployApproval,
-} from "@/lib/approvals-db";
-import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/approval-fingerprint";
+} from "@/lib/deploy/approvals-db";
+import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/deploy/approval-fingerprint";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
 }));
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor", { email: "a@test" }),

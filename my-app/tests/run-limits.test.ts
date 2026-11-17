@@ -1,5 +1,5 @@
 // run-limits: the time limits on deploy and rollback runs, and the machinery
-// behind the Stop button (lib/run-limits.ts).
+// behind the Stop button (lib/deploy/run-limits.ts).
 //
 // Nothing here reaches a database. A run's pool is a stand-in whose
 // connections are tests/helpers/fake-pg clients, so each test can say what
@@ -38,8 +38,8 @@ import {
   type RunEntry,
   type RunLimits,
   type StopContext,
-} from "@/lib/run-limits";
-import { isRunId, newRunId } from "@/lib/run-id";
+} from "@/lib/deploy/run-limits";
+import { isRunId, newRunId } from "@/lib/deploy/run-id";
 
 const RUN = "3f2a6c1e-8b4d-4e5f-9a7b-1c2d3e4f5a6b";
 const PID = 4242;

@@ -10,7 +10,7 @@ import { TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor", { email: "a@test" }),
@@ -18,7 +18,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -29,10 +29,10 @@ jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
 const mockBuildPgConfig = jest.fn<Record<string, unknown>, unknown[]>(() => ({}));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchema: async () => null,
   recordAppliedMigrationToLineage: async () => ({ advanced: false }),
 }));
@@ -44,13 +44,13 @@ jest.mock("../lib/lineage-db", () => ({
 // migration files into somebody's actual registry repository. Mocked to answer
 // "not configured", which is the same answer a server with no GitHub settings
 // gives, so the route takes its ordinary path.
-jest.mock("../lib/registry-archive", () => ({
+jest.mock("../lib/github/registry-archive", () => ({
   archiveAppliedVersions: async () => null,
 }));
 
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockReleaseApproval = jest.fn<Promise<void>, unknown[]>(async () => undefined);
-jest.mock("../lib/approvals-db", () => ({
+jest.mock("../lib/deploy/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockReleaseApproval(...args),
 }));
@@ -335,7 +335,7 @@ it("still says the outcome is unknown when the COMMIT does not report back", asy
 });
 
 // ─── A script that ended the run's transaction ─────────────────────────────
-// lib/sql-guard refuses COMMIT, END and ROLLBACK before anything runs. If a
+// lib/sql/guard refuses COMMIT, END and ROLLBACK before anything runs. If a
 // spelling ever gets past it, the route still notices, because the id of the
 // transaction it is in changes, and it must not then say "nothing was applied".
 

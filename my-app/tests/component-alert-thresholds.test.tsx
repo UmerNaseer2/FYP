@@ -25,7 +25,7 @@
  *   saying why; both are fixed in the component alongside these tests.
  *
  * What is NOT here:
- *  - The ranges themselves. lib/perf-thresholds decides that a query time is
+ *  - The ranges themselves. lib/performance/thresholds decides that a query time is
  *    1–3,600,000 ms; this suite only checks that the form refuses what
  *    validateThreshold refuses and says so in that function's own words. Worth
  *    knowing: validateThreshold has no unit suite of its own yet, so a wrong
@@ -46,8 +46,8 @@ import {
   THRESHOLD_KEYS,
   defaultSettings,
   type ThresholdSetting,
-} from "@/lib/perf-thresholds";
-import { presetFor } from "@/lib/permissions";
+} from "@/lib/performance/thresholds";
+import { presetFor } from "@/lib/roles/permissions";
 import {
   fetchCalls,
   flushAsync,

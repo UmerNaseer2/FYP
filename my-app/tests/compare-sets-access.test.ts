@@ -1,6 +1,6 @@
 // compare-sets-access: the Compare screen hands out saved comparison sets only
 // to a role allowed to open them (POST /api/compare, and runComparison in
-// lib/compare-run.ts).
+// lib/compare/run.ts).
 //
 // Comparing schemas is Compare: Read. The saved sets that ride along on the
 // same screen are Comparison sets: Read. They are two boxes on purpose: an
@@ -16,14 +16,14 @@
 //
 // And that a role with the box still gets the sets, and the link opens one.
 import { NextRequest } from "next/server";
-import type { Gate, Principal } from "@/lib/auth-guard";
+import type { Gate, Principal } from "@/lib/auth/guard";
 import { principalFor } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -31,7 +31,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 // Two saved PostgreSQL connections: the set below compares one with the other.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (text: string) => {
@@ -45,12 +45,12 @@ jest.mock("../lib/version-db", () => ({
 // Reached through mockListSets when called, not when this factory runs,
 // because the factory runs before the line that creates it.
 const mockListSets = jest.fn();
-jest.mock("../lib/comparison-sets", () => ({
+jest.mock("../lib/compare/sets", () => ({
   listComparisonSets: (...args: unknown[]) => mockListSets(...args),
   markComparisonSetRun: async () => {},
 }));
 
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchemas: async () => new Map(),
   trackedSchemaKey: (id: number, schema: string) => `${id}|${schema}`,
   recordComparisonRun: async () => {},
@@ -67,8 +67,8 @@ jest.mock("../lib/postgres", () => ({
 
 // Only the one function that opens a database is replaced, as in
 // tests/compare-run-safety.test.ts.
-jest.mock("../lib/version-detection", () => ({
-  ...jest.requireActual("../lib/version-detection"),
+jest.mock("../lib/versions/detection", () => ({
+  ...jest.requireActual("../lib/versions/detection"),
   fetchSchemaVersionInfo: async () => ({
     schema: "public",
     hasVersionTable: false,

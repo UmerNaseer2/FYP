@@ -3,7 +3,7 @@
 // passthrough in the OpenAI-compatible client. No database and no model are
 // reached.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
@@ -34,9 +34,9 @@ import { AiError, type AiToolCall } from "@/lib/ai/provider";
 import { OWN_KEY_REFUSED, type AiDeps, type AiRunResult } from "@/lib/ai/run";
 import { AI_OFF } from "@/lib/ai/settings";
 import type { AiCallRecord } from "@/lib/ai/store";
-import { compareSchemas } from "@/lib/compare";
-import type { CompareScreen } from "@/lib/compare-run";
-import type { PermissionKey } from "@/lib/permissions";
+import { compareSchemas } from "@/lib/compare/diff";
+import type { CompareScreen } from "@/lib/compare/run";
+import type { PermissionKey } from "@/lib/roles/permissions";
 import type { SchemaSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

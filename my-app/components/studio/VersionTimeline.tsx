@@ -7,7 +7,7 @@
 // Deploy (the GitHub registry against the database) all ask the same
 // question: which versions does each side have, and where is each one now?
 // This draws the answer the same way on all three. The screen builds the rows
-// with mergeTimelines (lib/version-timeline.ts) and hands them over; this
+// with mergeTimelines (lib/versions/timeline.ts) and hands them over; this
 // component only draws them. It fetches nothing and decides nothing.
 //
 // One row per version, newest first, grouped by script group:
@@ -23,8 +23,8 @@
 // ---------------------------------------------------------------------------
 
 import { Fragment, useId, useState, type ReactNode } from "react";
-import type { ChangeLevel } from "@/lib/change-level";
-import { shortUtcDate } from "@/lib/format-date";
+import type { ChangeLevel } from "@/lib/versions/change-level";
+import { shortUtcDate } from "@/lib/ui/format-date";
 import {
   displayVersion,
   headVersionOf,
@@ -33,7 +33,7 @@ import {
   type TimelineEntry,
   type TimelineRow,
   type TimelineStatus,
-} from "@/lib/version-timeline";
+} from "@/lib/versions/timeline";
 import { ChevronRightIcon } from "@/components/ui/icons";
 
 /** What the script block says for a side whose table keeps no scripts. */

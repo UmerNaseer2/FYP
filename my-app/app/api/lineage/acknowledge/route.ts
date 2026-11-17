@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool from "@/lib/version-db";
-import { driftFingerprint } from "@/lib/drift-fingerprint";
+import { requirePermission } from "@/lib/auth/guard";
+import pool from "@/lib/db/version-db";
+import { driftFingerprint } from "@/lib/drift/fingerprint";
 import {
   computeDriftDetail,
   type DriftStatus,
-} from "@/lib/lineage-db";
+} from "@/lib/versions/lineage-db";
 
 /**
  * POST /api/lineage/acknowledge  { trackedSchemaId }

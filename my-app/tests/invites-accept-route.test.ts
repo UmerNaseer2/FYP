@@ -1,7 +1,7 @@
 // invites-accept-route: taking an invitation (app/api/invites/accept/route.ts).
 //
 // Whether an invitation can be taken, and what taking it writes, is
-// lib/invites-db.ts acceptInvite's to decide, and tests/invites-db.test.ts
+// lib/orgs/invites-db.ts acceptInvite's to decide, and tests/invites-db.test.ts
 // holds it to that against a real database. Here acceptInvite and the gate are
 // stood in for, so these tests cover only what the route adds on top:
 //
@@ -18,11 +18,11 @@
 //   - A database that is down reads as "try again", with the reason kept to
 //     the log.
 import { NextRequest, NextResponse } from "next/server";
-import type { SignedInGate } from "@/lib/auth-guard";
+import type { SignedInGate } from "@/lib/auth/guard";
 
 let mockGate: SignedInGate;
 let mockGateCalls = 0;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requireSignedIn: async () => {
     mockGateCalls += 1;
     return mockGate;
@@ -30,7 +30,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockAcceptInvite = jest.fn();
-jest.mock("../lib/invites-db", () => ({
+jest.mock("../lib/orgs/invites-db", () => ({
   acceptInvite: (...args: unknown[]) => mockAcceptInvite(...args),
 }));
 

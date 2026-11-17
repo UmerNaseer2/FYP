@@ -11,7 +11,7 @@
 // These tests drive the real runComparison with the database layer mocked, so
 // the net is exercised where it actually sits rather than through an exported
 // hook that only tests use.
-import { runComparison } from "@/lib/compare-run";
+import { runComparison } from "@/lib/compare/run";
 import { TEST_ORG } from "./helpers/principals";
 
 /** Which target database's snapshot read should throw, by host. Null for none. */
@@ -64,7 +64,7 @@ function emptySnapshot(schema: string) {
   return { database: "app", schema, tables: [] };
 }
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async () => ({ rows: mockConnections, rowCount: mockConnections.length }),
@@ -72,12 +72,12 @@ jest.mock("../lib/version-db", () => ({
   syncMetadataTables: async () => {},
 }));
 
-jest.mock("../lib/comparison-sets", () => ({
+jest.mock("../lib/compare/sets", () => ({
   listComparisonSets: async () => [],
   markComparisonSetRun: async () => {},
 }));
 
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchemas: async () => new Map(),
   trackedSchemaKey: (id: number, schema: string) => `${id}|${schema}`,
   recordComparisonRun: async () => {},
@@ -100,8 +100,8 @@ jest.mock("../lib/postgres", () => ({
 // Only the one function that opens a database is replaced. Listing the module's
 // exports by hand instead would silently stub out pickCurrentVersion and the
 // rest, and the failure would read as a bug in compare-run.
-jest.mock("../lib/version-detection", () => ({
-  ...jest.requireActual("../lib/version-detection"),
+jest.mock("../lib/versions/detection", () => ({
+  ...jest.requireActual("../lib/versions/detection"),
   fetchSchemaVersionInfo: async () => mockNoVersionTable,
 }));
 

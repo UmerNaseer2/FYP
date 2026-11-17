@@ -138,7 +138,7 @@ services:
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       # A container reaching a database on the host machine needs a private
-      # address to be allowed. Off by default — see lib/connection-config.ts.
+      # address to be allowed. Off by default — see lib/connections/config.ts.
       ALLOW_PRIVATE_DB_HOSTS: ${ALLOW_PRIVATE_DB_HOSTS:-}
       # The app checks the tracked databases for drift on a timer of its own.
       # `off` stops that, for a copy that should not touch any database by

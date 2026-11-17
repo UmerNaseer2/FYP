@@ -9,7 +9,7 @@
 // SQL runs in the database suites.
 
 import { NextRequest } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
+import type { Gate } from "@/lib/auth/guard";
 import { principalFor } from "./helpers/principals";
 
 type Sent = { text: string; values: unknown[] };
@@ -27,7 +27,7 @@ function mockAnswer(text: string, values: unknown[] = []) {
   return Promise.resolve({ rows: [], rowCount: 0, ...(answer as object) });
 }
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockAnswer(text, values),
@@ -42,7 +42,7 @@ jest.mock("../lib/version-db", () => ({
 }));
 
 let mockGate: Gate;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => mockGate,
 }));
 

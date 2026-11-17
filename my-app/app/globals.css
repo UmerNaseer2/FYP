@@ -1423,7 +1423,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
    one it hangs from. The lines between boxes are borders on li::before and
    li::after, the classic CSS org chart: each child draws half of the bar
    above it and its own drop line, and the first and last child trim the
-   bar's ends. The tints follow shareBand in lib/query-analysis.ts: hot is
+   bar's ends. The tints follow shareBand in lib/performance/query-analysis.ts: hot is
    half of the query or more, warm a fifth or more. Theme tokens only, so
    light and dark both work.
    ============================================================================ */
@@ -1738,7 +1738,7 @@ kbd { font:500 11px/1 var(--mono); padding:3px 6px; border-radius:6px; border:1p
   .ny em { position:absolute; top:-4px; right:-4px; min-width:18px; padding:1px 5px; font-size:11px; }
   .ny { position:relative; }
 }
-/* ——— The logo reveal (components/studio/LogoIntro, lib/intro.ts) ——— */
+/* ——— The logo reveal (components/studio/LogoIntro, lib/ui/intro.ts) ——— */
 .boot { position:fixed; inset:0; z-index:200; display:grid; place-items:center; cursor:pointer; overflow:hidden; }
 .bt-bg { position:absolute; inset:0; background:var(--bg); }
 .bt-bg::after { content:""; position:absolute; left:50%; top:50%; width:min(78vmin, 620px); aspect-ratio:1; translate:-50% -50%;

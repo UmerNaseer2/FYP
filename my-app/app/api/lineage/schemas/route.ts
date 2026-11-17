@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import { fetchSchemaNames } from "@/lib/postgres";
 
 /**

@@ -1,5 +1,5 @@
-import { mapWithLimit } from "@/lib/concurrency";
-import { plural, countOf } from "@/lib/plural";
+import { mapWithLimit } from "@/lib/ui/concurrency";
+import { plural, countOf } from "@/lib/ui/plural";
 
 /**
  * The reason mapWithLimit exists is the connection pool, so the tests that

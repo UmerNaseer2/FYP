@@ -3,19 +3,19 @@
 // The gate and the stores are replaced, so this is about the routes' own
 // decisions. tests/access-requests-db.test.ts runs the queries on a real database.
 import { NextRequest, NextResponse } from "next/server";
-import type { AccessRequest } from "@/lib/access-requests";
-import type { Gate } from "@/lib/auth-guard";
-import type { PermissionKey } from "@/lib/permissions";
+import type { AccessRequest } from "@/lib/roles/access-requests";
+import type { Gate } from "@/lib/auth/guard";
+import type { PermissionKey } from "@/lib/roles/permissions";
 import { principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requireMember: async () => mockGate,
 }));
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/access-requests-db", () => ({
+jest.mock("../lib/roles/access-requests-db", () => ({
   answerAccessRequest: jest.fn(),
   countRequestInbox: jest.fn(),
   countRequestsAnsweredSince: jest.fn(),
@@ -31,7 +31,7 @@ jest.mock("../lib/access-requests-db", () => ({
   withdrawAccessRequest: jest.fn(),
 }));
 
-jest.mock("../lib/approvals-db", () => ({
+jest.mock("../lib/deploy/approvals-db", () => ({
   countOwnRunsAnsweredSince: jest.fn(),
   countRunsReadyToRun: jest.fn(),
   countRunsToApprove: jest.fn(),
@@ -42,8 +42,8 @@ jest.mock("../lib/approvals-db", () => ({
   mayDecideOwn: (principal: { bypass: boolean }) => principal.bypass,
 }));
 
-import * as requestsDb from "../lib/access-requests-db";
-import * as approvalsDb from "../lib/approvals-db";
+import * as requestsDb from "../lib/roles/access-requests-db";
+import * as approvalsDb from "../lib/deploy/approvals-db";
 import { GET, POST } from "../app/api/requests/route";
 import { PATCH } from "../app/api/requests/[id]/route";
 import { POST as SEEN } from "../app/api/requests/seen/route";

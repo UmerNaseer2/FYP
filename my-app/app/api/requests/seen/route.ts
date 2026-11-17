@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireMember } from "@/lib/auth-guard";
-import { markRequestsSeen } from "@/lib/access-requests-db";
+import { requireMember } from "@/lib/auth/guard";
+import { markRequestsSeen } from "@/lib/roles/access-requests-db";
 
 /**
  * The Requests page has been read, so the answers shown on it stop counting

@@ -16,8 +16,8 @@ import {
   type PerfAdvice,
   type TableStats,
   type WaitingPartition,
-} from "@/lib/perf-advice";
-import { buildFixScript, quoteIdent, type FixKind } from "@/lib/perf-sql";
+} from "@/lib/performance/advice";
+import { buildFixScript, quoteIdent, type FixKind } from "@/lib/performance/sql";
 import type {
   ColumnSnapshot,
   ConstraintSnapshot,

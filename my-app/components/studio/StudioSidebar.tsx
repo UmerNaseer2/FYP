@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { ChevronLeftIcon } from "@/components/ui/icons";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { Pill } from "@/components/ui/Pill";
-import { APP_VERSION } from "@/lib/app-version";
+import { APP_VERSION } from "@/lib/ui/app-version";
 import { groupNavItems, type NavItem } from "./nav";
 
 // The studio's left rail: a soft rounded panel that floats beside the page.

@@ -1,7 +1,7 @@
 // invites-db: invitations in a real metadata database.
 //
 // tests/admin-invites-route.test.ts and the invitation page's suites check what
-// the routes and screens do with each answer lib/invites-db.ts gives. Only
+// the routes and screens do with each answer lib/orgs/invites-db.ts gives. Only
 // Postgres can say whether those answers are right: whether the table really
 // holds the token's hash and never the token, whether an invitation to an
 // address really waits for a provider to vouch for that address, whether
@@ -28,7 +28,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { testDatabaseUrl } from "./helpers/test-database";
-import { ALL_PERMISSIONS, presetFor } from "@/lib/permissions";
+import { ALL_PERMISSIONS, presetFor } from "@/lib/roles/permissions";
 
 /**
  * Whoever makes the invitations in most tests: an Admin, who holds every box
@@ -90,7 +90,7 @@ describeWithDatabase("invitations in a real metadata database", () => {
   // The code under test. Imported after DATABASE_URL_A points at the fresh
   // database, so it uses the one Sequelize pool made for it.
   let sequelize: typeof import("@/lib/db/sequelize").sequelize;
-  let invites: typeof import("@/lib/invites-db");
+  let invites: typeof import("@/lib/orgs/invites-db");
 
   let orgA: Org;
   let orgB: Org;
@@ -257,7 +257,7 @@ describeWithDatabase("invitations in a real metadata database", () => {
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     ({ sequelize } = await import("@/lib/db/sequelize"));
-    invites = await import("@/lib/invites-db");
+    invites = await import("@/lib/orgs/invites-db");
 
     db = await connectTo(url);
     [orgA] = await rows<Org>(`SELECT id, slug, name FROM organizations WHERE is_default`);

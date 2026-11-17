@@ -25,7 +25,7 @@
  *
  * What is NOT here:
  *  - The geometry. Every coordinate, rule, tick and caption comes out of
- *    lib/metrics-series, which is pure and has tests/metrics-series.test.ts.
+ *    lib/performance/metrics-series, which is pure and has tests/metrics-series.test.ts.
  *    This suite checks which of those answers reach the screen, not how they
  *    are worked out.
  *  - describeCadence, in tests/drift-schedule.test.ts.
@@ -45,7 +45,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import { SchemaTrends } from "@/components/studio/SchemaTrends";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
-import type { MetricSample } from "@/lib/metrics-series";
+import type { MetricSample } from "@/lib/performance/metrics-series";
 import {
   fetchCalls,
   flushAsync,

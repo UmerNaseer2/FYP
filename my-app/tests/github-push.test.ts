@@ -7,10 +7,10 @@
 // values, and fetch is replaced with a stub that answers only the requests a
 // test names (by method and address) and records anything else as a failure.
 import { NextRequest, NextResponse } from "next/server";
-import { readChangeNote } from "@/lib/change-note";
-import { readChangeTypeHeader, stampChangeType } from "@/lib/change-type";
-import { refusalMessage } from "@/lib/permissions";
-import { CHANGE_LEVEL_REQUIRED, VERSION_FORMAT_HINT, rollbackCommitMessage } from "@/lib/registry-push";
+import { readChangeNote } from "@/lib/versions/change-note";
+import { readChangeTypeHeader, stampChangeType } from "@/lib/versions/change-type";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { CHANGE_LEVEL_REQUIRED, VERSION_FORMAT_HINT, rollbackCommitMessage } from "@/lib/github/registry-push";
 import { principalFor } from "./helpers/principals";
 
 // auth-guard pulls in next-auth, which ships as ESM Jest can't load. The
@@ -23,15 +23,15 @@ const mockRequirePermission = jest.fn(
     principal: principalFor("editor", { email: "e@x", name: "E" }),
   }),
 );
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: () => mockRequirePermission(),
 }));
 
-// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// Each organization's own GitHub settings (lib/github/org-store.ts) are kept
 // in the metadata database, which these tests do not have. Organization 12 has
 // settings of its own: the server's repository, with a token of its own. No
 // other organization has any, so the default one falls back to the server's
-// keys and any other has no GitHub at all (lib/github-config.ts).
+// keys and any other has no GitHub at all (lib/github/config.ts).
 const ORG_TOKEN = "org-token-not-real";
 function savedSettings(orgId: number): unknown {
   return orgId === 12
@@ -39,7 +39,7 @@ function savedSettings(orgId: number): unknown {
     : null;
 }
 const mockReadOrgGitHub = jest.fn();
-jest.mock("../lib/org-github-store", () => ({
+jest.mock("../lib/github/org-store", () => ({
   readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
 }));
 
@@ -755,7 +755,7 @@ describe("POST /api/github/push, adding a rollback to a saved version", () => {
 
 describe("POST /api/github/push, organizations", () => {
   // Organization 12 is not the default one, so its scripts live under
-  // orgs/12/ (lib/registry-paths.ts). Every test here that acts as it names
+  // orgs/12/ (lib/github/registry-paths.ts). Every test here that acts as it names
   // only addresses inside that folder, and the stub refuses any other, so a
   // single request into the default organization's folder fails the test.
   const ORG_FOLDER = `${REPO}/contents/orgs/12/db/public/orders_fix`;
@@ -884,7 +884,7 @@ describe("POST /api/github/push, setup and access", () => {
   });
 
   it("returns the guard's answer when the role may not save scripts", async () => {
-    // Worded the way lib/auth-guard refuses, and passed on unchanged.
+    // Worded the way lib/auth/guard refuses, and passed on unchanged.
     const refusal = refusalMessage("Viewer", "scripts:create");
     mockRequirePermission.mockImplementationOnce(async () => ({
       ok: false,

@@ -22,16 +22,16 @@
 //     Without them the organization is made exactly as before. The token is
 //     never in an answer.
 import { NextRequest, NextResponse } from "next/server";
-import type { SignedInGate } from "@/lib/auth-guard";
+import type { SignedInGate } from "@/lib/auth/guard";
 import {
   REPOSITORY_PROBLEM,
   REPOSITORY_WITHOUT_TOKEN,
   TOKEN_WITHOUT_REPOSITORY,
-} from "@/lib/github-settings";
+} from "@/lib/github/settings";
 
 let mockGate: SignedInGate;
 let mockGateCalls = 0;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requireSignedIn: async () => {
     mockGateCalls += 1;
     return mockGate;
@@ -43,19 +43,19 @@ const mockOrgsDb = {
   listMemberships: jest.fn(),
   listOrganizations: jest.fn(),
 };
-jest.mock("../lib/orgs-db", () => ({
+jest.mock("../lib/orgs/orgs-db", () => ({
   createOrganization: (...args: unknown[]) => mockOrgsDb.createOrganization(...args),
   listMemberships: (...args: unknown[]) => mockOrgsDb.listMemberships(...args),
   listOrganizations: (...args: unknown[]) => mockOrgsDb.listOrganizations(...args),
 }));
 
 const mockCheck = jest.fn();
-jest.mock("../lib/github-check", () => ({
+jest.mock("../lib/github/check", () => ({
   checkRepositoryAccess: (...args: unknown[]) => mockCheck(...args),
 }));
 
 let mockKeySource: "app-key" | "derived" | "none" = "app-key";
-jest.mock("../lib/secret-store", () => ({
+jest.mock("../lib/connections/secret-store", () => ({
   encryptionKeySource: () => mockKeySource,
 }));
 

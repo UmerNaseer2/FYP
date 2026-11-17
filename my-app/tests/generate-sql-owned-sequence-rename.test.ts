@@ -9,8 +9,8 @@
 //
 // These tests pin the fix: the sequence is renamed right after the table, and
 // only when there is a rename to do and the new name is free.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, renderMigrationScript } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, renderMigrationScript } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type { ColumnSnapshot, SchemaSnapshot, SequenceSnapshot } from "@/lib/postgres";
 

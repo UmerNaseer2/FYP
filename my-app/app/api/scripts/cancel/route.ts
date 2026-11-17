@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { canExecute, toExecuteRole } from "@/lib/connections/access";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
-import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { isRunId } from "@/lib/run-id";
-import { cancelRunElsewhere, findRun, stopRun, type CancelOutcome } from "@/lib/run-limits";
+import { ADMIN_ROLE, hasPermission } from "@/lib/roles/permissions";
+import { isRunId } from "@/lib/deploy/run-id";
+import { cancelRunElsewhere, findRun, stopRun, type CancelOutcome } from "@/lib/deploy/run-limits";
 
 /**
  * POST /api/scripts/cancel, with { runId, connectionId }
  *
  * The Stop button on the Deploy page: ends a deploy or rollback that is still
  * going. The run rolls back, so nothing it did is kept, and its own answer
- * says it was stopped. See lib/run-limits.ts for how.
+ * says it was stopped. See lib/deploy/run-limits.ts for how.
  *
  * Who may stop a run: the person who started it, an Admin, or anyone who may
  * run scripts on that connection (and so could stop it with a script of their

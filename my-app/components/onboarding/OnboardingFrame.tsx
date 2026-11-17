@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { LandingThemeToggle } from "@/components/landing/LandingThemeToggle";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { SignOutIcon } from "@/components/ui/icons";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 import "@/app/styles/atelier-onboarding.css";
 
 /**

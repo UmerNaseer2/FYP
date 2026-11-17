@@ -56,8 +56,8 @@ import {
   type QueryFinding,
   type SqlContext,
   type SqlContextTable,
-} from "@/lib/query-analysis";
-import type { FixKind } from "@/lib/perf-sql";
+} from "@/lib/performance/query-analysis";
+import type { FixKind } from "@/lib/performance/sql";
 import { allFixProblems } from "./helpers/fix-invariants";
 
 /**
@@ -7568,7 +7568,7 @@ describe("every finding's fix", () => {
 
   it("says every schema a change alters, and no schema for any other kind", () => {
     // The fix script saves only the changes to the schema picked above the
-    // query (buildFixScript in lib/perf-sql.ts). A change that left a schema
+    // query (buildFixScript in lib/performance/sql.ts). A change that left a schema
     // out would be saved into a migration made for another one.
     const changes = collected.filter((finding) => finding.fixKind === "change");
     expect(changes.length).toBeGreaterThan(20);

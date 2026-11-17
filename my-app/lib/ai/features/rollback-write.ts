@@ -22,7 +22,7 @@
 
 import { z } from "zod";
 import type { SchemaSnapshot } from "../../postgres";
-import { hasExecutableSql } from "../../sql-guard";
+import { hasExecutableSql } from "../../sql/guard";
 import { bareName, checkGeneratedSql, knownNames, unknownTablesInSql } from "../checks";
 import { mentionedObjects, schemaSlice } from "../context";
 import { estimateTokens } from "../provider";

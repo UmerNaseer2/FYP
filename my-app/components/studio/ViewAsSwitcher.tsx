@@ -2,8 +2,8 @@
 
 import { useEffect, useId, useState } from "react";
 import { useUser } from "@/hooks/useUser";
-import { ADMIN_ROLE } from "@/lib/permissions";
-import { apiFetch } from "@/lib/api-fetch";
+import { ADMIN_ROLE } from "@/lib/roles/permissions";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 type RoleOption = { name: string; label: string };
 
@@ -44,7 +44,7 @@ function isRoleOption(value: unknown): value is RoleOption {
  * boxes on the Admin screen do what they say. This picker is that check. It
  * asks POST /api/me/view-as to leave a cookie naming the role, and from then on
  * the server answers every request as that role (bypassPrincipal in
- * lib/auth-guard.ts) and every screen shows what that role may use.
+ * lib/auth/guard.ts) and every screen shows what that role may use.
  * "Admin (everything)" clears the cookie and puts the bypass back to the full
  * admin it normally is.
  *

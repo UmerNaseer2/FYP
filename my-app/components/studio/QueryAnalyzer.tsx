@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 import { CheckIcon, PlayIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
@@ -19,20 +19,20 @@ import type { PerfTarget } from "./PerfTargetPicker";
 // table named in the editor is quoted exactly as the suggestion that linked
 // here quotes it, and the heading over a change to another schema, worded as
 // the fix script below words it.
-import { otherSchemaHeading, qualifiedName, quoteIdent } from "@/lib/perf-sql";
+import { otherSchemaHeading, qualifiedName, quoteIdent } from "@/lib/performance/sql";
 import { PlanTree, ShareMeter } from "./PlanTree";
 import { FixScriptBuilder } from "./FixScriptBuilder";
 import { ScorePanel } from "./ScoreBadge";
 import { ThresholdBanner } from "./ThresholdBanner";
 // Type-only: erased at build time. The response shape has one definition, in
-// lib/query-analysis.ts, shared with the route that produces it, so the screen
+// lib/performance/query-analysis.ts, shared with the route that produces it, so the screen
 // and the route can never silently disagree about it.
 import type {
   AnalyzeView,
   PlanStep,
   PlanSummary,
   QueryFinding,
-} from "@/lib/query-analysis";
+} from "@/lib/performance/query-analysis";
 // Values from the same module, which opens no connections, so it is safe to
 // load in the browser. QUERY_TIMEOUT_SECONDS is how long a measured query may
 // run; the route's timeout is set from the same constant, so the sentence
@@ -46,8 +46,8 @@ import {
   shareLegend,
   stepFigures,
   subqueryCaption,
-} from "@/lib/query-analysis";
-import { apiFetch } from "@/lib/api-fetch";
+} from "@/lib/performance/query-analysis";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useOrgHref } from "@/hooks/useOrg";
 

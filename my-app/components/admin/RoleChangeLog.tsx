@@ -1,16 +1,16 @@
 "use client";
 
 import { AI_KEY_LOG_SUBJECT } from "@/lib/ai/key-providers";
-import { isPermissionKey } from "@/lib/permissions";
-import { joinList, lineName } from "@/lib/role-summary";
-import type { RoleChange } from "@/lib/roles-db";
-import { timeAgo } from "@/lib/time-ago";
+import { isPermissionKey } from "@/lib/roles/permissions";
+import { joinList, lineName } from "@/lib/roles/summary";
+import type { RoleChange } from "@/lib/roles/roles-db";
+import { timeAgo } from "@/lib/ui/time-ago";
 
 /**
  * "Recent changes" on the Roles & permissions tab: who changed which role,
  * and when.
  *
- * The database keeps one row per permission turned on or off (lib/roles-db.ts
+ * The database keeps one row per permission turned on or off (lib/roles/roles-db.ts
  * says why). Read back one by one, a single save that changes six of them
  * would be six entries saying almost the same thing, so the rows of one save
  * are put back together here into one entry that names what it turned on and

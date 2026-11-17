@@ -8,7 +8,7 @@ import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { Skeleton } from "@/components/ui";
 import { SchemaMapIcon } from "@/components/ui/icons";
 import type { SchemaSnapshot } from "@/lib/postgres";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 // One self-contained visualizer pane: its own connection and schema picker, its
 // own on-demand introspection, and its own React Flow canvas. The page renders

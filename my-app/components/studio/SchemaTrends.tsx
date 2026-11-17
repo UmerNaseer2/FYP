@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, DriftIcon, RefreshIcon, TrendIcon } from "@/components/ui/icons";
-import { describeCadence } from "@/lib/drift-schedule";
+import { describeCadence } from "@/lib/drift/schedule";
 import {
   METRICS,
   buildSeries,
@@ -14,9 +14,9 @@ import {
   type MetricSample,
   type Series,
   type SeriesBox,
-} from "@/lib/metrics-series";
+} from "@/lib/performance/metrics-series";
 import type { PerfTarget } from "./PerfTargetPicker";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -37,7 +37,7 @@ import { useOrgHref } from "@/hooks/useOrg";
  *    to yet, not a flat line through a single number.
  *
  * The charts are drawn by hand. Every number on screen, every coordinate,
- * every rule, every caption, comes out of lib/metrics-series, which is pure
+ * every rule, every caption, comes out of lib/performance/metrics-series, which is pure
  * and unit-tested; this file only turns that geometry into elements.
  */
 

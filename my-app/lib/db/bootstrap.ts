@@ -2,12 +2,12 @@ import { sequelize, metadataPool, type MetadataClient } from "./sequelize";
 // Importing the models also registers every one of them with `sequelize`,
 // which is what sync() below creates.
 import { AI_CALL_OUTCOMES, Organization } from "./models";
-import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
-import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
-import { THRESHOLD_KEYS } from "../perf-thresholds";
-import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
-import { ORG_SLUG_PATTERN } from "../org-slug";
-import { ensureLocalSecrets } from "../local-store";
+import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift/schedule";
+import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift/source";
+import { THRESHOLD_KEYS } from "../performance/thresholds";
+import { DEFAULT_EXECUTE_ROLE } from "../connections/access";
+import { ORG_SLUG_PATTERN } from "../orgs/slug";
+import { ensureLocalSecrets } from "../connections/local-store";
 import {
   ADMIN_ROLE,
   BUILT_IN_ROLES,
@@ -16,7 +16,7 @@ import {
   ROLE_CHANGE_KINDS,
   presetFor,
   type BuiltInRole,
-} from "../permissions";
+} from "../roles/permissions";
 
 /**
  * Create the app's own tables, once per process.
@@ -91,10 +91,10 @@ const ORG_TABLES = [
 /**
  * The key of the database lock createEverything holds while it works.
  *
- * lib/lineage-db.ts and app/api/lineage/rebaseline/route.ts take a one-key
+ * lib/versions/lineage-db.ts and app/api/lineage/rebaseline/route.ts take a one-key
  * pg_advisory_xact_lock keyed by a tracked schema's id, and every one-key lock
  * shares a single space. Those ids are 32-bit integers, so a key above
- * 2^31 - 1 can never be one of them. (lib/family-lock.ts uses the two-key form,
+ * 2^31 - 1 can never be one of them. (lib/versions/family-lock.ts uses the two-key form,
  * which is a separate space.)
  */
 export const BOOTSTRAP_LOCK_KEY = 7_365_786_101;
@@ -235,7 +235,7 @@ async function addConstraints(): Promise<void> {
   );
   // A role key is what memberships.role holds and what the Admin screen sends
   // back, so it stays plain: lowercase letters, digits and dashes, starting
-  // with a letter or digit. roleKeyFrom in lib/permissions.ts only makes keys
+  // with a letter or digit. roleKeyFrom in lib/roles/permissions.ts only makes keys
   // of that shape; this is the rule for anything that does not go through it.
   await addCheckConstraint(
     "roles",
@@ -290,7 +290,7 @@ async function addConstraints(): Promise<void> {
     "action IN ('deploy', 'revert')"
   );
   // The score band, so a row can never say "excellent" — a word no part of the
-  // app knows how to draw. bandFor() in lib/query-score.ts is the only thing
+  // app knows how to draw. bandFor() in lib/performance/query-score.ts is the only thing
   // that produces this value and it can only produce these three.
   await addCheckConstraint(
     "query_history",
@@ -317,13 +317,13 @@ async function addConstraints(): Promise<void> {
   // rule that can never fire, which is worse than no rule: it looks set.
   await addListCheck("perf_thresholds", "perf_thresholds_key_check", "threshold_key", THRESHOLD_KEYS);
   // An organization's slug is part of every address inside it, so only the
-  // plain shape lib/org-slug.ts describes can be stored.
+  // plain shape lib/orgs/slug.ts describes can be stored.
   await addCheckConstraint(
     "organizations",
     "organizations_slug_check",
     `slug ~ '${ORG_SLUG_PATTERN}'`
   );
-  // The sign-in providers lib/accounts-db.ts knows. A subject only means
+  // The sign-in providers lib/auth/accounts-db.ts knows. A subject only means
   // something next to the provider that issued it, so a misspelled provider
   // would be an account nobody could ever sign in as again.
   await addCheckConstraint(
@@ -331,7 +331,7 @@ async function addConstraints(): Promise<void> {
     "identities_provider_check",
     "provider IN ('microsoft', 'github')"
   );
-  // The two kinds of invitation lib/invites-db.ts makes.
+  // The two kinds of invitation lib/orgs/invites-db.ts makes.
   await addCheckConstraint("invites", "invites_kind_check", "kind IN ('email', 'link')");
   // An email invitation names its address and a link names none, so the
   // question "who was this for?" always has the one answer the kind implies.
@@ -377,7 +377,7 @@ async function addFunctionalIndexes(): Promise<void> {
   );
   await metadataPool.query(`DROP INDEX IF EXISTS roles_label_key`);
   // One invitation waiting per address in an organization. Inviting someone
-  // again cancels the one before (lib/invites-db.ts), and this is what stops
+  // again cancels the one before (lib/orgs/invites-db.ts), and this is what stops
   // two Admins doing it at the same moment from leaving two live links to one
   // person. Used and cancelled ones are history and can be many.
   await metadataPool.query(
@@ -453,7 +453,7 @@ export async function setUpRoles(): Promise<void> {
 
 /**
  * Write the built-in roles into one organization, and give each the preset
- * permissions (presetFor in lib/permissions.ts) it has not been given yet.
+ * permissions (presetFor in lib/roles/permissions.ts) it has not been given yet.
  *
  * This must not undo an admin's work: if they untick "Connections: Delete" for
  * editors, the next boot cannot tick it again. But a permission added to the
@@ -544,7 +544,7 @@ async function backfillOlderTables(): Promise<void> {
   );
 
   // A version that every save moves on, and who saved last, so a save that
-  // started from an older copy is turned down (lib/connection-writes.ts).
+  // started from an older copy is turned down (lib/connections/writes.ts).
   await metadataPool.query(
     `ALTER TABLE connections
        ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
@@ -647,7 +647,7 @@ async function backfillOlderTables(): Promise<void> {
   );
 
   // Which table on a target database names the applications it hosts, for the
-  // per-application script restriction (lib/application-targeting.ts).
+  // per-application script restriction (lib/deploy/application-targeting.ts).
   // Nullable with no default on purpose: a default would be this app guessing
   // a table name on somebody's database, and a wrong guess there reads as
   // "this target hosts nothing" and blocks every restricted script.
@@ -670,7 +670,7 @@ async function backfillOlderTables(): Promise<void> {
   // in practice: before this column, any editor could deploy to any saved
   // connection. Backfilling 'none' would have been the safe-looking choice and
   // the wrong one — it would stop every deployment in an existing install with
-  // no message anybody could act on. See lib/connection-access.ts.
+  // no message anybody could act on. See lib/connections/access.ts.
   await metadataPool.query(
     `ALTER TABLE connections
        ADD COLUMN IF NOT EXISTS execute_role TEXT NOT NULL DEFAULT '${DEFAULT_EXECUTE_ROLE}'`
@@ -1205,7 +1205,7 @@ async function createEverything(stamp: string | null): Promise<void> {
     // organization, so seeding "Viewer" into a second one would fail on it.
     await addFunctionalIndexes();
     // Before backfillMemberships and before the first profile is written:
-    // both give people a role, and resolveIdentity (lib/accounts-db.ts)
+    // both give people a role, and resolveIdentity (lib/auth/accounts-db.ts)
     // waits for this whole function.
     await setUpRoles();
     await backfillMemberships(defaultId);
@@ -1253,7 +1253,7 @@ export function syncMetadataTables(): Promise<void> {
       throw error;
     });
   }
-  // This machine's local passwords (lib/local-store) are read on the same
+  // This machine's local passwords (lib/connections/local-store) are read on the same
   // first request. It does nothing without LOCAL_DATABASE_URL, returns at once
   // once loaded, and never throws.
   return Promise.all([inFlight, ensureLocalSecrets()]).then(() => undefined);

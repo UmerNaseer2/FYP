@@ -9,9 +9,9 @@ import {
   RouteIcon,
   SignOutIcon,
 } from "@/components/ui/icons";
-import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
-import { replayIntro } from "@/lib/intro";
-import { readTourMemory, startTour } from "@/lib/tour";
+import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/roles/permissions";
+import { replayIntro } from "@/lib/ui/intro";
+import { readTourMemory, startTour } from "@/lib/ui/tour";
 import { useOrg } from "@/hooks/useOrg";
 import type { StudioUser } from "./StudioSidebar";
 

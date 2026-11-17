@@ -5,7 +5,7 @@ import Link from "next/link";
 import { TargetPicker } from "@/components/studio/TargetPicker";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { AlertCircleIcon } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -94,7 +94,7 @@ export function PerfTargetPicker({
           setSchemaPhase("ready");
           return;
         }
-        // Only PostgreSQL: every rule in lib/perf-advice is a PostgreSQL rule,
+        // Only PostgreSQL: every rule in lib/performance/advice is a PostgreSQL rule,
         // and pg_stat_user_tables is not a view any other engine has.
         const usable = data.filter((c: ConnectionRow) => c.type === "PostgreSQL");
         setConnections(usable);

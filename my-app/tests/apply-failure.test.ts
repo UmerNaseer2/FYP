@@ -1,7 +1,7 @@
 // readApplyFailure: how a failed answer from the apply route is read. It
 // decides what the Deploy page's rows, toast, header and recovery bar claim
 // about the target afterwards.
-import { readApplyFailure } from "@/lib/apply-failure";
+import { readApplyFailure } from "@/lib/deploy/apply-failure";
 
 describe("readApplyFailure", () => {
   it("cannot say how the run ended without an answer it can read", () => {

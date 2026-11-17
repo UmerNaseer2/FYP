@@ -1,5 +1,5 @@
 // role-summary: the words the Roles & permissions tab uses about a role
-// (lib/role-summary.ts). Pure functions, so every sentence is checked here
+// (lib/roles/summary.ts). Pure functions, so every sentence is checked here
 // without a screen:
 //
 //   - lists read as words, with "N more" past the limit and semicolons when
@@ -16,7 +16,7 @@
 //   - and a permission this build no longer has keeps its key as its name.
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
-import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/permissions";
+import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/roles/permissions";
 import {
   ADMIN_COPY_NOTE,
   ADMIN_ONLY_LINE,
@@ -30,7 +30,7 @@ import {
   lineName,
   roleSummary,
   toggleHint,
-} from "@/lib/role-summary";
+} from "@/lib/roles/summary";
 
 const VIEWER: readonly string[] = presetFor("viewer") ?? [];
 const EDITOR: readonly string[] = presetFor("editor") ?? [];

@@ -50,8 +50,8 @@ describeWithDatabase("requests in a real metadata database", () => {
   // The code under test. Imported after DATABASE_URL_A points at the fresh
   // database, so it uses the one Sequelize pool made for it.
   let sequelize: typeof import("@/lib/db/sequelize").sequelize;
-  let requests: typeof import("@/lib/access-requests-db");
-  let approvals: typeof import("@/lib/approvals-db");
+  let requests: typeof import("@/lib/roles/access-requests-db");
+  let approvals: typeof import("@/lib/deploy/approvals-db");
 
   let orgA: Org;
   let orgB: Org;
@@ -177,8 +177,8 @@ describeWithDatabase("requests in a real metadata database", () => {
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     ({ sequelize } = await import("@/lib/db/sequelize"));
-    requests = await import("@/lib/access-requests-db");
-    approvals = await import("@/lib/approvals-db");
+    requests = await import("@/lib/roles/access-requests-db");
+    approvals = await import("@/lib/deploy/approvals-db");
 
     db = await connectTo(url);
     [orgA] = await rows<Org>(`SELECT id FROM organizations WHERE is_default`);

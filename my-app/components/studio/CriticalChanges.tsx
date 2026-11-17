@@ -1,4 +1,4 @@
-import type { ChangeRow, DiffDocument } from "@/lib/compare-export";
+import type { ChangeRow, DiffDocument } from "@/lib/compare/export";
 import { AlertTriangleIcon, ChevronDownIcon } from "@/components/ui/icons";
 
 // ---------------------------------------------------------------------------

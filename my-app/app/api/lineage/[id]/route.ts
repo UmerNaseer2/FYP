@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { getLineageDetail, type LineageDetail } from "@/lib/lineage-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { getLineageDetail, type LineageDetail } from "@/lib/versions/lineage-db";
 
 // Re-export so the screen can import the shape from the route it calls.
 export type { LineageDetail };

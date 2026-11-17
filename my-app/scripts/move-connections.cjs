@@ -49,7 +49,7 @@ const {
 } = require("./move-data.cjs");
 
 // ---------------------------------------------------------------------------
-// Local connections. A copy of lib/local-secrets.ts and lib/local-store.ts,
+// Local connections. A copy of lib/connections/local-secrets.ts and lib/connections/local-store.ts,
 // because this script runs without the app's TypeScript. The test pins the two
 // together.
 // ---------------------------------------------------------------------------

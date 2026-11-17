@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
-import { requirePermission } from "@/lib/auth-guard";
-import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { actorFor } from "@/lib/auth-mode";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/roles/permissions";
+import { actorFor } from "@/lib/auth/mode";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
-import { containsTransactionControl } from "@/lib/sql-guard";
-import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/script-transaction";
-import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/run-settings";
-import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
-import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
-import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/script-status";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
+import { containsTransactionControl } from "@/lib/sql/guard";
+import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/deploy/script-transaction";
+import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/deploy/run-settings";
+import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy/attempts";
+import { recordDeployAttempt } from "@/lib/deploy/attempts-db";
+import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/versions/script-status";
 import {
   checkNewestFirst,
   listVersions,
@@ -21,14 +21,14 @@ import {
   MAX_ROLLBACK_VERSIONS,
   resolveRollback,
   vLabel,
-} from "@/lib/rollback-plan";
-import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
-import { claimApproval, releaseApproval } from "@/lib/approvals-db";
-import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
-import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
-import type { ChangeLevel } from "@/lib/change-level";
+} from "@/lib/deploy/rollback-plan";
+import { lockScriptFamilies, lockScriptVersion } from "@/lib/versions/family-lock";
+import { claimApproval, releaseApproval } from "@/lib/deploy/approvals-db";
+import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/deploy/commit-outcome";
+import { recordAppliedMigrationToLineage } from "@/lib/versions/lineage-db";
+import type { ChangeLevel } from "@/lib/versions/change-level";
 import { randomUUID } from "node:crypto";
-import { isRunId } from "@/lib/run-id";
+import { isRunId } from "@/lib/deploy/run-id";
 import {
   beginCommit,
   DUPLICATE_RUN_MESSAGE,
@@ -40,7 +40,7 @@ import {
   throwIfStopped,
   unregisterRun,
   type RunEntry,
-} from "@/lib/run-limits";
+} from "@/lib/deploy/run-limits";
 
 // ---------------------------------------------------------------------------
 // POST /api/scripts/revert — undo one or more applied versions of ONE script
@@ -52,7 +52,7 @@ import {
 // be deployed again. "Roll back to v1.0.0" sends every version above v1.0.0;
 // they all come off, or none do.
 //
-// Which rollback runs (lib/rollback-plan.ts resolveRollback): the copy stored
+// Which rollback runs (lib/deploy/rollback-plan.ts resolveRollback): the copy stored
 // on the ledger row wins, because it was written in the same transaction as
 // the migration it undoes. The registry copy the page sends (v<ver>.down.sql)
 // is used only when the row has none. This route never calls GitHub.
@@ -128,7 +128,7 @@ type RevertBody = {
   registryRollbacks?: unknown;
   /** Run everything, then ROLLBACK: reports what would happen and changes nothing. */
   dryRun?: unknown;
-  /** Names this run for the Stop button: see lib/run-limits.ts. */
+  /** Names this run for the Stop button: see lib/deploy/run-limits.ts. */
   runId?: unknown;
 };
 
@@ -180,7 +180,7 @@ function parseRequest(body: RevertBody): RevertRequest | string {
   if (!Array.isArray(rawVersions) || rawVersions.length === 0) {
     return `Say which versions to roll back: versions must list 1 to ${MAX_ROLLBACK_VERSIONS} versions, like ["2.0.0", "1.1.0"].`;
   }
-  // The cap lives in lib/rollback-plan.ts, shared with the Deploy page and
+  // The cap lives in lib/deploy/rollback-plan.ts, shared with the Deploy page and
   // the approvals route: the page never offers a longer rollback, and no
   // approval is recorded for one this route would refuse. A family further
   // back than the cap is rolled back in several steps.
@@ -309,7 +309,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   if (typeof parsed === "string") return fail(400, { error: parsed });
 
   const { connectionId, schemaName, scriptName: name, versions, dryRun, runId } = parsed;
-  // The time limits this run goes by: see lib/run-limits.ts.
+  // The time limits this run goes by: see lib/deploy/run-limits.ts.
   const limits = runLimits({ dryRun });
   attempt.connectionId = connectionId;
   attempt.schemaName = schemaName;
@@ -426,7 +426,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   const client = connected;
   // Errors the connection reports on its own, such as the database ending the
   // session between two queries. Without a listener one would crash the whole
-  // server. The first is kept, and the run reports it (lib/run-limits.ts).
+  // server. The first is kept, and the run reports it (lib/deploy/run-limits.ts).
   const clientError = keepFirstClientError(client);
 
   // PostgreSQL reports cascaded drops ("drop cascades to view x") and skipped
@@ -458,7 +458,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
   let runCommitted = false;
   let commitOutcomeUnknown = false;
   // This run's entry in the list of runs the Stop button and the time limit
-  // can reach (lib/run-limits.ts). Null until registered.
+  // can reach (lib/deploy/run-limits.ts). Null until registered.
   let run: RunEntry | null = null;
 
   // Refuse from inside the transaction: undo it (nothing ran yet), then answer.
@@ -513,7 +513,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     // waits below. 55P03 is turned into a readable message in the catch.
     await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
 
-    // The family lock is the same key the apply route takes (lib/family-lock.ts),
+    // The family lock is the same key the apply route takes (lib/versions/family-lock.ts),
     // so a deploy and a rollback of the same script never interleave. The
     // per-version locks match apply's per-version keys too; they are taken only
     // while the family lock is held, in sorted order, so they cannot deadlock.
@@ -532,12 +532,12 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
       searchPath: await runSearchPath(client, schemaName),
       lockTimeoutMs: LOCK_TIMEOUT_MS,
       // Generous, as for a deploy: there only so that a statement that never
-      // ends cannot hold the connection for good. See lib/run-limits.ts.
+      // ends cannot hold the connection for good. See lib/deploy/run-limits.ts.
       statementTimeoutMs: limits.statementMs,
     };
 
     // Put the settings in place (search_path, and reading strings the way
-    // lib/sql-guard did), then note which transaction this is, so a down
+    // lib/sql/guard did), then note which transaction this is, so a down
     // script that ends it is noticed. See lib/script-transaction.
     await applyRunSettings(client, runSettings);
     const runTransactionId = await currentTransactionId(client);
@@ -1030,7 +1030,7 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
 
     // A run that hit one of its time limits, was stopped with the Stop
     // button, or had its session ended by the database is not a broken
-    // rollback either. See lib/run-limits.ts.
+    // rollback either. See lib/deploy/run-limits.ts.
     const stopped = runStopMessage([error, clientError()], run, {
       kind: "rollback",
       dryRun,

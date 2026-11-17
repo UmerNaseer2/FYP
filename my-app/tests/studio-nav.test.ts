@@ -46,7 +46,7 @@ import {
   presetFor,
   readKeyOf,
   type FeatureKey,
-} from "@/lib/permissions";
+} from "@/lib/roles/permissions";
 
 const ROOT = path.join(__dirname, "..");
 
@@ -158,7 +158,7 @@ describe("the list of screens", () => {
 
   test("gives every row a feature the permission catalogue knows", () => {
     // A row is shown when the role may Read its feature. A feature missing
-    // from lib/permissions has no Read box anywhere, so its row would be
+    // from lib/roles/permissions has no Read box anywhere, so its row would be
     // hidden from every role, admin included, and nothing would say why.
     const known = new Set<string>(FEATURES.map((feature) => feature.key));
     for (const item of NAV_ITEMS) {
@@ -250,7 +250,7 @@ describe("deciding which screen you are on", () => {
   });
 
   test("never takes a screen's name for an organization", () => {
-    // The screens' names are kept back from organizations (lib/org-slug.ts),
+    // The screens' names are kept back from organizations (lib/orgs/slug.ts),
     // so "/drift/..." is the drift screen and not an organization named drift.
     expect(activeNavItem("/drift/acme").screen).toBe("Drift");
   });

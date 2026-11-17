@@ -8,7 +8,7 @@ import {
   setOptionLabel,
   validateSaveInput,
   type SaveComparisonSetInput,
-} from "@/lib/comparison-set-rules";
+} from "@/lib/compare/set-rules";
 
 /**
  * Saved comparison sets, minus the database: what a save request is read as,

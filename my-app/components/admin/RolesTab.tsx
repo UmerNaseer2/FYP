@@ -10,7 +10,7 @@ import {
   presetFor,
   withToggled,
   type PermissionKey,
-} from "@/lib/permissions";
+} from "@/lib/roles/permissions";
 import {
   ADMIN_COPY_NOTE,
   changeSentences,
@@ -19,8 +19,8 @@ import {
   roleSummary,
   toggleHint,
   type ToggleHint,
-} from "@/lib/role-summary";
-import type { RoleChange, RoleSummary } from "@/lib/roles-db";
+} from "@/lib/roles/summary";
+import type { RoleChange, RoleSummary } from "@/lib/roles/roles-db";
 import { Button, Card, ConfirmDialog, EmptyState, Input, Label, Skeleton } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
 import { HelpHint } from "@/components/ui/HelpHint";
@@ -40,7 +40,7 @@ import { PermissionList } from "./PermissionList";
 import { PermissionsGuide } from "./PermissionsGuide";
 import { RoleChangeLog } from "./RoleChangeLog";
 import { RoleCompare } from "./RoleCompare";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 /**
  * The Roles & permissions tab on the Admin screen: every role, what each one
@@ -53,9 +53,9 @@ import { apiFetch } from "@/lib/api-fetch";
  * thrown away, so looking at another role on the way loses nothing.
  *
  * Nothing here decides what a role may hold. Turning a line on also turns on
- * its feature's see line (withToggled in lib/permissions.ts), and the server
- * applies the same rules again whatever this screen sends (lib/roles-db.ts).
- * lib/role-summary.ts only puts what they decided into words.
+ * its feature's see line (withToggled in lib/roles/permissions.ts), and the server
+ * applies the same rules again whatever this screen sends (lib/roles/roles-db.ts).
+ * lib/roles/summary.ts only puts what they decided into words.
  */
 
 /**

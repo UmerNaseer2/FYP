@@ -10,7 +10,7 @@ import {
   describeRowSecurity,
   droppedColumnSeverity,
   objectDiffSeverity,
-} from "@/lib/compare";
+} from "@/lib/compare/diff";
 import type {
   ColumnChange,
   ColumnSnapshot,
@@ -21,7 +21,7 @@ import type {
   ObjectKind,
   TableMatch,
   TableSnapshot,
-} from "@/lib/compare-types";
+} from "@/lib/compare/types";
 import { CheckIcon } from "@/components/ui/icons";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { HelpHint } from "@/components/ui/HelpHint";
@@ -40,7 +40,7 @@ import { HelpHint } from "@/components/ui/HelpHint";
 // No "use client" of its own, but it is NOT a server component: the compare
 // page is a client component, so this is compiled into the browser bundle along
 // with it. That is fine and is the reason it may only import pure modules,
-// lib/compare grades changes and opens no connection. It also means every group
+// lib/compare/diff grades changes and opens no connection. It also means every group
 // here collapses through a native <details>, with no state and no effects, so
 // nothing about being in the bundle costs anything to hydrate. The one thing
 // here with state is the small "?" note (HelpHint), which holds the
@@ -60,7 +60,7 @@ type DiffKind = "add" | "rem" | "chg";
  *   "armed": a script is rendered and its DROP statements will run.
  *
  * These map 1:1 onto generateMigration()'s allowDataLoss option, see
- * lib/generate-sql.ts, which is the only thing that actually emits SQL.
+ * lib/sql/generate.ts, which is the only thing that actually emits SQL.
  */
 export type DropMode = "none" | "safe" | "armed";
 
@@ -183,7 +183,7 @@ function columnBody(col: ColumnSnapshot) {
 
 // This file used to carry a changeKindOf() that re-derived each change's
 // severity by string-matching the compare engine's prose. It is gone: a
-// ColumnChange now arrives already graded by lib/compare.ts, which is also
+// ColumnChange now arrives already graded by lib/compare/diff.ts, which is also
 // where the migration generator gets its grades from. Rewording a message can
 // no longer mis-colour the report, and the four changes that had no matching
 // branch at all, default, generated, unique and foreign-key participation,
@@ -560,7 +560,7 @@ function matchBreakdown(match: TableMatch): Breakdown {
   // One test, not two. A column can be renamed AND have its type or nullability
   // changed; it is still one column and one card row, and counting it in a
   // "changed" list and a "renamed" list made the chips read ~2 for it. This is
-  // the same test compare-summary.ts uses for the Columns row of the matrix, so
+  // the same test lib/compare/summary.ts uses for the Columns row of the matrix, so
   // the chips and the matrix now agree by construction.
   const changedCols = match.columnMatches.filter(
     (c) => c.changes.length > 0 || !c.exact,
@@ -620,7 +620,7 @@ function grantsOfNewTables(report: CompareReport): Map<string, ObjectDiff[]> {
 /**
  * Worst-case severity for a matched table, used for its header pill.
  *
- * Every clause below defers to a grader in lib/compare.ts. None of them decides
+ * Every clause below defers to a grader in lib/compare/diff.ts. None of them decides
  * anything here, because the pill and the script have to agree about the same
  * table and there is only one way to guarantee that.
  */

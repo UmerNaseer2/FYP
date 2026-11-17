@@ -25,8 +25,8 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import DriftPage from "@/app/[org]/(studio)/drift/page";
-import type { CompareReport } from "@/lib/compare-types";
-import type { DriftDetailView, TrackedSchemaListItem } from "@/lib/lineage-db";
+import type { CompareReport } from "@/lib/compare/types";
+import type { DriftDetailView, TrackedSchemaListItem } from "@/lib/versions/lineage-db";
 import {
   fetchCalls,
   render,

@@ -21,10 +21,10 @@
 
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import type { CompareScreen } from "../compare-run";
-import { buildDiffDocument, type ChangeRow } from "../compare-export";
+import type { CompareScreen } from "../compare/run";
+import { buildDiffDocument, type ChangeRow } from "../compare/export";
 import type { SchemaSnapshot } from "../postgres";
-import type { PermissionKey } from "../permissions";
+import type { PermissionKey } from "../roles/permissions";
 import type { AiToolSpec } from "./provider";
 import { knownNames } from "./checks";
 import { tableText, viewText } from "./context";

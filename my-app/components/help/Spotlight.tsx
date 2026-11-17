@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { HelpIcon } from "@/components/ui/icons";
-import { boxAround, firstOnScreen, lightUp } from "@/lib/tour";
+import { boxAround, firstOnScreen, lightUp } from "@/lib/ui/tour";
 
 const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -24,7 +24,7 @@ type SpotlightProps = {
  *   </Spotlight>
  *
  * It borrows the tour's look (the .tour, .tr-hole and .tr-card styles in
- * globals.css) and its placing code (lib/tour.ts), so the two never drift
+ * globals.css) and its placing code (lib/ui/tour.ts), so the two never drift
  * apart. Got it, Escape, or a click anywhere ends it, and focus then moves to
  * the control when it can take focus. For someone who asked for less motion
  * the page jumps to the control instead of gliding and the ring stays still.

@@ -6,16 +6,16 @@ import { useUser } from "@/hooks/useUser";
 import { Button, Card, ConfirmDialog, Input, Label, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, AlertTriangleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { apiFetch } from "@/lib/api-fetch";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
-import type { GitHubSettingsView } from "@/lib/github-settings";
-import { refusalMessage } from "@/lib/permissions";
-import { timeAgo } from "@/lib/time-ago";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
+import type { GitHubSettingsView } from "@/lib/github/settings";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { timeAgo } from "@/lib/ui/time-ago";
 
 /**
  * The GitHub tab on the Admin screen: the repository this organization keeps
  * its scripts in, and the access token the app uses for it. Out of the box
- * only the admin role has the GitHub registry permissions (lib/permissions.ts),
+ * only the admin role has the GitHub registry permissions (lib/roles/permissions.ts),
  * and app/api/admin/github/route.ts checks them again on every request.
  *
  * The token never comes back to the browser, not even for an Admin: the route

@@ -1,5 +1,5 @@
 /**
- * lib/api-answer.ts: reading what an API route answered, for the screens that
+ * lib/ui/api-answer.ts: reading what an API route answered, for the screens that
  * show a refusal in the route's own words.
  *
  * Every route here refuses with `{ error: "..." }`, but something else can
@@ -7,7 +7,7 @@
  * through. Each of those has to come back as null, never as a throw or as
  * something to print, so the screen falls back to wording of its own.
  */
-import { errorFrom, jsonOf } from "@/lib/api-answer";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
 
 describe("errorFrom", () => {
   test("gives a route's refusal in its own words", () => {

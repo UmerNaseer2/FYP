@@ -1,6 +1,6 @@
 // /api/internal/drift-tick: the scheduled call that wakes the drift checker.
 //
-// proxy.ts lets this path through with no session (lib/public-paths.ts), so the
+// proxy.ts lets this path through with no session (lib/auth/public-paths.ts), so the
 // shared secret here is the whole check. A mistake in it would let anyone on
 // the internet set off database work for every organization.
 import { GET, maxDuration } from "@/app/api/internal/drift-tick/route";
@@ -9,7 +9,7 @@ const SECRET = "made-up-secret-for-this-test-only-0123456789";
 
 const mockDisabled = jest.fn<string | null, []>(() => null);
 const mockTick = jest.fn(async () => ({ kind: "shared", line: "unused" }));
-jest.mock("../lib/drift-scheduler", () => ({
+jest.mock("../lib/drift/scheduler", () => ({
   disabledReason: () => mockDisabled(),
   runSchedulerTick: () => mockTick(),
 }));

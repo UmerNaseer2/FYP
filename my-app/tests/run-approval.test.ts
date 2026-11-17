@@ -5,16 +5,16 @@
 // Admins) can ask an Admin to approve one exact run, and then run that run
 // once. These tests follow the rule through the three routes that carry it
 // (apply, revert, and the approvals POST that records the asking) and the two
-// places in lib/approvals-db that keep a one-off approval with its owner.
+// places in lib/deploy/approvals-db that keep a one-off approval with its owner.
 //
 // The target database is the fake client from helpers/fake-pg, and the
 // metadata database a stand-in pool. Nothing here reaches a real database or
 // GitHub.
 import { NextRequest } from "next/server";
-import { askToRunRefusal } from "@/lib/connection-access";
-import { hasPermission } from "@/lib/permissions";
-import type { Principal } from "@/lib/auth-guard";
-import type { DeployApproval } from "@/lib/approvals-db";
+import { askToRunRefusal } from "@/lib/connections/access";
+import { hasPermission } from "@/lib/roles/permissions";
+import type { Principal } from "@/lib/auth/guard";
+import type { DeployApproval } from "@/lib/deploy/approvals-db";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { principalFor, TEST_ORG } from "./helpers/principals";
@@ -28,9 +28,9 @@ import { principalFor, TEST_ORG } from "./helpers/principals";
 // the viewer away at the door, and these tests would see it.
 let mockPrincipal: Principal;
 const mockGateAsked: string[] = [];
-jest.mock("../lib/auth-guard", () => {
+jest.mock("../lib/auth/guard", () => {
   const { NextResponse } = require("next/server");
-  const permissions = require("../lib/permissions");
+  const permissions = require("../lib/roles/permissions");
   return {
     requirePermission: async (...keys: string[]) => {
       mockGateAsked.push(...keys);
@@ -44,7 +44,7 @@ jest.mock("../lib/auth-guard", () => {
 // only the saved-connection lookups of the three routes reach it, plus the
 // real claimApproval in the last block.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -55,19 +55,19 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: () => ({}),
 }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchema: async () => null,
   recordAppliedMigrationToLineage: async () => ({ advanced: false }),
 }));
 // Left unmocked, a run that reaches COMMIT would write to a real registry
 // repository (see tests/apply-risk.test.ts).
-jest.mock("../lib/registry-archive", () => ({
+jest.mock("../lib/github/registry-archive", () => ({
   archiveAppliedVersions: async () => null,
 }));
-jest.mock("../lib/deploy-attempts-db", () => ({
+jest.mock("../lib/deploy/attempts-db", () => ({
   recordDeployAttempt: async () => undefined,
 }));
 
@@ -76,13 +76,13 @@ jest.mock("../lib/deploy-attempts-db", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
 const mockCreate = jest.fn<Promise<unknown>, unknown[]>(async () => ({ id: 1 }));
-jest.mock("../lib/approvals-db", () => ({
-  ...jest.requireActual("../lib/approvals-db"),
+jest.mock("../lib/deploy/approvals-db", () => ({
+  ...jest.requireActual("../lib/deploy/approvals-db"),
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
   createApprovalRequest: (...args: unknown[]) => mockCreate(...args),
 }));
-const realApprovals = jest.requireActual<typeof import("../lib/approvals-db")>("../lib/approvals-db");
+const realApprovals = jest.requireActual<typeof import("../lib/deploy/approvals-db")>("../lib/deploy/approvals-db");
 
 let applyPOST: typeof import("../app/api/scripts/apply/route").POST;
 let revertPOST: typeof import("../app/api/scripts/revert/route").POST;
@@ -433,7 +433,7 @@ describe("asking (POST /api/deploy/approvals)", () => {
   });
 });
 
-describe("whose approval a run may spend (lib/approvals-db)", () => {
+describe("whose approval a run may spend (lib/deploy/approvals-db)", () => {
   const RUN = [{ scriptName: "orders_fix", version: "1.0.0", sqlContent: "CREATE TABLE orders (id int);" }];
   const INPUT = {
     orgId: TEST_ORG.id, connectionId: 3, schemaName: "sales", scripts: RUN, action: "deploy" as const,

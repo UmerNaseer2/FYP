@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { AlertTriangleIcon, CheckIcon } from "@/components/ui/icons";
-import { countOf } from "@/lib/plural";
+import { countOf } from "@/lib/ui/plural";
 
 /**
  * Where one of the Source's versions stands on the Target:

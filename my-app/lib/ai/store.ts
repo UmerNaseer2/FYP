@@ -10,7 +10,7 @@
 // Old rows are cleared out at most once an hour (pruneOldAiRows): usage rows
 // after 90 days, saved answers once they are past their week.
 import { createHash } from "node:crypto";
-import pool, { syncMetadataTables } from "../version-db";
+import pool, { syncMetadataTables } from "../db/version-db";
 import type { AI_CALL_OUTCOMES } from "../db/models";
 import { AI_FEATURES, type AiFeature } from "./prompts";
 

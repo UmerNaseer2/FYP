@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 /**
- * The app tour's words and rules (lib/tour.ts): when it is offered, what it
+ * The app tour's words and rules (lib/ui/tour.ts): when it is offered, what it
  * remembers, which stops each role sees, and the choices on the last card.
  *
  * What is NOT here: drawing the cards and moving between pages. That is
@@ -10,7 +10,7 @@
 
 import { readFileSync, readdirSync } from "fs";
 import path from "path";
-import type { PermissionKey } from "@/lib/permissions";
+import type { PermissionKey } from "@/lib/roles/permissions";
 import {
   START_TOUR_EVENT,
   readTourMemory,
@@ -22,7 +22,7 @@ import {
   withoutTourParam,
   writeTourMemory,
   type TourAudience,
-} from "@/lib/tour";
+} from "@/lib/ui/tour";
 
 // Every page on the rail, as an Admin sees it.
 const ALL_PAGES = ["/studio", "/connections", "/compare", "/script-editor", "/deploy", "/versionsync", "/drift", "/requests"];

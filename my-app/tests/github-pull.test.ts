@@ -14,15 +14,15 @@ import { principalFor } from "./helpers/principals";
 const mockRequirePermission = jest.fn(
   async (): Promise<unknown> => ({ ok: true, principal: principalFor("viewer") }),
 );
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: () => mockRequirePermission(),
 }));
 
-// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// Each organization's own GitHub settings (lib/github/org-store.ts) are kept
 // in the metadata database, which these tests do not have. Organization 12 has
 // settings of its own: the server's repository, with a token of its own. No
 // other organization has any, so the default one falls back to the server's
-// keys and any other has no GitHub at all (lib/github-config.ts).
+// keys and any other has no GitHub at all (lib/github/config.ts).
 const ORG_TOKEN = "org-token-not-real";
 function savedSettings(orgId: number): unknown {
   return orgId === 12
@@ -30,7 +30,7 @@ function savedSettings(orgId: number): unknown {
     : null;
 }
 const mockReadOrgGitHub = jest.fn();
-jest.mock("../lib/org-github-store", () => ({
+jest.mock("../lib/github/org-store", () => ({
   readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
 }));
 
@@ -343,7 +343,7 @@ describe("GET /api/github/pull", () => {
 
 describe("GET /api/github/pull, organizations", () => {
   // Organization 12 is not the default one, so its scripts sit under
-  // orgs/12/ (lib/registry-paths.ts). The stub answers only the addresses a
+  // orgs/12/ (lib/github/registry-paths.ts). The stub answers only the addresses a
   // test names, so a walk that strayed into another organization's folder,
   // or into the repository root, fails the test.
   function asOrganization12(): void {

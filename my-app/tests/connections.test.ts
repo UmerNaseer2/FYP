@@ -8,16 +8,16 @@ import {
   validateConnection,
   summariseErrors,
   DEFAULT_SSL_MODE,
-} from "@/lib/connection-validate";
-import { parsePostgresUri, uriToFields } from "@/lib/parse-uri";
-import { checkConnectableHost, runConnectionTest } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+} from "@/lib/connections/validate";
+import { parsePostgresUri, uriToFields } from "@/lib/connections/parse-uri";
+import { checkConnectableHost, runConnectionTest } from "@/lib/connections/config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
 import {
   migrationFileName,
   rollbackFileName,
   parseRegistryFileName,
   groupRegistryFiles,
-} from "@/lib/registry-paths";
+} from "@/lib/github/registry-paths";
 
 /**
  * Connection validation and the registry naming rules.

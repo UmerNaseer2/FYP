@@ -14,7 +14,7 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DiffReport } from "@/components/studio/DiffReport";
-import type { CompareReport, ObjectDiff } from "@/lib/compare-types";
+import type { CompareReport, ObjectDiff } from "@/lib/compare/types";
 import { schema } from "./helpers/snapshots";
 
 /**

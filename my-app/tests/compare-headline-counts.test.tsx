@@ -9,10 +9,10 @@
 // report to one answer: the grants of something new go with it.
 import "@testing-library/jest-dom";
 import { cleanup, render, screen } from "@testing-library/react";
-import { comesWithNewObject, compareSchemas } from "@/lib/compare";
-import { buildDiffDocument } from "@/lib/compare-export";
-import { countedChanges } from "@/lib/compare-export-format";
-import { summaryRows } from "@/lib/compare-summary";
+import { comesWithNewObject, compareSchemas } from "@/lib/compare/diff";
+import { buildDiffDocument } from "@/lib/compare/export";
+import { countedChanges } from "@/lib/compare/export-format";
+import { summaryRows } from "@/lib/compare/summary";
 import { DiffReport, describeParts, tallyDelta } from "@/components/studio/DiffReport";
 import type { PrivilegeSnapshot, SchemaSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";

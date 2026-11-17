@@ -1,5 +1,5 @@
-import type { CompareReport } from "@/lib/compare-types";
-import { summaryRows } from "@/lib/compare-summary";
+import type { CompareReport } from "@/lib/compare/types";
+import { summaryRows } from "@/lib/compare/summary";
 import { dropModeFrom, type ReportSides } from "@/components/studio/DiffReport";
 import { ChevronDownIcon } from "@/components/ui/icons";
 

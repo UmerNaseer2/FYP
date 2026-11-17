@@ -6,7 +6,7 @@
 // nobody in that time. The engine now scores each column pair once, without
 // building its list of changes, and past a limit it does not look for renamed
 // tables at all.
-import { compareSchemas, renameMatchingSkipped } from "@/lib/compare";
+import { compareSchemas, renameMatchingSkipped } from "@/lib/compare/diff";
 import { column, schema, table } from "./helpers/snapshots";
 
 /** `tables` tables of `columns` columns each, every name starting with `prefix`. */

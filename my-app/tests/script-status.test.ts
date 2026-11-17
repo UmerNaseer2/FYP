@@ -1,4 +1,4 @@
-import { familyVersions } from "@/lib/registry-push";
+import { familyVersions } from "@/lib/github/registry-push";
 import {
   FIRST_VERSION,
   bumpToLevel,
@@ -17,7 +17,7 @@ import {
   suggestBumpLevel,
   versionKey,
   versionParts,
-} from "@/lib/script-status";
+} from "@/lib/versions/script-status";
 
 describe("version parsing", () => {
   it("drops a leading v and pads to three parts when comparing", () => {

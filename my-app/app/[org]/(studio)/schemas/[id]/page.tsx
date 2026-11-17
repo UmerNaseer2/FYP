@@ -10,8 +10,8 @@ import {
   Timeline,
   TimelineNode,
 } from "@/components/ui";
-import { countOf } from "@/lib/plural";
-import { displayVersion } from "@/lib/version-timeline";
+import { countOf } from "@/lib/ui/plural";
+import { displayVersion } from "@/lib/versions/timeline";
 import {
   ChevronLeftIcon,
   AlertTriangleIcon,
@@ -23,17 +23,17 @@ import { HelpHint } from "@/components/ui/HelpHint";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
-import { utcStamp } from "@/lib/format-date";
+import { utcStamp } from "@/lib/ui/format-date";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
-import { recordRecent } from "@/lib/recents";
+import { recordRecent } from "@/lib/ui/recents";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
   LineageDetail,
   LineageNode,
   DriftStatus,
-} from "@/lib/lineage-db";
-import { apiFetch } from "@/lib/api-fetch";
+} from "@/lib/versions/lineage-db";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import "@/app/styles/atelier-schema.css";
 
 /**

@@ -3,7 +3,7 @@
  * get mail at, and whether GitHub has checked that address.
  *
  * The last part decides whether somebody new can have an account at all
- * (lib/accounts-db.ts makes one only for a checked address), so an address
+ * (lib/auth/accounts-db.ts makes one only for a checked address), so an address
  * must only ever be marked checked when GitHub says so in so many words.
  *
  * fetch is replaced with a stub that answers the two addresses GitHub's API

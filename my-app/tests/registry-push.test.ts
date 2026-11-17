@@ -28,7 +28,7 @@ import {
   validateRegistrySegment,
   validateScriptName,
   type RegistryEntry,
-} from "@/lib/registry-push";
+} from "@/lib/github/registry-push";
 
 describe("validateRegistrySegment", () => {
   it("accepts ordinary database and schema names", () => {

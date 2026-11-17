@@ -1,5 +1,5 @@
-import { compareSchemas } from "@/lib/compare";
-import { inferChangeTypeFromSql, readChangeTypeHeader } from "@/lib/change-type";
+import { compareSchemas } from "@/lib/compare/diff";
+import { inferChangeTypeFromSql, readChangeTypeHeader } from "@/lib/versions/change-type";
 import {
   generateMigration,
   generateRollback,
@@ -8,9 +8,9 @@ import {
   renderRollbackScript,
   statementsThatRun,
   type MigrationOptions,
-} from "@/lib/generate-sql";
-import { suggestBumpLevel } from "@/lib/script-status";
-import { containsTransactionControl, findMightFailStatements } from "@/lib/sql-guard";
+} from "@/lib/sql/generate";
+import { suggestBumpLevel } from "@/lib/versions/script-status";
+import { containsTransactionControl, findMightFailStatements } from "@/lib/sql/guard";
 import { column, schema, table } from "./helpers/snapshots";
 import type {
   ConstraintSnapshot,

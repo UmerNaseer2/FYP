@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { deployLinkQuery } from "@/lib/deploy-link";
+import { deployLinkQuery } from "@/lib/deploy/link";
 import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
@@ -12,14 +12,14 @@ import {
   AlertTriangleIcon,
   RefreshIcon,
 } from "@/components/ui/icons";
-import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
+import { containsTransactionControl, hasExecutableSql } from "@/lib/sql/guard";
 import {
   gradeSql,
   levelWithArticle,
   quieterLevelWarning,
   type ScriptChangeType,
   type SqlGrade,
-} from "@/lib/change-type";
+} from "@/lib/versions/change-type";
 import {
   bumpToLevel,
   bumpVersion,
@@ -28,13 +28,13 @@ import {
   levelOfStep,
   levelToBump,
   type BumpLevel,
-} from "@/lib/script-status";
+} from "@/lib/versions/script-status";
 import {
   readAppliedVersion,
   readFamilyVersions,
   type AppliedVersionRead,
   type FamilyVersionsRead,
-} from "@/lib/family-reads";
+} from "@/lib/versions/family-reads";
 import {
   describePush,
   MIGRATION_NO_STATEMENTS,
@@ -43,23 +43,23 @@ import {
   rollbackToSend,
   validateScriptName,
   type PulledRollbackState,
-} from "@/lib/registry-push";
-import { countOf } from "@/lib/plural";
-import { vLabel } from "@/lib/rollback-plan";
-import { displayVersion } from "@/lib/version-timeline";
-import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
+} from "@/lib/github/registry-push";
+import { countOf } from "@/lib/ui/plural";
+import { vLabel } from "@/lib/deploy/rollback-plan";
+import { displayVersion } from "@/lib/versions/timeline";
+import { CHANGE_LEVEL_PILL } from "@/lib/versions/change-level";
 import { Pill } from "@/components/ui/Pill";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
-import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
+import { planDraftLoad, type MigrationDraft } from "@/lib/versions/migration-draft";
 import { useUser } from "@/hooks/useUser";
 import { SqlGeneratePanel, type GeneratedScript } from "@/components/studio/SqlGeneratePanel";
 import { useOrgHref } from "@/hooks/useOrg";
-import { DEFAULT_ROLE, refusalMessage } from "@/lib/permissions";
-import { apiFetch } from "@/lib/api-fetch";
+import { DEFAULT_ROLE, refusalMessage } from "@/lib/roles/permissions";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { SqlEditor, type EditorStatus } from "./SqlEditor";
 import "@/app/styles/atelier-script-editor.css";
 
@@ -156,7 +156,7 @@ const BUMP_DESC: Record<BumpLevel, string> = {
   major: "changes or removes things, existing queries can break",
 };
 
-// Name the keywords the guard actually rejects (lib/sql-guard.ts). The old
+// Name the keywords the guard actually rejects (lib/sql/guard.ts). The old
 // wording named BEGIN, which it ignores, and left out END and ABORT, which it
 // blocks.
 const TXN_IN_MIGRATION =
@@ -286,7 +286,7 @@ export default function ScriptEditorPage() {
   const [saveWithoutRollback, setSaveWithoutRollback] = useState(false);
   const [description, setDescription] = useState("");
 
-  // The two reads the next version is worked out from (lib/family-reads.ts).
+  // The two reads the next version is worked out from (lib/versions/family-reads.ts).
   // The Migration Workbench uses the same two, so both offer the same number.
   const [family, setFamily] = useState<FamilyRead | null>(null);
   const [familyRefresh, setFamilyRefresh] = useState(0);
@@ -339,7 +339,7 @@ export default function ScriptEditorPage() {
     sessionLoading || can("scripts:create") ? null : refusalMessage(roleLabel, "scripts:create");
 
   // ── A script handed over from Performance ("Save as a migration") ────────
-  // Run by the banner's Load button. planDraftLoad (lib/migration-draft.ts)
+  // Run by the banner's Load button. planDraftLoad (lib/versions/migration-draft.ts)
   // decides what changes; this only applies it. Connection and schema can be
   // set together because the schema-list effect below clears the list only,
   // never the chosen schema.

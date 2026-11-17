@@ -6,14 +6,14 @@ import { useUser } from "@/hooks/useUser";
 import { Button, Card, Input, Label, Modal, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { apiFetch } from "@/lib/api-fetch";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
+import { ORG_NAME_MAX_LENGTH } from "@/lib/orgs/new-organization";
 
 /**
  * The Organization tab on the Admin screen: the organization's name, and
  * deleting it. Only the admin role has the Organization
- * permissions (lib/permissions.ts), and app/api/admin/organization/route.ts checks
+ * permissions (lib/roles/permissions.ts), and app/api/admin/organization/route.ts checks
  * them again on every request.
  *
  * Renaming keeps the address. Links people saved still work, and the address

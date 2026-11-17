@@ -23,12 +23,12 @@ const SLOW = 60_000;
 const SETUP = 120_000;
 
 const mockCheck = jest.fn();
-jest.mock("../lib/drift-runner", () => ({
+jest.mock("../lib/drift/runner", () => ({
   runDriftCheck: (...args: unknown[]) => mockCheck(...args),
 }));
 
 const mockPrune = jest.fn(async () => 0);
-jest.mock("../lib/schema-metrics", () => ({
+jest.mock("../lib/performance/schema-metrics", () => ({
   METRIC_RETENTION_DAYS: 30,
   pruneSchemaMetrics: () => mockPrune(),
 }));
@@ -78,7 +78,7 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
   let databaseName = "";
   let sequelize: typeof import("@/lib/db/sequelize").sequelize;
   let pool: typeof import("@/lib/db/sequelize").metadataPool;
-  let scheduler: typeof import("@/lib/drift-scheduler");
+  let scheduler: typeof import("@/lib/drift/scheduler");
   let orgA = 0;
   let orgB = 0;
   let schemaA = 0;
@@ -148,7 +148,7 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
     const bootstrap = await import("@/lib/db/bootstrap");
     await bootstrap.syncMetadataTables();
     ({ sequelize, metadataPool: pool } = await import("@/lib/db/sequelize"));
-    scheduler = await import("@/lib/drift-scheduler");
+    scheduler = await import("@/lib/drift/scheduler");
     db = await connectTo(url);
 
     const { rows: orgs } = await db.query(`SELECT id FROM organizations WHERE is_default`);

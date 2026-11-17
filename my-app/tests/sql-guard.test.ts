@@ -1,6 +1,6 @@
-import { gradeSql } from "@/lib/change-type";
-import { compareSchemas } from "@/lib/compare";
-import { generateRollback, renderRollbackScript } from "@/lib/generate-sql";
+import { gradeSql } from "@/lib/versions/change-type";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateRollback, renderRollbackScript } from "@/lib/sql/generate";
 import {
   codeBodiesIn,
   containsTransactionControl,
@@ -12,7 +12,7 @@ import {
   hasExecutableSql,
   maskNonCode,
   ROW_DESTROYING_NOT_BREAKING,
-} from "@/lib/sql-guard";
+} from "@/lib/sql/guard";
 import { column, schema, table } from "./helpers/snapshots";
 
 /**

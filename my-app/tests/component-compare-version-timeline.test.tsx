@@ -28,10 +28,10 @@
  *   the whole history is in. The two marks mean opposite things.
  *
  * What is NOT here:
- *  - Which side is read which way. lib/compare-timeline decides that and
+ *  - Which side is read which way. lib/compare/timeline decides that and
  *    tests/compare-timeline.test.ts covers it.
  *  - The merge of the two sides into rows, and the table that draws them.
- *    lib/version-timeline and components/studio/VersionTimeline have their own
+ *    lib/versions/timeline and components/studio/VersionTimeline have their own
  *    suites (tests/version-timeline.test.ts, component-version-timeline).
  *  - Both endpoints. tests/versionsync-ledger-route.test.ts and
  *    tests/compare-version-history-route.test.ts cover those.
@@ -51,9 +51,9 @@ import {
   CompareVersionTimeline,
   type CompareTimelineSide,
 } from "@/components/studio/CompareVersionTimeline";
-import type { DetectedVersion, DetectedVersionEntry } from "@/lib/detected-version";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
-import type { LedgerEntry } from "@/lib/version-sync";
+import type { DetectedVersion, DetectedVersionEntry } from "@/lib/compare/detected-version";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
+import type { LedgerEntry } from "@/lib/versions/sync";
 import {
   fetchCalls,
   flushAsync,

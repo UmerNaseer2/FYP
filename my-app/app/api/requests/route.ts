@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireMember, type Principal } from "@/lib/auth-guard";
+import { requireMember, type Principal } from "@/lib/auth/guard";
 import {
   canAnswerRequests,
   REQUEST_TEXT_MAX,
   WAITING_REQUESTS_MAX,
   type RequestCounts,
   type RequestsPayload,
-} from "@/lib/access-requests";
+} from "@/lib/roles/access-requests";
 import {
   countRequestInbox,
   countRequestsAnsweredSince,
@@ -15,7 +15,7 @@ import {
   listOwnRequests,
   listRequestInbox,
   readRequestsSeen,
-} from "@/lib/access-requests-db";
+} from "@/lib/roles/access-requests-db";
 import {
   countOwnRunsAnsweredSince,
   countRunsReadyToRun,
@@ -24,12 +24,12 @@ import {
   listRunsReadyToRun,
   listRunsToApprove,
   mayDecideOwn,
-} from "@/lib/approvals-db";
-import { hasPermission, isAdminOnly, isPermissionKey } from "@/lib/permissions";
+} from "@/lib/deploy/approvals-db";
+import { hasPermission, isAdminOnly, isPermissionKey } from "@/lib/roles/permissions";
 
 /**
  * The Requests page and the count beside its name in the rail. Any member may
- * ask and read their own; see lib/access-requests.ts for what else they get.
+ * ask and read their own; see lib/roles/access-requests.ts for what else they get.
  */
 
 /** The runs waiting on this person leave out their own unless they may decide those. */

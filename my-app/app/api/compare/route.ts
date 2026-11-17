@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import { runComparison, type CompareScreen } from "@/lib/compare-run";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
+import { runComparison, type CompareScreen } from "@/lib/compare/run";
 
 // Re-exported so the screen can name the shape it renders without importing
 // the module that computes it — that one opens database connections.

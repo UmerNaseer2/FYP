@@ -3,7 +3,7 @@
  * Admin screen, where an organization keeps the repository its scripts go in
  * and the access token the app uses for it.
  *
- * What the database does with each change is lib/org-github-store.ts's
+ * What the database does with each change is lib/github/org-store.ts's
  * business. Here the gate, the store and GitHub itself are stood in for, so
  * these cover what the route adds:
  *
@@ -21,15 +21,15 @@
  *   - how each answer from the store is said.
  */
 import { NextRequest } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
-import { BYPASS_ACTOR } from "@/lib/auth-mode";
-import { REPOSITORY_PROBLEM, tokenProblem } from "@/lib/github-settings";
+import type { Gate } from "@/lib/auth/guard";
+import { BYPASS_ACTOR } from "@/lib/auth/mode";
+import { REPOSITORY_PROBLEM, tokenProblem } from "@/lib/github/settings";
 import { bypassAdminPrincipal, principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -37,14 +37,14 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockStore = { readOrgGitHub: jest.fn(), saveOrgGitHub: jest.fn(), removeOrgGitHub: jest.fn() };
-jest.mock("../lib/org-github-store", () => ({
+jest.mock("../lib/github/org-store", () => ({
   readOrgGitHub: (...args: unknown[]) => mockStore.readOrgGitHub(...args),
   saveOrgGitHub: (...args: unknown[]) => mockStore.saveOrgGitHub(...args),
   removeOrgGitHub: (...args: unknown[]) => mockStore.removeOrgGitHub(...args),
 }));
 
 let mockKeySource: "app-key" | "derived" | "none" = "app-key";
-jest.mock("../lib/secret-store", () => ({
+jest.mock("../lib/connections/secret-store", () => ({
   encryptionKeySource: () => mockKeySource,
 }));
 

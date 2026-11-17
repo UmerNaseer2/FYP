@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { after, NextResponse } from "next/server";
-import { disabledReason, runSchedulerTick } from "@/lib/drift-scheduler";
+import { disabledReason, runSchedulerTick } from "@/lib/drift/scheduler";
 
 /**
  * The scheduled call that wakes the drift checker where no timer can.
@@ -10,13 +10,13 @@ import { disabledReason, runSchedulerTick } from "@/lib/drift-scheduler";
  * deploy/SUPABASE-VERCEL.md) calls this on a schedule instead.
  *
  * There is no person behind the call, so no session and no role: proxy.ts lets
- * it through (lib/public-paths.ts) and the shared secret below is the whole check.
+ * it through (lib/auth/public-paths.ts) and the shared secret below is the whole check.
  *
  * It answers at once and checks afterwards, because the caller does not wait:
  * pg_net gives up after two seconds by default. `after` keeps the function alive
  * until the tick is done, up to maxDuration.
  *
- * Accepted in any mode, because the lease in lib/drift-scheduler makes a timer
+ * Accepted in any mode, because the lease in lib/drift/scheduler makes a timer
  * and a call agree. The answer names no organization and nothing that was checked.
  */
 

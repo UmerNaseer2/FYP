@@ -36,11 +36,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 // The real one reaches for next-auth, and signing out is not this page's to test.
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
 
 import { OnboardingPage } from "@/components/onboarding/OnboardingPage";
-import { REPOSITORY_WITHOUT_TOKEN, TOKEN_WITHOUT_REPOSITORY } from "@/lib/github-settings";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { REPOSITORY_WITHOUT_TOKEN, TOKEN_WITHOUT_REPOSITORY } from "@/lib/github/settings";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 import {
   fetchCalls,
   holdNext,

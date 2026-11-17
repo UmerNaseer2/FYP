@@ -5,7 +5,7 @@
  * shared by Compare, Version Sync and Deploy (spec features 5, 7 and 9).
  *
  * It fetches nothing and decides nothing — the screen merges the two sides
- * with lib/version-timeline and hands the rows over. What it does decide is
+ * with lib/versions/timeline and hands the rows over. What it does decide is
  * how each row reads, and three of those readings are worth a suite:
  *
  *   A gap is never a guess. A side's list can be partial — the newest few
@@ -27,7 +27,7 @@
  * What is NOT here:
  *  - The merge itself: which versions pair up, which side is head, which side
  *    is behind, and the spelling-insensitive key that pairs "v1.2.0" with
- *    "1.2.0" are all lib/version-timeline, with tests/version-timeline.test.ts.
+ *    "1.2.0" are all lib/versions/timeline, with tests/version-timeline.test.ts.
  *    This suite builds rows by hand and checks only what is drawn from them.
  *  - The screens that use it. Compare, Version Sync and Deploy each have their
  *    own rendered suite; what is checked here is the drawing they share.
@@ -48,7 +48,7 @@ import {
   timelineKey,
   type TimelineEntry,
   type TimelineRow,
-} from "@/lib/version-timeline";
+} from "@/lib/versions/timeline";
 
 /* ----------------------------------------------------------------- fixtures */
 

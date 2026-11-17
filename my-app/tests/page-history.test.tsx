@@ -23,10 +23,10 @@ import {
   lastDays,
   matchesFilters,
   NO_FILTERS,
-} from "@/lib/activity";
+} from "@/lib/ui/history-activity";
 import { historyHelp } from "@/lib/help/history";
-import type { DriftEventFeedItem } from "@/lib/lineage-db";
-import { refusalMessage } from "@/lib/permissions";
+import type { DriftEventFeedItem } from "@/lib/versions/lineage-db";
+import { refusalMessage } from "@/lib/roles/permissions";
 import {
   fetchCalls,
   flushAsync,
@@ -300,7 +300,7 @@ describe("filters", () => {
   });
 });
 
-describe("the helpers in lib/activity", () => {
+describe("the helpers in lib/ui/history-activity", () => {
   test("a CSV cell doubles quotes and cannot start a formula", () => {
     expect(csvCell('say "hi"')).toBe('"say ""hi"""');
     expect(csvCell("=SUM(A1)")).toBe(`"'=SUM(A1)"`);

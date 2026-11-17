@@ -5,7 +5,7 @@ import { Card, Pill, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 import {
   THRESHOLDS,
   THRESHOLD_KEYS,
@@ -13,16 +13,16 @@ import {
   type ThresholdDefinition,
   type ThresholdKey,
   type ThresholdSetting,
-} from "@/lib/perf-thresholds";
+} from "@/lib/performance/thresholds";
 import { AskAdmin } from "./AskAdmin";
 import type { PerfTarget } from "./PerfTargetPicker";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 /**
  * Spec feature 10, "Allow custom alert thresholds for performance issues."
  *
  * A form over the five things this app can watch. Two decisions carried from
- * lib/perf-thresholds.ts, both visible on screen:
+ * lib/performance/thresholds.ts, both visible on screen:
  *
  *   • Every rule starts switched off, with a suggested number already in the
  *     box. The suggestion is a starting point, not a claim about this database.
@@ -31,7 +31,7 @@ import { apiFetch } from "@/lib/api-fetch";
  *
  * The form validates with the same function the server validates with, so a
  * number the box accepts is a number the server will store. That is the whole
- * reason lib/perf-thresholds.ts has no database in it.
+ * reason lib/performance/thresholds.ts has no database in it.
  */
 
 /** Mirrors ThresholdsView in app/api/performance/thresholds/route.ts. */

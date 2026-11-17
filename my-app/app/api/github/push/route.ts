@@ -4,7 +4,7 @@
 // Layout: <database>/<schema>/<script_name>/v<version>.sql, with its rollback
 // beside it as v<version>.down.sql, inside the caller's organization's folder:
 // the repository root for the default organization, orgs/<id>/ for any other
-// (lib/registry-paths.ts says why). Each <script_name>/ folder is the project
+// (lib/github/registry-paths.ts says why). Each <script_name>/ folder is the project
 // diagram's "folder of versions"; the database and schema levels exist because
 // Deploy scopes the registry by them. The organization comes from the signed-in
 // session, never from the request, so nobody can write into another
@@ -51,11 +51,11 @@
 //   502 token_rejected | github_forbidden | github_rate_limited | repo_not_found |
 //       github_down | github_error | github_unreachable | outcome_unknown
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { createRepository } from "@/lib/github-check";
-import { githubConfigFor } from "@/lib/github-config";
-import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/change-note";
-import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
+import { requirePermission } from "@/lib/auth/guard";
+import { createRepository } from "@/lib/github/check";
+import { githubConfigFor } from "@/lib/github/config";
+import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/versions/change-note";
+import { stampChangeType, type ScriptChangeType } from "@/lib/versions/change-type";
 import {
   contentsFileUrl,
   decodeContentsFile,
@@ -64,7 +64,7 @@ import {
   logGitHubAnswer,
   type FamilyListing,
   type GitHubConfig,
-} from "@/lib/github-registry";
+} from "@/lib/github/registry";
 import {
   familyFolderPath,
   migrationFileName,
@@ -72,7 +72,7 @@ import {
   registryRoot,
   reservedFolderProblem,
   rollbackFileName,
-} from "@/lib/registry-paths";
+} from "@/lib/github/registry-paths";
 import {
   attachRollbackKind,
   CHANGE_LEVEL_REQUIRED,
@@ -91,9 +91,9 @@ import {
   rollbackFileState,
   type PushIdentity,
   type RegistryEntry,
-} from "@/lib/registry-push";
-import { bumpVersion, levelToBump } from "@/lib/script-status";
-import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
+} from "@/lib/github/registry-push";
+import { bumpVersion, levelToBump } from "@/lib/versions/script-status";
+import { containsTransactionControl, hasExecutableSql } from "@/lib/sql/guard";
 
 // The state every refusal ends on, so the user always knows GitHub is untouched.
 const NOTHING_SAVED = "Nothing was saved to GitHub.";
@@ -353,7 +353,7 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   //    not be read back from: the registry is read through the contents API,
   //    which returns files and not history, so a pulled script arrived with no
   //    note and Deploy had nothing to record in script_patch.description. In
-  //    the file it travels with the script — see lib/change-note.ts.
+  //    the file it travels with the script — see lib/versions/change-note.ts.
   const migrationName = migrationFileName(version);
   const migrationUrl = contentsFileUrl(
     config,
@@ -579,7 +579,7 @@ export async function POST(req: NextRequest) {
   const gate = await requirePermission("scripts:create");
   if (!gate.ok) return gate.response;
 
-  // 2. The organization's GitHub settings (lib/github-config.ts), read now
+  // 2. The organization's GitHub settings (lib/github/config.ts), read now
   //    rather than when the module loads, so a changed setting is picked up
   //    (and a test can fake it). The message names missing keys, never
   //    values, and never the token.

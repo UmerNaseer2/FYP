@@ -23,8 +23,8 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
-import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
+import { fingerprintBody } from "@/lib/deploy/approval-fingerprint";
 import { HELP_TOPICS } from "@/lib/help";
 import {
   type FetchRoute,

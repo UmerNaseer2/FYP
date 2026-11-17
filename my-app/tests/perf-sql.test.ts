@@ -1,5 +1,5 @@
 /**
- * The SQL helpers both performance tabs print with (lib/perf-sql.ts).
+ * The SQL helpers both performance tabs print with (lib/performance/sql.ts).
  *
  * Small, but everything a person pastes into a server goes through them, so a
  * mistake here is a statement that fails, or one that names a different
@@ -25,8 +25,8 @@ import {
   schemasPhrase,
   startingUnticked,
   type FixScriptItem,
-} from "@/lib/perf-sql";
-import { maskNonCode } from "@/lib/sql-guard";
+} from "@/lib/performance/sql";
+import { maskNonCode } from "@/lib/sql/guard";
 import { fixProblems } from "./helpers/fix-invariants";
 
 /** Bytes in UTF-8, the unit PostgreSQL's 63-byte name limit counts in. */

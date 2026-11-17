@@ -7,8 +7,8 @@
 // that fingerprint the next scheduled check, finding the same differences,
 // writes a new row and the acknowledgement is gone.
 import { NextRequest, NextResponse } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
-import { driftFingerprint } from "@/lib/drift-fingerprint";
+import type { Gate } from "@/lib/auth/guard";
+import { driftFingerprint } from "@/lib/drift/fingerprint";
 import { principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
@@ -21,7 +21,7 @@ let mockRowCount = 1;
 /** What the comparison answers with, or an error to throw. */
 let mockComparison: unknown;
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -30,7 +30,7 @@ jest.mock("../lib/auth-guard", () => ({
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (_text: string, values: unknown[]) => {
@@ -40,7 +40,7 @@ jest.mock("../lib/version-db", () => ({
   },
 }));
 
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   computeDriftDetail: async () => {
     if (mockComparison instanceof Error) throw mockComparison;
     return mockComparison;
@@ -136,7 +136,7 @@ describe("POST /api/lineage/acknowledge", () => {
   });
 
   it("repeats nothing the database said when writing the row fails", async () => {
-    jest.spyOn(jest.requireMock("../lib/version-db").default, "query").mockRejectedValue(new Error("secret host down"));
+    jest.spyOn(jest.requireMock("../lib/db/version-db").default, "query").mockRejectedValue(new Error("secret host down"));
     const answer = await POST(request({ trackedSchemaId: 9 }));
     expect(answer.status).toBe(500);
     expect(JSON.stringify(await answer.json())).not.toContain("secret host");

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext } from "react";
-import { orgHref } from "@/lib/org-slug";
+import { orgHref } from "@/lib/orgs/slug";
 
 /**
  * The organization a page is open in: its slug (the address) and its name.

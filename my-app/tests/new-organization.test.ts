@@ -1,5 +1,5 @@
 /**
- * The rules for a new organization's name and address (lib/new-organization.ts),
+ * The rules for a new organization's name and address (lib/orgs/new-organization.ts),
  * which the onboarding form and POST /api/organizations both use, so a
  * mistake gets the same words wherever it is caught.
  *
@@ -15,8 +15,8 @@ import {
   orgNameProblem,
   orgSlugProblem,
   suggestSlug,
-} from "@/lib/new-organization";
-import { ORG_SLUG_PATTERN, isOrgSlug } from "@/lib/org-slug";
+} from "@/lib/orgs/new-organization";
+import { ORG_SLUG_PATTERN, isOrgSlug } from "@/lib/orgs/slug";
 
 const SHAPE =
   "An address is 3 to 40 lowercase letters, digits and dashes, " +

@@ -19,8 +19,8 @@ jest.mock("next/navigation", () => ({
 
 import { CommandBar, scoreMatch } from "@/components/studio/CommandBar";
 import type { NavItem } from "@/components/studio/nav";
-import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
-import { REPLAY_INTRO_EVENT } from "@/lib/intro";
+import { OPEN_ASK_AI_EVENT } from "@/lib/ui/studio-events";
+import { REPLAY_INTRO_EVENT } from "@/lib/ui/intro";
 
 const PAGES: NavItem[] = [
   { screen: "Dashboard", label: "Dashboard", href: "/acme/studio", icon: null },

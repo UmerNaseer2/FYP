@@ -32,7 +32,7 @@
  *   commented it out is impossible rather than unlikely.
  *
  * What is NOT here:
- *  - The arithmetic. summaryRows in lib/compare-summary.ts turns a report into
+ *  - The arithmetic. summaryRows in lib/compare/summary.ts turns a report into
  *    these rows and has no suite of its own. Every number below does go through
  *    it, but the fixtures are built to reach a cell on screen rather than to
  *    cover the counting rules, so a row that is right for the wrong reason
@@ -58,7 +58,7 @@ import type {
   ObjectCategoryKey,
   ObjectDiff,
   ObjectKind,
-} from "@/lib/compare-types";
+} from "@/lib/compare/types";
 import type { CollationSnapshot, TypeSnapshot } from "@/lib/postgres";
 import { schema, table } from "./helpers/snapshots";
 

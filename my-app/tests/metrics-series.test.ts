@@ -9,7 +9,7 @@ import {
   METRICS,
   type MetricSample,
   type SeriesBox,
-} from "@/lib/metrics-series";
+} from "@/lib/performance/metrics-series";
 import type {
   RoutineSnapshot,
   SchemaSnapshot,

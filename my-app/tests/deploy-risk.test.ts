@@ -1,7 +1,7 @@
-// lib/deploy-risk: the one reading of what a run risks, and the forward-only
+// lib/deploy/risk: the one reading of what a run risks, and the forward-only
 // rule. The Deploy page, Version Sync, the apply route and the approvals route
 // all call these, so these tests pin the answers every one of them gets.
-import { louderChangeType } from "@/lib/change-type";
+import { louderChangeType } from "@/lib/versions/change-type";
 import {
   analyseRunRisk,
   checkForwardOnly,
@@ -9,7 +9,7 @@ import {
   readScriptLevel,
   scriptLabel,
   type RiskScript,
-} from "@/lib/deploy-risk";
+} from "@/lib/deploy/risk";
 
 /** One migration of orders_fix. */
 const script = (version: string, sqlContent: string, changeType?: unknown): RiskScript => ({

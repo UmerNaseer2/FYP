@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, type Principal } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { cancelInvite, createEmailInvite, createLinkInvite, listPendingInvites } from "@/lib/invites-db";
-import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/invites";
+import { requirePermission, type Principal } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { cancelInvite, createEmailInvite, createLinkInvite, listPendingInvites } from "@/lib/orgs/invites-db";
+import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/orgs/invites";
 
 /**
  * Invitations into the caller's organization, from the Users tab.
@@ -10,7 +10,7 @@ import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/in
  * GET lists the ones still waiting to be taken. POST makes one, either to an
  * email address with a role or as a link for Viewers, and answers with its
  * token. That answer is the only time the token leaves the server: the
- * database keeps its hash (lib/invites-db.ts), so the Users tab shows the link
+ * database keeps its hash (lib/orgs/invites-db.ts), so the Users tab shows the link
  * once, for the Admin to copy and send, and never again. DELETE cancels one.
  *
  * Reading needs Users: Read, like the member list beside it. Making and
@@ -18,7 +18,7 @@ import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/in
  * who gets in, and a role that could cancel but not invite could only ever
  * shut people out. The rank rule holds for both kinds of invitation: nobody
  * can offer a role that can do something theirs can't (canHandOut in
- * lib/permissions.ts).
+ * lib/roles/permissions.ts).
  *
  * Nobody can be invited in the demo, with sign-in switched off, and GET says
  * so with `canInvite`, so the Users tab draws no form that could only be

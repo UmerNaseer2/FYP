@@ -12,9 +12,9 @@
 // The fix is to also compare a fingerprint of WHICH differences were found. The
 // reports below are built by the real compare engine rather than by hand, so
 // these tests are about what the app actually produces.
-import { compareSchemas } from "@/lib/compare";
-import { driftDifferences, driftFingerprint } from "@/lib/drift-fingerprint";
-import { runDriftCheck } from "@/lib/drift-runner";
+import { compareSchemas } from "@/lib/compare/diff";
+import { driftDifferences, driftFingerprint } from "@/lib/drift/fingerprint";
+import { runDriftCheck } from "@/lib/drift/runner";
 import { column, schema, table } from "./helpers/snapshots";
 
 /** What the fake metadata database answers for "the newest event". */
@@ -46,7 +46,7 @@ const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>(
     return { rows: [], rowCount: 0 };
   }
 );
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: [string, unknown[]?]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -55,12 +55,12 @@ jest.mock("../lib/version-db", () => ({
 // Only the one function that reads a database is replaced. buildDriftSummary
 // and the rest of lineage-db stay real, so a change to what an outcome looks
 // like is not silently hidden behind a hand-written stub.
-jest.mock("../lib/lineage-db", () => ({
-  ...jest.requireActual("../lib/lineage-db"),
+jest.mock("../lib/versions/lineage-db", () => ({
+  ...jest.requireActual("../lib/versions/lineage-db"),
   computeDriftDetail: async () => mockState.outcome,
 }));
 
-jest.mock("../lib/schema-metrics", () => ({
+jest.mock("../lib/performance/schema-metrics", () => ({
   recordSchemaMetrics: async () => undefined,
 }));
 

@@ -32,10 +32,10 @@ import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 import { Client } from "pg";
 import type { SchemaSnapshot } from "@/lib/postgres";
-import type { RunPair, RunRecord } from "@/lib/comparison-history-db";
-import type { RecordQueryInput } from "@/lib/query-history-db";
-import type { SaveComparisonSetInput } from "@/lib/comparison-set-rules";
-import type { ApprovalScript } from "@/lib/approval-fingerprint";
+import type { RunPair, RunRecord } from "@/lib/compare/history-db";
+import type { RecordQueryInput } from "@/lib/performance/query-history-db";
+import type { SaveComparisonSetInput } from "@/lib/compare/set-rules";
+import type { ApprovalScript } from "@/lib/deploy/approval-fingerprint";
 import { column, schema, table } from "./helpers/snapshots";
 import { testDatabaseUrl } from "./helpers/test-database";
 
@@ -44,7 +44,7 @@ type Org = { id: number; slug: string; name: string };
 /** The organization the stand-in gate signs the next request into. */
 let mockOrg: Org = { id: 0, slug: "", name: "" };
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("admin", {
@@ -90,16 +90,16 @@ jest.mock("../lib/postgres", () => ({
 
 // The saved passwords below are not real ciphertext, so the config builder,
 // which would decrypt them, hands back a fixed config instead.
-jest.mock("../lib/connection-config", () => ({
-  ...jest.requireActual("../lib/connection-config"),
+jest.mock("../lib/connections/config", () => ({
+  ...jest.requireActual("../lib/connections/config"),
   buildPgConfig: () => ({ host: "db.example.test", port: 5432, database: "shop", user: "reader" }),
 }));
 
 // Tracking a schema asks the scheduler for an early check. The test runs the
 // scheduler's tick itself, when it chooses, so that request is only recorded.
 const mockRequestImmediateCheck = jest.fn<void, unknown[]>();
-jest.mock("../lib/drift-scheduler", () => ({
-  ...jest.requireActual("../lib/drift-scheduler"),
+jest.mock("../lib/drift/scheduler", () => ({
+  ...jest.requireActual("../lib/drift/scheduler"),
   requestImmediateCheck: (...args: unknown[]) => mockRequestImmediateCheck(...args),
 }));
 
@@ -140,16 +140,16 @@ describeWithDatabase("two organizations in one metadata database", () => {
   let track: typeof import("@/app/api/lineage/track/route");
   let rebaseline: typeof import("@/app/api/lineage/rebaseline/route");
   let acknowledge: typeof import("@/app/api/lineage/acknowledge/route");
-  let lineage: typeof import("@/lib/lineage-db");
-  let driftRunner: typeof import("@/lib/drift-runner");
-  let scheduler: typeof import("@/lib/drift-scheduler");
-  let metrics: typeof import("@/lib/schema-metrics");
-  let queries: typeof import("@/lib/query-history-db");
-  let thresholds: typeof import("@/lib/perf-thresholds-db");
-  let sets: typeof import("@/lib/comparison-sets");
-  let runs: typeof import("@/lib/comparison-history-db");
-  let approvals: typeof import("@/lib/approvals-db");
-  let attempts: typeof import("@/lib/deploy-attempts-db");
+  let lineage: typeof import("@/lib/versions/lineage-db");
+  let driftRunner: typeof import("@/lib/drift/runner");
+  let scheduler: typeof import("@/lib/drift/scheduler");
+  let metrics: typeof import("@/lib/performance/schema-metrics");
+  let queries: typeof import("@/lib/performance/query-history-db");
+  let thresholds: typeof import("@/lib/performance/thresholds-db");
+  let sets: typeof import("@/lib/compare/sets");
+  let runs: typeof import("@/lib/compare/history-db");
+  let approvals: typeof import("@/lib/deploy/approvals-db");
+  let attempts: typeof import("@/lib/deploy/attempts-db");
 
   let orgA: Org;
   let orgB: Org;
@@ -240,16 +240,16 @@ describeWithDatabase("two organizations in one metadata database", () => {
     track = await import("@/app/api/lineage/track/route");
     rebaseline = await import("@/app/api/lineage/rebaseline/route");
     acknowledge = await import("@/app/api/lineage/acknowledge/route");
-    lineage = await import("@/lib/lineage-db");
-    driftRunner = await import("@/lib/drift-runner");
-    scheduler = await import("@/lib/drift-scheduler");
-    metrics = await import("@/lib/schema-metrics");
-    queries = await import("@/lib/query-history-db");
-    thresholds = await import("@/lib/perf-thresholds-db");
-    sets = await import("@/lib/comparison-sets");
-    runs = await import("@/lib/comparison-history-db");
-    approvals = await import("@/lib/approvals-db");
-    attempts = await import("@/lib/deploy-attempts-db");
+    lineage = await import("@/lib/versions/lineage-db");
+    driftRunner = await import("@/lib/drift/runner");
+    scheduler = await import("@/lib/drift/scheduler");
+    metrics = await import("@/lib/performance/schema-metrics");
+    queries = await import("@/lib/performance/query-history-db");
+    thresholds = await import("@/lib/performance/thresholds-db");
+    sets = await import("@/lib/compare/sets");
+    runs = await import("@/lib/compare/history-db");
+    approvals = await import("@/lib/deploy/approvals-db");
+    attempts = await import("@/lib/deploy/attempts-db");
 
     db = await connectTo(url);
     [orgA] = await rows<Org>(`SELECT id, slug, name FROM organizations WHERE is_default`);

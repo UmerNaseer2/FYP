@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import {
   fetchSchemaSnapshot,
   withCurrentNormalization,
   withoutToolTables,
   type SchemaSnapshot,
 } from "@/lib/postgres";
-import { compareSchemas } from "@/lib/compare";
-import { driftFingerprint } from "@/lib/drift-fingerprint";
+import { compareSchemas } from "@/lib/compare/diff";
+import { driftFingerprint } from "@/lib/drift/fingerprint";
 import {
   getNextLineageVersion,
   buildDriftSummary,
   structuralChangeLevel,
-} from "@/lib/lineage-db";
+} from "@/lib/versions/lineage-db";
 
 /**
  * POST /api/lineage/rebaseline  { trackedSchemaId, shownFingerprint? }

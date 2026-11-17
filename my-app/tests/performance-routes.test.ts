@@ -17,7 +17,7 @@ import type { SchemaSnapshot } from "@/lib/postgres";
 // The routes record who analysed a query, and a mock that answers null for the
 // allowed case describes a state the real guard cannot produce. An editor,
 // because measuring a query needs Performance: Run, which an editor starts with.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor", {
@@ -29,7 +29,7 @@ jest.mock("../lib/auth-guard", () => ({
 
 // The metadata database, which only holds the saved connection here.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -46,7 +46,7 @@ jest.mock("../lib/postgres", () => ({
 }));
 
 // No password to decrypt: the config is only handed to getPoolForConfig above.
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (input: { host?: string | null }) => ({ host: input.host }),
 }));
 

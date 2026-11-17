@@ -19,7 +19,7 @@ import "@xyflow/react/dist/style.css";
 
 import type { SchemaSnapshot } from "@/lib/postgres";
 import { SearchIcon } from "@/components/ui/icons";
-import { countOf } from "@/lib/plural";
+import { countOf } from "@/lib/ui/plural";
 import { buildGraph, type TableNodeData, type VizGraph } from "./graph";
 import { TableNode } from "./TableNode";
 

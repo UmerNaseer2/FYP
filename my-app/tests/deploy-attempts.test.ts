@@ -30,12 +30,12 @@ import {
   describeAttempt,
   rollbackDetail,
   type AttemptResponseBody,
-} from "@/lib/deploy-attempts";
-import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
+} from "@/lib/deploy/attempts";
+import { recordDeployAttempt } from "@/lib/deploy/attempts-db";
 
 // The metadata database, for the one test of the writer at the bottom.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,

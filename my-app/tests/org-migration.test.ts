@@ -25,7 +25,7 @@
 //   - Deleting an organization deletes exactly its rows.
 //
 // It also runs the code that signs people in and looks up their roles
-// (lib/accounts-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on a booted database:
+// (lib/auth/accounts-db.ts, lib/orgs/orgs-db.ts, lib/roles/roles-db.ts) on a booted database:
 //
 //   - Signing in finds a person by the account they signed in with, never by
 //     the address it reports. A person from before accounts were recorded is
@@ -40,7 +40,7 @@
 //     default one.
 //   - The lookups the gates make on every request, and the changes the Roles
 //     tab makes, only ever see and touch the organization they are asked about.
-//   - An organization's GitHub settings (lib/org-github-store.ts) are saved
+//   - An organization's GitHub settings (lib/github/org-store.ts) are saved
 //     with it or on their own, with the token locked with the server's key and
 //     every change logged. A server without a key saves no token, and makes no
 //     organization that was given one.
@@ -75,8 +75,8 @@ import {
   presetFor,
   readKeyOf,
   type BuiltInRole,
-} from "@/lib/permissions";
-import type { Resolved, SignInIdentity } from "@/lib/accounts-db";
+} from "@/lib/roles/permissions";
+import type { Resolved, SignInIdentity } from "@/lib/auth/accounts-db";
 import { testDatabaseUrl } from "./helpers/test-database";
 
 const testUrl = testDatabaseUrl();
@@ -301,16 +301,16 @@ async function bootCountingClients(url: string): Promise<number> {
 // people in, find their membership and say what their role may do. Loaded
 // after load() has reset the modules, so they all share its pool.
 type RequestApp = App & {
-  resolveIdentity: typeof import("@/lib/accounts-db").resolveIdentity;
-  orgs: typeof import("@/lib/orgs-db");
-  roles: typeof import("@/lib/roles-db");
+  resolveIdentity: typeof import("@/lib/auth/accounts-db").resolveIdentity;
+  orgs: typeof import("@/lib/orgs/orgs-db");
+  roles: typeof import("@/lib/roles/roles-db");
 };
 
 async function loadRequestApp(url: string): Promise<RequestApp> {
   const app = await load(url);
-  const { resolveIdentity } = await import("@/lib/accounts-db");
-  const orgs = await import("@/lib/orgs-db");
-  const roles = await import("@/lib/roles-db");
+  const { resolveIdentity } = await import("@/lib/auth/accounts-db");
+  const orgs = await import("@/lib/orgs/orgs-db");
+  const roles = await import("@/lib/roles/roles-db");
   return { ...app, resolveIdentity, orgs, roles };
 }
 
@@ -1968,7 +1968,7 @@ describeWithDatabase("org-migration", () => {
     const actor = "admin@example.invalid";
     // A box editors have that is not a Read. Unticking a Read is undone while
     // the role holds anything else in that feature (see effectivePermissions
-    // in lib/permissions.ts), so a Read would not stay dropped.
+    // in lib/roles/permissions.ts), so a Read would not stay dropped.
     const DROPPED = EDITOR_PRESET.find((key) => !key.endsWith(":read")) ?? "";
     let url = "";
     let app: RequestApp;
@@ -2387,7 +2387,7 @@ describeWithDatabase("org-migration", () => {
 
     let url = "";
     let app: RequestApp;
-    let store: typeof import("@/lib/org-github-store");
+    let store: typeof import("@/lib/github/org-store");
     let client: Client;
     let edId = 0;
 
@@ -2397,7 +2397,7 @@ describeWithDatabase("org-migration", () => {
       process.env.APP_ENCRYPTION_KEY = KEY;
       delete process.env.NEXTAUTH_SECRET;
       app = await loadRequestApp(url);
-      store = await import("@/lib/org-github-store");
+      store = await import("@/lib/github/org-store");
       await app.syncMetadataTables();
       client = await connectTo(url);
       edId = await signedIn(app, github(101, ED.email));

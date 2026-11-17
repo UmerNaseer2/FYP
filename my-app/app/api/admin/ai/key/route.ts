@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, type Principal } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
+import { requirePermission, type Principal } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
 import { readAiAdminView } from "@/lib/ai/admin-view";
 import { removeOrgKey, saveOrgKey } from "@/lib/ai/org-key";
 import type { AiActor } from "@/lib/ai/settings";
 import { readAiKeyChange } from "@/lib/ai/views";
-import { encryptionKeySource } from "@/lib/secret-store";
+import { encryptionKeySource } from "@/lib/connections/secret-store";
 
 /**
  * The organization's own AI key, from the AI tab on the Admin screen

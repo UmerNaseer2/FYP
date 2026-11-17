@@ -52,17 +52,17 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { ViewAsSwitcher, announceRolesChanged } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
-import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
+import { VIEW_AS_COOKIE } from "@/lib/auth/mode";
 
 jest.mock("next-auth/react", () => ({
   useSession: () => ({ data: null, status: "unauthenticated" }),
 }));
 
 // The picker only exists while authentication is off, so every test here is on
-// that side of the switch. lib/auth-mode decides it once, from the
+// that side of the switch. lib/auth/mode decides it once, from the
 // environment, when it loads, and next/jest leaves it off.
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   BYPASS_AUTH: true,
 }));
 

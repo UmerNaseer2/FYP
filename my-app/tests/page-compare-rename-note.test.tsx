@@ -4,7 +4,7 @@
  * The comparison screen's note about renamed tables.
  *
  * The engine does not look for renamed tables when too many tables are left
- * over on both sides (lib/compare's renameMatchingSkipped), because scoring
+ * over on both sides (lib/compare/diff's renameMatchingSkipped), because scoring
  * every pair took minutes. A table that was only renamed then shows as one to
  * create and one to drop. The page has to say so, or a reader who knows the
  * table was renamed takes the report to be wrong.
@@ -32,8 +32,8 @@ jest.mock("../components/studio/VersionDetectBar", () => ({ VersionDetectBar: ()
 jest.mock("../components/studio/CompareVersionTimeline", () => ({ CompareVersionTimeline: () => null }));
 
 import ComparePage from "@/app/[org]/(studio)/compare/page";
-import { compareSchemas, type CompareReport } from "@/lib/compare";
-import type { CompareScreen, OutcomeView } from "@/lib/compare-run";
+import { compareSchemas, type CompareReport } from "@/lib/compare/diff";
+import type { CompareScreen, OutcomeView } from "@/lib/compare/run";
 import { tallyDelta } from "@/components/studio/DiffReport";
 import { render, resetPageState, setRoutes, setSearchParams } from "./helpers/render-page";
 import { column, schema, table } from "./helpers/snapshots";

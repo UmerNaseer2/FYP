@@ -23,7 +23,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import StudioPage from "@/app/[org]/(studio)/studio/page";
-import type { TrackedSchemaListItem } from "@/lib/lineage-db";
+import type { TrackedSchemaListItem } from "@/lib/versions/lineage-db";
 import {
   fetchCalls,
   flushAsync,

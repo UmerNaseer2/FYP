@@ -1,4 +1,4 @@
-import { identifierParts, sequenceOwnerTable } from "@/lib/snapshot-facts";
+import { identifierParts, sequenceOwnerTable } from "@/lib/postgres/snapshot-facts";
 
 describe("identifierParts", () => {
   it("splits a dotted name and reads quoted parts exactly", () => {

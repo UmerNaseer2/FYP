@@ -1,5 +1,5 @@
 import type { SVGProps } from "react";
-import { statusLook, type StatusLook } from "@/lib/status-look";
+import { statusLook, type StatusLook } from "@/lib/ui/status-look";
 
 /**
  * The glyph for a state: a tick for in sync, a wave for drifted, a circle

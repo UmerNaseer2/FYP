@@ -2,13 +2,13 @@
 // lost the race is stopped, so no repair and no second model is asked later,
 // and nothing it does afterwards can reach the server as an uncaught error.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
 }));
 
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import { ALERT_LINE_WAIT_MS, driftAlertLine } from "@/lib/ai/drift-alert-line";
 import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";

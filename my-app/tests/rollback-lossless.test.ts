@@ -10,8 +10,8 @@
 // the work it describes simply does not happen. A recreated sequence comes back
 // at its START WITH value rather than the number it had reached, which is the
 // one thing about a sequence anybody cares about.
-import { compareSchemas } from "@/lib/compare";
-import { generateRollback, renderRollbackScript } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateRollback, renderRollbackScript } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type { SchemaSnapshot, SequenceSnapshot, TypeSnapshot } from "@/lib/postgres";
 

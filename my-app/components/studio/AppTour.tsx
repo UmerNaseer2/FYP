@@ -2,21 +2,21 @@
 
 // The app tour: a welcome card, then one card per page with the part it talks
 // about lit up, then a last card with somewhere to start. What it says, and
-// when it is offered, live in lib/tour.ts; this file only draws it.
+// when it is offered, live in lib/ui/tour.ts; this file only draws it.
 //
 // StudioShell draws <AppTour /> once, outside `.studio`, so while the tour is
 // up the page behind it can be made inert (no clicks, no Tab stops) and the
 // tour moves from page to page itself.
 //
 // The light itself (finding a part of the page, scrolling to it, placing the
-// hole and the card) lives in lib/tour.ts, so the Help panel's "Show me" links
+// hole and the card) lives in lib/ui/tour.ts, so the Help panel's "Show me" links
 // can use the same one (components/help/Spotlight.tsx).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
-import type { PermissionKey } from "@/lib/permissions";
+import type { PermissionKey } from "@/lib/roles/permissions";
 import {
   START_TOUR_EVENT,
   boxAround,
@@ -34,7 +34,7 @@ import {
   type TourIcon,
   type TourPick,
   type TourStop,
-} from "@/lib/tour";
+} from "@/lib/ui/tour";
 import { useAiFeature } from "./AiPanel";
 
 type AppTourProps = {

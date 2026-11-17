@@ -50,16 +50,16 @@ those tables as models and creates them (`my-app/lib/db/models.ts`,
 `my-app/lib/db/bootstrap.ts`), and it owns the connection pool. It does not do
 the reading and writing: every query is parameterised SQL sent with the `pg`
 client through one handle, `pool`, the default export of
-`my-app/lib/version-db.ts`.
+`my-app/lib/db/version-db.ts`.
 
 **Target databases** are the customer databases being compared and deployed to.
 They are registered on the Connections screen, stored (with credentials
 encrypted) in the metadata DB, and reached with the **raw `pg` driver** through
-`getPoolForConfig()` in `my-app/lib/postgres.ts`. Sequelize never touches them.
+`getPoolForConfig()` in `my-app/lib/postgres/`. Sequelize never touches them.
 
 That split is deliberate and is stated in `my-app/lib/db/sequelize.ts`: an ORM
 models tables you own, and the tool owns none of the schemas it introspects. A
-reviewer asking "why isn't this using the ORM?" about `my-app/lib/postgres.ts`
+reviewer asking "why isn't this using the ORM?" about `my-app/lib/postgres/`
 has hit this boundary.
 
 ## 3. Repository layout
@@ -112,7 +112,7 @@ Microsoft Entra ID and GitHub · Tailwind v4 alongside hand-written CSS · Jest 
 `@xyflow/react` + `@dagrejs/dagre` for the ERD visualiser.
 
 **There is no charting library.** Every chart in `components/studio/SchemaTrends.tsx`
-is hand-drawn SVG over pure geometry from `lib/metrics-series.ts`. That is a
+is hand-drawn SVG over pure geometry from `lib/performance/metrics-series.ts`. That is a
 choice, not an omission.
 
 ## 5. How a request flows
@@ -125,7 +125,7 @@ client requirement.
 ```
 page.tsx  ──fetch──▶  app/api/**/route.ts
                           │
-                          ├─ requirePermission(key)       ← lib/auth-guard.ts
+                          ├─ requirePermission(key)       ← lib/auth/guard.ts
                           ├─ pool                          ← the metadata DB
                           └─ getPoolForConfig(buildPgConfig(row))  ← a target DB
 ```
@@ -134,7 +134,7 @@ page.tsx  ──fetch──▶  app/api/**/route.ts
 
 ## 6. Authorisation
 
-Roles with per-feature permissions. `my-app/lib/permissions.ts` lists every
+Roles with per-feature permissions. `my-app/lib/roles/permissions.ts` lists every
 feature and its permissions (Create, Read, Update, Delete, and Run or Approve
 where a feature has them), 43 in all across 17 features. What each role may do
 is stored in the database (`roles`, `role_permissions`), turned on and off on
@@ -152,7 +152,7 @@ at the next sign-in.
 Enforced at three layers that share one source of truth:
 
 - **Edge** — `my-app/proxy.ts` decides which pages and APIs are reachable.
-- **Server** — `my-app/lib/auth-guard.ts` exposes a discriminated union,
+- **Server** — `my-app/lib/auth/guard.ts` exposes a discriminated union,
   `{ok: true, principal} | {ok: false, response}`. Because the failure branch
   carries the response, forgetting to check `gate.ok` is a *type error*, not a
   silent hole. **71 of the 83 route files call a gate**:
@@ -169,17 +169,17 @@ Enforced at three layers that share one source of truth:
 
 Some routes ask for a second permission mid-handler (below, Feature: Action is
 shorthand for a permission key; the app itself names each one by its line on the
-Roles & permissions tab, `permissionLabel` in `my-app/lib/permissions.ts`).
+Roles & permissions tab, `permissionLabel` in `my-app/lib/roles/permissions.ts`).
 `/api/performance/analyze` needs Performance: Read to read a query plan and
 Performance: Run to actually execute the query under `EXPLAIN ANALYZE`. Saving a
 comparison set needs Create for a new name and Update for a name already taken.
 `/api/compare` leaves the saved sets out unless the role has Comparison sets:
 Read. `scripts/apply` and `scripts/revert` need Deploy: Run and then the
-connection's own setting (`my-app/lib/connection-access.ts`).
+connection's own setting (`my-app/lib/connections/access.ts`).
 
 ### The bypass switch — read this before filing an auth finding
 
-`my-app/lib/auth-mode.ts` defines:
+`my-app/lib/auth/mode.ts` defines:
 
 ```ts
 const BYPASS_ON = new Set(["true", "1", "yes", "on"]);
@@ -215,26 +215,26 @@ route into the codebase.
 
 | Function | Where | What it is |
 |---|---|---|
-| `fetchSchemaSnapshot(cfg, schema)` | `lib/postgres.ts:1394` | The single introspection entry point. Everything downstream consumes its `SchemaSnapshot`. |
-| `compareSchemas(left, right)` | `lib/compare.ts:2784` | The diff engine. 2,874 lines; the only entry point the app calls. |
-| `generateMigration(report, opts)` | `lib/generate-sql.ts:4222` | Diff → migration SQL. |
-| `generateRollback(report, opts)` | `lib/generate-sql.ts:4884` | The inverse, by re-running the comparison backwards. |
-| `runComparison(query, record)` | `lib/compare-run.ts:1027` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
-| `runDriftCheck(id, source, mode)` | `lib/drift-runner.ts:120` | One drift check, and the `drift_events` row it writes. |
-| `fetchSchemaVersionInfo(cfg, schema)` | `lib/version-detection.ts:575` | Finds a target's own version table: Flyway, Liquibase, or hand-rolled. |
-| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/query-analysis.ts:3517`, `:6049` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
-| `analyzeSchemaPerformance(snapshot)` | `lib/perf-advice.ts:1021` | Structural performance advice. |
+| `fetchSchemaSnapshot(cfg, schema)` | `lib/postgres/:1394` | The single introspection entry point. Everything downstream consumes its `SchemaSnapshot`. |
+| `compareSchemas(left, right)` | `lib/compare/diff.ts:2784` | The diff engine. 2,874 lines; the only entry point the app calls. |
+| `generateMigration(report, opts)` | `lib/sql/generate.ts:4222` | Diff → migration SQL. |
+| `generateRollback(report, opts)` | `lib/sql/generate.ts:4884` | The inverse, by re-running the comparison backwards. |
+| `runComparison(query, record)` | `lib/compare/run.ts:1027` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
+| `runDriftCheck(id, source, mode)` | `lib/drift/runner.ts:120` | One drift check, and the `drift_events` row it writes. |
+| `fetchSchemaVersionInfo(cfg, schema)` | `lib/versions/detection.ts:575` | Finds a target's own version table: Flyway, Liquibase, or hand-rolled. |
+| `readPlan(raw, tableRows)` / `readSql(sql)` | `lib/performance/query-analysis.ts:3517`, `:6049` | EXPLAIN-plan reader and static SQL anti-pattern linter. |
+| `analyzeSchemaPerformance(snapshot)` | `lib/performance/advice.ts:1021` | Structural performance advice. |
 
 ### Rename detection is the interesting algorithm
 
 A dropped `customer` table and an added `client` table might be a rename or might
 be two unrelated changes, and guessing wrong emits destructive SQL. So
-`lib/compare.ts` scores candidate pairs on weighted dimensions (name 20,
+`lib/compare/diff.ts` scores candidate pairs on weighted dimensions (name 20,
 constraints 15, columns 55, relationships 10 for tables) with accept/possible
 thresholds at 70/55, and then applies `tableNameRenameGuard` — a structurally
 identical pair whose *names* are unrelated is demoted to a review candidate
 rather than auto-emitting `ALTER TABLE … RENAME TO`. Primitives are in
-`lib/compare-utils.ts` (Levenshtein, Jaccard, multiset similarity).
+`lib/compare/utils.ts` (Levenshtein, Jaccard, multiset similarity).
 
 ## 8. The `lib/` purity split
 
@@ -244,11 +244,11 @@ value-import closure contains no `pg`, `sequelize`, `next/*`, `@/auth` or
 be imported by a client component. (This file used to give a count of each
 kind. The count was not redone on 2026-11-10, so it is left out.)
 
-Several files exist *only* to preserve that line: `lib/snapshot-facts.ts` holds
-one function so the UI can ask it without pulling in `pg`; `lib/parse-uri.ts`
+Several files exist *only* to preserve that line: `lib/postgres/snapshot-facts.ts` holds
+one function so the UI can ask it without pulling in `pg`; `lib/connections/parse-uri.ts`
 re-implements URI parsing so the connection drawer can preview a string in the
-browser; `lib/compare-data-summary.ts` is the browser-safe half of
-`lib/compare-data.ts`. A reviewer wondering why a 28-line file exists has found
+browser; `lib/compare/data-summary.ts` is the browser-safe half of
+`lib/compare/data.ts`. A reviewer wondering why a 28-line file exists has found
 the reason.
 
 ## 9. Requirements traceability
@@ -271,7 +271,7 @@ older copy of this document will come looking for them:
 | # | Item | What closed it |
 |---|---|---|
 | 28 | Migration execution history and audit log | The ledger row already held the SQL, the rollback, the change type and the timestamp; it now holds the actor too (`applied_by`, added to older ledgers on the next apply), and the Deploy screen's timeline reads "Applied *date* by *who*". The *Audit log* tab on the Drift screen is a different log and always was — drift checks, not deployments. |
-| 30 | Save comparison history and templates | Templates are `lib/comparison-sets.ts`. History is `lib/comparison-history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
+| 30 | Save comparison history and templates | Templates are `lib/compare/sets.ts`. History is `lib/compare/history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
 | 31 | Jest testing for the main webpages | The suite, test and coverage numbers are kept in one place: the Jest row of the compliance sheet in `my-app/README.md`. Of the 34 `page.tsx` files, the 19 that show something each have a suite of their own (`tests/page-*.test.tsx`), alongside 41 component suites; the landing page at `app/page.tsx` has one suite for whom it sends where and one for what it shows. The addresses that only redirect (`/acme` and the ones from before organizations) are in `tests/org-redirect.test.ts`. jsdom is asked for per file, so the logic suites keep a node environment. |
 | 32 | UI polish and error handling | The polish was already there. The error handling is `app/[org]/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
 | 38 | AI assistance | Built, and off by default. `my-app/lib/ai/` holds six features: a change summary on Compare, a migration review before deploy, an explanation of drift, one line in drift alerts, SQL written from plain words, and a schema chat. An organization gets them only after an Admin switches AI on in the Admin screen's AI tab, and only when the server or the organization has a key for an AI service. Using them needs the permission "Use AI assistance". Items 34 to 36 are still rule-based and do not need it. |
@@ -339,7 +339,7 @@ files and one proxy.
   the digest is the only thread back to the server log.
 - **The auth state is readable on screen.** The bottom-left of the studio rail
   carries your role, and an `auth off` pill beside it whenever the bypass is on.
-  That is a label, not a guard: the gates are `lib/auth-guard.ts` and `proxy.ts`.
+  That is a label, not a guard: the gates are `lib/auth/guard.ts` and `proxy.ts`.
 
 ## 12. House conventions
 

@@ -19,8 +19,8 @@ import { NextRequest } from "next/server";
 import type { SchemaSnapshot } from "../lib/postgres";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { column, schema, table } from "./helpers/snapshots";
-import { compareSchemas } from "../lib/compare";
-import { driftFingerprint } from "../lib/drift-fingerprint";
+import { compareSchemas } from "../lib/compare/diff";
+import { driftFingerprint } from "../lib/drift/fingerprint";
 
 /** The lineage head each of the two reads reports, and the order they ran in. */
 let headBeforeRead: number | null = null;
@@ -30,14 +30,14 @@ let client: FakeClient;
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor"),
   }),
 }));
 
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: () => ({ host: "db.test", port: 5432, database: "app" }),
 }));
 
@@ -52,7 +52,7 @@ jest.mock("../lib/postgres", () => ({
   },
 }));
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (text: string) => {

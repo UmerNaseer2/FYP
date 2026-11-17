@@ -22,7 +22,7 @@ import {
   normalizeAppName,
   readAppliesToHeader,
   type TargetApplications,
-} from "@/lib/application-targeting";
+} from "@/lib/deploy/application-targeting";
 
 /** A target that was read and hosts these applications. */
 function hosts(...names: string[]): TargetApplications {

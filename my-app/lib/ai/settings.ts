@@ -7,8 +7,8 @@
 //
 // Every change is written to the change log in the same transaction as the
 // change, as kind "ai-settings".
-import pool, { syncMetadataTables } from "../version-db";
-import { logRoleChanges, type RoleChangeEntry } from "../roles-db";
+import pool, { syncMetadataTables } from "../db/version-db";
+import { logRoleChanges, type RoleChangeEntry } from "../roles/roles-db";
 import { AI_FEATURES, FEATURE_LABELS, type AiFeature } from "./prompts";
 
 export type OrgAiSettings = {

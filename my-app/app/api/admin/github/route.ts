@@ -1,24 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, type Principal } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { checkRepositoryAccess } from "@/lib/github-check";
-import { githubConfig } from "@/lib/github-registry";
+import { requirePermission, type Principal } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { checkRepositoryAccess } from "@/lib/github/check";
+import { githubConfig } from "@/lib/github/registry";
 import {
   REPOSITORY_PROBLEM,
   parseRepository,
   repositoryLabel,
   tokenProblem,
   type GitHubSettingsView,
-} from "@/lib/github-settings";
-import { readOrgGitHub, removeOrgGitHub, saveOrgGitHub, type GitHubActor } from "@/lib/org-github-store";
-import { hasPermission } from "@/lib/permissions";
-import { registryRoot } from "@/lib/registry-paths";
-import { encryptionKeySource } from "@/lib/secret-store";
+} from "@/lib/github/settings";
+import { readOrgGitHub, removeOrgGitHub, saveOrgGitHub, type GitHubActor } from "@/lib/github/org-store";
+import { hasPermission } from "@/lib/roles/permissions";
+import { registryRoot } from "@/lib/github/registry-paths";
+import { encryptionKeySource } from "@/lib/connections/secret-store";
 
 /**
  * The caller's organization's GitHub settings, from the GitHub tab on the
  * Admin screen: the repository its scripts are kept in, and the access token
- * the app uses for it (lib/org-github-store.ts).
+ * the app uses for it (lib/github/org-store.ts).
  *
  * GET (github:read) says which repository is used, where it came from and
  * who saved it last. It never sends the token, to anyone: only whether one

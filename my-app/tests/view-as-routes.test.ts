@@ -3,7 +3,7 @@
 //
 // "View as" only exists while authentication is off. It leaves a cookie naming
 // a role, and from then on every gate answers as that role (bypassPrincipal in
-// lib/auth-guard.ts). What these tests hold it to:
+// lib/auth/guard.ts). What these tests hold it to:
 //
 //   - With real sign-in the switcher is not there at all. It answers 404
 //     before it asks who is calling, so being signed in never makes a way to
@@ -19,13 +19,13 @@
 //   - Every answer is about the organization the gate found, and a refusal
 //     from the gate is passed on as it came.
 import { NextRequest, NextResponse } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
-import { ALL_PERMISSIONS, presetFor } from "@/lib/permissions";
+import type { Gate } from "@/lib/auth/guard";
+import { ALL_PERMISSIONS, presetFor } from "@/lib/roles/permissions";
 import { TEST_ORG, bypassAdminPrincipal, principalFor } from "./helpers/principals";
 
 let mockBypass = true;
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   // A getter, so one file can see both sides of a switch that is otherwise
   // decided once, at module load. See tests/use-user.test.tsx.
   get BYPASS_AUTH() {
@@ -35,7 +35,7 @@ jest.mock("../lib/auth-mode", () => ({
 
 let mockGate: Gate;
 let mockGateCalls = 0;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requireMember: async () => {
     mockGateCalls += 1;
     return mockGate;
@@ -43,7 +43,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockRolesDb = { getRoleAccess: jest.fn(), listRoles: jest.fn() };
-jest.mock("../lib/roles-db", () => ({
+jest.mock("../lib/roles/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockRolesDb.getRoleAccess(...args),
   listRoles: (...args: unknown[]) => mockRolesDb.listRoles(...args),
 }));
@@ -68,7 +68,7 @@ const NOT_AVAILABLE = "View as is only available while authentication is off.";
 const CLEARED = "studio-view-as=; Path=/; Max-Age=0";
 const QA_LEAD = { role: "qa-lead", roleLabel: "QA Lead", permissions: ["dashboard:read"] };
 
-// The gate's three refusals, in lib/auth-guard.ts's words. A route hands each
+// The gate's three refusals, in lib/auth/guard.ts's words. A route hands each
 // one back as it came, so the words are only there to make the cases readable.
 const SIGN_IN_FIRST = "Sign in to continue.";
 const NOT_A_MEMBER = "This organization does not exist, or you are not a member.";

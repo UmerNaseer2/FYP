@@ -22,9 +22,9 @@
 
 import { z } from "zod";
 import type { SchemaSnapshot } from "../../postgres";
-import { serverActingCallIn } from "../../query-analysis";
-import { quoteIdent } from "../../perf-sql";
-import { codeBodiesIn, hasExecutableSql, maskNonCode, splitStatements } from "../../sql-guard";
+import { serverActingCallIn } from "../../performance/query-analysis";
+import { quoteIdent } from "../../performance/sql";
+import { codeBodiesIn, hasExecutableSql, maskNonCode, splitStatements } from "../../sql/guard";
 import { bareName, checkGeneratedSql, knownNames, tableRefsInSql, unknownTablesInSql } from "../checks";
 import { mentionedObjects, schemaSlice } from "../context";
 import { estimateTokens } from "../provider";

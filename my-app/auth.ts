@@ -1,18 +1,18 @@
 import NextAuth from "next-auth";
 import { authConfig, entraConfigured } from "./auth.config";
-import { identityFrom, resolveIdentity } from "@/lib/accounts-db";
+import { identityFrom, resolveIdentity } from "@/lib/auth/accounts-db";
 
 export { entraConfigured };
 
 /**
  * The full NextAuth setup: the edge-safe config plus the database-backed bits.
  *
- * Signing in decides which person in this app someone is (lib/accounts-db.ts)
+ * Signing in decides which person in this app someone is (lib/auth/accounts-db.ts)
  * and puts that person's profile ID in the session. Everything after that
- * keys on the ID: the gates in lib/auth-guard.ts find the person's membership
+ * keys on the ID: the gates in lib/auth/guard.ts find the person's membership
  * by it on every request, and nothing reads the address a provider sent
  * again. The address is only how someone is first found, and only for the
- * accounts lib/accounts-db.ts trusts with it.
+ * accounts lib/auth/accounts-db.ts trusts with it.
  */
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
@@ -71,7 +71,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
      *
      * What a person may do used to be read here, on every session read, and
      * copied into the session. It now lives in `memberships`, one row for each
-     * organization the person belongs to, and the gates in lib/auth-guard.ts
+     * organization the person belongs to, and the gates in lib/auth/guard.ts
      * read it fresh on every request (the screens ask them, through /api/me).
      * So an admin changing someone's role, or ticking a box on the Roles tab,
      * still takes effect on that person's very next request.

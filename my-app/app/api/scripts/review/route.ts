@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { runFingerprint } from "@/lib/approvals-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { runFingerprint } from "@/lib/deploy/approvals-db";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
 import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { readTableSizes } from "@/lib/ai/table-sizes";

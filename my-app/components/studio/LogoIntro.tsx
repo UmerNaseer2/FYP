@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { REPLAY_INTRO_EVENT, takeIntroTurn } from "@/lib/intro";
+import { REPLAY_INTRO_EVENT, takeIntroTurn } from "@/lib/ui/intro";
 
-// The logo reveal (see lib/intro.ts for when it plays).
+// The logo reveal (see lib/ui/intro.ts for when it plays).
 //
 // What happens, in order:
 //   1. The two squares fly in and lock together, a light sweeps across them

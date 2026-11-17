@@ -1,4 +1,4 @@
-import type { ComparisonHistoryView, HistoryLine } from "@/lib/compare-run";
+import type { ComparisonHistoryView, HistoryLine } from "@/lib/compare/run";
 import { ChevronDownIcon, TrendIcon } from "@/components/ui/icons";
 
 // ---------------------------------------------------------------------------

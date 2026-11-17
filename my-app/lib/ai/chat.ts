@@ -22,7 +22,7 @@
 //
 // When the person leaves, the browser cancels the request, and the question
 // stops: no more lookups and no more model steps.
-import { maskNonCode, splitStatements } from "../sql-guard";
+import { maskNonCode, splitStatements } from "../sql/guard";
 import type { SchemaSnapshot } from "../postgres";
 import { bareName, unknownTablesInSql } from "./checks";
 import { AiError, estimateTokens, type AiMessage, type AiUsage, type GenerateResult } from "./provider";

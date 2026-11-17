@@ -47,8 +47,8 @@ type DataTool = {
   keyFrom(appKey: string, nextAuthSecret: string): Buffer | null;
   sealSecret(plain: string | null, key: Buffer | null): string | null;
 };
-type SecretStore = typeof import("@/lib/secret-store");
-type LocalSecrets = typeof import("@/lib/local-secrets");
+type SecretStore = typeof import("@/lib/connections/secret-store");
+type LocalSecrets = typeof import("@/lib/connections/local-secrets");
 
 const tool = require("../scripts/move-connections.cjs") as MoveTool;
 const data = require("../scripts/move-data.cjs") as DataTool;
@@ -96,7 +96,7 @@ function withSharedKey<T>(run: (store: SecretStore, local: LocalSecrets) => T): 
   try {
     let result: T | undefined;
     jest.isolateModules(() => {
-      result = run(require("../lib/secret-store") as SecretStore, require("../lib/local-secrets") as LocalSecrets);
+      result = run(require("../lib/connections/secret-store") as SecretStore, require("../lib/connections/local-secrets") as LocalSecrets);
     });
     return result as T;
   } finally {

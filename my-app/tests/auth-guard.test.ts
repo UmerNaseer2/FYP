@@ -1,4 +1,4 @@
-// auth-guard: the gates every API route opens with (lib/auth-guard.ts).
+// auth-guard: the gates every API route opens with (lib/auth/guard.ts).
 //
 // The route suites put a stand-in in place of these gates, so a route can be
 // tested without a session or a metadata database. This file is the other
@@ -34,14 +34,14 @@
 //     whole, asks only who someone is: no organization, no membership, no
 //     role. Signed out is 401, as it is for the other gates, and the bypass is
 //     a caller with no profile.
-import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
-import { ORG_HEADER } from "@/lib/org-slug";
-import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/permissions";
+import { VIEW_AS_COOKIE } from "@/lib/auth/mode";
+import { ORG_HEADER } from "@/lib/orgs/slug";
+import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/roles/permissions";
 import { TEST_ORG, bypassAdminPrincipal } from "./helpers/principals";
 
 let mockBypass = false;
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   // A getter, so one file can see both sides of a switch that is otherwise
   // decided once, at module load. See tests/use-user.test.tsx.
   get BYPASS_AUTH() {
@@ -76,20 +76,20 @@ jest.mock("next/headers", () => ({
 const mockFindOrganization = jest.fn();
 const mockFindDefault = jest.fn();
 const mockFindMembership = jest.fn();
-jest.mock("../lib/orgs-db", () => ({
+jest.mock("../lib/orgs/orgs-db", () => ({
   findOrganization: (...args: unknown[]) => mockFindOrganization(...args),
   findDefaultOrganization: (...args: unknown[]) => mockFindDefault(...args),
   findMembership: (...args: unknown[]) => mockFindMembership(...args),
 }));
 
 const mockGetRoleAccess = jest.fn();
-jest.mock("../lib/roles-db", () => ({
+jest.mock("../lib/roles/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockGetRoleAccess(...args),
 }));
 
-/** The metadata database: here only the day-long grants (lib/access-requests-db activeGrants) read it. */
+/** The metadata database: here only the day-long grants (lib/roles/access-requests-db activeGrants) read it. */
 const mockQuery = jest.fn();
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -101,7 +101,7 @@ import {
   requireSignedIn,
   resolveOrganization,
   type Gate,
-} from "@/lib/auth-guard";
+} from "@/lib/auth/guard";
 
 const SIGN_IN_FIRST = { error: "Sign in to continue." };
 const NOT_A_MEMBER = { error: "This organization does not exist, or you are not a member." };

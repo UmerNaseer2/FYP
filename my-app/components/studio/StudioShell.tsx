@@ -7,10 +7,10 @@ import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useTheme } from "@/hooks/useTheme";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 import { Drawer } from "@/components/ui";
 import { BellIcon, HelpIcon, MoonIcon, SparkIcon, SunIcon } from "@/components/ui/icons";
-import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
+import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/roles/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { HelpButton, HelpProvider, useHelp } from "@/components/help/HelpPanel";
 import { StudioTopbar } from "./StudioTopbar";
@@ -23,8 +23,8 @@ import { useAiFeature } from "./AiPanel";
 import LogoIntro from "./LogoIntro";
 import { AppTour } from "./AppTour";
 import { NAV_ITEMS, activeScreen, isKnownScreen, type NavItem } from "./nav";
-import { recordRecent } from "@/lib/recents";
-import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
+import { recordRecent } from "@/lib/ui/recents";
+import { OPEN_ASK_AI_EVENT } from "@/lib/ui/studio-events";
 
 // What the rail offers while it cannot ask what the role may do: what a new
 // Viewer can read.
@@ -157,7 +157,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const active = activeScreen(pathname);
   const activeHref = orgPath(active.href);
 
-  // Remember this page for the command bar's "Recent" list (lib/recents.ts).
+  // Remember this page for the command bar's "Recent" list (lib/ui/recents.ts).
   // Only a real, named page this person's menu offers: not the Dashboard
   // fallback for an unknown address, and nothing before the role is known.
   const onMenu = navItems.some((item) => item.href === activeHref);

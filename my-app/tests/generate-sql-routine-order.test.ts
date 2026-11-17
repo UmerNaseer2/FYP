@@ -10,8 +10,8 @@
 // These tests pin the ordering both ways round: the function a table needs is
 // moved up, and the function nothing needs stays where the old order protects
 // it.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, renderMigrationScript } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, renderMigrationScript } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type {
   ConstraintSnapshot,

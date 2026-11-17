@@ -9,7 +9,7 @@ import {
   normalizeDriftInterval,
   selectDue,
   type DriftScheduleEntry,
-} from "@/lib/drift-schedule";
+} from "@/lib/drift/schedule";
 
 /**
  * The scheduler is one thin loop around the decisions in this module, so these

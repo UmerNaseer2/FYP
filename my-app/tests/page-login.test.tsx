@@ -12,7 +12,7 @@
  * There are two ways in, Microsoft and GitHub, each offered
  * only when the server has its keys. Signing in carries on to the page that
  * sent the person here (?callbackUrl=), as long as that page is on this site;
- * lib/callback-url.ts has the rules and tests/callback-url.test.ts the cases.
+ * lib/auth/callback-url.ts has the rules and tests/callback-url.test.ts the cases.
  * Someone sent here to sign in as somebody else (&account=choose) is shown
  * Microsoft's or GitHub's account picker rather than signed straight back in.
  */
@@ -206,7 +206,7 @@ describe("where signing in carries on to", () => {
 
 describe("signing in as somebody else", () => {
   // How the invitation page sends someone who signed out to take an
-  // invitation meant for another address (lib/callback-url.ts loginHref).
+  // invitation meant for another address (lib/auth/callback-url.ts loginHref).
   // Without the prompt, Microsoft and GitHub both sign straight back in to the
   // account the browser last used, and the person is back where they started.
   it.each([

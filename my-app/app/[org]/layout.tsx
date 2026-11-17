@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { notFound, redirect } from "next/navigation";
 import { OrgProvider } from "@/components/OrgProvider";
-import { resolveOrganization } from "@/lib/auth-guard";
-import { isOrgSlug } from "@/lib/org-slug";
-import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
+import { resolveOrganization } from "@/lib/auth/guard";
+import { isOrgSlug } from "@/lib/orgs/slug";
+import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs/orgs-db";
 
 /**
  * Every page of an organization sits under its address: /acme/studio,
@@ -12,12 +12,12 @@ import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
  * tells the pages which one it is (components/OrgProvider.tsx).
  *
  * It asks the same gate the API routes do (resolveOrganization in
- * lib/auth-guard.ts), for the organization in the address rather than the one
+ * lib/auth/guard.ts), for the organization in the address rather than the one
  * a request's header names, and the answers mean the same:
  *
  *   - A member: the pages are drawn. With real sign-in the organization is
  *     remembered as the one they used last, so an old address that names none
- *     (/studio) brings them back here (lib/org-redirect.ts).
+ *     (/studio) brings them back here (lib/orgs/redirect.ts).
  *
  *   - Not a member: the 404 page, the same answer the API gives for another
  *     organization's rows, so an address cannot be used to find out whether an

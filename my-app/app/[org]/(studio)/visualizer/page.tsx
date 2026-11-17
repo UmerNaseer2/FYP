@@ -12,7 +12,7 @@ import {
   type VizConnection,
   type VizPick,
 } from "@/components/studio/visualizer/VisualizerPane";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-visualizer.css";
 

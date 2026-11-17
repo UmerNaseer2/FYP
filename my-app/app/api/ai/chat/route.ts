@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import { runComparison } from "@/lib/compare-run";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
+import { runComparison } from "@/lib/compare/run";
 import { aiGateRefusal, aiResponse } from "@/lib/ai/respond";
 import { aiDepsFor } from "@/lib/ai/run";
 import { runSchemaChat } from "@/lib/ai/chat";

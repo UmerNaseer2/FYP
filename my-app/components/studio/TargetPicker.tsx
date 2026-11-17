@@ -12,7 +12,7 @@ import {
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { CheckIcon, ChevronDownIcon, SearchIcon } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import "@/app/styles/atelier-picker.css";
 
 // ---------------------------------------------------------------------------

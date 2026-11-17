@@ -1,5 +1,5 @@
 // github-config: which repository and token a request uses for the script
-// registry (lib/github-config.ts).
+// registry (lib/github/config.ts).
 //
 // The organization's saved settings are stood in for. What these tests hold
 // the lookup to:
@@ -13,7 +13,7 @@
 //   - No message holds a token or a value of the server's keys.
 
 const mockReadOrgGitHub = jest.fn();
-jest.mock("../lib/org-github-store", () => ({
+jest.mock("../lib/github/org-store", () => ({
   readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
 }));
 
@@ -22,8 +22,8 @@ import {
   GITHUB_SETTINGS_UNAVAILABLE_CODE,
   ORG_UNCONFIGURED_MESSAGE,
   UNREADABLE_TOKEN_MESSAGE,
-} from "@/lib/github-config";
-import { GITHUB_UNCONFIGURED_CODE } from "@/lib/github-registry";
+} from "@/lib/github/config";
+import { GITHUB_UNCONFIGURED_CODE } from "@/lib/github/registry";
 
 const DEFAULT_ORG = { orgId: 1, orgIsDefault: true };
 const OTHER_ORG = { orgId: 12, orgIsDefault: false };

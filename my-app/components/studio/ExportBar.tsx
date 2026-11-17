@@ -7,8 +7,8 @@ import {
   documentToJson,
   documentToMarkdown,
   exportFileStem,
-} from "@/lib/compare-export-format";
-import type { DiffDocument } from "@/lib/compare-export";
+} from "@/lib/compare/export-format";
+import type { DiffDocument } from "@/lib/compare/export";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 
 /**
@@ -19,7 +19,7 @@ import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
  * looked at — could only be read on screen, which is no use in a pull request,
  * a spreadsheet, or a submission.
  *
- * The document is built on the server (lib/compare-export.ts) and arrives here
+ * The document is built on the server (lib/compare/export.ts) and arrives here
  * as plain data, so this component only formats and hands over. It deliberately
  * does not reach into the report: a second opinion about severity is exactly
  * what an export must not have.

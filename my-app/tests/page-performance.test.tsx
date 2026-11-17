@@ -19,7 +19,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import PerformancePage from "@/app/[org]/(studio)/performance/page";
-import { THRESHOLDS } from "@/lib/perf-thresholds";
+import { THRESHOLDS } from "@/lib/performance/thresholds";
 import {
   fetchCalls,
   render,

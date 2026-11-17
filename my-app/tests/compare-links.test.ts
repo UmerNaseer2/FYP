@@ -2,8 +2,8 @@
 // Workbench offers when a push would move the target backwards. The link must
 // swap the two sides exactly, run at once, and never point at a side nobody
 // picked.
-import { buildSwapHref } from "../lib/compare-links";
-import type { CurrentSelection } from "../lib/compare-selection";
+import { buildSwapHref } from "../lib/compare/links";
+import type { CurrentSelection } from "../lib/compare/selection";
 
 // staging.public (connection 3) compared with prod.app (connection 7).
 function selection(overrides: Partial<CurrentSelection> = {}): CurrentSelection {

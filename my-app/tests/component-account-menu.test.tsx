@@ -16,9 +16,9 @@ import "@testing-library/jest-dom";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { AccountMenu } from "@/components/studio/AccountMenu";
-import { BUILT_IN_ROLE_INFO } from "@/lib/permissions";
-import { REPLAY_INTRO_EVENT } from "@/lib/intro";
-import { START_TOUR_EVENT, writeTourMemory } from "@/lib/tour";
+import { BUILT_IN_ROLE_INFO } from "@/lib/roles/permissions";
+import { REPLAY_INTRO_EVENT } from "@/lib/ui/intro";
+import { START_TOUR_EVENT, writeTourMemory } from "@/lib/ui/tour";
 import { OrgContext } from "@/hooks/useOrg";
 
 const ADA = { name: "Ada Lovelace", email: "ada@example.com", initials: "AD" };

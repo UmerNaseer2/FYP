@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { getThresholds, saveThresholds } from "@/lib/perf-thresholds-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { getThresholds, saveThresholds } from "@/lib/performance/thresholds-db";
 import {
   THRESHOLDS,
   type ThresholdDefinition,
   type ThresholdKey,
   type ThresholdSetting,
-} from "@/lib/perf-thresholds";
+} from "@/lib/performance/thresholds";
 
 /**
  * GET  /api/performance/thresholds?connectionId=<id>&schema=<name>
@@ -17,7 +17,7 @@ import {
  *
  * The GET returns the definitions as well as the values, so the settings screen
  * renders its whole form — labels, units, ranges, help text — from one call and
- * cannot drift from what the server will accept. lib/perf-thresholds.ts is the
+ * cannot drift from what the server will accept. lib/performance/thresholds.ts is the
  * single definition of both.
  */
 

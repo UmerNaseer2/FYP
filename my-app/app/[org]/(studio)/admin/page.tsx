@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 import { Skeleton } from "@/components/ui";
 import { LockIcon } from "@/components/ui/icons";
 import { PageHeader } from "@/components/studio/PageHeader";

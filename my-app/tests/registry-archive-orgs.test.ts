@@ -6,9 +6,9 @@
 // Nothing here reaches GitHub. The GitHub settings are fake, and fetch is a
 // stub that answers only the addresses a test names, so a write into the
 // wrong organization's folder fails the test.
-import { archiveAppliedVersions, type AppliedVersion } from "@/lib/registry-archive";
+import { archiveAppliedVersions, type AppliedVersion } from "@/lib/github/registry-archive";
 
-// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// Each organization's own GitHub settings (lib/github/org-store.ts) are kept
 // in the metadata database, which these tests do not have. Organization 12 has
 // the server's repository with a token of its own; no other organization has
 // settings, so the default one uses the server's keys.
@@ -19,7 +19,7 @@ const mockReadOrgGitHub = jest.fn(
       ? { owner: "acme", repo: "registry", token: ORG_TOKEN, updatedBy: "admin@test", updatedAt: new Date(0) }
       : null,
 );
-jest.mock("../lib/org-github-store", () => ({
+jest.mock("../lib/github/org-store", () => ({
   readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
 }));
 

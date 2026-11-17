@@ -19,7 +19,7 @@ import type {
   ConstraintDiff,
   ObjectDiff,
   TableMatch,
-} from "@/lib/compare";
+} from "@/lib/compare/diff";
 import type { TableSnapshot } from "@/lib/postgres";
 import {
   NODE_HEADER_H,

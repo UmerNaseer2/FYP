@@ -1,6 +1,6 @@
-import { compareSchemas } from "@/lib/compare";
-import { buildDiffDocument, type DiffDocument } from "@/lib/compare-export";
-import { countedChanges, documentToMarkdown } from "@/lib/compare-export-format";
+import { compareSchemas } from "@/lib/compare/diff";
+import { buildDiffDocument, type DiffDocument } from "@/lib/compare/export";
+import { countedChanges, documentToMarkdown } from "@/lib/compare/export-format";
 import { tallyDelta } from "@/components/studio/DiffReport";
 import { column, schema, table } from "./helpers/snapshots";
 

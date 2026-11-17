@@ -28,10 +28,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 // The real one reaches for next-auth, and signing out is not this page's to test.
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
 
 import { InvitePage, type InviteView } from "@/components/invite/InvitePage";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 import {
   fetchCalls,
   flushAsync,

@@ -1,14 +1,14 @@
 "use client";
 
 import { useId } from "react";
-import { RISK_LABELS, type Permission, type PermissionKey, type Risk } from "@/lib/permissions";
+import { RISK_LABELS, type Permission, type PermissionKey, type Risk } from "@/lib/roles/permissions";
 import {
   ADMIN_ONLY_LINE,
   SCREEN_GROUPS,
   capitalise,
   type FeatureLines,
   type ToggleHint,
-} from "@/lib/role-summary";
+} from "@/lib/roles/summary";
 import { Button, InfoIcon, LockIcon, Pill, type PillTone } from "@/components/ui";
 
 // ---------------------------------------------------------------------------

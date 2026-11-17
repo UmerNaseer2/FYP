@@ -9,13 +9,13 @@
 //
 // These tests pin the fix: such a drop is held back beside the column or
 // table that needs it, and nothing else is.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   renderMigrationScript,
   statementsThatRun,
   type MigrationScript,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type {
   ConstraintSnapshot,

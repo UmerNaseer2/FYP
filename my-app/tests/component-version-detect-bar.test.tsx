@@ -50,8 +50,8 @@ import "@testing-library/jest-dom";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
-import type { DetectedVersion } from "@/lib/detected-version";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
+import type { DetectedVersion } from "@/lib/compare/detected-version";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
 
 /** A schema whose versions another tool keeps: no script groups. */
 function flyway(over: Partial<DetectedVersion> = {}): DetectedVersion {

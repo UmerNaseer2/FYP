@@ -14,14 +14,14 @@ import {
   pickSchemaAfterConnectionChange,
   selectionToQuery,
   swapSourceWithTarget,
-} from "@/lib/compare-selection";
-import { buildDiffDocument } from "@/lib/compare-export";
-import { renameMatchingSkipped } from "@/lib/compare";
+} from "@/lib/compare/selection";
+import { buildDiffDocument } from "@/lib/compare/export";
+import { renameMatchingSkipped } from "@/lib/compare/diff";
 import type {
   CompareScreen,
   ConnectionView,
   OutcomeView,
-} from "@/lib/compare-run";
+} from "@/lib/compare/run";
 import { DiffReport, describeParts, type DeltaPart, type DiffFilter } from "@/components/studio/DiffReport";
 import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
@@ -53,7 +53,7 @@ import {
   XIcon,
   CodeIcon,
 } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import {
   forgetCompare,
   hasMemory,
@@ -66,7 +66,7 @@ import {
   rememberQuery,
   rememberScreen,
   scriptKey,
-} from "@/lib/compare-memory";
+} from "@/lib/compare/memory";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import "@/app/styles/atelier-compare.css";
 
@@ -1278,7 +1278,7 @@ function CompareScreenView({ query }: { query: string }) {
                         />
                       )}
                       {/* Two big schemas with little in common are not searched
-                          for renamed tables (lib/compare has a limit, or the
+                          for renamed tables (lib/compare/diff has a limit, or the
                           search takes minutes). Said here, or a reader who knows
                           a table was renamed sees a create and a drop for it and
                           takes the report to be wrong. */}

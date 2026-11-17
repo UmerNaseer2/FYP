@@ -5,8 +5,8 @@ import { Button, Card, ConfirmDialog, Input, Label } from "@/components/ui";
 import { AlertCircleIcon } from "@/components/ui/icons";
 import { Select } from "@/components/ui/Select";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { apiFetch } from "@/lib/api-fetch";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
 import {
   AI_KEY_PROVIDERS,
   AI_KEY_PROVIDER_LIST,

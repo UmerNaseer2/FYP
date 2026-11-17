@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { Pill, type PillTone } from "@/components/ui/Pill";
-import { apiFetch } from "@/lib/api-fetch";
-import { MAX_MIGRATION_DESCRIPTION } from "@/lib/perf-sql";
-import { countOf } from "@/lib/plural";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { MAX_MIGRATION_DESCRIPTION } from "@/lib/performance/sql";
+import { countOf } from "@/lib/ui/plural";
 import {
   isSqlGenerateAnswer,
   isSqlGenerateChecks,

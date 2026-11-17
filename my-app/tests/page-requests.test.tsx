@@ -10,10 +10,10 @@
 // use, and that an answer which changes a role really changes it first.
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { REQUESTS_CHANGED_EVENT, type InboxRequest, type RequestsPayload } from "@/lib/access-requests";
+import { REQUESTS_CHANGED_EVENT, type InboxRequest, type RequestsPayload } from "@/lib/roles/access-requests";
 import { HELP_TOPICS } from "@/lib/help";
-import type { ListedApproval } from "@/lib/approvals-db";
-import { permissionLabel, type PermissionKey } from "@/lib/permissions";
+import type { ListedApproval } from "@/lib/deploy/approvals-db";
+import { permissionLabel, type PermissionKey } from "@/lib/roles/permissions";
 import {
   fetchCalls,
   render,

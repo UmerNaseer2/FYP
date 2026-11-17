@@ -45,7 +45,7 @@ import "@testing-library/jest-dom";
 import { fireEvent, render as renderWithoutOrg, screen } from "@testing-library/react";
 
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
-import { MIGRATION_DRAFT_KEY, type MigrationDraft } from "@/lib/migration-draft";
+import { MIGRATION_DRAFT_KEY, type MigrationDraft } from "@/lib/versions/migration-draft";
 import { TEST_ORG, render } from "./helpers/render-page";
 
 // A draft in the shape a Performance tab saves: a header comment, then each
@@ -127,7 +127,7 @@ describe("when there is nothing waiting", () => {
   test("and nothing when what is stored is not a draft", () => {
     // Storage is the person's own browser and can hold anything — an older
     // version of this app's draft, or something typed in by hand. What counts
-    // as usable is decided in lib/migration-draft; what matters here is that an
+    // as usable is decided in lib/versions/migration-draft; what matters here is that an
     // unusable one leaves no empty offer on the screen.
     window.sessionStorage.setItem(MIGRATION_DRAFT_KEY, "half a draft {");
     const view = banner();

@@ -14,11 +14,11 @@ import { NextRequest } from "next/server";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { schema } from "./helpers/snapshots";
 import { TEST_ORG } from "./helpers/principals";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor"),
@@ -27,7 +27,7 @@ jest.mock("../lib/auth-guard", () => ({
 
 // The metadata database: saved connections, tracked schemas, lineage.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -48,17 +48,17 @@ jest.mock("../lib/postgres", () => ({
 
 type ConfigInput = { host?: string | null; port?: number | null; database?: string | null };
 const mockBuildPgConfig = jest.fn<unknown, [ConfigInput]>();
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (input: ConfigInput) => mockBuildPgConfig(input),
 }));
 
 // Track asks for a drift check straight away; that is not what these test.
-jest.mock("../lib/drift-scheduler", () => ({ requestImmediateCheck: () => undefined }));
+jest.mock("../lib/drift/scheduler", () => ({ requestImmediateCheck: () => undefined }));
 
 // Compare reads the source's version table once it has the source snapshot.
 // A schema with none is the ordinary case, and this is what that returns.
-jest.mock("../lib/version-detection", () => ({
-  ...jest.requireActual("../lib/version-detection"),
+jest.mock("../lib/versions/detection", () => ({
+  ...jest.requireActual("../lib/versions/detection"),
   fetchSchemaVersionInfo: async (_cfg: unknown, schemaName: string) => ({
     schema: schemaName,
     hasVersionTable: false,
@@ -270,7 +270,7 @@ describe("Compare", () => {
 
   /** What pressing Compare on Source.sales against Target.sales returns. */
   async function compare() {
-    const { runComparison } = await import("../lib/compare-run");
+    const { runComparison } = await import("../lib/compare/run");
     const screen = await runComparison(
       TEST_ORG.id,
       new URLSearchParams({
@@ -368,7 +368,7 @@ describe("drift check", () => {
       return { rows: [] };
     });
 
-    const { computeDriftDetail } = await import("../lib/lineage-db");
+    const { computeDriftDetail } = await import("../lib/versions/lineage-db");
     const result = await computeDriftDetail(TEST_ORG.id, 3);
 
     expect(result).toMatchObject({

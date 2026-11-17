@@ -26,13 +26,13 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 /**
- * lib/approvals-db is reached for one export — runFingerprint, the server's
+ * lib/deploy/approvals-db is reached for one export — runFingerprint, the server's
  * half of the hash — and importing it pulls in the metadata pool. A stand-in
  * keeps this suite off every database; nothing below calls a query.
  * Relative, not "@/lib/...": next/jest rewrites that alias inside import
  * statements only, so a jest.mock of the alias would not resolve.
  */
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: async () => ({ rows: [] }) },
   syncMetadataTables: async () => undefined,
@@ -42,8 +42,8 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
-import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/approval-fingerprint";
-import { runFingerprint } from "@/lib/approvals-db";
+import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/deploy/approval-fingerprint";
+import { runFingerprint } from "@/lib/deploy/approvals-db";
 import { resetPageState } from "./helpers/render-page";
 
 type PanelProps = Parameters<typeof ApprovalPanel>[0];

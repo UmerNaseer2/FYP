@@ -7,12 +7,12 @@ import {
   ACTIVITY_KIND_LABEL,
   type ActivityKind,
   type ActivitySession,
-} from "@/lib/db-activity";
-import type { ThresholdBreach } from "@/lib/perf-thresholds";
-import type { DbHealth, HealthLevel } from "@/lib/db-health";
+} from "@/lib/performance/db-activity";
+import type { ThresholdBreach } from "@/lib/performance/thresholds";
+import type { DbHealth, HealthLevel } from "@/lib/performance/db-health";
 import { ThresholdBanner } from "./ThresholdBanner";
 import type { PerfTarget } from "./PerfTargetPicker";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /**

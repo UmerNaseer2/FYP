@@ -19,7 +19,7 @@
  *    push route's attach request and report what it answers; the rules about
  *    when a rollback may be added at all belong to that route. They are not
  *    covered by any test in this file.
- *  - How the SQL is graded. gradeSql (lib/change-type) has its own suite, and
+ *  - How the SQL is graded. gradeSql (lib/versions/change-type) has its own suite, and
  *    the fixtures below use it only to reach a known suggestion.
  *  - The draft banner handed over from Performance, which is its own
  *    component: tests/component-migration-draft-banner.test.tsx. What this

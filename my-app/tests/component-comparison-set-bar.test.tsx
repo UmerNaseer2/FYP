@@ -24,8 +24,8 @@
  *
  * What is NOT here:
  *  - The rules themselves. saveButtonLabel, setOptionLabel, matchesSet and
- *    validateSaveInput are lib/comparison-set-rules, with their own suite;
- *    selectionToQuery is lib/compare-selection, with its own. This suite
+ *    validateSaveInput are lib/compare/set-rules, with their own suite;
+ *    selectionToQuery is lib/compare/selection, with its own. This suite
  *    checks what the bar does with their answers, not the answers.
  *  - The endpoint. /api/comparison-sets does the real name-conflict check and
  *    the writing; here it is a canned reply.
@@ -40,7 +40,7 @@ import {
   ComparisonSetBar,
   type ComparisonSetOption,
 } from "@/components/studio/ComparisonSetBar";
-import type { CurrentSelection } from "@/lib/compare-selection";
+import type { CurrentSelection } from "@/lib/compare/selection";
 import {
   fetchCalls,
   flushAsync,

@@ -35,7 +35,7 @@ import { cleanup, fireEvent, render as renderWithoutOrg, screen, waitFor } from 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import { OrgSwitcher } from "@/components/studio/OrgSwitcher";
-import { ORG_HEADER } from "@/lib/org-slug";
+import { ORG_HEADER } from "@/lib/orgs/slug";
 import {
   TEST_ORG,
   fetchCalls,

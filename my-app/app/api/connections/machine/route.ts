@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { localMachineName, localStoreConfigured } from "@/lib/local-secrets";
+import { requirePermission } from "@/lib/auth/guard";
+import { localMachineName, localStoreConfigured } from "@/lib/connections/local-secrets";
 
 /**
  * The name of the machine this copy runs on, when it keeps local connections'

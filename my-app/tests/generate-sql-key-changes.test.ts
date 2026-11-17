@@ -1,5 +1,5 @@
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, statementsThatRun } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, statementsThatRun } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type { ConstraintSnapshot, ForeignKeySnapshot, IndexSnapshot } from "@/lib/postgres";
 

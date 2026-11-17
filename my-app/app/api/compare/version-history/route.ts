@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
-import { fetchSchemaVersionInfo, pickCurrentVersion } from "@/lib/version-detection";
-import { toFullDetectedVersion, type DetectedVersion } from "@/lib/detected-version";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
+import { fetchSchemaVersionInfo, pickCurrentVersion } from "@/lib/versions/detection";
+import { toFullDetectedVersion, type DetectedVersion } from "@/lib/compare/detected-version";
 
 // GET /api/compare/version-history?connectionId=<id>&schema=<name>
 //

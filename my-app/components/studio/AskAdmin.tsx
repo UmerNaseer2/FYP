@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
-import { DEFAULT_ROLE, isAdminOnly, type PermissionKey } from "@/lib/permissions";
+import { DEFAULT_ROLE, isAdminOnly, type PermissionKey } from "@/lib/roles/permissions";
 
 type AskAdminProps = {
   /** The permission the sentence before this is about. Requests opens with it picked. */

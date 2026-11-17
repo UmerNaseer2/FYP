@@ -1,5 +1,5 @@
 import { OnboardingPage } from "@/components/onboarding/OnboardingPage";
-import { BYPASS_AUTH } from "@/lib/auth-mode";
+import { BYPASS_AUTH } from "@/lib/auth/mode";
 
 /**
  * "Your organizations": the organizations someone belongs to, and a form to
@@ -8,7 +8,7 @@ import { BYPASS_AUTH } from "@/lib/auth-mode";
  * Who is sent here:
  *   - Someone signed in who belongs to no organization, which is everyone the
  *     first time they sign in, unless an invitation brought them. /studio and
- *     the old addresses send them (lib/org-redirect.ts), and so does an
+ *     the old addresses send them (lib/orgs/redirect.ts), and so does an
  *     organization's address they are not a member of (app/[org]/layout.tsx).
  *   - Someone removed from the organization they had open, from the guard's
  *     "not a member" screen (components/AuthGuard.tsx).

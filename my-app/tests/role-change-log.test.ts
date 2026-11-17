@@ -2,7 +2,7 @@
 // (components/admin/RoleChangeLog.tsx), as describeRoleChanges words it.
 //
 // The database keeps one row per line turned on or off, and hands them back
-// newest first (listRoleChanges in lib/roles-db.ts). The screen puts the rows
+// newest first (listRoleChanges in lib/roles/roles-db.ts). The screen puts the rows
 // of one save back into one line, so these tests give it rows the way the
 // database does and check that:
 //
@@ -20,7 +20,7 @@
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
 import { describeRoleChanges, type LogEntry } from "@/components/admin/RoleChangeLog";
-import type { RoleChange } from "@/lib/roles-db";
+import type { RoleChange } from "@/lib/roles/roles-db";
 
 const ADA = "ada@example.com";
 const BOB = "bob@example.com";

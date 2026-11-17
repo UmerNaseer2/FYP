@@ -1,5 +1,5 @@
 // github-settings: how a repository and an access token are read from what
-// someone typed or pasted (lib/github-settings.ts). The Admin screen, the
+// someone typed or pasted (lib/github/settings.ts). The Admin screen, the
 // new-organization form and the routes all check with these, so a value one
 // of them accepts is one the others accept too.
 import {
@@ -12,7 +12,7 @@ import {
   TOKEN_MIN,
   TOKEN_WITHOUT_REPOSITORY,
   tokenProblem,
-} from "@/lib/github-settings";
+} from "@/lib/github/settings";
 
 describe("parseRepository", () => {
   test.each([

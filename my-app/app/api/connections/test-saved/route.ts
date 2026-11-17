@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { runConnectionTest } from "@/lib/connection-config";
-import { savedSecrets } from "@/lib/connection-writes";
-import { LivesElsewhereError } from "@/lib/local-secrets";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { runConnectionTest } from "@/lib/connections/config";
+import { savedSecrets } from "@/lib/connections/writes";
+import { LivesElsewhereError } from "@/lib/connections/local-secrets";
 
 /**
  * Test a saved connection by id (used by the per-row "Test" action).

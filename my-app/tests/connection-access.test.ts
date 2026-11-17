@@ -11,7 +11,7 @@
 // nobody recognises must not lock a connection, and the sentence shown to the
 // person who was refused must not send them looking for something that does
 // not exist.
-import { BUILT_IN_ROLE_INFO, BUILT_IN_ROLES } from "@/lib/permissions";
+import { BUILT_IN_ROLE_INFO, BUILT_IN_ROLES } from "@/lib/roles/permissions";
 import {
   DEFAULT_EXECUTE_ROLE,
   EXECUTE_ROLES,
@@ -21,7 +21,7 @@ import {
   executeRoleBadge,
   toExecuteRole,
   type ExecuteAbility,
-} from "@/lib/connection-access";
+} from "@/lib/connections/access";
 
 // A role is no longer a rank, so the module is asked about abilities: whether
 // the person holds "Deploy: Run", and whether they are the Admin role.

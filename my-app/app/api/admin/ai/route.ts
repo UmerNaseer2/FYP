@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
 import { readAiAdminView } from "@/lib/ai/admin-view";
 import { saveOrgAi } from "@/lib/ai/settings";
 import { readAiSettingsChange } from "@/lib/ai/views";

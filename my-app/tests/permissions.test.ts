@@ -2,7 +2,7 @@
 //
 // The client asked at the 22 September review for an admin to be able to say,
 // for every role and every feature, which of create, read, update and delete
-// that role may do. lib/permissions.ts is the one list of those permissions,
+// that role may do. lib/roles/permissions.ts is the one list of those permissions,
 // and every route, screen and the admin grid reads it. Three things here would
 // be easy to break without noticing:
 //
@@ -37,8 +37,8 @@ import {
   withToggled,
   type PermissionHolder,
   type PermissionKey,
-} from "@/lib/permissions";
-import { BYPASS_ACTOR, actorFor } from "@/lib/auth-mode";
+} from "@/lib/roles/permissions";
+import { BYPASS_ACTOR, actorFor } from "@/lib/auth/mode";
 
 /**
  * The grid the client agreed to, written out by hand on purpose: if this and

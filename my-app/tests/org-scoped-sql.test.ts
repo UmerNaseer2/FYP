@@ -156,7 +156,7 @@ test("the scan finds the app's tenant statements", () => {
   // below would pass over nothing. The app has well over a hundred of these.
   expect(tenantStatements.length).toBeGreaterThan(100);
   const files = new Set(tenantStatements.map((statement) => statement.file));
-  expect(files).toContain(path.join("lib", "approvals-db.ts"));
+  expect(files).toContain(path.join("lib", "deploy", "approvals-db.ts"));
   expect(files).toContain(path.join("app", "api", "scripts", "apply", "route.ts"));
 });
 

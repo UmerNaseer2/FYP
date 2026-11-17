@@ -29,7 +29,7 @@ import {
   effectivePermissions,
   presetFor,
   type PermissionKey,
-} from "../../lib/permissions";
+} from "../../lib/roles/permissions";
 
 /* ------------------------------------------------------------------ routing */
 
@@ -163,13 +163,13 @@ function memberOf(role: string, roleLabel: string, permissions: readonly string[
  * about permissions, so a viewer given "Connections: Create" should see the
  * button for it.
  *
- * Either list goes through effectivePermissions, as lib/roles-db does for
+ * Either list goes through effectivePermissions, as lib/roles/roles-db does for
  * every real session, so a test can only build a role the app could hand
  * out: each box brings its feature's Read with it, and only an admin has the
  * admin-only ones. A screen tested against a role that cannot exist is
  * tested against nothing.
  *
- * Worth knowing why this works at all: `lib/auth-mode` reads
+ * Worth knowing why this works at all: `lib/auth/mode` reads
  * NEXT_PUBLIC_AUTH_BYPASS once, at module load, and next/jest does not load
  * .env.local under NODE_ENV=test — so in here the variable is unset, which
  * since the allow-list landed means BYPASS_AUTH is false. useUser therefore

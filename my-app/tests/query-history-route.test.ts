@@ -15,20 +15,20 @@
 //
 // The reads are mocked. What is being tested is the choosing, not the SQL.
 import { NextRequest } from "next/server";
-import type { Principal } from "@/lib/auth-guard";
-import type { QueryHistoryRow } from "@/lib/query-history";
+import type { Principal } from "@/lib/auth/guard";
+import type { QueryHistoryRow } from "@/lib/performance/query-history";
 import { principalFor } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 let mockGate: { ok: true; principal: Principal } | { ok: false; response: Response };
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => mockGate,
 }));
 
 // The metadata pool, which this route uses only to read the connection's name.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -37,7 +37,7 @@ jest.mock("../lib/version-db", () => ({
 const mockListRuns = jest.fn<Promise<QueryHistoryRow[]>, unknown[]>();
 const mockListHistory = jest.fn<Promise<QueryHistoryRow[]>, unknown[]>();
 const mockTrend = jest.fn<Promise<unknown[]>, unknown[]>();
-jest.mock("../lib/query-history-db", () => ({
+jest.mock("../lib/performance/query-history-db", () => ({
   HISTORY_PAGE_SIZE: 50,
   listRunsOfQuery: (...args: unknown[]) => mockListRuns(...args),
   listQueryHistory: (...args: unknown[]) => mockListHistory(...args),

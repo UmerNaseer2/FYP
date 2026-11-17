@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { isOrgSlug } from "@/lib/org-slug";
+import { isOrgSlug } from "@/lib/orgs/slug";
 
 /**
  * An organization's own address, /acme, opens its dashboard.

@@ -1,10 +1,10 @@
 /**
- * lib/family-reads.ts: the two reads both push screens take the next version
+ * lib/versions/family-reads.ts: the two reads both push screens take the next version
  * from. fetch is replaced with a stub that answers only the one request each
  * test expects and fails for anything else, so nothing here can reach GitHub
  * or a database.
  */
-import { readAppliedVersion, readFamilyVersions } from "../lib/family-reads";
+import { readAppliedVersion, readFamilyVersions } from "../lib/versions/family-reads";
 
 type Answer = { status: number; body: unknown } | "network-error";
 

@@ -61,7 +61,7 @@ jest.mock("../lib/db/models", () => ({}));
 
 import { seedBuiltInRoles, setUpRoles } from "@/lib/db/bootstrap";
 import type { MetadataClient } from "@/lib/db/sequelize";
-import { BUILT_IN_ROLE_INFO, presetFor } from "@/lib/permissions";
+import { BUILT_IN_ROLE_INFO, presetFor } from "@/lib/roles/permissions";
 
 const VIEWER: string[] = [...(presetFor("viewer") ?? [])];
 const EDITOR: string[] = [...(presetFor("editor") ?? [])];

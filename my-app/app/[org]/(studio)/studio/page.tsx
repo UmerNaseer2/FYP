@@ -31,11 +31,11 @@ import { useDriftCheckRefusal } from "@/components/studio/RecheckDriftButton";
 import { useNow } from "@/hooks/useNow";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
-import { STATUS_ORDER, statusLook, type StatusKey } from "@/lib/status-look";
-import { displayVersion } from "@/lib/version-timeline";
+import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/roles/permissions";
+import { STATUS_ORDER, statusLook, type StatusKey } from "@/lib/ui/status-look";
+import { displayVersion } from "@/lib/versions/timeline";
 import { CheckIcon, AlertCircleIcon, RefreshIcon, PlusIcon, InfoIcon } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { statusLine } from "./status-line";
 
 /**
@@ -43,7 +43,7 @@ import { statusLine } from "./status-line";
  *
  * Every tracked schema (GET /api/lineage) is drawn as one building in a small
  * city. The roof says what the last drift check found, with a colour and a
- * glyph from the one status system (lib/status-look), and the height is a real
+ * glyph from the one status system (lib/ui/status-look), and the height is a real
  * number about the schema: how many versions it has recorded, or how many
  * tables its latest recorded version had. Press a building to read about it
  * and to act on it. Drifted schemas stand at the front. Real data only.

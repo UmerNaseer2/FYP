@@ -5,7 +5,7 @@
 // optional rollback beside it as v<version>.down.sql, inside the
 // organization's folder: the repository root for the default organization,
 // orgs/<id>/ for any other. The naming rules and the reason for that split
-// live in lib/registry-paths.ts. The default organization's walk starts at the
+// live in lib/github/registry-paths.ts. The default organization's walk starts at the
 // root, so it skips orgs/<digits>/: those folders are other organizations'.
 //
 // Unlike the push route, one unreadable folder or file does not stop the
@@ -28,8 +28,8 @@
 //   502 { ok: false, code, error }  code: github_unreachable | token_rejected |
 //       github_forbidden | github_rate_limited | repo_not_found | github_down | github_error
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { githubConfigFor } from "@/lib/github-config";
+import { requirePermission } from "@/lib/auth/guard";
+import { githubConfigFor } from "@/lib/github/config";
 import {
   contentsPathUrl,
   GITHUB_TIMEOUT_MS,
@@ -37,15 +37,15 @@ import {
   logGitHubAnswer,
   repoUrl,
   type GitHubConfig,
-} from "@/lib/github-registry";
-import { groupRegistryFiles, isOrganizationFolder, registryRoot } from "@/lib/registry-paths";
+} from "@/lib/github/registry";
+import { groupRegistryFiles, isOrganizationFolder, registryRoot } from "@/lib/github/registry-paths";
 import {
   describeGitHubFailure,
   githubErrorCode,
   pulledRollbackState,
   type PulledRollbackState,
-} from "@/lib/registry-push";
-import { compareVersions } from "@/lib/script-status";
+} from "@/lib/github/registry-push";
+import { compareVersions } from "@/lib/versions/script-status";
 
 // One entry of a contents API folder listing (only the fields used here).
 type GitHubItem = {
@@ -265,7 +265,7 @@ export async function GET() {
   const gate = await requirePermission("scripts:read", "deploy:read");
   if (!gate.ok) return gate.response;
 
-  // The organization's GitHub settings (lib/github-config.ts), read now
+  // The organization's GitHub settings (lib/github/config.ts), read now
   // rather than when the module loads. The message names missing keys, never
   // values, and never the token.
   const config = await githubConfigFor(gate.principal);

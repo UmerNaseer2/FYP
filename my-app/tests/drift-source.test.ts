@@ -1,5 +1,5 @@
 /**
- * lib/drift-source turns a free-text column into a closed set with words for
+ * lib/drift/source turns a free-text column into a closed set with words for
  * it. The value is written by four different code paths and read by the audit
  * log, so the two things worth pinning down are that an unknown value can never
  * reach the screen as-is, and that every source the app writes has a label.
@@ -16,7 +16,7 @@ import {
   driftSourceLabel,
   driftSourceVerb,
   toDriftSource,
-} from "@/lib/drift-source";
+} from "@/lib/drift/source";
 
 describe("toDriftSource", () => {
   it("returns each known key unchanged", () => {

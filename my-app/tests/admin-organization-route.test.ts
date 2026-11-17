@@ -3,22 +3,22 @@
  * renaming and deleting the caller's own
  * organization.
  *
- * What the database does with each change is lib/orgs-db.ts's business, and
+ * What the database does with each change is lib/orgs/orgs-db.ts's business, and
  * tests/org-migration.test.ts holds it to that against a real Postgres. Here the gate
  * and the database calls are stood in for, so these cover what the route adds:
  * which box each method asks for, what it reads from the body, what it refuses
  * before the database is reached, and how each answer is said.
  */
 import { NextRequest } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
-import { orgNameProblem } from "@/lib/new-organization";
+import type { Gate } from "@/lib/auth/guard";
+import { orgNameProblem } from "@/lib/orgs/new-organization";
 import { bypassAdminPrincipal, principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -26,7 +26,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockOrgsDb = { updateOrganization: jest.fn(), deleteOrganization: jest.fn() };
-jest.mock("../lib/orgs-db", () => ({
+jest.mock("../lib/orgs/orgs-db", () => ({
   updateOrganization: (...args: unknown[]) => mockOrgsDb.updateOrganization(...args),
   deleteOrganization: (...args: unknown[]) => mockOrgsDb.deleteOrganization(...args),
 }));

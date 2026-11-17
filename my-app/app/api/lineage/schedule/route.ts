@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import {
   driftSchedulerStatus,
   requestImmediateCheck,
   type SchedulerStatus,
-} from "@/lib/drift-scheduler";
+} from "@/lib/drift/scheduler";
 import {
   DRIFT_INTERVAL_CHOICES,
   describeCadence,
   isDriftInterval,
   nextDueAt,
   normalizeDriftInterval,
-} from "@/lib/drift-schedule";
+} from "@/lib/drift/schedule";
 
 /**
  * The automatic-checking settings screen, as an API.

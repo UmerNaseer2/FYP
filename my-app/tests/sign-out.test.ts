@@ -1,14 +1,14 @@
 /** @jest-environment jsdom */
 
 /**
- * signOutEverywhere (lib/sign-out.ts): where signing out lands.
+ * signOutEverywhere (lib/auth/sign-out.ts): where signing out lands.
  *
  * tests/component-studio-shell.test.tsx presses Sign out on the studio's rail,
  * and checks the default (the login screen). These add a caller that asks to land somewhere else: the
  * invitation page, which brings someone who signs out to use another account
  * back to the same invitation.
  */
-import { pageLoader, signOutEverywhere } from "@/lib/sign-out";
+import { pageLoader, signOutEverywhere } from "@/lib/auth/sign-out";
 
 // next-auth ships as ESM, which Jest cannot load.
 const mockSignOut = jest.fn<Promise<void>, [unknown?]>(() => Promise.resolve());

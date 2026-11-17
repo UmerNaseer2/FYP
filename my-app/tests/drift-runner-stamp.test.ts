@@ -10,8 +10,8 @@
 // An unreachable database is not one of these: it comes out of the check as a
 // successful "unreachable" result and always got its stamp, which is why the
 // schedule looked fine right up until a schema lost its baseline.
-import { runDriftCheck } from "@/lib/drift-runner";
-import { selectDue, type DriftScheduleEntry } from "@/lib/drift-schedule";
+import { runDriftCheck } from "@/lib/drift/runner";
+import { selectDue, type DriftScheduleEntry } from "@/lib/drift/schedule";
 
 /** What computeDriftDetail should do on the next call. */
 let outcome: { kind: string } | Error = { kind: "not_found" };
@@ -27,7 +27,7 @@ const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>(async () =
   rows: [],
   rowCount: 0,
 }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: [string, unknown[]?]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -36,8 +36,8 @@ jest.mock("../lib/version-db", () => ({
 // Only the one function that reads a database is replaced; buildDriftSummary
 // and the rest of lineage-db stay real, so a change to what an outcome looks
 // like is not silently hidden behind a hand-written stub.
-jest.mock("../lib/lineage-db", () => ({
-  ...jest.requireActual("../lib/lineage-db"),
+jest.mock("../lib/versions/lineage-db", () => ({
+  ...jest.requireActual("../lib/versions/lineage-db"),
   computeDriftDetail: async (...args: unknown[]) => {
     mockDetailCalls.push(args);
     if (mockOutcome.value instanceof Error) throw mockOutcome.value;
@@ -45,7 +45,7 @@ jest.mock("../lib/lineage-db", () => ({
   },
 }));
 
-jest.mock("../lib/schema-metrics", () => ({
+jest.mock("../lib/performance/schema-metrics", () => ({
   recordSchemaMetrics: async () => undefined,
 }));
 

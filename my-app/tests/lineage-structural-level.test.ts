@@ -23,7 +23,7 @@ jest.mock("../lib/postgres", () => ({
   fetchSchemaSnapshot: async () => ({ ok: true, data: mockShapes.live }),
 }));
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     // The tracked-schema lookup: schema 7, last checked in sync.
@@ -63,11 +63,11 @@ const mockShapes: { live: SchemaSnapshot; head: SchemaSnapshot | null } = {
   head: null,
 };
 
-type LineageModule = typeof import("../lib/lineage-db");
+type LineageModule = typeof import("../lib/versions/lineage-db");
 let lineage: LineageModule;
 
 beforeAll(async () => {
-  lineage = await import("../lib/lineage-db");
+  lineage = await import("../lib/versions/lineage-db");
 });
 
 const orders = (cols: string[]) => table("orders", cols.map((name) => column(name)));

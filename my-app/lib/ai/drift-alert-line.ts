@@ -10,7 +10,7 @@
 // the AI task is stopped: no repair request, no late call to the service.
 // ---------------------------------------------------------------------------
 
-import type { CompareReport } from "../compare-types";
+import type { CompareReport } from "../compare/types";
 import { alertLine, buildDriftOneLinerTask } from "./features/drift-explain";
 import { runAiTask, type AiDeps } from "./run";
 

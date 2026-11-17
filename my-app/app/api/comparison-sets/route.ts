@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { hasPermission } from "@/lib/permissions";
+import { requirePermission } from "@/lib/auth/guard";
+import { hasPermission } from "@/lib/roles/permissions";
 import {
   deleteComparisonSet,
   listComparisonSets,
   saveComparisonSet,
-} from "@/lib/comparison-sets";
-import { parseSaveBody } from "@/lib/comparison-set-rules";
+} from "@/lib/compare/sets";
+import { parseSaveBody } from "@/lib/compare/set-rules";
 
 /**
  * Saved comparison sets — the named "source + targets" selections on /compare.
@@ -18,7 +18,7 @@ import { parseSaveBody } from "@/lib/comparison-set-rules";
  * everybody's to do.
  *
  * Every method works inside the caller's organization: it sees, saves and
- * deletes only that organization's sets (see lib/comparison-sets.ts).
+ * deletes only that organization's sets (see lib/compare/sets.ts).
  */
 
 /** GET /api/comparison-sets — every saved set, with its targets in order. */

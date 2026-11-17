@@ -12,13 +12,13 @@
 // a test needs to differ, such as a particular email.
 //
 // Inside a jest.mock() factory, load this file with require() rather than an
-// import (eslint.config.mjs says why). The import of lib/auth-guard below is
+// import (eslint.config.mjs says why). The import of lib/auth/guard below is
 // type-only, so this file never loads the gate itself, or next-auth with it.
 //
 // This file is not a test itself: Jest only runs tests/**/*.test.ts.
-import type { Principal } from "@/lib/auth-guard";
-import { BYPASS_PRINCIPAL } from "@/lib/auth-mode";
-import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/permissions";
+import type { Principal } from "@/lib/auth/guard";
+import { BYPASS_PRINCIPAL } from "@/lib/auth/mode";
+import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/roles/permissions";
 
 /**
  * The organization every principal here acts in. Its id is not 1 on purpose:

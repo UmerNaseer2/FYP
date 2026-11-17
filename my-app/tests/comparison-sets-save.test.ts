@@ -1,5 +1,5 @@
 // comparison-sets-save: which Comparison sets box a save needs
-// (POST /api/comparison-sets, and saveComparisonSet in lib/comparison-sets.ts).
+// (POST /api/comparison-sets, and saveComparisonSet in lib/compare/sets.ts).
 //
 // Save is one button for two acts. A name nobody has used makes a new set,
 // which needs Comparison sets: Create. A name that is taken rewrites that set,
@@ -20,7 +20,7 @@
 //     it, and a connection that is not the organization's own is refused the
 //     same way as one that was deleted, before anything is written.
 import { NextRequest, NextResponse } from "next/server";
-import type { Gate, Principal } from "@/lib/auth-guard";
+import type { Gate, Principal } from "@/lib/auth/guard";
 import { createFakeClient, queryTexts, type FakeClient } from "./helpers/fake-pg";
 import { TEST_ORG, principalFor } from "./helpers/principals";
 
@@ -28,7 +28,7 @@ let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -43,7 +43,7 @@ let mockConnects = 0;
 // set back afterwards goes through the pool's own query(). Both are looked up
 // when called, not when the mock is made, because this factory runs before
 // the lines above do.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockPool.query(text, values),
@@ -56,8 +56,8 @@ jest.mock("../lib/version-db", () => ({
 }));
 
 import { POST } from "@/app/api/comparison-sets/route";
-import { parseSaveBody } from "@/lib/comparison-set-rules";
-import { saveComparisonSet } from "@/lib/comparison-sets";
+import { parseSaveBody } from "@/lib/compare/set-rules";
+import { saveComparisonSet } from "@/lib/compare/sets";
 
 /** Two roles an admin might make, each with one of the two boxes. */
 const SET_KEEPER = principalFor("viewer", {

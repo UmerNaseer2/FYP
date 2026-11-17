@@ -2,7 +2,7 @@
 // the database (with a fake client) and the whole run with a fake model. No
 // database and no model are reached.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,

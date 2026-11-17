@@ -3,7 +3,7 @@ import {
   describeExecuteRole,
   executeRoleBadge,
   type ExecuteRole,
-} from "@/lib/connection-access";
+} from "@/lib/connections/access";
 
 /**
  * "Read-only" / "Admins only" beside a connection's name, drawn the same way

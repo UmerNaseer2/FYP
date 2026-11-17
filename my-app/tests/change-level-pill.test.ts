@@ -12,7 +12,7 @@ import path from "path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
-import { CHANGE_LEVEL_PILL, changeLevelWord, type ChangeLevel } from "@/lib/change-level";
+import { CHANGE_LEVEL_PILL, changeLevelWord, type ChangeLevel } from "@/lib/versions/change-level";
 
 const ROOT = path.join(__dirname, "..");
 const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");

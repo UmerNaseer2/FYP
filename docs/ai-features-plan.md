@@ -26,8 +26,8 @@ You picked five features, built in this order:
 
 Two grade scales exist in the code and the AI may change neither:
 
-- each change in a comparison: breaking, safe or info (`ChangeSeverity`, `lib/compare-types.ts`, set in `lib/compare.ts`)
-- a script: breaking, additive or patch (`gradeSql` in `lib/change-type.ts`)
+- each change in a comparison: breaking, safe or info (`ChangeSeverity`, `lib/compare/types.ts`, set in `lib/compare/diff.ts`)
+- a script: breaking, additive or patch (`gradeSql` in `lib/versions/change-type.ts`)
 
 ## 3. Which model
 
@@ -129,7 +129,7 @@ New folder `lib/ai/`:
 | `config.ts` | Reads `AI_PROVIDER`, `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL_FAST`, `AI_MODEL_SMART` on the server only. The key never reaches the browser and is never stored in the database |
 | `context.ts` | Turns a snapshot or diff into compact text, builds the context slice, estimates tokens and trims to the cap |
 | `dependents.ts` | New: "what uses this object". The code has no such helper today. It is built from what snapshots already hold: views' `dependsOn`, foreign keys' `referencedTable`, triggers' `functionName`. Routines have no dependency data, so the AI is told "unknown" for them, never a guess |
-| `checks.ts` | Reference check, grade lock, and SQL checks through the existing `lib/sql-guard.ts`, `lib/deploy-risk.ts` and `gradeSql` |
+| `checks.ts` | Reference check, grade lock, and SQL checks through the existing `lib/sql/guard.ts`, `lib/deploy/risk.ts` and `gradeSql` |
 | `run.ts` | One entry point for every feature: permission check, organization switch, limits, cache lookup, call, validate, retry once, write the `ai_calls` row |
 | `prompts/*.ts` | One versioned prompt per feature. The version is part of the cache key, so changing a prompt refreshes old answers |
 
@@ -137,8 +137,8 @@ Also in step 0:
 
 - **Validation:** `zod` (new dependency) for every answer shape; the Claude SDK uses the same schemas later.
 - **Database:** tables `ai_calls` (log) and `ai_results` (cache by organization, feature, input fingerprint, prompt version and model), added the same way the app adds its other tables at start-up.
-- **Organization switch:** organization settings are columns on `organizations` today, so add one `ai_settings` column: on or off (**off by default**), which features, and the query-text opt-in. It goes through the same path as the name: `lib/orgs-db.ts` `updateOrganization`, the PATCH in `app/api/admin/organization/route.ts`, a section in `components/admin/OrganizationTab.tsx`, and out to pages through `OrgProvider` and to routes through the signed-in principal.
-- **Roles:** a new permission line, "Use AI assistance" (`ai:read`), in `FEATURES` in `lib/permissions.ts`, so it shows on the roles page. Default: from Editor up (Editors and Admins), not Viewers; an Admin can change it there.
+- **Organization switch:** organization settings are columns on `organizations` today, so add one `ai_settings` column: on or off (**off by default**), which features, and the query-text opt-in. It goes through the same path as the name: `lib/orgs/orgs-db.ts` `updateOrganization`, the PATCH in `app/api/admin/organization/route.ts`, a section in `components/admin/OrganizationTab.tsx`, and out to pages through `OrgProvider` and to routes through the signed-in principal.
+- **Roles:** a new permission line, "Use AI assistance" (`ai:read`), in `FEATURES` in `lib/roles/permissions.ts`, so it shows on the roles page. Default: from Editor up (Editors and Admins), not Viewers; an Admin can change it there.
 - **Data rules:** schema structure only by default. Never row data. Query text only if the organization opts in. Never connection strings, passwords or hostnames.
 - **UI:** one shared `components/studio/AiPanel.tsx`: the label, model name and time, Regenerate, thumbs up or down, and a plain reason when AI is off for you.
 - **Tests:** the mock provider plus the repo's usual patterns: `jest.mock` with relative paths (the `@/` alias doesn't work there), `global.fetch` swapped as in `tests/github-pull.test.ts`, and `tests/helpers/principals.ts` and `tests/helpers/snapshots.ts` for users and schemas.
@@ -148,7 +148,7 @@ Also in step 0:
 ### 6.1 Change summary on Compare
 
 - **Where:** a new route `app/api/compare/summary/route.ts` (needs `compare:read` and `ai:read`). The panel sits next to `<CriticalChanges>` in `app/[org]/(studio)/compare/page.tsx`, above `DiffReport`. The drift page uses the same report components, so the panel can show there too for free.
-- **Input:** the flattened diff the export already builds (`buildDiffDocument` in `lib/compare-export.ts`: one row per change with its breaking, safe or info grade), the counts from `lib/compare-summary.ts`, what depends on each changed object (from `lib/ai/dependents.ts`), and a context slice. The route recomputes the diff on the server rather than trusting what the browser sends.
+- **Input:** the flattened diff the export already builds (`buildDiffDocument` in `lib/compare/export.ts`: one row per change with its breaking, safe or info grade), the counts from `lib/compare/summary.ts`, what depends on each changed object (from `lib/ai/dependents.ts`), and a context slice. The route recomputes the diff on the server rather than trusting what the browser sends.
 - **Output:** a one sentence headline and short plain lines of what is added, dropped and changed, each citing the change rows it covers. The app files each line by those rows, marks breaking ones, and adds a line for anything the AI left out. (Until 2026-11-12 it also listed risks and a suggested order to apply the changes; the user asked for just the summary.)
 - **Checks:** every cited change and object exists in the diff, grades match the engine, the order only names real changes. Items that fail are dropped; too many failures and the call is retried once.
 - **Cache:** by the comparison's fingerprint, so reopening a report costs nothing.
@@ -156,8 +156,8 @@ Also in step 0:
 ### 6.2 Migration review before deploy
 
 - **Where:** a review panel beside the risk gate and `ApprovalPanel` on the deploy page (`app/[org]/(studio)/deploy/page.tsx`), for deploys and rollbacks. A route `app/api/scripts/review/route.ts` (needs `deploy:read` or `approvals:read`, plus `ai:read`).
-- **Input:** the script, the diff it implements, `analyseRunRisk` findings from `lib/deploy-risk.ts` (breaking, data loss, might fail), the script grade, and row counts and sizes for **only the tables the script touches**.
-- **New piece:** per-table sizes don't exist at deploy time today (`lib/schema-metrics.ts` only sums a whole schema during drift checks). Step 2 adds one read-only query on the target (`reltuples` and `pg_total_relation_size` for the named tables) with the usual short lock timeout.
+- **Input:** the script, the diff it implements, `analyseRunRisk` findings from `lib/deploy/risk.ts` (breaking, data loss, might fail), the script grade, and row counts and sizes for **only the tables the script touches**.
+- **New piece:** per-table sizes don't exist at deploy time today (`lib/performance/schema-metrics.ts` only sums a whole schema during drift checks). Step 2 adds one read-only query on the target (`reltuples` and `pg_total_relation_size` for the named tables) with the usual short lock timeout.
 - **Output:** findings, each with severity, the statement it points at, why, and a safer way (for example "build the index with CONCURRENTLY", "add the column nullable, backfill, then set NOT NULL").
 - **Checks:** each finding must point at a real statement in the script and a real object; severity can raise but never lower a deploy-risk finding. It never blocks or approves anything: the reviewer still decides.
 - **Cache:** by the script's fingerprint (the same one approvals already use).
@@ -165,12 +165,12 @@ Also in step 0:
 
 ### 6.3 Explain drift
 
-- **3a One-liner:** in `lib/drift-scheduler.ts`, between the drift check and `alertDriftChange`, while the full comparison is still in memory (the stored `drift_events.detail` only keeps counts). Only for **new** drift, with a hard 4 second wait: if the AI is slower, off, or fails, the alert goes out exactly as today. The sentence is stored as `detail.aiSummary` and appended to the web push text (`driftAlertText` in `lib/push-alerts.ts`) and to the desktop alert (`singleBody` in `desktop/src/core/drift-alerts.ts`). Example: "Someone added a nullable column notes to orders and dropped index orders_customer_id_idx."
-- **3b Explain and scripts:** an "Explain with AI" panel on the drift page (`app/[org]/(studio)/drift/page.tsx`), fed by the live comparison the page already gets (`computeDriftDetail` in `lib/lineage-db.ts`).
+- **3a One-liner:** in `lib/drift/scheduler.ts`, between the drift check and `alertDriftChange`, while the full comparison is still in memory (the stored `drift_events.detail` only keeps counts). Only for **new** drift, with a hard 4 second wait: if the AI is slower, off, or fails, the alert goes out exactly as today. The sentence is stored as `detail.aiSummary` and appended to the web push text (`driftAlertText` in `lib/push-alerts.ts`) and to the desktop alert (`singleBody` in `desktop/src/core/drift-alerts.ts`). Example: "Someone added a nullable column notes to orders and dropped index orders_customer_id_idx."
+- **3b Explain and scripts:** an "Explain with AI" panel on the drift page (`app/[org]/(studio)/drift/page.tsx`), fed by the live comparison the page already gets (`computeDriftDetail` in `lib/versions/lineage-db.ts`).
   - **Explanation (AI):** what changed, what it affects, likely why.
   - **Revert script (engine first):** the engine already writes migrations from a comparison (`generateMigration`, used by Compare), so it writes the revert. The AI only adds comments and drafts the items the engine marks as needing manual work. That keeps the benchmark's "zero differences after revert" test meaningful.
   - **Adopt draft:** the live schema saved as the next registry version, through the existing save path (`POST /api/github/push`, needs `scripts:create`).
-- **Checks:** both drafts go through sql-guard and deploy-risk, are marked as drafts, and open in the script editor through the existing handoff (`lib/migration-draft.ts`). Nothing runs from the drift page.
+- **Checks:** both drafts go through sql-guard and deploy-risk, are marked as drafts, and open in the script editor through the existing handoff (`lib/versions/migration-draft.ts`). Nothing runs from the drift page.
 
 ### 6.4 SQL script generation
 

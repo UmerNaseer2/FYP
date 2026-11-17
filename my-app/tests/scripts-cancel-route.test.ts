@@ -2,7 +2,7 @@
 // Deploy page (app/api/scripts/cancel/route.ts).
 //
 // The metadata database and the target database are stand-ins. The list of
-// runs going is the real one from lib/run-limits.ts, so a run "going in this
+// runs going is the real one from lib/deploy/run-limits.ts, so a run "going in this
 // server" is one a test registers itself, holding a pool of fake clients of
 // its own. These tests check who may stop a run, that another organization's
 // run stays out of reach, that a run already saving its changes is left to
@@ -11,7 +11,7 @@
 // scripts there.
 import { NextRequest } from "next/server";
 import type { Pool } from "pg";
-import type { Gate } from "@/lib/auth-guard";
+import type { Gate } from "@/lib/auth/guard";
 import {
   REAL_RUN_LIMITS,
   beginCommit,
@@ -22,8 +22,8 @@ import {
   type CancelOutcome,
   type RunDetails,
   type RunEntry,
-} from "@/lib/run-limits";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+} from "@/lib/deploy/run-limits";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
 import { createFakeClient, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { principalFor, TEST_ORG } from "./helpers/principals";
 
@@ -40,7 +40,7 @@ let mockConfigError: Error | null;
 /** The pool the route is handed for the target database. */
 let mockTargetPool: Pool;
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -49,7 +49,7 @@ jest.mock("../lib/auth-guard", () => ({
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (_text: string, values: unknown[]) => {
@@ -61,7 +61,7 @@ jest.mock("../lib/version-db", () => ({
   syncMetadataTables: async () => undefined,
 }));
 
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: () => {
     if (mockConfigError) throw mockConfigError;
     return {};

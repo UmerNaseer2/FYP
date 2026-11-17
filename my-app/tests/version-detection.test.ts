@@ -5,7 +5,7 @@ import {
   normalizeChangeLevel,
   pickCurrentVersion,
   type VersionDetectionResult,
-} from "@/lib/version-detection";
+} from "@/lib/versions/detection";
 import { createFakeClient, queriesMatching, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 
 // fetchSchemaVersionInfo reads through getPoolForConfig. The fake answers each

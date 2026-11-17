@@ -1,16 +1,16 @@
-import { cutForwardOnly, diffLedgers, entryKey, readReplayAnswer, type LedgerEntry } from "@/lib/version-sync";
-import { checkForwardOnly } from "@/lib/deploy-risk";
+import { cutForwardOnly, diffLedgers, entryKey, readReplayAnswer, type LedgerEntry } from "@/lib/versions/sync";
+import { checkForwardOnly } from "@/lib/deploy/risk";
 import { createHash } from "node:crypto";
-import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
-import { runFingerprint } from "@/lib/approvals-db";
-import { BUILT_IN_ROLES, presetFor } from "@/lib/permissions";
-import { pendingPrefixThrough } from "@/lib/script-status";
+import { fingerprintBody, rollbackFingerprintBody } from "@/lib/deploy/approval-fingerprint";
+import { runFingerprint } from "@/lib/deploy/approvals-db";
+import { BUILT_IN_ROLES, presetFor } from "@/lib/roles/permissions";
+import { pendingPrefixThrough } from "@/lib/versions/script-status";
 
-// approvals-db reads the metadata database through lib/version-db, which
+// approvals-db reads the metadata database through lib/db/version-db, which
 // pulls in Sequelize and the models. The parity cases below only hash, so a
 // stand-in pool is enough. The path is relative on purpose: next/jest
 // rewrites the @/ alias inside import statements only.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: jest.fn() },
   syncMetadataTables: jest.fn(),

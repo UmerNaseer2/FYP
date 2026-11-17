@@ -11,7 +11,7 @@
 import { NextRequest } from "next/server";
 import { TEST_ORG } from "./helpers/principals";
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor"),
@@ -37,7 +37,7 @@ const mockPoolQuery = jest.fn(async (text: string, values: unknown[] = []) => {
   );
   return { rows, rowCount: rows.length };
 });
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockPoolQuery(text, values),
@@ -54,7 +54,7 @@ const mockRunConnectionTest = jest.fn<Promise<unknown>, unknown[]>(async () => (
   ssl: false,
   sslMode: "disable" as const,
 }));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   runConnectionTest: (...args: unknown[]) => mockRunConnectionTest(...args),
 }));
 

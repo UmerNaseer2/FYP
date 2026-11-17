@@ -4,7 +4,7 @@
 // service is sent. The database, the gate and the key store are fakes, the
 // services are never called, and every key is a made-up string.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
@@ -25,14 +25,14 @@ jest.mock("../lib/ai/admin-view", () => ({
 }));
 
 const mockKeySource = jest.fn();
-jest.mock("../lib/secret-store", () => ({
-  ...jest.requireActual("../lib/secret-store"),
+jest.mock("../lib/connections/secret-store", () => ({
+  ...jest.requireActual("../lib/connections/secret-store"),
   encryptionKeySource: () => mockKeySource(),
 }));
 
 type Gate = { ok: true; principal: unknown } | { ok: false; response: Response };
 let mockGate: Gate;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => mockGate,
 }));
 

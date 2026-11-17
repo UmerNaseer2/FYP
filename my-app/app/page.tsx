@@ -2,8 +2,8 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { authUsable } from "@/auth.config";
 import { LandingPage } from "@/components/landing/LandingPage";
-import { BYPASS_AUTH } from "@/lib/auth-mode";
-import { encryptionKeySource } from "@/lib/secret-store";
+import { BYPASS_AUTH } from "@/lib/auth/mode";
+import { encryptionKeySource } from "@/lib/connections/secret-store";
 
 /**
  * The front door: the landing page for a visitor, and a quick hop into the
@@ -21,14 +21,14 @@ import { encryptionKeySource } from "@/lib/secret-store";
  *     make their first organization; "Log in" carries on to /studio as usual.
  *     When sign-in is not set up on this server, /login says so itself.
  *
- * The proxy lets "/" through without a session (lib/public-paths.ts), so all
+ * The proxy lets "/" through without a session (lib/auth/public-paths.ts), so all
  * of the deciding happens here.
  *
  * Rendered on every request, never once at build time. Whether the server
  * has an encryption key is read from the server's environment, and a page
  * prerendered by `next build` would keep the build machine's answer forever: the Docker image and CI both build with
  * placeholder settings. Only the bypass switch is fixed at build time, because
- * Next writes NEXT_PUBLIC_ values into the code (see lib/auth-mode.ts).
+ * Next writes NEXT_PUBLIC_ values into the code (see lib/auth/mode.ts).
  *
  * NOTE: this is a Server Component, and nothing here may touch `window`. An
  * earlier version tried to finish the Azure sign-in on this page, calling
@@ -41,7 +41,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Sign in, then "Your organizations". /login checks a callbackUrl before
- * following it (lib/callback-url.ts), and a path on this site passes.
+ * following it (lib/auth/callback-url.ts), and a path on this site passes.
  */
 const CREATE_ACCOUNT_HREF = "/login?callbackUrl=/onboarding";
 

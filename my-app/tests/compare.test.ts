@@ -8,7 +8,7 @@ import {
   nullabilityChangeSeverity,
   droppedColumnSeverity,
   addedColumnSeverity,
-} from "@/lib/compare";
+} from "@/lib/compare/diff";
 import type { ConstraintSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

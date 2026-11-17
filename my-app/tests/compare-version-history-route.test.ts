@@ -10,19 +10,19 @@
 // The detector is mocked: it opens database connections, and what is being
 // tested is the route around it, not the catalog queries it sends.
 import { NextRequest } from "next/server";
-import type { Principal } from "@/lib/auth-guard";
-import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/version-detection";
+import type { Principal } from "@/lib/auth/guard";
+import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/versions/detection";
 import { principalFor, TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 let mockGate: { ok: true; principal: Principal } | { ok: false; response: Response };
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => mockGate,
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -30,7 +30,7 @@ jest.mock("../lib/version-db", () => ({
 
 // Set to throw to play a saved secret this server can't decrypt.
 const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 
@@ -38,8 +38,8 @@ jest.mock("../lib/connection-config", () => ({
 // because the route's job is to apply that rule to what the detector returned
 // — a stub would let a wrong entry be marked current and still pass.
 const mockFetchInfo = jest.fn<Promise<VersionDetectionResult>, unknown[]>();
-jest.mock("../lib/version-detection", () => {
-  const real = jest.requireActual("../lib/version-detection");
+jest.mock("../lib/versions/detection", () => {
+  const real = jest.requireActual("../lib/versions/detection");
   return {
     ...real,
     fetchSchemaVersionInfo: (...args: unknown[]) => mockFetchInfo(...args),

@@ -16,8 +16,8 @@ import {
 } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { TEST_ORG } from "./helpers/principals";
-import { askToRunRefusal } from "@/lib/connection-access";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { askToRunRefusal } from "@/lib/connections/access";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -25,7 +25,7 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // test sets mockBypass to play the auth bypass's one principal instead, the
 // full admin that answers for everyone while sign-in is off.
 let mockBypass = false;
-jest.mock("../lib/auth-guard", () => {
+jest.mock("../lib/auth/guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
     requirePermission: async () => ({
@@ -42,7 +42,7 @@ afterEach(() => {
 
 // The metadata database: only the saved-connection lookup reaches it.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -55,18 +55,18 @@ jest.mock("../lib/postgres", () => ({
 }));
 // Made to throw once to play a saved password this server can't decrypt.
 const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
-jest.mock("../lib/approvals-db", () => ({
+jest.mock("../lib/deploy/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
@@ -74,7 +74,7 @@ jest.mock("../lib/approvals-db", () => ({
 // The audit trail. The route hands every answer to recordDeployAttempt; the
 // writer itself is tested in tests/deploy-attempts.test.ts.
 const mockRecordAttempt = jest.fn<Promise<void>, unknown[]>(async () => undefined);
-jest.mock("../lib/deploy-attempts-db", () => ({
+jest.mock("../lib/deploy/attempts-db", () => ({
   recordDeployAttempt: (...args: unknown[]) => mockRecordAttempt(...args),
 }));
 
@@ -128,7 +128,7 @@ function ledger(options: {
   return [
     ...(options.first ?? []),
     // No extension lives in a schema of its own, so the search_path is the
-    // target schema alone (lib/run-settings). Before the schema check below,
+    // target schema alone (lib/deploy/run-settings). Before the schema check below,
     // because both read pg_namespace.
     { match: /extnamespace/, rows: [] },
     { match: /FROM pg_namespace/, rows: [{ exists: 1 }] },
@@ -650,7 +650,7 @@ describe("failures", () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("admin")] });
     mockClaim.mockResolvedValue({ id: 42 });
     // txid_current answers "100" before the down script and "101" after it,
-    // which is what a COMMIT inside the script that lib/sql-guard missed
+    // which is what a COMMIT inside the script that lib/sql/guard missed
     // would look like.
     let reads = 0;
     mockClient = createFakeClient(
@@ -818,7 +818,7 @@ describe("the settings each down script runs under", () => {
       ])
     );
     // A rollback gets the same generous limit on a statement as a real deploy
-    // (lib/run-limits.ts), sent again before every script.
+    // (lib/deploy/run-limits.ts), sent again before every script.
     const limits = texts.filter((text) => /statement_timeout/.test(text));
     expect(limits.length).toBeGreaterThan(0);
     expect(new Set(limits)).toEqual(new Set(["SET LOCAL statement_timeout = 1800000"]));

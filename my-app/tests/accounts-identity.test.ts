@@ -1,6 +1,6 @@
 /**
  * identityFrom: how each kind of sign-in is reduced to the account it came
- * from and an address, before lib/accounts-db.ts decides which person that is.
+ * from and an address, before lib/auth/accounts-db.ts decides which person that is.
  *
  * Two things here decide who gets in as whom, so each is pinned down:
  *   - The account is the provider's fixed ID (Microsoft's tenant and object
@@ -16,9 +16,9 @@
  * database address.
  */
 
-import { identityFrom, type SignInParams } from "@/lib/accounts-db";
+import { identityFrom, type SignInParams } from "@/lib/auth/accounts-db";
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: jest.fn(),

@@ -5,11 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, EmptyState, Pill, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, PlayIcon, TrendIcon } from "@/components/ui/icons";
-import { bandFor } from "@/lib/query-score";
-import type { QueryComparison, QueryHistoryRow } from "@/lib/query-history";
+import { bandFor } from "@/lib/performance/query-score";
+import type { QueryComparison, QueryHistoryRow } from "@/lib/performance/query-history";
 import { ScoreBadge } from "./ScoreBadge";
 import type { PerfTarget } from "./PerfTargetPicker";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -29,7 +29,7 @@ import { useOrgHref } from "@/hooks/useOrg";
  * chart that would read as "nothing has been slow".
  */
 
-/** Mirrors QueryDayPoint in lib/query-history-db.ts. */
+/** Mirrors QueryDayPoint in lib/performance/query-history-db.ts. */
 type QueryDayPoint = {
   day: string;
   runs: number;

@@ -30,13 +30,13 @@
  *
  * What is NOT here:
  *  - Working out what moved, and writing the sentence about it. That is
- *    lib/comparison-history — snapshotChanges, compareRuns, describeItem and
+ *    lib/compare/history — snapshotChanges, compareRuns, describeItem and
  *    describeDelta — and it is covered by tests/comparison-history.test.ts.
  *    The sentence handed in below is written by hand, in the shape that file
  *    produces, so these tests keep their meaning if the wording changes.
  *  - The decision not to render this panel at all on a first comparison, which
  *    is the compare page's (`outcome.history && <CompareHistory …>`) sitting on
- *    a null that lib/compare-run fills in. That wiring has no suite of its own.
+ *    a null that lib/compare/run fills in. That wiring has no suite of its own.
  *  - Reading and writing the stored run the comparison is made against:
  *    tests/comparison-history.test.ts covers readRunSnapshot; the database
  *    round trip is not exercised anywhere in the unit tests.
@@ -52,8 +52,8 @@ import "@testing-library/jest-dom";
 import { render } from "@testing-library/react";
 
 import { CompareHistory } from "@/components/studio/CompareHistory";
-import type { ComparisonHistoryView, HistoryLine } from "@/lib/compare-run";
-import type { ChangeSeverity } from "@/lib/compare-types";
+import type { ComparisonHistoryView, HistoryLine } from "@/lib/compare/run";
+import type { ChangeSeverity } from "@/lib/compare/types";
 
 /** When the run being measured against happened, exactly as it is stored. */
 const SINCE = "2026-09-12T14:30:00.000Z";

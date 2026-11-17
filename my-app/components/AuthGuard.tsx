@@ -5,13 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 import {
   isAdminOnly,
   permissionLabel,
   readKeyOf,
   type FeatureKey,
-} from "@/lib/permissions";
+} from "@/lib/roles/permissions";
 
 /**
  * Client-side gate for the pages wrapped in <AuthGuard>.
@@ -23,7 +23,7 @@ import {
  *
  * The bypass value used to be a hard-coded const in this file, which meant the
  * UI and the API routes could disagree about whether auth was on. It now comes
- * from lib/auth-mode through useUser, the same module the edge proxy and the
+ * from lib/auth/mode through useUser, the same module the edge proxy and the
  * server-side route gates read, so one environment variable moves all three
  * together. useUser answers with what the server says the person may do
  * (/api/me): their role in the organization, or with the bypass on the role
@@ -33,7 +33,7 @@ import {
  *
  * This guard is a convenience, not a security boundary. It only decides what
  * React renders. The real enforcement is proxy.ts (page requests) and
- * lib/auth-guard.ts (API routes), both of which run before any of this.
+ * lib/auth/guard.ts (API routes), both of which run before any of this.
  */
 export default function AuthGuard({
   children,

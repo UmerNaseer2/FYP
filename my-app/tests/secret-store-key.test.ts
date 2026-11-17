@@ -3,13 +3,13 @@
 // and tells visitors whether their passwords are encrypted, so a wrong answer
 // here is a false promise on the front page.
 //
-// Each case loads a fresh copy of lib/secret-store.ts. The module reads the
+// Each case loads a fresh copy of lib/connections/secret-store.ts. The module reads the
 // environment on its first call, not at import, and keeps the answer for the
 // life of the process, so the settings must stay in place until that call.
 //
 // The key and the secret below are made up and protect nothing.
 
-import type { KeySource } from "../lib/secret-store";
+import type { KeySource } from "../lib/connections/secret-store";
 
 type Settings = { APP_ENCRYPTION_KEY?: string; NEXTAUTH_SECRET?: string };
 
@@ -26,7 +26,7 @@ async function askWith(settings: Settings, asks = 1): Promise<KeySource[]> {
   Object.assign(process.env, settings);
   try {
     jest.resetModules();
-    const { encryptionKeySource } = await import("../lib/secret-store");
+    const { encryptionKeySource } = await import("../lib/connections/secret-store");
     return Array.from({ length: asks }, () => encryptionKeySource());
   } finally {
     process.env = saved;
@@ -100,7 +100,7 @@ describe("a value saved under the placeholder secret", () => {
     delete process.env.NEXTAUTH_SECRET;
     Object.assign(process.env, settings);
     jest.resetModules();
-    const store = await import("../lib/secret-store");
+    const store = await import("../lib/connections/secret-store");
     return { store, restore: () => (process.env = saved) };
   }
 

@@ -23,9 +23,9 @@
  *
  * What is NOT here:
  *  - Which session counts as blocked, idle-in-transaction or long-running.
- *    lib/db-activity decides that from pg_stat_activity, and it has no suite
+ *    lib/performance/db-activity decides that from pg_stat_activity, and it has no suite
  *    of its own yet, so nothing checks that classification anywhere.
- *  - The numbers on the health panel. lib/db-health works those out and
+ *  - The numbers on the health panel. lib/performance/db-health works those out and
  *    tests/db-health.test.ts covers it; here they arrive already worded.
  *  - The endpoint. /api/performance/activity runs the query; here it is a
  *    canned reply.
@@ -36,9 +36,9 @@ import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 import { LiveActivity } from "@/components/studio/LiveActivity";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
-import type { ActivitySession } from "@/lib/db-activity";
-import type { DbHealth, HealthMetric } from "@/lib/db-health";
-import type { ThresholdBreach } from "@/lib/perf-thresholds";
+import type { ActivitySession } from "@/lib/performance/db-activity";
+import type { DbHealth, HealthMetric } from "@/lib/performance/db-health";
+import type { ThresholdBreach } from "@/lib/performance/thresholds";
 import {
   fetchCalls,
   flushAsync,

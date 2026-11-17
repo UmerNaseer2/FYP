@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useSession } from "next-auth/react";
 import { OrgContext } from "@/hooks/useOrg";
-import { BYPASS_AUTH, BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
+import { BYPASS_AUTH, BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth/mode";
 import {
   ADMIN_ROLE,
   ALL_PERMISSIONS,
@@ -18,8 +18,8 @@ import {
   isBuiltInRole,
   isPermissionKey,
   type PermissionKey,
-} from "@/lib/permissions";
-import { apiFetch } from "@/lib/api-fetch";
+} from "@/lib/roles/permissions";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 export type CurrentUser = {
   email: string;
@@ -77,13 +77,13 @@ const BYPASS_USER: CurrentUser = {
 // membership in the organization and what its role allows, and both can change
 // while they are signed in: an admin can change their role, edit the role, or
 // remove them. So the browser asks the server, through /api/me, which answers
-// with the same principal lib/auth-guard.ts hands every API route. A screen
+// with the same principal lib/auth/guard.ts hands every API route. A screen
 // then offers exactly what the server will allow, and never a button whose
 // request the server refuses.
 //
 // With the bypass on there is no session, and the server acts as the full
 // admin unless the View as switcher on the studio rail has left a cookie
-// naming a role (bypassPrincipal in lib/auth-guard.ts). With no cookie there
+// naming a role (bypassPrincipal in lib/auth/guard.ts). With no cookie there
 // is nothing to ask: the answer is the full admin, straight away.
 //
 // The answer is about one organization: the one the page is open in, which
@@ -431,7 +431,7 @@ export function resetUserCache() {
  *
  * Who comes from the sign-in session, or from the bypass's stand-in. What they
  * may do comes from /api/me in both cases, which is the same principal
- * lib/auth-guard.ts hands the API routes: their role in the organization the
+ * lib/auth/guard.ts hands the API routes: their role in the organization the
  * page is open in, or with the bypass on the full admin or the role picked in
  * View as. Without that, a screen could offer a button whose request the
  * server then refuses, the client and the server disagreeing about the one

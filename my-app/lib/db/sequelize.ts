@@ -15,7 +15,7 @@ import { metadataWantsSsl } from "./metadata-ssl";
  *
  *   • The databases being COMPARED and DEPLOYED to. Arbitrary schemas the app
  *     has never seen, read out of pg_catalog and changed with generated DDL.
- *     There is nothing for an ORM to model there, so lib/postgres.ts keeps
+ *     There is nothing for an ORM to model there, so lib/postgres/ keeps
  *     talking to them with the driver directly.
  *
  * The reading and writing of those tables is not done through the models. Every
@@ -61,7 +61,7 @@ export const METADATA_ACQUIRE_TIMEOUT_MS = 15_000;
 /**
  * Hosted Postgres (Supabase, Neon, RDS) requires SSL but commonly presents a
  * cert chain the runtime doesn't trust, so when SSL is on, accept the cert
- * without local CA verification, the same thing lib/connection-config.ts does
+ * without local CA verification, the same thing lib/connections/config.ts does
  * for target DBs. Whether SSL is on at all (it is off for localhost, and for a
  * URL with sslmode=disable such as the one docker-compose.yml builds) is
  * decided in ./metadata-ssl.

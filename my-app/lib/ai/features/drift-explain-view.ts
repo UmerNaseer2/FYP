@@ -1,8 +1,8 @@
 // Explain drift as the screen gets it. No imports that reach a database or
 // the AI service, so the drift page can use the types and the shape checks.
 
-import { buildDiffDocument } from "../../compare-export";
-import type { CompareReport } from "../../compare-types";
+import { buildDiffDocument } from "../../compare/export";
+import type { CompareReport } from "../../compare/types";
 import { isStringArray, isSummaryItem, type SummaryItem } from "./compare-summary-view";
 
 export type DriftChoice = "adopt" | "revert" | "either";
@@ -91,7 +91,7 @@ export function isDriftScripts(value: unknown): value is DriftScripts {
  * The drift summary is not enough for this: it holds only counts, so a
  * re-check that finds different drift with the same counts (one column
  * dropped and another added) would keep explaining, and offering scripts
- * for, the old drift. buildDiffDocument (lib/compare-export.ts) is the one
+ * for, the old drift. buildDiffDocument (lib/compare/export.ts) is the one
  * list of changes the screen shows, and it is safe in the browser.
  */
 export function driftExplainKey(

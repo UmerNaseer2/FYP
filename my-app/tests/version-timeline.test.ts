@@ -17,8 +17,8 @@ import {
   versionTitle,
   type TimelineEntry,
   type TimelineRow,
-} from "@/lib/version-timeline";
-import type { LedgerEntry } from "@/lib/version-sync";
+} from "@/lib/versions/timeline";
+import type { LedgerEntry } from "@/lib/versions/sync";
 
 // The merged timeline and the per-group verdict. Both are pure, and both feed
 // words the screens print: a row the merge gets wrong is a version shown as

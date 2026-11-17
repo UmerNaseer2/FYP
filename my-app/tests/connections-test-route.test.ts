@@ -12,11 +12,11 @@
 // dialled.
 import { NextRequest } from "next/server";
 import { TEST_ORG } from "./helpers/principals";
-import { REENTER_CONNECTION_STRING_MESSAGE, REENTER_PASSWORD_MESSAGE } from "@/lib/connection-validate";
+import { REENTER_CONNECTION_STRING_MESSAGE, REENTER_PASSWORD_MESSAGE } from "@/lib/connections/validate";
 
 /** The permissions the caller's role holds; each test can change them. */
 let mockPermissions: string[] = ["connections:create", "connections:update"];
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor", {
@@ -80,7 +80,7 @@ const mockPoolQuery = jest.fn(async (text: string, values: unknown[] = []) => {
   );
   return { rows, rowCount: rows.length };
 });
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockPoolQuery(text, values),
@@ -97,7 +97,7 @@ const mockRunConnectionTest = jest.fn<Promise<unknown>, unknown[]>(async () => (
   ssl: true,
   sslMode: "require" as const,
 }));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   runConnectionTest: (...args: unknown[]) => mockRunConnectionTest(...args),
 }));
 

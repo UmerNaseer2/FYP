@@ -3,7 +3,7 @@
  */
 // Compare keeps the last comparison so leaving the page and coming back finds
 // it as it was: the result and filters in memory, the query in the tab.
-import type { CompareScreen } from "@/lib/compare-run";
+import type { CompareScreen } from "@/lib/compare/run";
 import {
   forgetCompare,
   hasMemory,
@@ -16,7 +16,7 @@ import {
   rememberQuery,
   rememberScreen,
   scriptKey,
-} from "@/lib/compare-memory";
+} from "@/lib/compare/memory";
 
 const ORG = "acme";
 const QUERY = "run=1&sourceConnection=1&sourceSchema=a&targetConnection=1&targetSchema=b";

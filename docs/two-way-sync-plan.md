@@ -45,7 +45,7 @@ Each step is committed after its tests and type checks pass. One run against a l
 
 - 2026-11-08: plan written.
 - 2026-11-08: step 1 built and committed locally on `two-way-sync`.
-  - Site: `version`, `updated_at`, `updated_by` on connections, with the version check and 409 in `lib/connection-writes.ts` shared by the Connections route and the linked computer's routes (`/api/agent/sync`, `/api/agent/sync/connections`). Passwords go down only to roles with Connections: Update. `/api/computers?connections=all` lists each computer's own connections for its owner.
+  - Site: `version`, `updated_at`, `updated_by` on connections, with the version check and 409 in `lib/connections/writes.ts` shared by the Connections route and the linked computer's routes (`/api/agent/sync`, `/api/agent/sync/connections`). Passwords go down only to roles with Connections: Update. `/api/computers?connections=all` lists each computer's own connections for its owner.
   - Desktop: `src/core/stays-home.ts` keeps home addresses home without asking the site. `cloud-agent.ts` pulls the org's connections when the fingerprint moves and writes them through the desktop-only `/api/desktop/sync` route (main process token only). Five new bridge calls: `syncStatus`, `syncCreate`, `syncUpdate`, `syncRemove`, `syncSendUp`.
   - Connections page: "Website" or "This computer" tag, "No password on this computer", the offline lock and its banner, saves of website connections through the desktop app, the conflict box (keep theirs, or save mine on top; keep it, or delete anyway), "Send to website", and "On your computers" on the website.
   - Checked: type checks, the full web suite, and the desktop's 836 tests. Not yet run live.
@@ -57,7 +57,7 @@ Each step is committed after its tests and type checks pass. One run against a l
   - Checked: type checks, the full web suite (6,315 tests), and the desktop's 845 tests. Not yet run live.
 - 2026-11-08: step 3 built and committed locally on `two-way-sync`.
   - Site: each changed sync answer carries the person's role (`lib/site-role.ts`), and the fingerprint includes it, so a role change reaches the desktop at the next sync.
-  - Desktop server: `organizations.site_role` keeps the role; `/api/desktop/sync` saves it with the list (null clears it, a role it cannot read is a 400 before anything is written). `lib/auth-guard.ts` holds the default organization to it while linked.
+  - Desktop server: `organizations.site_role` keeps the role; `/api/desktop/sync` saves it with the list (null clears it, a role it cannot read is a 400 before anything is written). `lib/auth/guard.ts` holds the default organization to it while linked.
   - Desktop app: a changed list without a readable role is not taken. Unlinking, a 401, and a start with no saved link clear the copies and the role. Settings, Web site, shows a sync line: the website role, when it last synced, how many connections come from the website and how many stay on this computer, and that website connections cannot be changed while it is offline.
   - Checked: type checks, the full web suite (6,347 tests), and the desktop's 849 tests. Not yet run live.
 - 2026-11-08: the 9 database suites run on a throwaway PostgreSQL cluster (256 tests pass).

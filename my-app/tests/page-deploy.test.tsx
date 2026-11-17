@@ -28,10 +28,10 @@
  *    nothing here for a test to see.
  *  - The Verify stage: the ledger re-read and the drift check that follow a
  *    successful run.
- *  - An empty or unversioned target (lib/deploy-init's "needs-init" and
+ *  - An empty or unversioned target (lib/deploy/init's "needs-init" and
  *    "unversioned" stages). Every test here starts from a target that already
  *    has a version applied, so the initialise path is untested by this file.
- *  - The "Applies-to" restriction, which lib/application-targeting decides and
+ *  - The "Applies-to" restriction, which lib/deploy/application-targeting decides and
  *    tests/application-targeting.test.ts already covers.
  */
 
@@ -43,8 +43,8 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 
 import DeployPage from "@/app/[org]/(studio)/deploy/page";
 import { sha256Hex } from "@/components/studio/ApprovalPanel";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
-import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
+import { fingerprintBody } from "@/lib/deploy/approval-fingerprint";
 import {
   fetchCalls,
   flushAsync,

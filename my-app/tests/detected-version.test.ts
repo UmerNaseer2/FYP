@@ -1,5 +1,5 @@
-import { toDetectedVersion, toFullDetectedVersion, VERSION_TIMELINE_SHOWN } from "@/lib/detected-version";
-import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/version-detection";
+import { toDetectedVersion, toFullDetectedVersion, VERSION_TIMELINE_SHOWN } from "@/lib/compare/detected-version";
+import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/versions/detection";
 
 // What the Compare screen receives of each schema's own version table. The
 // screen prints a version in its headline and a head per script group, so

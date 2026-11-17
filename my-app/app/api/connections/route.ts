@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import {
   PUBLIC_COLUMNS,
   publicRow,
@@ -8,17 +8,17 @@ import {
   deleteConnection,
   updateConnection,
   type WriteAnswer,
-} from "@/lib/connection-writes";
+} from "@/lib/connections/writes";
 
 /**
  * Saved database targets — the rows every other feature connects through.
  *
  * Three rules hold across all four methods:
  *
- *  1. Validation is lib/connection-validate, the SAME module the drawer uses.
+ *  1. Validation is lib/connections/validate, the SAME module the drawer uses.
  *     One implementation means the client and the server cannot drift into
  *     disagreeing about what a valid connection is.
- *  2. Secrets are encrypted on the way in (lib/secret-store) and decrypted in
+ *  2. Secrets are encrypted on the way in (lib/connections/secret-store) and decrypted in
  *     exactly one place on the way out (buildPgConfig). Nothing here ever sends
  *     a password or a connection string back to the browser.
  *  3. `ssl_mode` is the real setting; the older boolean `ssl` column is written
@@ -81,7 +81,7 @@ function send(answer: WriteAnswer): NextResponse {
 
 const NOT_JSON = { error: "Expected a JSON body." };
 
-/** Save a new connection. The work is in lib/connection-writes.ts. */
+/** Save a new connection. The work is in lib/connections/writes.ts. */
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("connections:create");
   if (!gate.ok) return gate.response;

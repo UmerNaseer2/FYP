@@ -2,13 +2,13 @@
 
 /**
  * The shared pieces many pages lean on: the one status system
- * (lib/status-look, StatusChip), errors that say what to do
- * (lib/friendly-error, ErrorNotice) and setup checklists (SetupChecklist).
+ * (lib/ui/status-look, StatusChip), errors that say what to do
+ * (lib/ui/friendly-error, ErrorNotice) and setup checklists (SetupChecklist).
  */
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { STATUS_LOOK, STATUS_ORDER, statusKeyOf, statusVar } from "@/lib/status-look";
-import { describeError } from "@/lib/friendly-error";
+import { STATUS_LOOK, STATUS_ORDER, statusKeyOf, statusVar } from "@/lib/ui/status-look";
+import { describeError } from "@/lib/ui/friendly-error";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { SetupChecklist } from "@/components/ui/SetupChecklist";

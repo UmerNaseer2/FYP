@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { StatusChip } from "@/components/ui/StatusChip";
-import { statusLook } from "@/lib/status-look";
+import { statusLook } from "@/lib/ui/status-look";
 import { CheckIcon, SearchIcon } from "@/components/ui/icons";
-import { timeAgo } from "@/lib/time-ago";
-import { driftSourceLabel, type DriftSource } from "@/lib/drift-source";
+import { timeAgo } from "@/lib/ui/time-ago";
+import { driftSourceLabel, type DriftSource } from "@/lib/drift/source";
 import { useOrgHref } from "@/hooks/useOrg";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";

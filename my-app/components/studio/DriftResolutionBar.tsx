@@ -5,9 +5,9 @@ import Link from "next/link";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { CompareIcon, CheckIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage } from "@/lib/roles/permissions";
 import { RecheckDriftButton, useDriftCheckRefusal } from "./RecheckDriftButton";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
 

@@ -13,7 +13,7 @@ import { NextRequest } from "next/server";
 import { column, schema, table } from "./helpers/snapshots";
 
 const mockQuery = jest.fn();
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -28,12 +28,12 @@ jest.mock("../lib/postgres", () => ({
 }));
 
 const mockBuildPgConfig = jest.fn();
-jest.mock("../lib/connection-config", () => ({
-  ...jest.requireActual("../lib/connection-config"),
+jest.mock("../lib/connections/config", () => ({
+  ...jest.requireActual("../lib/connections/config"),
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("admin"),
@@ -60,8 +60,8 @@ jest.mock("../lib/ai/table-sizes", () => ({
 }));
 
 import { loadPgTarget, readTargetSnapshot, SNAPSHOT_LOCK_TIMEOUT_MS } from "@/lib/ai/pg-target";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
-import { stampChangeType } from "@/lib/change-type";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
+import { stampChangeType } from "@/lib/versions/change-type";
 import { TEST_ORG } from "./helpers/principals";
 import { POST as reviewPost } from "@/app/api/scripts/review/route";
 import { POST as generatePost } from "@/app/api/scripts/generate/route";

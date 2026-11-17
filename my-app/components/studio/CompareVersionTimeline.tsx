@@ -16,24 +16,24 @@
 // opened: most comparisons never open it, and a comparison should not cost
 // another trip to each database for a panel nobody looked at. A side with no
 // saved connection, or one the comparison already carried whole, shows the
-// entries it came with. lib/compare-timeline.ts holds the rules for which side
+// entries it came with. lib/compare/timeline.ts holds the rules for which side
 // is read which way.
 // ---------------------------------------------------------------------------
 
 import { useState, type ReactNode } from "react";
-import type { DetectedVersion } from "@/lib/detected-version";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
-import type { LedgerEntry } from "@/lib/version-sync";
-import { describeRecentSide, readsHistory, readsLedger, recentTimelineEntries } from "@/lib/compare-timeline";
+import type { DetectedVersion } from "@/lib/compare/detected-version";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
+import type { LedgerEntry } from "@/lib/versions/sync";
+import { describeRecentSide, readsHistory, readsLedger, recentTimelineEntries } from "@/lib/compare/timeline";
 import {
   ledgerTimelineEntries,
   mergeTimelines,
   outdatedSideFor,
   type TimelineEntry,
-} from "@/lib/version-timeline";
+} from "@/lib/versions/timeline";
 import { NO_STORED_SCRIPT, VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChevronDownIcon } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 /** One side of the comparison, as the timeline needs it. */
 export type CompareTimelineSide = {

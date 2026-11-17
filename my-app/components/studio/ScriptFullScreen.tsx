@@ -3,8 +3,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CheckIcon, ClipboardIcon, RefreshIcon, XIcon } from "@/components/ui/icons";
-import { countOf } from "@/lib/plural";
-import { scriptSteps } from "@/lib/script-steps";
+import { countOf } from "@/lib/ui/plural";
+import { scriptSteps } from "@/lib/versions/script-steps";
 
 // The migration script over the whole window. It edits the same text as the
 // side panel (the Workbench owns it), so closing keeps every edit. Beside the

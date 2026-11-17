@@ -18,9 +18,9 @@ import {
   changeNoteSummary,
   readChangeNote,
   stampChangeNote,
-} from "@/lib/change-note";
-import { readChangeTypeHeader, stampChangeType } from "@/lib/change-type";
-import { readAppliesToHeader } from "@/lib/application-targeting";
+} from "@/lib/versions/change-note";
+import { readChangeTypeHeader, stampChangeType } from "@/lib/versions/change-type";
+import { readAppliesToHeader } from "@/lib/deploy/application-targeting";
 
 const SQL = "ALTER TABLE orders ADD COLUMN invoice_no text;";
 

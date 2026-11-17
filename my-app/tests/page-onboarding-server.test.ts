@@ -27,11 +27,11 @@ jest.mock("next/navigation", () => ({
 
 // next-auth ships as ESM, which Jest cannot load, and signing out is reached
 // only through the client half.
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn() }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: jest.fn() }));
 
 // Getters, so each case's change is what the page reads.
 const mockFlags = { bypass: false };
-jest.mock("../lib/auth-mode", () => ({
+jest.mock("../lib/auth/mode", () => ({
   get BYPASS_AUTH() {
     return mockFlags.bypass;
   },

@@ -1,4 +1,4 @@
-import { compositeIndexAdvice, tableSearchIndexes, type SearchPattern } from "../lib/composite-index";
+import { compositeIndexAdvice, tableSearchIndexes, type SearchPattern } from "../lib/performance/composite-index";
 
 /**
  * The rule that suggests one index across several columns. These tests cover

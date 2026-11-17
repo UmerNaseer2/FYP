@@ -18,12 +18,12 @@ import { TEST_ORG } from "./helpers/principals";
 // schema, so it writes one row while the schema is still in the organization
 // and none once it is not.
 const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>();
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (text: string, values?: unknown[]) => mockPoolQuery(text, values) },
 }));
 
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: () => ({ host: "target.example", database: "app" }),
 }));
 
@@ -32,7 +32,7 @@ jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
 
-import { recordSchemaMetrics } from "@/lib/schema-metrics";
+import { recordSchemaMetrics } from "@/lib/performance/schema-metrics";
 
 const CONNECTION_ROW = {
   type: "PostgreSQL",

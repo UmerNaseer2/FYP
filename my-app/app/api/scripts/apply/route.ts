@@ -1,33 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { claimApproval, releaseApproval } from "@/lib/approvals-db";
-import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
-import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { askToRunRefusal, canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/roles/permissions";
+import { claimApproval, releaseApproval } from "@/lib/deploy/approvals-db";
+import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy/attempts";
+import { recordDeployAttempt } from "@/lib/deploy/attempts-db";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import {
   containsTransactionControl,
   enumAddValueTypeName,
   extractEnumAddValues,
   hasExecutableSql,
-} from "@/lib/sql-guard";
-import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/script-transaction";
-import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/run-settings";
-import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
-import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
-import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
-import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
-import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
-import { readApplications } from "@/lib/application-read";
-import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
+} from "@/lib/sql/guard";
+import { ScriptEndedTransactionError, currentTransactionId } from "@/lib/deploy/script-transaction";
+import { applyRunSettings, runSearchPath, type RunSettings } from "@/lib/deploy/run-settings";
+import { lockScriptFamilies, lockScriptVersion } from "@/lib/versions/family-lock";
+import { recordAppliedMigrationToLineage } from "@/lib/versions/lineage-db";
+import { loudestChangeLevel, type ScriptChangeType } from "@/lib/versions/change-type";
+import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/deploy/commit-outcome";
+import { checkApplications, readAppliesToHeader } from "@/lib/deploy/application-targeting";
+import { readApplications } from "@/lib/deploy/application-read";
+import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/github/registry-archive";
 import { randomUUID } from "node:crypto";
-import { isRunId } from "@/lib/run-id";
+import { isRunId } from "@/lib/deploy/run-id";
 import {
   beginCommit,
   DUPLICATE_RUN_MESSAGE,
@@ -39,13 +39,13 @@ import {
   throwIfStopped,
   unregisterRun,
   type RunEntry,
-} from "@/lib/run-limits";
+} from "@/lib/deploy/run-limits";
 import {
   checkForwardOnly,
   readScriptLevel,
   scriptLabel,
   type ForwardOnlyProblem,
-} from "@/lib/deploy-risk";
+} from "@/lib/deploy/risk";
 
 // script_patch.version is VARCHAR(20)
 const MAX_VERSION_LENGTH = 20;
@@ -73,7 +73,7 @@ type ScriptJob = {
   /**
    * The level stored in script_patch.change_type and handed to lineage: the
    * SQL's own level, raised to the caller's change_type when that is louder
-   * (lib/deploy-risk's readScriptLevel). Never "unknown".
+   * (lib/deploy/risk's readScriptLevel). Never "unknown".
    */
   changeType: ScriptChangeType;
   sourceRef: string | null;
@@ -431,7 +431,7 @@ async function ledgerExists(client: PoolClient, quotedSchema: string): Promise<b
 /**
  * Check the run against the versions this schema has already applied: each
  * version of a script must be above every version of it in script_patch.
- * The rule itself is lib/deploy-risk's checkForwardOnly; this only reads the
+ * The rule itself is lib/deploy/risk's checkForwardOnly; this only reads the
  * ledger for it, and only the run's own scripts. The caller makes sure the
  * table exists.
  */
@@ -490,7 +490,7 @@ function rolledBackOutcomes(
   );
 }
 
-// Bare COMMIT / ROLLBACK detection lives in lib/sql-guard so the deploy page's
+// Bare COMMIT / ROLLBACK detection lives in lib/sql/guard so the deploy page's
 // client-side pre-check uses the exact same rule (and the dollar-quote-aware
 // stripping) as this server route — see containsTransactionControl import above.
 
@@ -502,7 +502,7 @@ function rolledBackOutcomes(
  * a run that reached its transaction and rolled back (a lock timeout after
  * BEGIN is a 503 too). A screen that cannot tell them apart sends the operator
  * looking for a ledger table or an enum value that was never written.
- * lib/apply-failure is the reading of it.
+ * lib/deploy/apply-failure is the reading of it.
  */
 function answerBeforeRun(body: Record<string, unknown>, init: { status: number }) {
   return NextResponse.json({ ...body, nothingRan: true }, init);
@@ -562,7 +562,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
      * real apply does outside the transaction.
      */
     dryRun?: boolean;
-    /** Names this run for the Stop button: see lib/run-limits.ts. */
+    /** Names this run for the Stop button: see lib/deploy/run-limits.ts. */
     runId?: unknown;
   };
 
@@ -728,7 +728,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       // The SQL's own level (its stamp, else what its statements read as),
       // raised to the caller's change_type when that is louder and never
       // lowered by it; a missing or "unknown" change_type is ignored. The rule
-      // lives in lib/deploy-risk, so the Deploy page's warning and this row agree.
+      // lives in lib/deploy/risk, so the Deploy page's warning and this row agree.
       changeType: readScriptLevel({
         sqlContent: raw.sql_content,
         changeType: raw.change_type,
@@ -885,7 +885,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   //
   // Somebody whose role may run here just runs: nothing waits for anyone.
   // Anybody else (step 4a) may run only with an approval given to them, for
-  // this exact run. See lib/approvals-db for the rule, and for the CHECK
+  // this exact run. See lib/deploy/approvals-db for the rule, and for the CHECK
   // constraint that stops anyone approving their own ask.
   //
   // Claimed BEFORE the run, not after. An approval authorises one run, so the
@@ -987,7 +987,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
 
   // Errors the connection reports on its own, such as the database ending the
   // session between two queries. Without a listener one would crash the whole
-  // server. The first is kept, and the run reports it (lib/run-limits.ts).
+  // server. The first is kept, and the run reports it (lib/deploy/run-limits.ts).
   const clientError = keepFirstClientError(client);
 
   // Derive the quoted schema identifier once — used in every query below.
@@ -1154,7 +1154,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // fails and step 7 throws.
   const hoistedEnumAdditions: string[] = [];
   // The time limits this run goes by, and its entry in the list of runs the
-  // Stop button can reach (lib/run-limits.ts). Null until registered.
+  // Stop button can reach (lib/deploy/run-limits.ts). Null until registered.
   const limits = runLimits({ dryRun });
   let run: RunEntry | null = null;
 
@@ -1237,7 +1237,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     //
     // statement_timeout goes alongside it, generous on purpose: a migration
     // that rewrites a large table legitimately takes minutes, so a real run
-    // allows each statement half an hour (lib/run-limits.ts). The limit is
+    // allows each statement half an hour (lib/deploy/run-limits.ts). The limit is
     // there only so that a statement that never ends, such as
     // pg_sleep(100000) or a runaway query, cannot hold the connection for
     // good. A dry run is rolled back whatever happens, so it gets a shorter
@@ -1267,7 +1267,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     };
 
     // Put the settings in place (lock_timeout, statement_timeout,
-    // search_path, and reading strings the way lib/sql-guard did when it
+    // search_path, and reading strings the way lib/sql/guard did when it
     // checked the scripts), then note which transaction this is. Each script
     // is checked against that id after it runs: see lib/script-transaction.
     await applyRunSettings(client, runSettings);
@@ -1284,7 +1284,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     const ledgerReady = dryRun ? await ledgerExists(client, quotedSchema) : true;
 
     // Lock every script family in the run: one lock per family, sorted, before
-    // any per-version lock (lib/family-lock explains both rules). A deploy and
+    // any per-version lock (lib/versions/family-lock explains both rules). A deploy and
     // a rollback of the same family name different versions, so only this
     // lock makes one wait for the other. failedJob is still null here, so a
     // lock timeout reads as "This run" rather than blaming one migration.
@@ -1830,7 +1830,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // A run that hit one of its time limits, was stopped with the Stop
     // button, or had its session ended by the database is not a broken
     // script either, and "canceling statement due to user request" does not
-    // say which of those happened. See lib/run-limits.ts.
+    // say which of those happened. See lib/deploy/run-limits.ts.
     const stopped = runStopMessage([error, clientError()], run, {
       kind: "deploy",
       dryRun,
@@ -1959,7 +1959,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
  * The row goes to the METADATA database, on a different connection from the
  * target. That is what makes it survive: a ROLLBACK cannot reach across a
  * connection it does not own, and an attempt refused because the target could
- * not be opened still leaves a row. lib/deploy-attempts explains the four
+ * not be opened still leaves a row. lib/deploy/attempts explains the four
  * outcomes and why "failed" and "unknown" must not be collapsed together.
  *
  * Recording cannot change the answer. It happens after the response exists,

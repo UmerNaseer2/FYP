@@ -1,5 +1,5 @@
 // compare-run: a link that names only the target fills in the pickers and runs
-// nothing (POST /api/compare, and runComparison in lib/compare-run.ts).
+// nothing (POST /api/compare, and runComparison in lib/compare/run.ts).
 //
 // Drift, the dashboard and a schema's page link to Compare with their schema
 // as the target. They used to add run=1, so the comparison ran at once against
@@ -13,17 +13,17 @@
 // still carries run=1) runs nothing and starts the source on another
 // database, while a link that names both sides still runs.
 import { NextRequest } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
+import type { Gate } from "@/lib/auth/guard";
 import { principalFor } from "./helpers/principals";
 
 let mockGate: Gate;
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => mockGate,
 }));
 
 // Three saved PostgreSQL connections, in the name order the real query uses.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (text: string) => {
@@ -34,12 +34,12 @@ jest.mock("../lib/version-db", () => ({
   syncMetadataTables: async () => {},
 }));
 
-jest.mock("../lib/comparison-sets", () => ({
+jest.mock("../lib/compare/sets", () => ({
   listComparisonSets: async () => [],
   markComparisonSetRun: async () => {},
 }));
 
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchemas: async () => new Map(),
   trackedSchemaKey: (id: number, schema: string) => `${id}|${schema}`,
   recordComparisonRun: async () => {},
@@ -56,8 +56,8 @@ jest.mock("../lib/postgres", () => ({
 
 // Only the one function that opens a database is replaced, as in
 // tests/compare-run-safety.test.ts.
-jest.mock("../lib/version-detection", () => ({
-  ...jest.requireActual("../lib/version-detection"),
+jest.mock("../lib/versions/detection", () => ({
+  ...jest.requireActual("../lib/versions/detection"),
   fetchSchemaVersionInfo: async () => ({
     schema: "public",
     hasVersionTable: false,

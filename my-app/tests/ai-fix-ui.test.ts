@@ -9,13 +9,13 @@
 
 import { NextRequest } from "next/server";
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
 }));
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({ ok: true, principal: require("./helpers/principals").principalFor("admin") }),
 }));
 
@@ -30,7 +30,7 @@ const mockRuns: URLSearchParams[] = [];
 
 // The first target has no report, with a message of its own, so a test can
 // tell which outcome the route read without building a real report.
-jest.mock("../lib/compare-run", () => ({
+jest.mock("../lib/compare/run", () => ({
   runComparison: async (_orgId: number, params: URLSearchParams) => {
     mockRuns.push(new URLSearchParams(params));
     return { kind: "ready", allowDataLoss: false, outcomes: [{ index: 0, report: null, error: "Outcome 0." }] };

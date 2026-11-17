@@ -5,9 +5,9 @@
 // the key), what AI calls use now, and the last 30 days of use. Shared by
 // GET and PATCH /api/admin/ai and by /api/admin/ai/key, so every answer
 // draws the tab the same way.
-import type { Principal } from "../auth-guard";
-import { hasPermission } from "../permissions";
-import { encryptionKeySource } from "../secret-store";
+import type { Principal } from "../auth/guard";
+import { hasPermission } from "../roles/permissions";
+import { encryptionKeySource } from "../connections/secret-store";
 import { describeAiConfig, readAiLimits, type AiSetup } from "./config";
 import { AI_KEY_PROVIDERS } from "./key-providers";
 import { readOrgKey, type OrgAiKey } from "./org-key";

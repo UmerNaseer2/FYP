@@ -2,7 +2,7 @@
 // rows. It must name the UTC day, the day the "… UTC" stamps beside it name,
 // whatever time zone the reader (or this test run) is in.
 
-import { shortUtcDate, utcStamp } from "@/lib/format-date";
+import { shortUtcDate, utcStamp } from "@/lib/ui/format-date";
 
 describe("shortUtcDate", () => {
   it("names the UTC day, not the reader's", () => {

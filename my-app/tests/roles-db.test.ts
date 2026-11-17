@@ -1,7 +1,7 @@
 // roles-db: the reads and writes behind the Admin screen's Roles tab.
 //
 // Run against a stand-in database (tests/helpers/fake-pg.ts), so what is
-// checked is what lib/roles-db.ts says to Postgres and what it answers:
+// checked is what lib/roles/roles-db.ts says to Postgres and what it answers:
 //
 //   - The refusals a person can act on, each in the words the screen shows.
 //     The ones that need no database are made before a connection is taken.
@@ -29,7 +29,7 @@ let mockConnects = 0;
 // The pool's own query() answers the reads; connect() hands out the client a
 // write runs its transaction on. Both are looked up when called, not when the
 // mock is made, because this factory runs before the lines above do.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: (text: string, values?: unknown[]) => mockPool.query(text, values),
@@ -47,7 +47,7 @@ import {
   ROLE_LABEL_MAX,
   isAdminOnly,
   presetFor,
-} from "@/lib/permissions";
+} from "@/lib/roles/permissions";
 import {
   createRole,
   deleteRole,
@@ -58,7 +58,7 @@ import {
   logRoleChanges,
   resetRolePermissions,
   setRolePermissions,
-} from "@/lib/roles-db";
+} from "@/lib/roles/roles-db";
 import { TEST_ORG } from "./helpers/principals";
 
 const ORG = TEST_ORG.id;

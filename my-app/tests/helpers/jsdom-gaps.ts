@@ -67,7 +67,7 @@ if (typeof window !== "undefined") {
   // Node itself; jsdom leaves them out because they live outside the DOM spec
   // it implements, so under this environment they are missing rather than
   // stubbed and a call throws "not a function". Node's own implementations are
-  // the real ones, so what goes in here is not a fake: lib/approval-fingerprint
+  // the real ones, so what goes in here is not a fake: lib/deploy/approval-fingerprint
   // hashes a run with crypto.subtle (ApprovalPanel's sha256Hex), and a test
   // that could not hash could never show an approval matching a run at all.
   const scope = globalThis as unknown as Record<string, unknown>;

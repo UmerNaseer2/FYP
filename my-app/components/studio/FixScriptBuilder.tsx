@@ -6,8 +6,8 @@ import { Card } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { useUser } from "@/hooks/useUser";
-import { refusalMessage } from "@/lib/permissions";
-import { saveMigrationDraft } from "@/lib/migration-draft";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { saveMigrationDraft } from "@/lib/versions/migration-draft";
 import {
   buildFixScript,
   changesWithoutUndo,
@@ -17,7 +17,7 @@ import {
   listedFixes,
   startingUnticked,
   type FixScriptItem,
-} from "@/lib/perf-sql";
+} from "@/lib/performance/sql";
 import { AskAdmin } from "./AskAdmin";
 import { downloadText } from "./ExportBar";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
@@ -30,7 +30,7 @@ import { useOrg, useOrgHref } from "@/hooks/useOrg";
  * start with, and hands the ticked ones over three ways:
  *
  *   Copy as one script / Download .sql   everything ticked, as one file with a
- *                                        header (buildFixScript in lib/perf-sql.ts)
+ *                                        header (buildFixScript in lib/performance/sql.ts)
  *   Save as a migration                  the schema changes only, with their
  *                                        rollback, into the Script Editor, where
  *                                        the usual version and save flow takes over
@@ -79,7 +79,7 @@ export function FixScriptBuilder({
   const canSave = !loading && can("scripts:create");
 
   // Above the state, because the state starts from it. Both are pure and live
-  // in lib/perf-sql.ts, where they can be tested without a browser.
+  // in lib/performance/sql.ts, where they can be tested without a browser.
   const listed = listedFixes(items);
   const startOff = startingUnticked(listed);
 

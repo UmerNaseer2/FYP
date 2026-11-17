@@ -17,7 +17,7 @@ import {
   isReservedSlug,
   orgHref,
   orgSlugFromPath,
-} from "@/lib/org-slug";
+} from "@/lib/orgs/slug";
 
 const APP = path.join(__dirname, "..", "app");
 const SLUG = new RegExp(ORG_SLUG_PATTERN);

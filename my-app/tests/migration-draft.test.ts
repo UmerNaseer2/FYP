@@ -1,6 +1,6 @@
 /**
  * The hand-over from a Performance tab to the Script Editor
- * (lib/migration-draft.ts).
+ * (lib/versions/migration-draft.ts).
  *
  * sessionStorage belongs to the browser, so each test puts a stand-in window
  * on globalThis: one whose storage works, one whose storage refuses every
@@ -17,8 +17,8 @@ import {
   readMigrationDraftRaw,
   saveMigrationDraft,
   type MigrationDraft,
-} from "@/lib/migration-draft";
-import { MAX_MIGRATION_DESCRIPTION } from "@/lib/perf-sql";
+} from "@/lib/versions/migration-draft";
+import { MAX_MIGRATION_DESCRIPTION } from "@/lib/performance/sql";
 
 /** A sessionStorage that works, kept in a Map. */
 function workingStorage(): Storage {

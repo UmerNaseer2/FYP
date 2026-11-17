@@ -8,12 +8,12 @@
 // a page is added under app/[org]/(studio) without its old address.
 import fs from "fs";
 import path from "path";
-import { redirectToLastOrg, type OldAddressProps } from "@/lib/org-redirect";
+import { redirectToLastOrg, type OldAddressProps } from "@/lib/orgs/redirect";
 import OrganizationHome from "@/app/[org]/page";
 
 let mockBypass = false;
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   // A getter, so one file can see both sides of the switch. See
   // tests/auth-guard.test.ts.
   get BYPASS_AUTH() {
@@ -26,7 +26,7 @@ jest.mock("../auth", () => ({ auth: () => mockAuth() }));
 
 const mockFindLast = jest.fn();
 const mockFindDefault = jest.fn();
-jest.mock("../lib/orgs-db", () => ({
+jest.mock("../lib/orgs/orgs-db", () => ({
   findLastOrganization: (...args: unknown[]) => mockFindLast(...args),
   findDefaultOrganization: (...args: unknown[]) => mockFindDefault(...args),
 }));

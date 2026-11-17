@@ -46,7 +46,7 @@
  *  - The bypass branch of useUser. BYPASS_AUTH is read at module load from
  *    NEXT_PUBLIC_AUTH_BYPASS, which next/jest does not load under
  *    NODE_ENV=test, so it is false here — which is what makes the role gate
- *    below testable at all. lib/auth-mode's own switch is covered by
+ *    below testable at all. lib/auth/mode's own switch is covered by
  *    tests/auth-role-and-bypass.test.ts, and the hook's behaviour on both
  *    sides of it by tests/use-user.test.tsx.
  */
@@ -58,8 +58,8 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { FixScriptBuilder, type FixScriptTarget } from "@/components/studio/FixScriptBuilder";
-import { readMigrationDraftRaw, type MigrationDraft } from "@/lib/migration-draft";
-import type { FixScriptItem } from "@/lib/perf-sql";
+import { readMigrationDraftRaw, type MigrationDraft } from "@/lib/versions/migration-draft";
+import type { FixScriptItem } from "@/lib/performance/sql";
 import {
   render,
   resetPageState,

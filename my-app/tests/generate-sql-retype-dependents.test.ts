@@ -13,13 +13,13 @@
 // These tests pin the fix: the policy or trigger is dropped before the type
 // change and created again after it, and a generated column is dropped or
 // added on the right side of it.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   renderMigrationScript,
   statementsThatRun,
   type MigrationScript,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type {
   ColumnSnapshot,

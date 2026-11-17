@@ -20,9 +20,9 @@ import {
   type InboxRequest,
   type RequestAnswer,
   type RequestsPayload,
-} from "@/lib/access-requests";
-import { apiFetch } from "@/lib/api-fetch";
-import type { ListedApproval } from "@/lib/approvals-db";
+} from "@/lib/roles/access-requests";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import type { ListedApproval } from "@/lib/deploy/approvals-db";
 import {
   deployHref,
   describeAsked,
@@ -31,7 +31,7 @@ import {
   runTarget,
   runTitle,
   STATUS_PILLS,
-} from "@/lib/request-wording";
+} from "@/lib/roles/request-wording";
 import {
   ADMIN_ROLE,
   isAdminOnly,
@@ -40,17 +40,17 @@ import {
   PERMISSIONS,
   withToggled,
   type PermissionKey,
-} from "@/lib/permissions";
+} from "@/lib/roles/permissions";
 
 /**
  * Requests: ask for something your role can't do, see what is waiting on you,
- * and read the answers. See lib/access-requests.ts for how it fits together.
+ * and read the answers. See lib/roles/access-requests.ts for how it fits together.
  *
  * Answering "allow for everyone in the role" calls the same Roles and Users
  * routes the Admin page uses, and only then records the answer, so their guards
  * and audit trail still apply and a refusal from them leaves the request
  * waiting. "Allow just them for a day" is one call to the request route, which
- * makes the change itself (lib/access-requests.ts, grantProblem).
+ * makes the change itself (lib/roles/access-requests.ts, grantProblem).
  *
  * The page has three tabs. "Needs you" holds what is waiting on the reader,
  * "You asked" holds what they asked for that is still open, and "Done" holds

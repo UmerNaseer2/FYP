@@ -37,7 +37,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ARG NEXT_PUBLIC_AUTH_BYPASS="false"
 ENV NEXT_PUBLIC_AUTH_BYPASS=$NEXT_PUBLIC_AUTH_BYPASS
 
-# lib/version-db.ts refuses to load without a connection string, and the build
+# lib/db/version-db.ts refuses to load without a connection string, and the build
 # imports it while collecting page data. Nothing connects — every page that
 # reads the database is force-dynamic — so this deliberately points nowhere.
 # The real one arrives at run time.

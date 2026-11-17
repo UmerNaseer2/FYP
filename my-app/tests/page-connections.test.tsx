@@ -10,7 +10,7 @@
  * naming what went with it takes a drift history nobody was asked about.
  *
  * What is NOT here: the add/edit drawer's field-by-field validation. Every rule
- * it applies comes from lib/connection-validate, which has its own suite, and
+ * it applies comes from lib/connections/validate, which has its own suite, and
  * the drawer calls the same validateConnection() the route does — re-asserting
  * each message through the form would be testing that module twice. The one
  * check made HERE is the one the drawer adds on its own (an empty URI on a new

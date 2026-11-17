@@ -7,11 +7,11 @@
 // database is the fake client from helpers/fake-pg. Nothing here reaches a
 // real database or GitHub.
 import { NextRequest } from "next/server";
-import { askToRunRefusal } from "@/lib/connection-access";
+import { askToRunRefusal } from "@/lib/connections/access";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { TEST_ORG } from "./helpers/principals";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/connections/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -19,7 +19,7 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // test sets mockBypass to play the auth bypass's one principal instead, the
 // full admin that answers for everyone while sign-in is off.
 let mockBypass = false;
-jest.mock("../lib/auth-guard", () => {
+jest.mock("../lib/auth/guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
     requirePermission: async () => ({
@@ -36,7 +36,7 @@ afterEach(() => {
 
 // The metadata database: only the saved-connection lookup reaches it.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -55,12 +55,12 @@ jest.mock("../lib/postgres", () => ({
 }));
 // Set to throw to play a saved secret this server can't decrypt.
 const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
@@ -71,15 +71,15 @@ jest.mock("../lib/lineage-db", () => ({
 // migration files into somebody's actual registry repository. Mocked to answer
 // "not configured", which is the same answer a server with no GitHub settings
 // gives, so the route takes its ordinary path.
-jest.mock("../lib/registry-archive", () => ({
+jest.mock("../lib/github/registry-archive", () => ({
   archiveAppliedVersions: async () => null,
 }));
 
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 const mockRelease = jest.fn<Promise<void>, unknown[]>(async () => undefined);
-jest.mock("../lib/approvals-db", () => ({
+jest.mock("../lib/deploy/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
-  mayDecideOwn: jest.requireActual("../lib/approvals-db").mayDecideOwn,
+  mayDecideOwn: jest.requireActual("../lib/deploy/approvals-db").mayDecideOwn,
   releaseApproval: (...args: unknown[]) => mockRelease(...args),
 }));
 
@@ -235,9 +235,9 @@ describe("a run by somebody whose role may run here", () => {
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockRelease).not.toHaveBeenCalled();
-    // A dry run gets a shorter limit than a real run (lib/run-limits.ts). See
+    // A dry run gets a shorter limit than a real run (lib/deploy/run-limits.ts). See
     // the next test for the real run. The line is sent again before every
-    // script (lib/run-settings), so it is there more than once, always with
+    // script (lib/deploy/run-settings), so it is there more than once, always with
     // the same limit.
     const limits = queriesMatching(mockClient, /statement_timeout/).map((query) => query.text);
     expect(limits.length).toBeGreaterThan(0);

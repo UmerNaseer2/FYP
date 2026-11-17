@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { readSchemaMetrics, METRIC_RETENTION_DAYS } from "@/lib/schema-metrics";
-import { normalizeDriftInterval } from "@/lib/drift-schedule";
-import type { MetricSample } from "@/lib/metrics-series";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { readSchemaMetrics, METRIC_RETENTION_DAYS } from "@/lib/performance/schema-metrics";
+import { normalizeDriftInterval } from "@/lib/drift/schedule";
+import type { MetricSample } from "@/lib/performance/metrics-series";
 
 /**
  * GET /api/performance/metrics?connectionId=<id>&schema=<name>&days=<n>
@@ -11,7 +11,7 @@ import type { MetricSample } from "@/lib/metrics-series";
  * Spec feature 10 — performance monitoring.
  *
  * The history this returns is not gathered on request. Readings are written by
- * the drift check (lib/schema-metrics), so a schema has a history exactly when
+ * the drift check (lib/performance/schema-metrics), so a schema has a history exactly when
  * the app has been watching it, and the honest answer for anything else is "not
  * tracked" rather than an empty chart. An empty chart says "nothing happened";
  * "not tracked" says "nobody was looking", and those are different facts.

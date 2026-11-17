@@ -28,7 +28,7 @@
  *
  * What is NOT here:
  *  - The comparison itself: the verdict, the deltas and the threshold for
- *    calling a query slower are lib/query-history, with its own suite. What is
+ *    calling a query slower are lib/performance/query-history, with its own suite. What is
  *    checked below is that what the server decided reaches the screen intact,
  *    not whether it decided right.
  *  - fingerprintQuery, the score and bandFor: their own suites.
@@ -48,7 +48,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import { QueryHistoryPanel } from "@/components/studio/QueryHistoryPanel";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
-import type { QueryComparison, QueryHistoryRow } from "@/lib/query-history";
+import type { QueryComparison, QueryHistoryRow } from "@/lib/performance/query-history";
 import {
   fetchCalls,
   flushAsync,

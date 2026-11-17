@@ -12,9 +12,9 @@ import {
   RefreshIcon,
   XIcon,
 } from "@/components/ui/icons";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { apiFetch } from "@/lib/api-fetch";
-import { shortUtcDate } from "@/lib/format-date";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { shortUtcDate } from "@/lib/ui/format-date";
 import {
   DEFAULT_LINK_INVITE_DAYS,
   EMAIL_INVITE_DAYS,
@@ -30,14 +30,14 @@ import {
   type InviteListing,
   type LinkInviteDays,
   type PendingInvite,
-} from "@/lib/invites";
-import { BUILT_IN_ROLE_INFO, DEFAULT_ROLE } from "@/lib/permissions";
+} from "@/lib/orgs/invites";
+import { BUILT_IN_ROLE_INFO, DEFAULT_ROLE } from "@/lib/roles/permissions";
 
 /**
  * "Invite people", under the member list on the Users tab (UsersTab.tsx),
  * for whoever may invite (Users: Create).
  *
- * Two ways in, as lib/invites.ts explains: an invitation to one email address,
+ * Two ways in, as lib/orgs/invites.ts explains: an invitation to one email address,
  * with a role, or a link that lets anyone who has it join as a Viewer. Either
  * way the app sends nothing. Making one answers with its link, which this
  * panel shows once for the Admin to copy and send themselves: the server keeps

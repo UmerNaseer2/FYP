@@ -8,11 +8,11 @@
 // Moving them changed nothing about how they behave.
 // ---------------------------------------------------------------------------
 import { CheckIcon, UsersIcon, XIcon } from "@/components/ui/icons";
-import { utcStamp } from "@/lib/format-date";
-import { permissionLabel } from "@/lib/permissions";
-import { countOf } from "@/lib/plural";
-import { vLabel } from "@/lib/rollback-plan";
-import { versionKey } from "@/lib/script-status";
+import { utcStamp } from "@/lib/ui/format-date";
+import { permissionLabel } from "@/lib/roles/permissions";
+import { countOf } from "@/lib/ui/plural";
+import { vLabel } from "@/lib/deploy/rollback-plan";
+import { versionKey } from "@/lib/versions/script-status";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
 
@@ -28,7 +28,7 @@ function ApprovalHint() {
 
 // ── Deploy approvals ───────────────────────────────────────────────────────
 // One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
-// Mirrors DeployApproval in lib/approvals-db, which cannot be imported here —
+// Mirrors DeployApproval in lib/deploy/approvals-db, which cannot be imported here —
 // that module opens a database pool, and this file runs in the browser.
 export type ApprovalRow = {
   id: number;
@@ -67,7 +67,7 @@ export type ApprovalRow = {
  * Hash the text of a run the same way the server does.
  *
  * The server uses node:crypto and this uses the Web Crypto API, but both hash
- * the string lib/approval-fingerprint builds, so the two hex strings match and
+ * the string lib/deploy/approval-fingerprint builds, so the two hex strings match and
  * this screen can tell whether the run in front of the user is the approved
  * one. crypto.subtle only exists in a secure context — https or localhost — so
  * the caller has to cope with this throwing rather than assume it cannot.
@@ -363,7 +363,7 @@ export function ApprovalPanel({
               Admins see it on their Requests page, and you see their answer here.
             </p>
           ) : mine ? (
-            // The server's own words (decisionBlockReason in lib/approvals-db),
+            // The server's own words (decisionBlockReason in lib/deploy/approvals-db),
             // so this line and the refusal it would give read the same.
             <p className="appr__meta">
               {action === "revert"

@@ -9,8 +9,8 @@
 //
 // These tests pin the rule on hand-made snapshots. The same cases run on a real
 // PostgreSQL in generate-sql-db.test.ts.
-import { compareSchemas, serialSides } from "@/lib/compare";
-import { generateMigration, statementsThatRun } from "@/lib/generate-sql";
+import { compareSchemas, serialSides } from "@/lib/compare/diff";
+import { generateMigration, statementsThatRun } from "@/lib/sql/generate";
 import type { SchemaSnapshot, SequenceOptions, SequenceSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

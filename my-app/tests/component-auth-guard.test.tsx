@@ -4,7 +4,7 @@
  * The gate every studio page is wrapped in.
  *
  * It is not a security boundary and does not pretend to be one — proxy.ts turns
- * a page request away and lib/auth-guard turns an API call away, both before
+ * a page request away and lib/auth/guard turns an API call away, both before
  * any of this runs. What AuthGuard decides is what React puts on screen, and
  * the failures worth catching are the ways that can go wrong from the reader's
  * side: a page whose contents flash up for a frame before the redirect lands, a
@@ -36,15 +36,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-// How signing out goes is lib/sign-out's business, and
+// How signing out goes is lib/auth/sign-out's business, and
 // tests/component-studio-shell.test.tsx follows it. Here it only matters
 // that the button asks for it.
 const mockSignOutEverywhere = jest.fn();
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: () => mockSignOutEverywhere() }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: () => mockSignOutEverywhere() }));
 
 let mockBypass = false;
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   // A getter, so one file can see both sides of a switch that is otherwise
   // decided once, at module load. See tests/use-user.test.tsx.
   get BYPASS_AUTH() {
@@ -54,7 +54,7 @@ jest.mock("../lib/auth-mode", () => ({
 
 import AuthGuard from "@/components/AuthGuard";
 import { resetUserCache } from "@/hooks/useUser";
-import { presetFor, type FeatureKey } from "@/lib/permissions";
+import { presetFor, type FeatureKey } from "@/lib/roles/permissions";
 import {
   resetPageState,
   routerCalls,

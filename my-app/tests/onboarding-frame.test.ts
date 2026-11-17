@@ -8,7 +8,7 @@ import { initialOf } from "@/components/onboarding/OnboardingFrame";
 
 // next-auth ships as ESM, which Jest cannot load, and the frame's Sign out
 // button reaches it through here.
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn() }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: jest.fn() }));
 
 test.each([
   ["a name", "Acme", "A"],

@@ -35,8 +35,8 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 // on. A getter, for the reason tests/use-user.test.tsx gives: the hook reads
 // BYPASS_AUTH each time it runs, so one file can see both sides of it.
 let mockBypass = false;
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   get BYPASS_AUTH() {
     return mockBypass;
   },
@@ -45,18 +45,18 @@ jest.mock("../lib/auth-mode", () => ({
 import AdminPage from "@/app/[org]/(studio)/admin/page";
 import { ROLES_CHANGED_EVENT } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
-import type { GitHubSettingsView } from "@/lib/github-settings";
+import type { GitHubSettingsView } from "@/lib/github/settings";
 import { HELP_TOPICS } from "@/lib/help";
-import type { InviteListing } from "@/lib/invites";
+import type { InviteListing } from "@/lib/orgs/invites";
 import {
   ALL_PERMISSIONS,
   BUILT_IN_ROLE_INFO,
   presetFor,
   withToggled,
   type PermissionKey,
-} from "@/lib/permissions";
-import { ADMIN_COPY_NOTE, ADMIN_ONLY_LINE, ADMIN_ONLY_TABS } from "@/lib/role-summary";
-import type { RoleChange, RoleSummary } from "@/lib/roles-db";
+} from "@/lib/roles/permissions";
+import { ADMIN_COPY_NOTE, ADMIN_ONLY_LINE, ADMIN_ONLY_TABS } from "@/lib/roles/summary";
+import type { RoleChange, RoleSummary } from "@/lib/roles/roles-db";
 import {
   fetchCalls,
   flushAsync,

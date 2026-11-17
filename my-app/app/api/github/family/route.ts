@@ -6,7 +6,7 @@
 // version: the same floor the push route checks against. One folder listing,
 // instead of the whole registry /api/github/pull downloads. The folder is
 // inside the caller's organization's part of the registry (registryRoot in
-// lib/registry-paths.ts), so the floor is that organization's own.
+// lib/github/registry-paths.ts), so the floor is that organization's own.
 //
 // Fails closed like the push guard: when GitHub can't be read the answer is a
 // readable 502, never an empty list, because an empty list would make the
@@ -19,12 +19,12 @@
 //   503 { ok: false, code: "github_settings_unavailable", error }   the settings could not be read
 //   502 { ok: false, code, error }      GitHub could not be read
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { githubConfigFor } from "@/lib/github-config";
-import { familyVersions, listFamilyFiles } from "@/lib/github-registry";
-import { registryRoot, reservedFolderProblem } from "@/lib/registry-paths";
-import { familyPathProblem } from "@/lib/registry-push";
-import { highestVersion } from "@/lib/script-status";
+import { requirePermission } from "@/lib/auth/guard";
+import { githubConfigFor } from "@/lib/github/config";
+import { familyVersions, listFamilyFiles } from "@/lib/github/registry";
+import { registryRoot, reservedFolderProblem } from "@/lib/github/registry-paths";
+import { familyPathProblem } from "@/lib/github/registry-push";
+import { highestVersion } from "@/lib/versions/script-status";
 
 export async function GET(request: NextRequest) {
   // Reading the family is harmless, so any role that may open the Script

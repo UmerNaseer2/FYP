@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import { fetchSchemaSnapshot, getPoolForConfig, withoutToolTables } from "@/lib/postgres";
 import type { PoolClient } from "pg";
 import {
@@ -27,10 +27,10 @@ import {
   type PerfAdvice,
   type TableStats,
   type WaitingPartition,
-} from "@/lib/perf-advice";
-import { aggregateSearches, compositeIndexAdvice, tableSearchIndexes } from "@/lib/composite-index";
-import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
-import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
+} from "@/lib/performance/advice";
+import { aggregateSearches, compositeIndexAdvice, tableSearchIndexes } from "@/lib/performance/composite-index";
+import { getThresholdsOrDefaults } from "@/lib/performance/thresholds-db";
+import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/performance/query-history-db";
 
 /**
  * GET /api/performance/advice?connectionId=<id>&schema=<name>
@@ -38,7 +38,7 @@ import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
  * Spec feature 09 — performance suggestions.
  *
  * Two independent passes over one schema, deliberately not merged in the
- * analyzer (see lib/perf-advice.ts): the structural rules read the snapshot the
+ * analyzer (see lib/performance/advice.ts): the structural rules read the snapshot the
  * introspector already knows how to take, and the statistics rules read
  * PostgreSQL's own counters. They are merged HERE, tagged with which pass found
  * them, because a reader needs to know that "this index has not been used"
@@ -72,7 +72,7 @@ import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
  * READ ONLY transaction, which the server enforces.
  */
 
-// AdviceItem and AdviceView live in lib/perf-advice.ts, so this route and the
+// AdviceItem and AdviceView live in lib/performance/advice.ts, so this route and the
 // screen that reads its response share one definition instead of two copies
 // that could drift apart without anyone noticing.
 
@@ -82,7 +82,7 @@ const TOOL_TABLES = ["script_patch", "script_patch_reverted"];
 /**
  * PostgreSQL reports every counter as a bigint, and node-pg hands a bigint back
  * as a STRING so that values past 2^53 survive the trip. Every rule in
- * lib/perf-advice does arithmetic on these, and `"5000" > "100" * 10` is not
+ * lib/performance/advice does arithmetic on these, and `"5000" > "100" * 10` is not
  * arithmetic, so each one is converted exactly once, here.
  */
 function num(value: unknown): number {

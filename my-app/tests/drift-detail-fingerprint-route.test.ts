@@ -10,13 +10,13 @@
 //
 // Nothing here reaches a database: the drift read is a stand-in.
 import { NextRequest } from "next/server";
-import { compareSchemas } from "../lib/compare";
-import { driftFingerprint } from "../lib/drift-fingerprint";
+import { compareSchemas } from "../lib/compare/diff";
+import { driftFingerprint } from "../lib/drift/fingerprint";
 import { column, schema, table } from "./helpers/snapshots";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor"),
@@ -24,10 +24,10 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 let mockView: Record<string, unknown> | null = null;
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   getDriftDetail: async () => mockView,
 }));
-jest.mock("../lib/drift-runner", () => ({ runDriftCheck: async () => null }));
+jest.mock("../lib/drift/runner", () => ({ runDriftCheck: async () => null }));
 
 import { GET } from "../app/api/lineage/drift/route";
 

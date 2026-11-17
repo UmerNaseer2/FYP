@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { listDeployAttempts, type DeployAttemptRow } from "@/lib/deploy-attempts-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { listDeployAttempts, type DeployAttemptRow } from "@/lib/deploy/attempts-db";
 
 // GET /api/scripts/attempts?connectionId=<id>&schema=<name>&limit=<n>
 //

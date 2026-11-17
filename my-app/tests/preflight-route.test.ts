@@ -10,7 +10,7 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("viewer"),
@@ -18,7 +18,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -30,7 +30,7 @@ jest.mock("../lib/postgres", () => ({
 }));
 // Set to throw to play a saved secret this server can't decrypt.
 const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
-jest.mock("../lib/connection-config", () => ({
+jest.mock("../lib/connections/config", () => ({
   buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
 }));
 

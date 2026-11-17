@@ -104,7 +104,7 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          # The metadata pool is created when lib/version-db.ts is first
+          # The metadata pool is created when lib/db/version-db.ts is first
           # imported and refuses to load without a connection string, so the
           # build needs one to exist. Nothing connects during a build — every
           # page that reads the database is force-dynamic — so this points at a

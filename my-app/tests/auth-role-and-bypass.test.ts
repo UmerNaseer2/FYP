@@ -9,7 +9,7 @@
 // signed in with: admin.
 //
 // The session carries no role at all now. It says who someone is, and the
-// gates in lib/auth-guard.ts read what they may do from their membership on
+// gates in lib/auth/guard.ts read what they may do from their membership on
 // every request, so there is nothing in the token left to fall back on. What
 // the tests below hold the callbacks to is not putting any of it back: no role
 // copied into the session, and no token refresh quietly making somebody an
@@ -24,7 +24,7 @@
 // than served. Turning the bypass on for testing is a deliberate line.
 import fs from "fs";
 import path from "path";
-import { DEFAULT_ROLE, effectivePermissions, presetFor } from "@/lib/permissions";
+import { DEFAULT_ROLE, effectivePermissions, presetFor } from "@/lib/roles/permissions";
 
 /** The parts of a NextAuth token the callbacks read or write. */
 type Token = {
@@ -74,7 +74,7 @@ jest.mock("next-auth/providers/github", () => ({
 // would not resolve.
 const mockIdentityFrom = jest.fn();
 const mockResolveIdentity = jest.fn();
-jest.mock("../lib/accounts-db", () => ({
+jest.mock("../lib/auth/accounts-db", () => ({
   identityFrom: (...args: unknown[]) => mockIdentityFrom(...args),
   resolveIdentity: (...args: unknown[]) => mockResolveIdentity(...args),
 }));
@@ -89,7 +89,7 @@ async function loadCallbacks(): Promise<Callbacks> {
 }
 
 const UMER = { email: "umer@x", name: "Umer" };
-/** What lib/accounts-db.ts reads out of a sign-in for Umer. */
+/** What lib/auth/accounts-db.ts reads out of a sign-in for Umer. */
 const UMER_IDENTITY = {
   provider: "microsoft",
   subject: "t:o",
@@ -252,7 +252,7 @@ describe("the auth bypass switch", () => {
       // again for each spelling. require() and not import: an import is hoisted
       // out of this callback and evaluated once, which is exactly what has to
       // not happen here.
-      result = (require("../lib/auth-mode") as { BYPASS_AUTH: boolean }).BYPASS_AUTH;
+      result = (require("../lib/auth/mode") as { BYPASS_AUTH: boolean }).BYPASS_AUTH;
     });
 
     if (previous === undefined) delete process.env.NEXT_PUBLIC_AUTH_BYPASS;
@@ -306,7 +306,7 @@ describe("the auth bypass switch", () => {
     // the variable reached through a helper — is never substituted, so in the
     // browser it is always undefined and the bypass is always on.
     const source = fs.readFileSync(
-      path.join(__dirname, "..", "lib", "auth-mode.ts"),
+      path.join(__dirname, "..", "lib", "auth", "mode.ts"),
       "utf8"
     );
     // Comments stripped first — the one above the export explains this rule by
@@ -320,7 +320,7 @@ describe("the auth bypass switch", () => {
     // The comment used to call changing this "one line in .env.local", and for
     // a built app that line does nothing at all.
     const source = fs.readFileSync(
-      path.join(__dirname, "..", "lib", "auth-mode.ts"),
+      path.join(__dirname, "..", "lib", "auth", "mode.ts"),
       "utf8"
     );
     expect(source).toMatch(/rebuild/i);

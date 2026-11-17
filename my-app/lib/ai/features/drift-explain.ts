@@ -23,9 +23,9 @@
 // ---------------------------------------------------------------------------
 
 import { z } from "zod";
-import { compareSchemas } from "../../compare";
-import { buildDiffDocument, type ChangeRow } from "../../compare-export";
-import type { CompareReport } from "../../compare-types";
+import { compareSchemas } from "../../compare/diff";
+import { buildDiffDocument, type ChangeRow } from "../../compare/export";
+import type { CompareReport } from "../../compare/types";
 import {
   generateMigration,
   generateRollback,
@@ -35,9 +35,9 @@ import {
   statementsThatRun,
   type MigrationScript,
   type RollbackScript,
-} from "../../generate-sql";
+} from "../../sql/generate";
 import type { TableSnapshot } from "../../postgres";
-import { MAX_MIGRATION_DESCRIPTION } from "../../perf-sql";
+import { MAX_MIGRATION_DESCRIPTION } from "../../performance/sql";
 import { isKnownName, knownNames } from "../checks";
 import { schemaSlice, tableText } from "../context";
 import { buildDependencyIndex, describeDependents } from "../dependents";

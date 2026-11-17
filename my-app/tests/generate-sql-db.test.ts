@@ -15,14 +15,14 @@
 // see tests/helpers/test-database.ts), and only against a database whose name
 // contains "test". tests/invites-db.test.ts shows how to start one locally.
 import { Client, type ClientConfig } from "pg";
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   generateRollback,
   renderMigrationScript,
   renderRollbackScript,
   statementsThatRun,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import { fetchSchemaSnapshot, getPoolForConfig, type SchemaSnapshot } from "@/lib/postgres";
 import { testDatabaseUrl } from "./helpers/test-database";
 

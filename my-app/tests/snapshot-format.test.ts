@@ -6,7 +6,7 @@ import {
   snapshotFormatGap,
   snapshotFormatVersion,
   unrecordedCategories,
-} from "@/lib/snapshot-format";
+} from "@/lib/postgres/snapshot-format";
 
 /**
  * A stored baseline is never rewritten, so a schema tracked a year ago is still

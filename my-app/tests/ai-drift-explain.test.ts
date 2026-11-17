@@ -2,13 +2,13 @@
 // scripts the app writes, what the prompt carries, the checks between the
 // model's answer and the screen, and the one line in a drift alert.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
 }));
 
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   alertLine,
   buildDriftExplainTask,

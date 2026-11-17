@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
-import { highestVersion, looksLikeVersion } from "@/lib/script-status";
-import { hasExecutableSql } from "@/lib/sql-guard";
-import type { TargetApplications } from "@/lib/application-targeting";
-import { readApplications } from "@/lib/application-read";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
+import { highestVersion, looksLikeVersion } from "@/lib/versions/script-status";
+import { hasExecutableSql } from "@/lib/sql/guard";
+import type { TargetApplications } from "@/lib/deploy/application-targeting";
+import { readApplications } from "@/lib/deploy/application-read";
 import type { PoolClient } from "pg";
 
 // One row from script_patch — what we return to the frontend
@@ -79,7 +79,7 @@ export type PreflightResult = {
    * connection names. Spec feature 11: a script restricted to an application
    * only runs against that application's databases. `known: false` when the
    * connection names no table or the table is not there — see
-   * lib/application-targeting.ts for why that blocks a restricted script
+   * lib/deploy/application-targeting.ts for why that blocks a restricted script
    * rather than waving it through.
    */
   applications: TargetApplications;

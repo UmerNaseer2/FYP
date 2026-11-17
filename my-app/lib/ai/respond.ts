@@ -1,8 +1,8 @@
 // SERVER-ONLY: the HTTP answers an AI route gives: its two AI checks, and
 // what runAiTask's result becomes.
 import { NextResponse } from "next/server";
-import type { Principal } from "@/lib/auth-guard";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
+import type { Principal } from "@/lib/auth/guard";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
 import type { AiFeature } from "./prompts";
 import { aiGate, aiRefusalStatus, type AiCaller, type AiDeps, type AiRunResult } from "./run";
 

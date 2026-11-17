@@ -2,11 +2,11 @@ import {
   summarizeDataCompare,
   type DataCompareReport,
   type TableDataCompare,
-} from "@/lib/compare-data-summary";
-import { describeSample, type RowSample } from "@/lib/compare-sample";
+} from "@/lib/compare/data-summary";
+import { describeSample, type RowSample } from "@/lib/compare/sample";
 import { AlertTriangleIcon } from "@/components/ui/icons";
 import { dropModeFrom, SummaryHint } from "@/components/studio/DiffReport";
-import { plural } from "@/lib/plural";
+import { plural } from "@/lib/ui/plural";
 
 // ---------------------------------------------------------------------------
 // DataCompare — the row-level half of a comparison.

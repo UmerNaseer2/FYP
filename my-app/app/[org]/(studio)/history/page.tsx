@@ -28,12 +28,12 @@ import {
   matchesFilters,
   type ActivityFilters,
   type ActivityKind,
-} from "@/lib/activity";
-import { apiFetch } from "@/lib/api-fetch";
-import { DRIFT_SOURCES, driftSourceLabel } from "@/lib/drift-source";
-import type { DriftEventFeedItem, DriftStatus } from "@/lib/lineage-db";
-import { refusalMessage } from "@/lib/permissions";
-import { statusLook } from "@/lib/status-look";
+} from "@/lib/ui/history-activity";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { DRIFT_SOURCES, driftSourceLabel } from "@/lib/drift/source";
+import type { DriftEventFeedItem, DriftStatus } from "@/lib/versions/lineage-db";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { statusLook } from "@/lib/ui/status-look";
 
 /**
  * History: every drift check recorded for the organization, newest
@@ -352,7 +352,7 @@ function statusPhrase(status: DriftStatus): string {
 
 /**
  * A filter button's word. The three that name a state use the shared status
- * words (lib/status-look), so "Can't be reached" reads the same on every page.
+ * words (lib/ui/status-look), so "Can't be reached" reads the same on every page.
  */
 function kindLabel(kind: { key: ActivityKind; label: string }): string {
   if (kind.key === "all" || kind.key === "acknowledged") return kind.label;

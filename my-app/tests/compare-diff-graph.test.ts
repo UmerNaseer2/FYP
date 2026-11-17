@@ -1,7 +1,7 @@
 // The map of changes in Compare: one card per table, coloured by what the
 // script does to it, with the links between them. Its counts must agree with
 // the tiles above it.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import { buildDiffGraph, diffNodeId } from "@/components/studio/visualizer/diff-graph";
 import type { ConstraintSnapshot, ForeignKeySnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";

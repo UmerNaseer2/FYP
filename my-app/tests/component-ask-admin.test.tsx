@@ -9,7 +9,7 @@ import "@testing-library/jest-dom";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { seedUserAccess } from "@/hooks/useUser";
-import { presetFor } from "@/lib/permissions";
+import { presetFor } from "@/lib/roles/permissions";
 import { render, resetPageState, setCustomRole, setUser, TEST_ORG } from "./helpers/render-page";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);

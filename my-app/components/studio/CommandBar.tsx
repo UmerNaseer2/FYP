@@ -17,10 +17,10 @@ import {
   SparkIcon,
   SunIcon,
 } from "@/components/ui/icons";
-import { replayIntro } from "@/lib/intro";
-import { startTour } from "@/lib/tour";
-import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
-import { readRecents, recordRecent, type Recent } from "@/lib/recents";
+import { replayIntro } from "@/lib/ui/intro";
+import { startTour } from "@/lib/ui/tour";
+import { OPEN_ASK_AI_EVENT } from "@/lib/ui/studio-events";
+import { readRecents, recordRecent, type Recent } from "@/lib/ui/recents";
 import type { NavItem } from "./nav";
 
 // The command bar: press Ctrl K (Cmd K on a Mac), or the search pill in the
@@ -29,7 +29,7 @@ import type { NavItem } from "./nav";
 // It lists the pages your role can open and a few actions (switch theme, Ask
 // AI, Help, Replay intro, Sign out). With nothing typed it shows what needs
 // you first, then "Recent" (the last few pages, schemas and actions you
-// opened, kept by lib/recents.ts), then every page.
+// opened, kept by lib/ui/recents.ts), then every page.
 //
 // Typing ">" first shows only actions. Up and Down move, Enter runs the one
 // that is lit, Escape closes it.

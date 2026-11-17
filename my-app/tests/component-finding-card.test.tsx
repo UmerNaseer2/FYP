@@ -24,7 +24,7 @@
  *
  * What is NOT here:
  *  - Which findings exist, how serious each one is, and the SQL each carries.
- *    That is lib/perf-advice and lib/perf-sql, covered by
+ *    That is lib/performance/advice and lib/performance/sql, covered by
  *    tests/perf-advice.test.ts, tests/perf-sql.test.ts and
  *    tests/query-analysis.test.ts — the first two through
  *    tests/helpers/fix-invariants.ts, which holds every rule to a fix that is
@@ -66,11 +66,11 @@ import {
   type FindingSeverity,
   type FilterKey,
 } from "@/components/studio/FindingCard";
-import type { FixKind } from "@/lib/perf-sql";
+import type { FixKind } from "@/lib/performance/sql";
 
 type CardProps = ComponentProps<typeof FindingCard>;
 
-/** A finding of the shape lib/perf-advice really produces. */
+/** A finding of the shape lib/performance/advice really produces. */
 const BASE: CardProps = {
   severity: "high",
   title: "Nothing reads orders through an index",
@@ -184,7 +184,7 @@ describe("the fix, and what running it would do", () => {
 
   it("has a heading for every kind of fix there is", () => {
     // Not the same check: the loop above would still pass with a fifth kind
-    // added to lib/perf-sql and left out of this map, which renders as
+    // added to lib/performance/sql and left out of this map, which renders as
     // "undefined" above the SQL.
     expect(Object.keys(FIX_KIND_HEADING).sort()).toEqual(KINDS.map(([kind]) => kind).sort());
   });

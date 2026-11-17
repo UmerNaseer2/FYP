@@ -4,7 +4,7 @@
  * The four ways a diff leaves the compare screen.
  *
  * Everything this bar hands over is built elsewhere — the document on the
- * server, the Markdown, JSON and CSV in lib/compare-export-format — so what is
+ * server, the Markdown, JSON and CSV in lib/compare/export-format — so what is
  * left to get wrong is the handing over itself, and all four ways have a way of
  * failing quietly:
  *
@@ -28,7 +28,7 @@
  *
  * What is NOT here:
  *  - What the exported files actually say. The four formatters live in
- *    lib/compare-export-format.ts, and only two of them are covered:
+ *    lib/compare/export-format.ts, and only two of them are covered:
  *    countedChanges and documentToMarkdown's headline, by
  *    tests/compare-export.test.ts, which also holds this bar's count against
  *    the header above it on real engine output. documentToJson and
@@ -36,7 +36,7 @@
  *    below only as far as the file name. The tests here pin which document goes
  *    into which format, what it is called and when it is let go of — not what
  *    comes out.
- *  - Building the document: buildDiffDocument in lib/compare-export.ts, through
+ *  - Building the document: buildDiffDocument in lib/compare/export.ts, through
  *    that same suite.
  *  - The screen that mounts this. tests/page-compare.test.tsx stops before a
  *    finished comparison exists, so the bar had never been rendered.
@@ -51,13 +51,13 @@ import "@testing-library/jest-dom";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ExportBar } from "@/components/studio/ExportBar";
-import type { DiffDocument } from "@/lib/compare-export";
-import type { TableDataCompare } from "@/lib/compare-data-summary";
+import type { DiffDocument } from "@/lib/compare/export";
+import type { TableDataCompare } from "@/lib/compare/data-summary";
 import {
   documentToCsv,
   documentToJson,
   documentToMarkdown,
-} from "@/lib/compare-export-format";
+} from "@/lib/compare/export-format";
 
 /** The clock the JSON stamp is read from. */
 const NOW = new Date("2026-04-02T09:30:00.000Z");

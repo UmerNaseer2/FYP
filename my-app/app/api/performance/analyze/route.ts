@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient, QueryConfig } from "pg";
-import { requirePermission } from "@/lib/auth-guard";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import { actorFor } from "@/lib/auth-mode";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { buildPgConfig } from "@/lib/connection-config";
-import { credentialsMessage } from "@/lib/secret-store";
+import { requirePermission } from "@/lib/auth/guard";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
+import { actorFor } from "@/lib/auth/mode";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { buildPgConfig } from "@/lib/connections/config";
+import { credentialsMessage } from "@/lib/connections/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import {
   QUERY_TIMEOUT_SECONDS,
@@ -28,13 +28,13 @@ import {
   type AnalyzeView,
   type CatalogRows,
   type PlanStep,
-} from "@/lib/query-analysis";
-import { scoreQuery } from "@/lib/query-score";
-import { fingerprintQuery } from "@/lib/query-history";
-import { recordQuery } from "@/lib/query-history-db";
-import { planSearches } from "@/lib/composite-index";
-import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
-import { evaluateThresholds, type ThresholdReading } from "@/lib/perf-thresholds";
+} from "@/lib/performance/query-analysis";
+import { scoreQuery } from "@/lib/performance/query-score";
+import { fingerprintQuery } from "@/lib/performance/query-history";
+import { recordQuery } from "@/lib/performance/query-history-db";
+import { planSearches } from "@/lib/performance/composite-index";
+import { getThresholdsOrDefaults } from "@/lib/performance/thresholds-db";
+import { evaluateThresholds, type ThresholdReading } from "@/lib/performance/thresholds";
 
 /**
  * POST /api/performance/analyze
@@ -43,7 +43,7 @@ import { evaluateThresholds, type ThresholdReading } from "@/lib/perf-thresholds
  *
  * Asks a target server what it would do with one query, and turns the answer
  * into something a person can act on. The analysis itself lives in
- * lib/query-analysis.ts, which never opens a connection; this file is the part
+ * lib/performance/query-analysis.ts, which never opens a connection; this file is the part
  * that has to be careful.
  *
  * Careful means these steps, in this order:
@@ -87,7 +87,7 @@ export type AnalyzeRequest = {
   measure?: boolean;
 };
 
-// The response shape, AnalyzeView, lives in lib/query-analysis.ts so this
+// The response shape, AnalyzeView, lives in lib/performance/query-analysis.ts so this
 // route and the screen that reads it share one definition.
 
 /** How long the user's query gets. See QUERY_TIMEOUT_SECONDS for the why. */

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, type Principal } from "@/lib/auth-guard";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { runConnectionTest } from "@/lib/connection-config";
-import { editElsewhereMessage, savedSecrets } from "@/lib/connection-writes";
-import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "@/lib/local-secrets";
+import { requirePermission, type Principal } from "@/lib/auth/guard";
+import { hasPermission, refusalMessage } from "@/lib/roles/permissions";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
+import { runConnectionTest } from "@/lib/connections/config";
+import { editElsewhereMessage, savedSecrets } from "@/lib/connections/writes";
+import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "@/lib/connections/local-secrets";
 import {
   REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
@@ -15,7 +15,7 @@ import {
   sslModeProblem,
   toSslMode,
   type SslMode,
-} from "@/lib/connection-validate";
+} from "@/lib/connections/validate";
 
 /**
  * Test a connection from the add/edit drawer (fields or URI + SSL).
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
         ? toSslMode(body.ssl_mode)
         : sslModeFromLegacyBoolean(body.ssl);
 
-    // Only the server writes a local connection's marker (lib/local-secrets).
+    // Only the server writes a local connection's marker (lib/connections/local-secrets).
     if (typedLocalMarker(body.password, body.connection_string)) return failure(TYPED_MARKER_MESSAGE, 400);
 
     // A new connection: test exactly what was typed.

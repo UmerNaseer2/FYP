@@ -4,10 +4,10 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
-import { apiFetch } from "@/lib/api-fetch";
-import { saveMigrationDraft } from "@/lib/migration-draft";
-import { countOf } from "@/lib/plural";
-import { refusalMessage } from "@/lib/permissions";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { saveMigrationDraft } from "@/lib/versions/migration-draft";
+import { countOf } from "@/lib/ui/plural";
+import { refusalMessage } from "@/lib/roles/permissions";
 import { isCitedChanges, type CitedChange } from "@/lib/ai/features/compare-summary-view";
 import {
   isDriftExplainAnswer,

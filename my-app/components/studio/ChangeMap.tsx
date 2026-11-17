@@ -6,8 +6,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Skeleton } from "@/components/ui";
 import { ExpandIcon, SchemaMapIcon, XIcon } from "@/components/ui/icons";
-import { comesWithNewObject, type CompareReport } from "@/lib/compare";
-import { countOf, plural } from "@/lib/plural";
+import { comesWithNewObject, type CompareReport } from "@/lib/compare/diff";
+import { countOf, plural } from "@/lib/ui/plural";
 import type { DiffStatus } from "@/components/studio/visualizer/diff-graph";
 
 // The Compare page's map of changes: the Visualizer, drawing what the script

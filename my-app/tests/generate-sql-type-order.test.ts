@@ -14,8 +14,8 @@
 // migration stopped on its first statement (`type "happy_mood[]" does not
 // exist`, from the composite) and dropping them all stopped on "a_base";
 // after, all eight are created, the rollback drops them, and so does the drop.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, generateRollback, statementsThatRun } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, generateRollback, statementsThatRun } from "@/lib/sql/generate";
 import type { SchemaSnapshot, TypeSnapshot } from "@/lib/postgres";
 import { schema } from "./helpers/snapshots";
 

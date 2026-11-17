@@ -3,25 +3,25 @@
 // It is asked for only when the alert will show it, and a row someone else
 // wrote during the wait is never buried under this check's row.
 
-import { runDriftCheck } from "@/lib/drift-runner";
-import { compareSchemas } from "@/lib/compare";
+import { runDriftCheck } from "@/lib/drift/runner";
+import { compareSchemas } from "@/lib/compare/diff";
 import { column, schema, table } from "./helpers/snapshots";
 
 let outcome: unknown = { kind: "not_found" };
 
 const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>(async () => ({ rows: [], rowCount: 1 }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: [string, unknown[]?]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
 }));
 
-jest.mock("../lib/lineage-db", () => ({
-  ...jest.requireActual("../lib/lineage-db"),
+jest.mock("../lib/versions/lineage-db", () => ({
+  ...jest.requireActual("../lib/versions/lineage-db"),
   computeDriftDetail: async () => mockOutcome.value,
 }));
 
-jest.mock("../lib/schema-metrics", () => ({
+jest.mock("../lib/performance/schema-metrics", () => ({
   recordSchemaMetrics: async () => undefined,
 }));
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth/guard";
 import { describeAiConfig } from "@/lib/ai/config";
 import { aiDepsFor, NOT_CONFIGURED } from "@/lib/ai/run";
 import { readOrgAi } from "@/lib/ai/settings";

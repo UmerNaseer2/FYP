@@ -7,7 +7,7 @@
 import "@testing-library/jest-dom";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useRequestCounts } from "@/hooks/useRequestCounts";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
 import { fetchCalls, flushAsync, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);

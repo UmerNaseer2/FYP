@@ -11,14 +11,14 @@
 // orders_product_code_fkey and took an orphan row; after, the key is back, an
 // orphan is refused, and a rebuild whose new values would orphan existing rows
 // makes the whole script fail instead of finishing.
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   generateMigration,
   generateRollback,
   renderMigrationScript,
   statementsThatRun,
   type MigrationOptions,
-} from "@/lib/generate-sql";
+} from "@/lib/sql/generate";
 import type { ColumnSnapshot, ConstraintSnapshot, ForeignKeySnapshot, SchemaSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 

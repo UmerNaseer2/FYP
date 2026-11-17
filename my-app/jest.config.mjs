@@ -56,14 +56,14 @@ const config = {
     // them needs a live Postgres. Only three suites use one, and only when
     // TEST_DATABASE_URL is set: tests/org-migration.test.ts boots
     // lib/db/bootstrap.ts and runs the sign-in, membership and role code
-    // (lib/version-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on what it made,
+    // (lib/db/version-db.ts, lib/orgs/orgs-db.ts, lib/roles/roles-db.ts) on what it made,
     // tests/org-data-db.test.ts drives the data code of two organizations side
     // by side to check that neither can reach the other's rows, and
-    // tests/invites-db.test.ts holds the invitation code (lib/invites-db.ts)
+    // tests/invites-db.test.ts holds the invitation code (lib/orgs/invites-db.ts)
     // to its locks and checks, races included. Every other suite runs with no
     // server.
-    "!lib/postgres.ts",
-    "!lib/version-db.ts",
+    "!lib/postgres/",
+    "!lib/db/version-db.ts",
     "!lib/**/*-db.ts",
   ],
 };

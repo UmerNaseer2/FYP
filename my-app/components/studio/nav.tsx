@@ -13,8 +13,8 @@ import {
   InboxIcon,
   ClockIcon,
 } from "@/components/ui/icons";
-import type { FeatureKey } from "@/lib/permissions";
-import { orgSlugFromPath } from "@/lib/org-slug";
+import type { FeatureKey } from "@/lib/roles/permissions";
+import { orgSlugFromPath } from "@/lib/orgs/slug";
 
 /**
  * The menu's group headings, in the order they are drawn. The first five are
@@ -36,7 +36,7 @@ export type NavItem = {
   href: string;
   icon: ReactNode;
   /**
-   * The feature this screen belongs to (lib/permissions). The rail shows it
+   * The feature this screen belongs to (lib/roles/permissions). The rail shows it
    * only when the role may Read that feature, or any one of them for a list,
    * which is the same question the screen's own AuthGuard asks. Left out for a
    * screen that every member may open.

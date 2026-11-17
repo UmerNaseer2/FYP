@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { cleanOrgName, orgNameProblem } from "@/lib/new-organization";
-import { deleteOrganization, updateOrganization } from "@/lib/orgs-db";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { cleanOrgName, orgNameProblem } from "@/lib/orgs/new-organization";
+import { deleteOrganization, updateOrganization } from "@/lib/orgs/orgs-db";
 
 /**
  * The caller's organization itself, from the Organization tab on the Admin
  * screen. All three need an Organization permission, which only the admin
- * role has (lib/permissions.ts), so nobody can rename or delete an
+ * role has (lib/roles/permissions.ts), so nobody can rename or delete an
  * organization from a role an Admin made.
  *
  * GET says its name and its address.
  *
  * PATCH renames it. The address stays as it is (see updateOrganization in
- * lib/orgs-db.ts). The change goes in the change log on the Roles &
+ * lib/orgs/orgs-db.ts). The change goes in the change log on the Roles &
  * permissions tab.
  *
  * DELETE deletes it and everything it owns, once the body's `confirm` is its

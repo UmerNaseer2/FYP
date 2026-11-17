@@ -1,20 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import {
   HISTORY_PAGE_SIZE,
   listQueryHistory,
   listRunsOfQuery,
   queryTrend,
   type QueryDayPoint,
-} from "@/lib/query-history-db";
+} from "@/lib/performance/query-history-db";
 import {
   QUERY_HISTORY_MAX_ROWS,
   QUERY_HISTORY_RETENTION_DAYS,
   compareRuns,
   type QueryComparison,
   type QueryHistoryRow,
-} from "@/lib/query-history";
+} from "@/lib/performance/query-history";
 
 /**
  * GET /api/performance/history?connectionId=<id>&schema=<name>
@@ -23,7 +23,7 @@ import {
  * Spec feature 8 — "store query history for comparison" — and feature 10's
  * "Historical Query Monitoring" and "compare historical performance with
  * current performance". One endpoint, because they are one table: see the note
- * at the top of lib/query-history.ts for why.
+ * at the top of lib/performance/query-history.ts for why.
  *
  * Without a fingerprint this is the whole schema's history, newest first, plus
  * the day-by-day trend. With one, it is every run of that single query, plus a
@@ -92,7 +92,7 @@ function windowDays(raw: string | null): number {
 }
 
 /**
- * A fingerprint is eight hex characters (lib/query-history.ts). Anything else
+ * A fingerprint is eight hex characters (lib/performance/query-history.ts). Anything else
  * is refused rather than passed to the query as a value that cannot match —
  * a silent empty list would read as "this query has never been run".
  */

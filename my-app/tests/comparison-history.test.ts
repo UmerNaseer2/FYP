@@ -6,8 +6,8 @@ import {
   readRunSnapshot,
   snapshotChanges,
   type RunSnapshot,
-} from "@/lib/comparison-history";
-import type { ChangeRow } from "@/lib/compare-export";
+} from "@/lib/compare/history";
+import type { ChangeRow } from "@/lib/compare/export";
 
 /**
  * The rules behind "show historical comparison changes" (spec 04).

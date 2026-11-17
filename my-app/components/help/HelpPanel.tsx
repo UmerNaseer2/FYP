@@ -7,7 +7,7 @@ import { usePathname } from "next/navigation";
 import { Drawer } from "@/components/ui/Drawer";
 import { HelpIcon } from "@/components/ui/icons";
 import { helpForPath, stepTarget, stepText, type HelpTopic } from "@/lib/help";
-import { firstOnScreen } from "@/lib/tour";
+import { firstOnScreen } from "@/lib/ui/tour";
 import { Spotlight } from "./Spotlight";
 
 // The Help panel: one side panel for the whole studio, showing the help for

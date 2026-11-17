@@ -1,10 +1,10 @@
-// How one row of pg_stat_activity becomes a session (lib/db-activity.ts).
+// How one row of pg_stat_activity becomes a session (lib/performance/db-activity.ts).
 //
 // The kinds and the times are pinned where people read them, in
 // tests/component-live-activity.test.tsx. This pins the moment a query started:
 // it has to survive as text with all of PostgreSQL's digits, because with the
 // pid it is what names one statement.
-import { ACTIVITY_SQL, toSession, type ActivityRow } from "@/lib/db-activity";
+import { ACTIVITY_SQL, toSession, type ActivityRow } from "@/lib/performance/db-activity";
 
 const ROW: ActivityRow = {
   pid: 4242,

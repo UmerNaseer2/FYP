@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
-import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
+import { ADMIN_ROLE, hasPermission } from "@/lib/roles/permissions";
 import { getPoolForConfig } from "@/lib/postgres";
 import type { PoolConfig } from "pg";
-import { canExecute, toExecuteRole } from "@/lib/connection-access";
+import { canExecute, toExecuteRole } from "@/lib/connections/access";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
 import { loadPgTarget, readTargetSnapshot, type PgTargetRow } from "@/lib/ai/pg-target";
 import { aiDepsFor, runAiTask } from "@/lib/ai/run";
@@ -15,7 +15,7 @@ import {
   MAX_ROLLBACK_SOURCE_CHARS,
   tryScriptFirst,
 } from "@/lib/ai/features/rollback-write";
-import { hasExecutableSql } from "@/lib/sql-guard";
+import { hasExecutableSql } from "@/lib/sql/guard";
 
 /** The saved connection, with the columns chooseTrial reads. */
 type ConnectionRow = PgTargetRow;

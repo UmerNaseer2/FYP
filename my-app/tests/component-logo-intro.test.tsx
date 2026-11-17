@@ -24,7 +24,7 @@ import {
   replayIntro,
   resetIntro,
   takeIntroTurn,
-} from "@/lib/intro";
+} from "@/lib/ui/intro";
 
 const html = document.documentElement;
 const overlay = () => screen.queryByTestId("logo-intro");

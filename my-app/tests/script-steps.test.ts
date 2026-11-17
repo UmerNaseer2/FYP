@@ -2,9 +2,9 @@
 // order, labelled from the generator's "-- [TAG] what it does" line, with the
 // drops safe mode holds back and the notes listed too, so the list and the
 // count under it agree with the script.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, renderMigrationScript } from "@/lib/generate-sql";
-import { scriptSteps, stepKind } from "@/lib/script-steps";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, renderMigrationScript } from "@/lib/sql/generate";
+import { scriptSteps, stepKind } from "@/lib/versions/script-steps";
 import { column, schema, table } from "./helpers/snapshots";
 
 describe("scriptSteps", () => {

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
-import { apiFetch } from "@/lib/api-fetch";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 /**
  * The number beside Requests in the rail: what is waiting on this person plus

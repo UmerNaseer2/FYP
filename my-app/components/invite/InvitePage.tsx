@@ -5,17 +5,17 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { OnboardingFrame, initialOf } from "@/components/onboarding/OnboardingFrame";
 import { AlertCircleIcon, ChevronRightIcon, RefreshIcon } from "@/components/ui/icons";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { apiFetch } from "@/lib/api-fetch";
-import { loginHref } from "@/lib/callback-url";
-import type { InviteLookup } from "@/lib/invites-db";
-import { isOrgSummary, type OrgSummary } from "@/lib/organization-list";
-import { orgHref } from "@/lib/org-slug";
-import { signOutEverywhere } from "@/lib/sign-out";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { loginHref } from "@/lib/auth/callback-url";
+import type { InviteLookup } from "@/lib/orgs/invites-db";
+import { isOrgSummary, type OrgSummary } from "@/lib/orgs/list";
+import { orgHref } from "@/lib/orgs/slug";
+import { signOutEverywhere } from "@/lib/auth/sign-out";
 
 /**
  * What the invitation page found, as app/invite/[token]/page.tsx hands it
- * over: what the invitation is to this person (lib/invites-db.ts InviteLookup),
+ * over: what the invitation is to this person (lib/orgs/invites-db.ts InviteLookup),
  * or one of the reasons it was not looked up at all.
  *
  * - "demo": sign-in is switched off, so there is nobody to join as.
@@ -41,7 +41,7 @@ const YOUR_ORGANIZATIONS = "/onboarding";
  * Each view is one card on the onboarding frame. Only an invitation this
  * person can take has a Join button. The others say why it cannot be taken
  * and what to do instead, and none of them show more about the invitation
- * than the server chose to tell (lib/invites-db.ts InviteLookup says what).
+ * than the server chose to tell (lib/orgs/invites-db.ts InviteLookup says what).
  */
 export function InvitePage({ token, view }: { token: string; view: InviteView }) {
   // Where to come back to after signing in again. The token is encoded
@@ -237,7 +237,7 @@ function JoinCard({
       const joined = (body as { organization?: unknown } | null)?.organization;
       if (isOrgSummary(joined)) {
         setStage("opening");
-        // ?tour=member: the studio offers the app tour (lib/tour.ts).
+        // ?tour=member: the studio offers the app tour (lib/ui/tour.ts).
         router.push(orgHref(joined.slug, "/studio?tour=member"));
         return;
       }
@@ -319,7 +319,7 @@ function JoinCard({
  *
  * Signing out and in again is not enough on its own: Microsoft and GitHub
  * would both sign straight back in to the account the browser last used. So
- * the login page is told to ask for their account picker (lib/callback-url.ts
+ * the login page is told to ask for their account picker (lib/auth/callback-url.ts
  * loginHref), and afterwards it comes back here to try again as whoever they
  * chose.
  */

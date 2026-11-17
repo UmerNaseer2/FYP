@@ -13,8 +13,8 @@
 // ---------------------------------------------------------------------------
 
 import type { SchemaSnapshot } from "../postgres";
-import { analyseRunRisk, scriptLabel, type RunRisk } from "../deploy-risk";
-import { gradeSql, type SqlGrade } from "../change-type";
+import { analyseRunRisk, scriptLabel, type RunRisk } from "../deploy/risk";
+import { gradeSql, type SqlGrade } from "../versions/change-type";
 import {
   codeBodiesIn,
   containsTransactionControl,
@@ -22,7 +22,7 @@ import {
   hasExecutableSql,
   maskNonCode,
   splitStatements,
-} from "../sql-guard";
+} from "../sql/guard";
 
 /**
  * Every name a model may cite: tables, columns as table.column, views, types,

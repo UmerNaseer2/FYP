@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSignedIn } from "@/lib/auth-guard";
-import { checkRepositoryAccess } from "@/lib/github-check";
-import { readGitHubPair } from "@/lib/github-settings";
-import { createOrganization, listMemberships, listOrganizations } from "@/lib/orgs-db";
-import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/new-organization";
-import { encryptionKeySource } from "@/lib/secret-store";
+import { requireSignedIn } from "@/lib/auth/guard";
+import { checkRepositoryAccess } from "@/lib/github/check";
+import { readGitHubPair } from "@/lib/github/settings";
+import { createOrganization, listMemberships, listOrganizations } from "@/lib/orgs/orgs-db";
+import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/orgs/new-organization";
+import { encryptionKeySource } from "@/lib/connections/secret-store";
 
 /**
  * The caller's organizations, and a way to make a new one.
@@ -23,7 +23,7 @@ import { encryptionKeySource } from "@/lib/secret-store";
  * screen offers a button that can only be refused.
  *
  * POST makes an organization with the caller as its Admin
- * (lib/orgs-db.ts createOrganization). It is refused with the bypass, where
+ * (lib/orgs/orgs-db.ts createOrganization). It is refused with the bypass, where
  * nobody is signed in. An organization needs a person to be its first Admin,
  * and the demo user is not one.
  *

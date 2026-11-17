@@ -1,13 +1,13 @@
 // Feature 1, the Compare change summary: what the prompt carries, and the code
 // checks that stand between the model's answer and the screen.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
 }));
 
-import { compareSchemas } from "@/lib/compare";
+import { compareSchemas } from "@/lib/compare/diff";
 import {
   buildCompareSummaryTask,
   changeLabel,

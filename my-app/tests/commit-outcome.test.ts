@@ -1,4 +1,4 @@
-// lib/commit-outcome: whether a COMMIT that threw left the run's fate in doubt.
+// lib/deploy/commit-outcome: whether a COMMIT that threw left the run's fate in doubt.
 //
 // The deploy and rollback routes used to treat every failed COMMIT as
 // unreportable and send the reader off to inspect script_patch. Most failed
@@ -6,7 +6,7 @@
 // rolled the whole transaction back by itself. These tests pin the line
 // between the two, because the wrong answer either hides an error that is
 // already in hand or claims a run was undone when nobody knows.
-import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
+import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/deploy/commit-outcome";
 
 /** A pg error the way node-postgres builds one. */
 function pgError(message: string, extra: Record<string, unknown> = {}): Error {

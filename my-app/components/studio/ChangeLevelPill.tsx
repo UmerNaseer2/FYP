@@ -1,9 +1,9 @@
 // A change level as a pill: the same word and colour on every screen.
-// The word and the tone come from CHANGE_LEVEL_PILL (lib/change-level), the one
+// The word and the tone come from CHANGE_LEVEL_PILL (lib/versions/change-level), the one
 // table of them; this component only draws it.
 
 import { Pill } from "@/components/ui/Pill";
-import { CHANGE_LEVEL_PILL, type ChangeLevel } from "@/lib/change-level";
+import { CHANGE_LEVEL_PILL, type ChangeLevel } from "@/lib/versions/change-level";
 
 export function ChangeLevelPill({ level, title }: { level: ChangeLevel; title?: string }) {
   const { word, tone } = CHANGE_LEVEL_PILL[level];

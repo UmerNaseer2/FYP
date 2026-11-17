@@ -15,9 +15,9 @@ import {
   XIcon,
 } from "@/components/ui/icons";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { describeAttempt, type DeployAttemptRow } from "@/lib/deploy-attempts";
-import { shortUtcDate } from "@/lib/format-date";
-import { vLabel } from "@/lib/rollback-plan";
+import { describeAttempt, type DeployAttemptRow } from "@/lib/deploy/attempts";
+import { shortUtcDate } from "@/lib/ui/format-date";
+import { vLabel } from "@/lib/deploy/rollback-plan";
 
 type Kind = "ship" | "back" | "stop" | "dry" | "unknown";
 

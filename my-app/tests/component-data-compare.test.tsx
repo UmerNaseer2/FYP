@@ -29,7 +29,7 @@
  *    the panel puts their answers in front of the reader, and in the right
  *    words — a correct total in a sentence that misreads it is still wrong.
  *  - Which rows a scan reads, or how the checksum is built. That is
- *    lib/compare-data, and it needs a database.
+ *    lib/compare/data, and it needs a database.
  *  - Collapsing and expanding the groups, which is <details> doing what
  *    <details> does. The `open` attribute is asserted where a default matters;
  *    jsdom renders the contents either way, so there is no visibility to test
@@ -45,8 +45,8 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DataCompare } from "@/components/studio/DataCompare";
-import type { DataCompareReport, TableDataCompare } from "@/lib/compare-data-summary";
-import type { RowSample } from "@/lib/compare-sample";
+import type { DataCompareReport, TableDataCompare } from "@/lib/compare/data-summary";
+import type { RowSample } from "@/lib/compare/sample";
 
 const aTable = (over: Partial<TableDataCompare> & { table: string }): TableDataCompare => ({
   status: "identical",

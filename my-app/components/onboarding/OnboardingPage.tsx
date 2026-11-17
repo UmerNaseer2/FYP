@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { OnboardingFrame, initialOf } from "@/components/onboarding/OnboardingFrame";
 import { AlertCircleIcon, ChevronRightIcon, PlusIcon, RefreshIcon } from "@/components/ui/icons";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { apiFetch } from "@/lib/api-fetch";
-import { readGitHubPair, repositoryLabel } from "@/lib/github-settings";
-import { cleanOrgName, orgNameProblem, orgSlugProblem, suggestSlug } from "@/lib/new-organization";
-import { isOrgListing, type OrgSummary } from "@/lib/organization-list";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { readGitHubPair, repositoryLabel } from "@/lib/github/settings";
+import { cleanOrgName, orgNameProblem, orgSlugProblem, suggestSlug } from "@/lib/orgs/new-organization";
+import { isOrgListing, type OrgSummary } from "@/lib/orgs/list";
 
 /** The list, while it loads and once it has. */
 type Loaded =
@@ -101,7 +101,7 @@ async function postOrganization(fields: NewOrganization): Promise<Made> {
  * taken straight into it.
  *
  * The form checks the name and the address with the same rules the route
- * uses (lib/new-organization.ts), so most mistakes are caught before anything
+ * uses (lib/orgs/new-organization.ts), so most mistakes are caught before anything
  * is sent, in the same words the route would use. The route still has the
  * last say: an address someone else took a moment ago is only found out
  * there, and its answer names the field, so it lands under the right box.
@@ -109,7 +109,7 @@ async function postOrganization(fields: NewOrganization): Promise<Made> {
  * "Connect GitHub" is optional and starts closed. Opened, it takes the
  * repository the organization's scripts are kept in and an access token for
  * it, both or neither, read with the same rules as the GitHub tab on the
- * Admin screen (lib/github-settings.ts). The route asks GitHub before it
+ * Admin screen (lib/github/settings.ts). The route asks GitHub before it
  * creates anything, so a token that can't open the repository is turned down
  * under its box and no organization is made. Closed, the boxes keep what was
  * typed in them, and none of it is sent.
@@ -264,7 +264,7 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
       // there without needing to trust anything in the answer. The button
       // stays busy until the studio replaces this page.
       setSubmitting("opening");
-      // ?tour=new: the studio offers the app tour (lib/tour.ts).
+      // ?tour=new: the studio offers the app tour (lib/ui/tour.ts).
       router.push(`/${trimmedSlug}/studio?tour=new`);
       return;
     }

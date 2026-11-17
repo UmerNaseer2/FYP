@@ -6,7 +6,7 @@ import {
   parseMigrationDraft,
   readMigrationDraftRaw,
   type MigrationDraft,
-} from "@/lib/migration-draft";
+} from "@/lib/versions/migration-draft";
 
 /**
  * Nothing to subscribe to. The draft sits in this tab's sessionStorage, and
@@ -33,7 +33,7 @@ const serverSnapshot = () => null;
  * it is parsed here only when that text changes.
  *
  * Only a draft saved in the organization this page is open in. The tab keeps
- * one draft for every organization opened in it (see lib/migration-draft.ts),
+ * one draft for every organization opened in it (see lib/versions/migration-draft.ts),
  * so a draft from another one is left where it is, for that organization's
  * Script Editor, rather than offered here. Outside every organization nothing
  * is offered.

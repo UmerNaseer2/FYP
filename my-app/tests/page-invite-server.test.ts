@@ -1,7 +1,7 @@
 /**
  * The server half of an invitation (app/invite/[token]/page.tsx).
  *
- * What an invitation is to whoever opens it is lib/invites-db.ts
+ * What an invitation is to whoever opens it is lib/orgs/invites-db.ts
  * inspectInvite's to decide, and tests/invites-db.test.ts holds it to that
  * against a real database. Here inspectInvite and the gate are stood in for, so
  * these tests cover only what the page adds on top:
@@ -20,7 +20,7 @@
  */
 import type { ReactElement } from "react";
 import { NextResponse } from "next/server";
-import type { SignedInGate } from "@/lib/auth-guard";
+import type { SignedInGate } from "@/lib/auth/guard";
 import Invite, { dynamic, metadata } from "@/app/invite/[token]/page";
 import { InvitePage, type InviteView } from "@/components/invite/InvitePage";
 
@@ -39,15 +39,15 @@ jest.mock("next/navigation", () => ({
 
 // next-auth ships as ESM, which Jest cannot load, and signing out is reached
 // only through the client half.
-jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn() }));
+jest.mock("../lib/auth/sign-out", () => ({ signOutEverywhere: jest.fn() }));
 
 let mockGate: SignedInGate;
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requireSignedIn: async () => mockGate,
 }));
 
 const mockInspectInvite = jest.fn();
-jest.mock("../lib/invites-db", () => ({
+jest.mock("../lib/orgs/invites-db", () => ({
   inspectInvite: (...args: unknown[]) => mockInspectInvite(...args),
 }));
 

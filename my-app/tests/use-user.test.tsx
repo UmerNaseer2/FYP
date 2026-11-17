@@ -7,15 +7,15 @@
  * reads its answer from here, so a wrong answer is wrong in a dozen places at
  * once and in the direction that matters: too generous.
  *
- * The bypass branch is the one worth the trouble of forcing. lib/auth-mode is
+ * The bypass branch is the one worth the trouble of forcing. lib/auth/mode is
  * the single switch that decides whether authentication is enforced, and
- * lib/auth-guard hands the API routes a full admin principal while it is on,
+ * lib/auth/guard hands the API routes a full admin principal while it is on,
  * or the role picked in "View as". If this hook did not agree, the UI would
  * offer a button whose request the server then refuses, or refuse one it would
  * let through: the client and the server disagreeing about the one switch that
  * is supposed to control both, which is worse than either answer on its own.
  *
- * BYPASS_AUTH is read once when lib/auth-mode loads, so it cannot be changed
+ * BYPASS_AUTH is read once when lib/auth/mode loads, so it cannot be changed
  * from inside a test. The module is replaced here with the real one plus a
  * switch that can be moved, which is the only way to reach both branches in
  * one file. That does mean the switch's own parsing is not exercised here.
@@ -25,7 +25,7 @@
  *    an unset one leaves authentication enforced:
  *    tests/auth-role-and-bypass.test.ts, against the real module.
  *  - Reading the role and its permissions out of the database. That happens in
- *    /api/me (through lib/auth-guard.ts), before the answer ever reaches this
+ *    /api/me (through lib/auth/guard.ts), before the answer ever reaches this
  *    hook. What is pinned below is what the hook does
  *    with the answer, including one that somehow was not cleaned up first.
  *  - The screens that act on the answer: tests/component-auth-guard.test.tsx,
@@ -39,8 +39,8 @@ import { act, render, waitFor } from "@testing-library/react";
 
 import { useUser, resetUserCache, ViewAsCookieSeen, type UserAccess } from "@/hooks/useUser";
 import { OrgContext } from "@/hooks/useOrg";
-import { BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
-import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/permissions";
+import { BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth/mode";
+import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/roles/permissions";
 
 type MockSession = { user: { name?: string | null; email?: string | null } } | null;
 
@@ -52,8 +52,8 @@ jest.mock("next-auth/react", () => ({
   useSession: () => ({ data: mockSession, status: mockStatus }),
 }));
 
-jest.mock("../lib/auth-mode", () => ({
-  ...jest.requireActual("../lib/auth-mode"),
+jest.mock("../lib/auth/mode", () => ({
+  ...jest.requireActual("../lib/auth/mode"),
   // A getter, not a value: the hook reads BYPASS_AUTH when it runs, so this is
   // what lets one file see both sides of a switch that is otherwise decided
   // once, at module load, from the environment.
@@ -477,7 +477,7 @@ describe('with the bypass on and a role picked in "View as"', () => {
 
 describe("reading the View as cookie the way the server reads it", () => {
   // The server reads the cookie off the request (bypassPrincipal in
-  // lib/auth-guard.ts) and the browser reads it off document.cookie. If the two
+  // lib/auth/guard.ts) and the browser reads it off document.cookie. If the two
   // disagreed about whether there is one, the page would be drawn for one role
   // while the routes answered for another.
   const LOOK_ALIKE = `${VIEW_AS_COOKIE}-old`;

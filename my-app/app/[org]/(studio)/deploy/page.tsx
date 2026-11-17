@@ -28,39 +28,39 @@ import {
   pendingPrefixThrough,
   versionKey,
   type LedgerEntry,
-} from "@/lib/script-status";
-import { deployStage, patchPrompt, stagePrompt } from "@/lib/deploy-init";
+} from "@/lib/versions/script-status";
+import { deployStage, patchPrompt, stagePrompt } from "@/lib/deploy/init";
 import {
   checkApplications,
   readAppliesToHeader,
   type TargetApplications,
-} from "@/lib/application-targeting";
+} from "@/lib/deploy/application-targeting";
 import {
   containsTransactionControl,
   EXECUTE_CANNOT_BE_READ,
   findRowDestroyingStatements,
   ROW_DESTROYING_NOT_BREAKING,
-} from "@/lib/sql-guard";
-import { analyseRunRisk } from "@/lib/deploy-risk";
-import { readApplyFailure, type ApplyFailure } from "@/lib/apply-failure";
-import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/registry-report";
+} from "@/lib/sql/guard";
+import { analyseRunRisk } from "@/lib/deploy/risk";
+import { readApplyFailure, type ApplyFailure } from "@/lib/deploy/apply-failure";
+import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
 import {
   describeChangeType,
   louderChangeType,
   type ChangeTypeReading,
   type ScriptChangeType,
-} from "@/lib/change-type";
-import { changeNoteSummary, readChangeNote } from "@/lib/change-note";
-import type { DeployAttemptRow } from "@/lib/deploy-attempts";
-import { countOf } from "@/lib/plural";
+} from "@/lib/versions/change-type";
+import { changeNoteSummary, readChangeNote } from "@/lib/versions/change-note";
+import type { DeployAttemptRow } from "@/lib/deploy/attempts";
+import { countOf } from "@/lib/ui/plural";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { Select } from "@/components/ui/Select";
 import { SetupChecklist, type SetupStep } from "@/components/ui/SetupChecklist";
 import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
-import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { describeError } from "@/lib/friendly-error";
-import { DEFAULT_ROLE, permissionLabel, refusalMessage } from "@/lib/permissions";
-import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connections/access";
+import { describeError } from "@/lib/ui/friendly-error";
+import { DEFAULT_ROLE, permissionLabel, refusalMessage } from "@/lib/roles/permissions";
+import { fingerprintBody, rollbackFingerprintBody } from "@/lib/deploy/approval-fingerprint";
 import {
   listVersions,
   MAX_ROLLBACK_VERSIONS,
@@ -69,9 +69,9 @@ import {
   versionRange,
   vLabel,
   type RollbackStep,
-} from "@/lib/rollback-plan";
-import type { PulledRollbackState } from "@/lib/registry-push";
-import { normalizeChangeLevel } from "@/lib/change-level";
+} from "@/lib/deploy/rollback-plan";
+import type { PulledRollbackState } from "@/lib/github/registry-push";
+import { normalizeChangeLevel } from "@/lib/versions/change-level";
 import {
   displayVersion,
   mergeTimelines,
@@ -81,7 +81,7 @@ import {
   type TimelineEntry,
   type TimelineRow,
   type TimelineStatus,
-} from "@/lib/version-timeline";
+} from "@/lib/versions/timeline";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
@@ -92,10 +92,10 @@ import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { PageHeader } from "@/components/studio/PageHeader";
 import { HelpHint } from "@/components/ui/HelpHint";
-import { shortUtcDate } from "@/lib/format-date";
-import { apiFetch } from "@/lib/api-fetch";
-import { newRunId } from "@/lib/run-id";
-import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
+import { shortUtcDate } from "@/lib/ui/format-date";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { newRunId } from "@/lib/deploy/run-id";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/roles/access-requests";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5): Pre-flight → Run → Verify stepper.
@@ -125,7 +125,7 @@ import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 // the ledger re-read after a run are all read from the target too.
 //
 // Each registry version of the family is Applied, Pending or Skipped
-// (buildVersionLedger in lib/script-status). Skipped means never applied and
+// (buildVersionLedger in lib/versions/script-status). Skipped means never applied and
 // below the version applied to the target. Deploys only move forward, so a
 // skipped version never runs; the version timeline, the up-to-date card and
 // the run panel each say so, so none of them reads as still to do.
@@ -139,7 +139,7 @@ import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 // ---------------------------------------------------------------------------
 
 // The deploy screen's own name for a script's change type. The grading itself
-// lives in lib/change-type, so this screen and the generator can never disagree
+// lives in lib/versions/change-type, so this screen and the generator can never disagree
 // about what a script does.
 type ChangeKind = ScriptChangeType;
 
@@ -170,7 +170,7 @@ type Connection = {
   port: number;
   database_name: string;
   type: string;
-  /** Who may run migrations here: none, editor or admin. See lib/connection-access.ts. */
+  /** Who may run migrations here: none, editor or admin. See lib/connections/access.ts. */
   execute_role?: string | null;
 };
 
@@ -206,7 +206,7 @@ type PatchEntry = {
 type PreflightResult = {
   hasVersionTable: boolean;
   needsInit: boolean;
-  /** Does the schema exist on the target? See lib/deploy-init.ts. */
+  /** Does the schema exist on the target? See lib/deploy/init.ts. */
   /**
    * What the target says it hosts, read from the connection's application
    * table. Used here only to say so on screen, the apply route runs the same
@@ -306,7 +306,7 @@ type ApplyResponse = {
   outcomeUnknown?: boolean;
   /**
    * Set on every answer the route gives before its first write to the target
-   * (answerBeforeRun there). lib/apply-failure is the one reading of it.
+   * (answerBeforeRun there). lib/deploy/apply-failure is the one reading of it.
    */
   nothingRan?: boolean;
   /**
@@ -322,7 +322,7 @@ type ApplyResponse = {
   registry?: unknown;
   /**
    * "run_stopped" when the run was ended partway: by Stop, or by one of its
-   * time limits (lib/run-limits.ts). It rolled back like any failed run.
+   * time limits (lib/deploy/run-limits.ts). It rolled back like any failed run.
    */
   code?: string;
 };
@@ -383,7 +383,7 @@ type DriftResult = {
 // Where the lineage drift check stands for the chosen target.
 type DriftPhase = "idle" | "loading" | "untracked" | "ready" | "error";
 
-// Version comparison + the Applied/Pending ledger live in lib/script-status so
+// Version comparison + the Applied/Pending ledger live in lib/versions/script-status so
 // they can be unit-tested in isolation; compareVersions is imported above.
 function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
   return [...scripts].sort((a, b) => compareVersions(a.version, b.version));
@@ -407,7 +407,7 @@ function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
 }
 
 // The COMMIT/ROLLBACK pre-flight check uses the SAME helper as the server apply
-// route (lib/sql-guard), so the advisory warning here can never disagree with
+// route (lib/sql/guard), so the advisory warning here can never disagree with
 // what the route actually rejects, including the dollar-quoted-body handling.
 
 // "1 statement" / "4 statements": the count PostgreSQL reported for one script.
@@ -426,7 +426,7 @@ function fmtDate(iso: string | null): string {
   return shortUtcDate(iso);
 }
 
-// Applied / Pending / Skipped (the version ledger, lib/script-status) → the
+// Applied / Pending / Skipped (the version ledger, lib/versions/script-status) → the
 // "This database" status in the version timeline.
 //
 // - `current` is the version applied to the target ("v5.0.2"). A skipped
@@ -513,7 +513,7 @@ function rolledBackTitle(row: RevertedEntry, status: LedgerEntry["status"], curr
     : `${history} It is below ${current}, the version applied to the target, so a deploy will not run it again.`;
 }
 
-// The text an approval of this batch is hashed from (lib/approval-fingerprint,
+// The text an approval of this batch is hashed from (lib/deploy/approval-fingerprint,
 // the same text the server hashes). The rehearsal pin and the recovery bar
 // compare these strings directly: equal text means the same scripts, in the
 // same order, with the same SQL, so no hashing is needed to tell.
@@ -726,7 +726,7 @@ const BEFORE_FIRST = "__before_first__";
 type RowNote = { text: string; warn: boolean };
 
 // How the pull read a version's rollback file (its rollback_state). Not
-// lib/registry-push's rollbackFileState: that one classifies a file's text,
+// lib/github/registry-push's rollbackFileState: that one classifies a file's text,
 // this one only reads the answer the pull already worked out. The pull sets
 // it on every script; without one, the fallback agrees with the apply body,
 // which sends down_sql whenever there is one.
@@ -1134,7 +1134,7 @@ function DeployBody() {
   // A failure that belongs to the run rather than to any one migration, a
   // rejected request, an unreadable response, a connection that never landed.
   const [runError, setRunError] = useState<string | null>(null);
-  // How the last run failed, as lib/apply-failure reads the answer; null after
+  // How the last run failed, as lib/deploy/apply-failure reads the answer; null after
   // a success and before any run. A refused run (a 4xx) and one that never
   // started (a 5xx the server marks nothingRan) never got going, so the rows,
   // the header and the recovery bar name what happened rather than saying
@@ -1357,7 +1357,7 @@ function DeployBody() {
   // Stepping over this one case is safe by the feature's own premise, the
   // script touches another application's tables, which are not in this
   // database, and it is the only refusal that may be stepped over. See
-  // addressedElsewhere in lib/application-targeting.ts for the other two.
+  // addressedElsewhere in lib/deploy/application-targeting.ts for the other two.
   const addressedElsewhere = useMemo<GitHubScript[]>(() => {
     const applications = preflightResult?.applications ?? { known: false, names: [], source: null };
     return aheadOfTarget.filter(
@@ -1422,7 +1422,7 @@ function DeployBody() {
 
   // Spec feature 11: "If no schema or tables exist, prompt to run
   // /scripts_init." Which of the three states this target is in, and the one
-  // thing worth saying about it. Both come from lib/deploy-init.ts rather than
+  // thing worth saying about it. Both come from lib/deploy/init.ts rather than
   // being decided here, because the after-the-run prompt has to agree with
   // this one about what "initialised" meant.
   const targetStage = preflightResult
@@ -1812,7 +1812,7 @@ function DeployBody() {
   }, [pendingScripts, stage]);
 
   // What the chosen batch risks, from one reading of its SQL. The same helper
-  // (lib/deploy-risk) gives the breaking count an approver is shown. Each migration is read with the
+  // (lib/deploy/risk) gives the breaking count an approver is shown. Each migration is read with the
   // change_type runBatch sends with it, exactly as the server will read it.
   const runRisk = useMemo(
     () =>
@@ -2849,7 +2849,7 @@ function DeployBody() {
 
     let outcomes: ApplyOutcome[] | null = null;
     let failure: string | null = null;
-    // How the run failed, if it did: lib/apply-failure's reading of the answer,
+    // How the run failed, if it did: lib/deploy/apply-failure's reading of the answer,
     // so the rows, the toast, the header and the recovery bar tell one story.
     // Stays null on a success.
     let failureKind: ApplyFailure | null = null;
@@ -3041,7 +3041,7 @@ function DeployBody() {
   // /scripts_patch." pendingScripts is read AFTER the run, from the re-read
   // ledger, so it is what is genuinely left rather than what was left before.
   // patchPrompt answers null for an ordinary patch run, a rehearsal, or a run
-  // that did not finish clean; see lib/deploy-init.ts for why each of those is
+  // that did not finish clean; see lib/deploy/init.ts for why each of those is
   // a case where offering the next run would be the wrong thing to say.
   const afterInitPrompt = patchPrompt({
     initialised: runInitialised,

@@ -53,12 +53,12 @@ jest.mock("../auth.config", () => ({
     return mockFlags.authUsable;
   },
 }));
-jest.mock("../lib/auth-mode", () => ({
+jest.mock("../lib/auth/mode", () => ({
   get BYPASS_AUTH() {
     return mockFlags.bypass;
   },
 }));
-jest.mock("../lib/secret-store", () => ({
+jest.mock("../lib/connections/secret-store", () => ({
   encryptionKeySource: () => mockFlags.keySource,
 }));
 

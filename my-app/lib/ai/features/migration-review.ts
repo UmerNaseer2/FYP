@@ -23,8 +23,8 @@
 // ---------------------------------------------------------------------------
 
 import { z } from "zod";
-import { gradeSql } from "../../change-type";
-import { readScriptLevel, scriptLabel } from "../../deploy-risk";
+import { gradeSql } from "../../versions/change-type";
+import { readScriptLevel, scriptLabel } from "../../deploy/risk";
 import type { SchemaSnapshot } from "../../postgres";
 import {
   findMightFailStatements,
@@ -32,8 +32,8 @@ import {
   hasExecutableSql,
   maskNonCode,
   splitStatements,
-} from "../../sql-guard";
-import { countOf } from "../../plural";
+} from "../../sql/guard";
+import { countOf } from "../../ui/plural";
 import { bareName, isKnownName, knownNames } from "../checks";
 import { schemaSlice } from "../context";
 import { buildDependencyIndex, describeDependents } from "../dependents";

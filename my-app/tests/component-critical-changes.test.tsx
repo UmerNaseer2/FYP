@@ -61,7 +61,7 @@ import "@testing-library/jest-dom";
 import { render } from "@testing-library/react";
 
 import { CriticalChanges } from "@/components/studio/CriticalChanges";
-import type { ChangeRow, DiffDocument } from "@/lib/compare-export";
+import type { ChangeRow, DiffDocument } from "@/lib/compare/export";
 
 function totals(over: Partial<DiffDocument["totals"]> = {}): DiffDocument["totals"] {
   return {

@@ -3,8 +3,8 @@
 // organization the page is open in.
 //
 // The API routes are the same for every organization (/api/...), so the gate
-// in lib/auth-guard.ts learns the organization from the ORG_HEADER that
-// lib/api-fetch.ts adds. A screen that called fetch() directly would send no
+// in lib/auth/guard.ts learns the organization from the ORG_HEADER that
+// lib/ui/api-fetch.ts adds. A screen that called fetch() directly would send no
 // header; on the web the gate answers that with a 404, so the screen would
 // simply stop working, and nothing about it would fail to compile. The first
 // tests check the wrapper; the last reads the source and fails on any direct
@@ -12,8 +12,8 @@
 import fs from "fs";
 import path from "path";
 import ts from "typescript";
-import { apiFetch } from "@/lib/api-fetch";
-import { ORG_HEADER } from "@/lib/org-slug";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { ORG_HEADER } from "@/lib/orgs/slug";
 
 const ROOT = path.join(__dirname, "..");
 
@@ -101,12 +101,12 @@ const EXTENSIONS = /\.(ts|tsx)$/;
  * not go to an organization's part of this app's API.
  */
 const ALLOWED: Record<string, string> = {
-  [path.join("lib", "api-fetch.ts")]: "the wrapper itself",
-  [path.join("lib", "github-registry.ts")]: "the server's own calls to GitHub",
+  [path.join("lib", "ui", "api-fetch.ts")]: "the wrapper itself",
+  [path.join("lib", "github", "registry.ts")]: "the server's own calls to GitHub",
   [path.join("lib", "ai", "openai-compatible.ts")]: "the server's own calls to the AI service",
   [path.join("app", "login", "page.tsx")]:
     "the sign-in page reads NextAuth's providers, which belong to no organization",
-  [path.join("lib", "sign-out.ts")]:
+  [path.join("lib", "auth", "sign-out.ts")]:
     "Sign out asks NextAuth whether the session is really gone, which belongs to no organization",
 };
 

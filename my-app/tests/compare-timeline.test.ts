@@ -4,9 +4,9 @@ import {
   readsHistory,
   readsLedger,
   recentTimelineEntries,
-} from "@/lib/compare-timeline";
-import type { DetectedVersion, DetectedVersionEntry } from "@/lib/detected-version";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
+} from "@/lib/compare/timeline";
+import type { DetectedVersion, DetectedVersionEntry } from "@/lib/compare/detected-version";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
 
 // How the Compare screen's version timeline reads each side, and the push
 // button's backwards warning. A side read the wrong way shows a version as

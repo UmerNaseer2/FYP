@@ -13,12 +13,12 @@ import {
   REENTER_PASSWORD_MESSAGE,
   savedPasswordWouldMove,
   type PasswordDestination,
-} from "@/lib/connection-validate";
+} from "@/lib/connections/validate";
 import { TEST_ORG } from "./helpers/principals";
 
 // The role the gate hands the route. Editor unless a test says otherwise.
 let mockRole: "viewer" | "editor" | "admin" = "editor";
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor(mockRole),
@@ -38,7 +38,7 @@ type SavedRow = {
 
 let mockSaved: SavedRow;
 const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>();
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (text: string, values?: unknown[]) => mockPoolQuery(text, values) },
   syncMetadataTables: async () => undefined,
@@ -50,7 +50,7 @@ const mockDependents = jest.fn<Promise<unknown>, unknown[]>(async () => ({
   comparisonSets: 0,
   comparisonSetNames: [],
 }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/versions/lineage-db", () => ({
   getConnectionDependents: (...args: unknown[]) => mockDependents(...args),
 }));
 // Encryption is not what these tests are about; a typed value is stored as typed.
@@ -58,7 +58,7 @@ jest.mock("../lib/lineage-db", () => ({
 // resolves a stored connection string before it judges it, and a stand-in that
 // returned undefined would make every string unreadable — which the check
 // answers with "nothing to judge", waving the blocked hosts below straight past.
-jest.mock("../lib/secret-store", () => ({
+jest.mock("../lib/connections/secret-store", () => ({
   encryptSecret: (value: string | null | undefined) => (value ? `enc:${value}` : null),
   decryptSecret: (value: string | null | undefined) =>
     typeof value === "string" ? value.replace(/^enc:/, "") : (value ?? null),

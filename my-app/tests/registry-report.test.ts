@@ -1,4 +1,4 @@
-import { describeRegistry, readArchivedVersions, type ArchivedVersion } from "@/lib/registry-report";
+import { describeRegistry, readArchivedVersions, type ArchivedVersion } from "@/lib/github/registry-report";
 
 /**
  * What the apply route says about the GitHub registry after a run (spec 07 —

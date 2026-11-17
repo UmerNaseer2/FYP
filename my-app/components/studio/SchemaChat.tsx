@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import { Button, Drawer, Pill } from "@/components/ui";
 import { HelpHint } from "@/components/ui/HelpHint";
 import { AlertCircleIcon, CheckIcon, ClipboardIcon, SparkIcon } from "@/components/ui/icons";
-import { OPEN_ASK_AI_EVENT } from "@/lib/studio-events";
+import { OPEN_ASK_AI_EVENT } from "@/lib/ui/studio-events";
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
-import { apiFetch } from "@/lib/api-fetch";
-import { errorFrom, jsonOf } from "@/lib/api-answer";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { errorFrom, jsonOf } from "@/lib/ui/api-answer";
 import { isAiAnswerBody, type AiAnswerMeta } from "@/lib/ai/views";
 import {
   MAX_HISTORY_TURNS,
@@ -18,9 +18,9 @@ import {
   type ChatAnswer,
   type ChatTurn,
 } from "@/lib/ai/features/schema-chat-view";
-import { saveMigrationDraft } from "@/lib/migration-draft";
-import { refusalMessage } from "@/lib/permissions";
-import { MAX_MIGRATION_DESCRIPTION } from "@/lib/perf-sql";
+import { saveMigrationDraft } from "@/lib/versions/migration-draft";
+import { refusalMessage } from "@/lib/roles/permissions";
+import { MAX_MIGRATION_DESCRIPTION } from "@/lib/performance/sql";
 import { AI_SUGGESTION_LABEL, RateButtons, rateAiAnswer, useAiFeature } from "./AiPanel";
 import { withNames } from "./ai-names";
 

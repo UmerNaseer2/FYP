@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InvitePanel } from "@/components/admin/InvitePanel";
 import { useUser } from "@/hooks/useUser";
-import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole, presetFor } from "@/lib/permissions";
+import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole, presetFor } from "@/lib/roles/permissions";
 import {
   Button,
   Card,
@@ -23,7 +23,7 @@ import {
   AlertCircleIcon,
   InfoIcon,
 } from "@/components/ui/icons";
-import { apiFetch } from "@/lib/api-fetch";
+import { apiFetch } from "@/lib/ui/api-fetch";
 
 /**
  * The Users tab on the Admin screen: everyone in this organization, the role
@@ -34,7 +34,7 @@ import { apiFetch } from "@/lib/api-fetch";
  * What each role may do is the Roles & permissions tab's business. This tab
  * only says who has which role.
  *
- * Managing people is not admin-only, so the rank rule (lib/permissions.ts
+ * Managing people is not admin-only, so the rank rule (lib/roles/permissions.ts
  * canHandOut) decides what each person here may touch: nobody hands out, or
  * takes away, a role that can do something their own can't. The server
  * enforces it and says which roles pass (`assignable`), so the pickers offer

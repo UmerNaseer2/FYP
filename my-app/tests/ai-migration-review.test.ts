@@ -2,7 +2,7 @@
 // of each statement, what the prompt carries, and the checks between the
 // model's answer and the screen.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
@@ -22,7 +22,7 @@ import {
   type ModelReview,
   type ReviewScript,
 } from "@/lib/ai/features/migration-review";
-import { stampChangeType } from "@/lib/change-type";
+import { stampChangeType } from "@/lib/versions/change-type";
 import { isMigrationReviewAnswer } from "@/lib/ai/features/migration-review-view";
 import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";

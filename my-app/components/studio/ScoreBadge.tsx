@@ -1,7 +1,7 @@
 "use client";
 
 import { Pill, type PillTone } from "@/components/ui";
-import { BAND_MEANING, type ScoreBand, type QueryScore } from "@/lib/query-score";
+import { BAND_MEANING, type ScoreBand, type QueryScore } from "@/lib/performance/query-score";
 
 /**
  * The score badge, and the panel that explains it.

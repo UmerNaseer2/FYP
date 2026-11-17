@@ -1,6 +1,6 @@
 /* =====================================================================
    Shared pieces used on many pages (imported once in app/layout.tsx):
-   - the one status system (lib/status-look.ts, components/ui/StatusChip.tsx)
+   - the one status system (lib/ui/status-look.ts, components/ui/StatusChip.tsx)
    - error notices that say what to do (components/ui/ErrorNotice.tsx)
    - setup checklists for blocked pages and Getting started
      (components/ui/SetupChecklist.tsx)

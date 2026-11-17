@@ -35,7 +35,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import { StudioSidebar } from "@/components/studio/StudioSidebar";
 import type { NavItem } from "@/components/studio/nav";
-import { APP_VERSION } from "@/lib/app-version";
+import { APP_VERSION } from "@/lib/ui/app-version";
 
 // A cut-down rail. The icons are stand-ins: what matters is that whatever the
 // caller hands over for a row is what gets drawn in it. One row is given a

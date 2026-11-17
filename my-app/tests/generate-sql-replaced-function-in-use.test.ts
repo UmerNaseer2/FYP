@@ -11,8 +11,8 @@
 // These tests pin the fix. Plain views are dropped first and rebuilt after the
 // new function exists. For anything else the function is left alone and the
 // script says so in a MANUAL note, instead of a statement certain to fail.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration, statementsThatRun, type MigrationScript } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration, statementsThatRun, type MigrationScript } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 import type {
   ConstraintSnapshot,

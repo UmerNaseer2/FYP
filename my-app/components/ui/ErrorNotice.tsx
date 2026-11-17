@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { useOrgHref } from "@/hooks/useOrg";
-import { describeError } from "@/lib/friendly-error";
+import { describeError } from "@/lib/ui/friendly-error";
 import { AlertCircleIcon, LockIcon } from "./icons";
 
 type ErrorNoticeProps = {
@@ -25,7 +25,7 @@ type ErrorNoticeProps = {
 /**
  * An error that says what happened, what to press, and keeps the server's
  * wording under Technical details. It reads the message with describeError
- * (lib/friendly-error) and picks the right next step:
+ * (lib/ui/friendly-error) and picks the right next step:
  *
  * - a saved password this server cannot open: "Enter the password again",
  *   which opens the connection on Connections (/connections?edit=<id>)

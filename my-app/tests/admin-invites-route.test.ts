@@ -3,8 +3,8 @@
 //
 // The rules about invitations themselves (who counts as a member already, a
 // second invitation to one address, the hash kept in place of the token) live
-// in lib/invites-db.ts and are tested against a real database in
-// tests/invites-db.test.ts. Here lib/invites-db is replaced, so these tests
+// in lib/orgs/invites-db.ts and are tested against a real database in
+// tests/invites-db.test.ts. Here lib/orgs/invites-db is replaced, so these tests
 // cover only what the route adds on top:
 //
 //   - GET asks for Users: Read, and POST and DELETE for Users: Create, before
@@ -19,18 +19,18 @@
 //     cannot make it more than a Viewer's.
 //   - Every call names the gate's organization, and is credited to the
 //     caller's profile and address. Nothing in the body can change either.
-//   - Each refusal from lib/invites-db reaches the screen with its own status
+//   - Each refusal from lib/orgs/invites-db reaches the screen with its own status
 //     and words. A database that is down reads as "try again", with the
 //     reason kept to the log.
 import { NextRequest, NextResponse } from "next/server";
-import type { Gate } from "@/lib/auth-guard";
+import type { Gate } from "@/lib/auth/guard";
 import { bypassAdminPrincipal, principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async (...keys: string[]) => {
     mockAskedFor.push(keys);
     return mockGate;
@@ -45,7 +45,7 @@ const mockInvitesDb = {
   createLinkInvite: jest.fn(),
   listPendingInvites: jest.fn(),
 };
-jest.mock("../lib/invites-db", () => ({
+jest.mock("../lib/orgs/invites-db", () => ({
   cancelInvite: (...args: unknown[]) => mockInvitesDb.cancelInvite(...args),
   createEmailInvite: (...args: unknown[]) => mockInvitesDb.createEmailInvite(...args),
   createLinkInvite: (...args: unknown[]) => mockInvitesDb.createLinkInvite(...args),
@@ -60,7 +60,7 @@ const DEMO_REFUSAL =
   "Inviting someone needs a real sign-in. In the demo nobody signs in, so nobody could take an invitation.";
 const NOT_JSON = "Expected a JSON body.";
 
-/** A token of the shape lib/invites-db makes. Only POST's answer ever carries one. */
+/** A token of the shape lib/orgs/invites-db makes. Only POST's answer ever carries one. */
 const TOKEN = "A".repeat(43);
 
 const ANN_INVITE = {

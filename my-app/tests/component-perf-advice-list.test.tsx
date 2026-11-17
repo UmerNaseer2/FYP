@@ -30,7 +30,7 @@
  *
  * What is NOT here:
  *  - The advice itself: which rules fire, what each one says, and the SQL it
- *    carries. That is lib/perf-advice, covered by tests/perf-advice.test.ts and
+ *    carries. That is lib/performance/advice, covered by tests/perf-advice.test.ts and
  *    tests/perf-sql.test.ts. Every finding here is a fixture.
  *  - What one finding looks like. FindingCard, OriginBadge and SeverityFilter
  *    are tests/component-finding-card.test.tsx; this file checks only that the
@@ -59,7 +59,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import { PerfAdviceList } from "@/components/studio/PerfAdviceList";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
-import type { AdviceItem, AdviceView } from "@/lib/perf-advice";
+import type { AdviceItem, AdviceView } from "@/lib/performance/advice";
 import {
   fetchCalls,
   flushAsync,

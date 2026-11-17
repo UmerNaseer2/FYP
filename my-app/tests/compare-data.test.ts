@@ -10,9 +10,9 @@
 // These tests pin the wording and the counts that carry that bound, because a
 // reader who takes "rows match" at face value over a partial compare is exactly
 // the person this report exists to protect.
-import { compareRowData, summarizeDataCompare } from "@/lib/compare-data";
-import type { DataCompareReport, TableDataCompare } from "@/lib/compare-data-summary";
-import type { CompareReport } from "@/lib/compare";
+import { compareRowData, summarizeDataCompare } from "@/lib/compare/data";
+import type { DataCompareReport, TableDataCompare } from "@/lib/compare/data-summary";
+import type { CompareReport } from "@/lib/compare/diff";
 import { createFakeClient, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 
 // One fake connection per side, handed out by a fake pool. compareRowData opens

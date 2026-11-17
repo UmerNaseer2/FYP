@@ -14,7 +14,7 @@
 // change this table except a route that is added or removed.
 import fs from "fs";
 import path from "path";
-import { hasPermission, isAdminOnly, presetFor, type PermissionKey } from "@/lib/permissions";
+import { hasPermission, isAdminOnly, presetFor, type PermissionKey } from "@/lib/roles/permissions";
 import { allHandlers, hasPermissionLiterals, API_DIR, type Gate } from "./helpers/route-gates";
 
 type OldRole = "viewer" | "editor" | "admin";

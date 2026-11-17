@@ -41,7 +41,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import { InvitePanel } from "@/components/admin/InvitePanel";
 import type { SelectOption } from "@/components/ui/Select";
-import type { InviteListing, PendingInvite } from "@/lib/invites";
+import type { InviteListing, PendingInvite } from "@/lib/orgs/invites";
 import {
   fetchCalls,
   flushAsync,
@@ -58,7 +58,7 @@ const OPTIONS: SelectOption[] = [
   { value: "admin", label: "Admin" },
 ];
 
-/** 43 characters from the URL-safe alphabet, the shape lib/invites.ts isInviteToken expects. */
+/** 43 characters from the URL-safe alphabet, the shape lib/orgs/invites.ts isInviteToken expects. */
 const TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE";
 
 const GRACE: PendingInvite = {

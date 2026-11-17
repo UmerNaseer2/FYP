@@ -12,10 +12,10 @@
 // the block on itself and left the remainder outside it. Neither is a name
 // anybody would choose, and both are names PostgreSQL accepts, which is enough
 // — a migration that aborts half way through is the most expensive kind.
-import { compareSchemas } from "@/lib/compare";
-import { generateMigration } from "@/lib/generate-sql";
+import { compareSchemas } from "@/lib/compare/diff";
+import { generateMigration } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
-import type { SqlStatement } from "@/lib/generate-sql";
+import type { SqlStatement } from "@/lib/sql/generate";
 
 /**
  * The DO block for a NOT NULL column being added to `tableName`.

@@ -17,7 +17,7 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("editor", { email: "a@test" }),
@@ -25,7 +25,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: { query: (...args: unknown[]) => mockPoolQuery(...args) },
   syncMetadataTables: async () => undefined,
@@ -35,8 +35,8 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
-jest.mock("../lib/lineage-db", () => ({
+jest.mock("../lib/connections/config", () => ({ buildPgConfig: () => ({}) }));
+jest.mock("../lib/versions/lineage-db", () => ({
   findTrackedSchema: async () => null,
   recordAppliedMigrationToLineage: async () => ({ advanced: false }),
 }));
@@ -48,11 +48,11 @@ jest.mock("../lib/lineage-db", () => ({
 // migration files into somebody's actual registry repository. Mocked to answer
 // "not configured", which is the same answer a server with no GitHub settings
 // gives, so the route takes its ordinary path.
-jest.mock("../lib/registry-archive", () => ({
+jest.mock("../lib/github/registry-archive", () => ({
   archiveAppliedVersions: async () => null,
 }));
-jest.mock("../lib/approvals-db", () => ({
-  approvalsOn: jest.requireActual("../lib/approvals-db").approvalsOn,
+jest.mock("../lib/deploy/approvals-db", () => ({
+  approvalsOn: jest.requireActual("../lib/deploy/approvals-db").approvalsOn,
   claimApproval: async () => null,
   releaseApproval: async () => undefined,
 }));

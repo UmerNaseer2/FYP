@@ -23,7 +23,7 @@ import { NextRequest } from "next/server";
 import { TEST_ORG } from "./helpers/principals";
 import { guardGitHub, type GitHubGuard } from "./helpers/no-github";
 
-jest.mock("../lib/auth-guard", () => ({
+jest.mock("../lib/auth/guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("admin"),
@@ -112,7 +112,7 @@ function mockAnswer(text: string, values: unknown[]) {
   return { rows, rowCount: rows.length };
 }
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {
     query: async (text: string, values: unknown[] = []) => mockAnswer(text, values),
@@ -145,8 +145,8 @@ jest.mock("pg", () => {
  * organization's connection has already read something it should not have.
  */
 const mockBuildPgConfig = jest.fn();
-jest.mock("../lib/connection-config", () => {
-  const actual = jest.requireActual("../lib/connection-config");
+jest.mock("../lib/connections/config", () => {
+  const actual = jest.requireActual("../lib/connections/config");
   return {
     ...actual,
     buildPgConfig: (...args: unknown[]) => {

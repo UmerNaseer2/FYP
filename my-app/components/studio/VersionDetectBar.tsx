@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { DetectedVersion } from "@/lib/detected-version";
-import type { NewerSchemaVerdict } from "@/lib/version-detection";
+import type { DetectedVersion } from "@/lib/compare/detected-version";
+import type { NewerSchemaVerdict } from "@/lib/versions/detection";
 import {
   compareFamilyHeads,
   displayVersion,
@@ -10,7 +10,7 @@ import {
   outdatedSideFor,
   pushMovesTargetBack,
   type FamilyHeadRow,
-} from "@/lib/version-timeline";
+} from "@/lib/versions/timeline";
 
 // ---------------------------------------------------------------------------
 // VersionDetectBar — what each schema says about its OWN version.

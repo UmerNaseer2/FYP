@@ -40,7 +40,7 @@
  *    tests/use-user.test.tsx. What is asserted here is only that the shell is
  *    wired to them: the theme reaching the document, and the session and the
  *    server's answer reaching the rail.
- *  - The auth-bypass pill. It is driven by BYPASS_AUTH, which lib/auth-mode
+ *  - The auth-bypass pill. It is driven by BYPASS_AUTH, which lib/auth/mode
  *    reads once at module load, so it cannot be switched per test in this file
  *    without switching it for all of them. Both pills are drawn in
  *    tests/component-studio-sidebar.test.tsx, where they arrive as props.
@@ -61,8 +61,8 @@ import {
   effectivePermissions,
   presetFor,
   type BuiltInRole,
-} from "@/lib/permissions";
-import { pageLoader } from "@/lib/sign-out";
+} from "@/lib/roles/permissions";
+import { pageLoader } from "@/lib/auth/sign-out";
 import { setPathname } from "./helpers/render-page";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
@@ -87,7 +87,7 @@ function answer(role: string, roleLabel: string, permissions: readonly string[])
   };
 }
 
-// The same words lib/auth-guard.ts answers with.
+// The same words lib/auth/guard.ts answers with.
 const NOT_A_MEMBER: MeAnswer = {
   status: 404,
   body: { error: "This organization does not exist, or you are not a member." },
@@ -398,7 +398,7 @@ describe("who the account menu says you are", () => {
 
 describe("what the account menu says you are allowed to do", () => {
   // Only the role half is checked here. The bypass pill is driven by
-  // BYPASS_AUTH, which lib/auth-mode reads once at module load. A jest.mock of
+  // BYPASS_AUTH, which lib/auth/mode reads once at module load. A jest.mock of
   // it would switch the bypass on for every test in this file, including the
   // ones above that are about a real session. That the rail draws the pill when
   // it is told to is tests/component-studio-sidebar.test.tsx's.
@@ -539,7 +539,7 @@ describe("signing out", () => {
       renderShell();
       fireEvent.click(within(openAccountMenu()).getByRole("menuitem", { name: "Sign out" }));
       await waitFor(() => expect(loaded).toHaveBeenCalledWith("/login"));
-      // lib/sign-out.ts loads the page itself, once the session is gone.
+      // lib/auth/sign-out.ts loads the page itself, once the session is gone.
       expect(mockSignOutCalls).toEqual([{ redirect: false }]);
     } finally {
       loaded.mockRestore();

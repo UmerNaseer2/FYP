@@ -6,7 +6,7 @@
 // An approval names a connection by id only. Before this, someone could get
 // SQL approved for a production connection, point that connection at another
 // database, and run the approved SQL there. See CONNECTION_NOT_EDITED_SINCE in
-// lib/approvals-db.ts.
+// lib/deploy/approvals-db.ts.
 //
 // This runs against a real PostgreSQL, because the rule is one SQL condition
 // and a fake pool cannot say whether it is right. It is skipped unless
@@ -16,7 +16,7 @@
 //     REQUIRE_TEST_DATABASE=1 npx jest tests/approvals-connection-edit-db.test.ts
 
 import { Client } from "pg";
-import type { ApprovalScript } from "@/lib/approval-fingerprint";
+import type { ApprovalScript } from "@/lib/deploy/approval-fingerprint";
 import { testDatabaseUrl } from "./helpers/test-database";
 
 const testUrl = testDatabaseUrl();
@@ -47,7 +47,7 @@ describeWithDatabase("an approval and a connection edited after it", () => {
   let db: Client;
   let databaseName = "";
   let sequelize: typeof import("@/lib/db/sequelize").sequelize;
-  let approvals: typeof import("@/lib/approvals-db");
+  let approvals: typeof import("@/lib/deploy/approvals-db");
 
   let orgId = 0;
   let connectionId = 0;
@@ -93,7 +93,7 @@ describeWithDatabase("an approval and a connection edited after it", () => {
       note: null,
     });
 
-  // What saving an edit in Connections does to the row (lib/connection-writes).
+  // What saving an edit in Connections does to the row (lib/connections/writes).
   const editConnection = () =>
     db.query(`UPDATE connections SET host = 'other.example.test', updated_at = now() WHERE id = $1`, [
       connectionId,
@@ -119,7 +119,7 @@ describeWithDatabase("an approval and a connection edited after it", () => {
     const { syncMetadataTables } = await import("@/lib/db/bootstrap");
     await syncMetadataTables();
     ({ sequelize } = await import("@/lib/db/sequelize"));
-    approvals = await import("@/lib/approvals-db");
+    approvals = await import("@/lib/deploy/approvals-db");
 
     db = await connectTo(url);
     const org = await db.query(`SELECT id FROM organizations WHERE is_default`);

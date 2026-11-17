@@ -26,7 +26,7 @@ const mono = DM_Mono({
 });
 
 import type { Viewport } from "next";
-import { INTRO_HEAD_SCRIPT } from "@/lib/intro";
+import { INTRO_HEAD_SCRIPT } from "@/lib/ui/intro";
 
 export const metadata = {
   title: "Schema Studio",
@@ -71,7 +71,7 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
-        {/* Marks the page as waiting for the logo reveal (lib/intro.ts). */}
+        {/* Marks the page as waiting for the logo reveal (lib/ui/intro.ts). */}
         <script dangerouslySetInnerHTML={{ __html: INTRO_HEAD_SCRIPT }} />
       </head>
       <body>

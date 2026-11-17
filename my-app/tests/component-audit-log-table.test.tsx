@@ -33,13 +33,13 @@
  *    itself had never been drawn with any.
  *  - The order. This table shows rows in the order it is handed them, and the
  *    footer's "newest first" is a claim about the query that produced them:
- *    listDriftEvents in lib/lineage-db orders by detected_at then id, in SQL,
+ *    listDriftEvents in lib/versions/lineage-db orders by detected_at then id, in SQL,
  *    and has no suite of its own. What is pinned here is that the table does
  *    not disturb that order.
- *  - What the source labels say. lib/drift-source owns them and is covered by
+ *  - What the source labels say. lib/drift/source owns them and is covered by
  *    tests/drift-source.test.ts; this file only checks that the label is shown
  *    and is searchable.
- *  - How "5m ago" is worded. lib/time-ago has no suite of its own; the clock is
+ *  - How "5m ago" is worded. lib/ui/time-ago has no suite of its own; the clock is
  *    fixed here so the column can be read, but the wording is its rule, not
  *    this table's.
  *  - Acknowledging a check. That is a button on the drift detail screen, not

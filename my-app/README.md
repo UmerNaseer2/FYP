@@ -179,7 +179,7 @@ my-app/
         requests/             ask for a permission, answer requests, see runs waiting for approval
     studio/, compare/, …      the addresses from before organizations, one per page above:
                               each [[...rest]]/page.tsx sends /compare?left=1 on to the
-                              organization opened last (lib/org-redirect.ts)
+                              organization opened last (lib/orgs/redirect.ts)
     api/                      the route handlers, listed in full below
     globals.css               all styling (see §6)
   components/
@@ -205,41 +205,41 @@ my-app/
 
 | Module | Role |
 | --- | --- |
-| `lib/compare.ts` | The diff engine: weighted similarity, mutual-best matching, rename guard |
-| `lib/compare-utils.ts` | Levenshtein, Jaccard, multiset helpers used by the scorer |
-| `lib/compare-types.ts` | Shared types for snapshots and reports |
-| `lib/postgres.ts` | Catalog introspection, connection-pool cache, schema-qualifier stripping |
-| `lib/generate-sql.ts` | Migration generator (`generateMigration()`) and its rollback (`generateRollback()`); the order it writes statements in is under *How the comparison engine works* below |
-| `lib/sql-guard.ts` | Destructive-statement detection |
-| `lib/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
-| `lib/drift-runner.ts` | One drift check plus its audit row — shared by the button, the scheduler and tracking |
-| `lib/drift-schedule.ts` | Cadence arithmetic: what is due, what is overdue. Pure, so it is unit-tested |
-| `lib/drift-scheduler.ts` | The background loop itself; the only timer in the process |
-| `lib/query-analysis.ts` | Reads an `EXPLAIN` plan and says what is wrong with it. Pure |
-| `lib/schema-metrics.ts` | `schema_metrics`: takes a reading, reads a window, prunes the tail |
-| `lib/metrics-series.ts` | Readings to plot geometry, ticks and a sentence. Pure |
-| `lib/snapshot-format.ts` | The snapshot format version, and what to do with an older one |
+| `lib/compare/diff.ts` | The diff engine: weighted similarity, mutual-best matching, rename guard |
+| `lib/compare/utils.ts` | Levenshtein, Jaccard, multiset helpers used by the scorer |
+| `lib/compare/types.ts` | Shared types for snapshots and reports |
+| `lib/postgres/` | Catalog introspection, connection-pool cache, schema-qualifier stripping |
+| `lib/sql/generate.ts` | Migration generator (`generateMigration()`) and its rollback (`generateRollback()`); the order it writes statements in is under *How the comparison engine works* below |
+| `lib/sql/guard.ts` | Destructive-statement detection |
+| `lib/versions/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
+| `lib/drift/runner.ts` | One drift check plus its audit row — shared by the button, the scheduler and tracking |
+| `lib/drift/schedule.ts` | Cadence arithmetic: what is due, what is overdue. Pure, so it is unit-tested |
+| `lib/drift/scheduler.ts` | The background loop itself; the only timer in the process |
+| `lib/performance/query-analysis.ts` | Reads an `EXPLAIN` plan and says what is wrong with it. Pure |
+| `lib/performance/schema-metrics.ts` | `schema_metrics`: takes a reading, reads a window, prunes the tail |
+| `lib/performance/metrics-series.ts` | Readings to plot geometry, ticks and a sentence. Pure |
+| `lib/postgres/snapshot-format.ts` | The snapshot format version, and what to do with an older one |
 | `lib/db/sequelize.ts` | The one Sequelize instance, plus `metadataPool`, a `pg.Pool`-shaped adapter over its pool that every metadata read and write goes through |
 | `lib/db/models.ts` | Every metadata table as a Sequelize model. The list in §4 is described from this file. The models are used to create the tables, not to query them |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
-| `lib/version-db.ts` | Re-exports the metadata pool and `syncMetadataTables()`, so every caller reaches the metadata database through one module |
+| `lib/db/version-db.ts` | Re-exports the metadata pool and `syncMetadataTables()`, so every caller reaches the metadata database through one module |
 | `lib/ai/` | The AI features. `config.ts` reads the `AI_*` settings, `openai-compatible.ts` and `anthropic.ts` talk to the service, `prompts/index.ts` names the six features and the rules every prompt starts with, `features/` holds the code of each feature, `checks.ts` checks an answer before it is shown, and `store.ts` counts calls and caches answers |
-| `lib/permissions.ts` | The permission catalogue: every feature and its permissions, what Viewer and Editor start with, the rule that turning a permission on also turns on its feature's Read, and the refusal sentence. Pure |
-| `lib/roles-db.ts` | `roles`, `role_permissions` and `role_changes`: what a role may do, making, editing and deleting roles, and the change log |
-| `lib/auth-guard.ts` | `requirePermission()` and `requireSignedIn()`, the gate every route opens with, and the View as role while the bypass is on |
-| `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
-| `lib/version-sync.ts` | Ledger reconciliation helpers |
-| `lib/version-detection.ts` | Change-level severity, plus detecting an existing version table in a target |
-| `lib/connection-config.ts` | Builds a `pg` config from a saved row; host allow-list check |
-| `lib/parse-uri.ts` | `postgres://` URI parsing |
-| `lib/connection-access.ts` | Who may execute against a connection on top of "Apply or revert migrations" (`deploy:run`), and why "none" is not the weakest rank. Pure |
-| `lib/dialects.ts` | What the app knows about each engine, and which ones are actually implemented. Pure |
-| `lib/comparison-history.ts` | Diffs this comparison against the last one of the same pair. Pure |
-| `lib/comparison-history-db.ts` | `comparison_runs`: stores a run, reads the previous one |
-| `lib/compare-export.ts` | Flattens a report into the document the exporters format. Pure |
-| `lib/application-targeting.ts` | Which application a migration is allowed to touch |
-| `lib/perf-thresholds.ts` | Per-schema alert levels and the banner they drive |
-| `lib/query-score.ts` | Turns an analysed plan into one comparable number. Pure |
+| `lib/roles/permissions.ts` | The permission catalogue: every feature and its permissions, what Viewer and Editor start with, the rule that turning a permission on also turns on its feature's Read, and the refusal sentence. Pure |
+| `lib/roles/roles-db.ts` | `roles`, `role_permissions` and `role_changes`: what a role may do, making, editing and deleting roles, and the change log |
+| `lib/auth/guard.ts` | `requirePermission()` and `requireSignedIn()`, the gate every route opens with, and the View as role while the bypass is on |
+| `lib/versions/script-status.ts` | Pending / applied / superseded classification against the ledger |
+| `lib/versions/sync.ts` | Ledger reconciliation helpers |
+| `lib/versions/detection.ts` | Change-level severity, plus detecting an existing version table in a target |
+| `lib/connections/config.ts` | Builds a `pg` config from a saved row; host allow-list check |
+| `lib/connections/parse-uri.ts` | `postgres://` URI parsing |
+| `lib/connections/access.ts` | Who may execute against a connection on top of "Apply or revert migrations" (`deploy:run`), and why "none" is not the weakest rank. Pure |
+| `lib/connections/dialects.ts` | What the app knows about each engine, and which ones are actually implemented. Pure |
+| `lib/compare/history.ts` | Diffs this comparison against the last one of the same pair. Pure |
+| `lib/compare/history-db.ts` | `comparison_runs`: stores a run, reads the previous one |
+| `lib/compare/export.ts` | Flattens a report into the document the exporters format. Pure |
+| `lib/deploy/application-targeting.ts` | Which application a migration is allowed to touch |
+| `lib/performance/thresholds.ts` | Per-schema alert levels and the banner they drive |
+| `lib/performance/query-score.ts` | Turns an analysed plan into one comparable number. Pure |
 
 ### API routes
 
@@ -268,14 +268,14 @@ connections/test-saved      me/view-as                    versionsync/ledger
 deploy/approvals            organizations
 ```
 
-Most of them open with a gate from `lib/auth-guard.ts`. The usual one is
+Most of them open with a gate from `lib/auth/guard.ts`. The usual one is
 `requirePermission()` with one or more boxes from the Admin screen's grid, such
 as `"connections:update"`, which lets the request through when the person's role
 has any one of them. A route that several screens read for their pickers names
 the Read box of each of those screens. What each role may do lives in the
 database (`roles`, `role_permissions`), and the boxes themselves are listed
-once, in `lib/permissions.ts`. Approval is not a role either, but a second
-*person*, which `lib/approvals-db.ts` enforces per run.
+once, in `lib/roles/permissions.ts`. Approval is not a role either, but a second
+*person*, which `lib/deploy/approvals-db.ts` enforces per run.
 
 Three smaller groups use a different check, and
 `tests/permissions-coverage.test.ts` names every route in each group:
@@ -313,7 +313,7 @@ is read cannot produce a snapshot that never existed. `compareSchemas()` then:
    weak match becomes a create + drop instead of a rename;
 4. repeats the same process for columns inside each matched table.
 
-`generateMigration()` in `lib/generate-sql.ts` then writes the script. It writes
+`generateMigration()` in `lib/sql/generate.ts` then writes the script. It writes
 its sections in this order, so that each statement finds what it depends on:
 extensions, collations, types and standalone sequences, the functions a new
 table needs, dropping views that must be rebuilt, table renames, renames of
@@ -351,7 +351,7 @@ trusting this table to be complete. At commit `e1a4d0c` it declares 34 tables:
 | `snapshots` | Point-in-time catalog snapshots of a tracked schema |
 | `lineage_migrations` | Which migration was applied to which tracked schema |
 | `drift_events` | Detected drift, plus acknowledgement state |
-| `profiles` | One row per person who has signed in. Their role in each organization is in `memberships`. On the web nobody joins an organization just by signing in: they make their own or accept an invitation. The one exception is a fresh deployment, where the first person from the home Microsoft tenant to sign in while the default organization has no members becomes its admin (`lib/accounts-db.ts`) |
+| `profiles` | One row per person who has signed in. Their role in each organization is in `memberships`. On the web nobody joins an organization just by signing in: they make their own or accept an invitation. The one exception is a fresh deployment, where the first person from the home Microsoft tenant to sign in while the default organization has no members becomes its admin (`lib/auth/accounts-db.ts`) |
 | `roles` | Every role: the three built in, which can't be deleted, and any an admin makes |
 | `role_permissions` | The permissions each role has turned on, one row each. Admin has none stored: it can always do everything |
 | `role_changes` | The Recent changes list on the Roles & permissions tab: permissions turned on and off, roles made, reset, deleted and given to people, invitations, people removed, and changes to the organization and its GitHub settings |
@@ -382,7 +382,7 @@ part in only one of them:
   expression, is plain SQL in `lib/db/bootstrap.ts` as well.
 - **The databases being compared and deployed to.** Arbitrary schemas the app
   has never seen, read out of `pg_catalog` and changed with generated DDL.
-  There is nothing for an ORM to model, so `lib/postgres.ts` keeps talking to
+  There is nothing for an ORM to model, so `lib/postgres/` keeps talking to
   them with the `pg` driver directly.
 
 In each **target database**:
@@ -434,9 +434,9 @@ views, sequences, types and routines.
 Some of those are new enough to say where they live:
 
 - **Drift is checked on a cadence**, not only when somebody presses the button.
-  `lib/drift-scheduler.ts` runs one interval timer in the Next.js server,
+  `lib/drift/scheduler.ts` runs one interval timer in the Next.js server,
   started from `instrumentation.ts`. It wakes every 60s, asks
-  `lib/drift-schedule.ts` which tracked schemas are overdue, and runs the same
+  `lib/drift/schedule.ts` which tracked schemas are overdue, and runs the same
   check the button runs — at most 6 per tick, 2 at a time, so a backlog drains
   over several ticks instead of opening thirty connections to other people's
   databases at once. `DRIFT_SCHEDULER=off` is the kill switch. Per-schema
@@ -462,7 +462,7 @@ Some of those are new enough to say where they live:
   that the same editor is trusted on dev and not on the reference schema. So running anything needs the
   "Apply or revert migrations" permission (`deploy:run`) first, and then the connection's own setting on top: anyone
   whose role may run deployments (the default), the Admin role only, or nobody.
-  `lib/connection-access.ts` holds the rule, the setting is a `<select>` on
+  `lib/connections/access.ts` holds the rule, the setting is a `<select>` on
   Connections, and both executing routes (`scripts/apply`, `scripts/revert`)
   check it before opening a connection. One more route reads the same
   setting: `scripts/generate`, before it tries AI-written SQL on the database. Dry runs are included, because a
@@ -471,13 +471,13 @@ Some of those are new enough to say where they live:
   reference schema others are compared against: it is a fact about the
   database, not a rank to be outranked.
 - **A comparison says what changed since the last one of the same pair.**
-  `comparison_runs` stores what each run found; `lib/comparison-history.ts`
+  `comparison_runs` stores what each run found; `lib/compare/history.ts`
   diffs the current run against the previous one and the panel on Compare
   reports what appeared and what was resolved. Absent on a first comparison,
   because there is nothing to have drifted from. Only structural differences
   are tracked — row counts move whenever a database is used, and counting that
   as drift would bury the schema change that matters.
-- **Snapshots carry a format version.** `lib/snapshot-format.ts` stamps one on
+- **Snapshots carry a format version.** `lib/postgres/snapshot-format.ts` stamps one on
   every capture. The comparator already refused to report a category as "added"
   just because an old baseline predated it — a category is compared only when
   both sides recorded it — so the bug this fixes is not a false drift report but
@@ -493,8 +493,8 @@ Some of those are new enough to say where they live:
   `.env.local.example` sets `NEXT_PUBLIC_AUTH_BYPASS=true`, and
   `docker-compose.yml` does only when asked
   (`NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build`). With it on,
-  `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
-  `lib/auth-guard.ts` let every request through as an admin, or as the role
+  `lib/auth/mode.ts` reports the bypass as on and both the UI guard and
+  `lib/auth/guard.ts` let every request through as an admin, or as the role
   picked in View as (below). The wiring underneath is complete: every API route
   that a person calls opens with `requirePermission`, `requireMember` or
   `requireSignedIn` (the list of exceptions is under *API routes* in §3), and
@@ -566,9 +566,9 @@ counted as bullets rather than headings some are not built. They are listed here
 rather than left for a marker to find.
 
 - **Multiple database types** (feature 2.4). PostgreSQL only.
-  `lib/dialects.ts` names the three engines the app has an opinion about and
+  `lib/connections/dialects.ts` names the three engines the app has an opinion about and
   carries an `implemented` flag; only PostgreSQL has it, and
-  `SUPPORTED_TYPES` in `lib/connection-validate.ts` is derived from that flag
+  `SUPPORTED_TYPES` in `lib/connections/validate.ts` is derived from that flag
   rather than written out separately. What that file buys is honesty, not
   coverage: a MySQL connection is now refused with a reason instead of being
   saved and then silently filtered out of Compare. Introspection is still

@@ -11,7 +11,7 @@
 //   - the apply route saves that version, and its rollback, to GitHub right
 //     after the commit, the same step every Deploy run takes;
 //   - the version is picked from the change level, the way every screen that
-//     saves a script picks it (lib/quick-run.ts);
+//     saves a script picks it (lib/deploy/quick-run.ts);
 //   - roles and approvals decide who may run it, as on the rest of Deploy.
 // Two presses: Dry run, then Deploy. Deploy opens only for the exact text the
 // dry run passed; any edit locks it again.
@@ -31,14 +31,14 @@ import {
   XIcon,
 } from "@/components/ui/icons";
 import { useAiAccess } from "@/components/studio/AiPanel";
-import { apiFetch } from "@/lib/api-fetch";
-import { newRunId } from "@/lib/run-id";
-import { readApplyFailure } from "@/lib/apply-failure";
-import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/registry-report";
-import { describeChangeType } from "@/lib/change-type";
-import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { readAppliedVersion, readFamilyVersions } from "@/lib/family-reads";
-import { compareVersions } from "@/lib/script-status";
+import { apiFetch } from "@/lib/ui/api-fetch";
+import { newRunId } from "@/lib/deploy/run-id";
+import { readApplyFailure } from "@/lib/deploy/apply-failure";
+import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
+import { describeChangeType } from "@/lib/versions/change-type";
+import { canExecute, toExecuteRole } from "@/lib/connections/access";
+import { readAppliedVersion, readFamilyVersions } from "@/lib/versions/family-reads";
+import { compareVersions } from "@/lib/versions/script-status";
 import {
   isRollbackWriteAnswer,
   isRollbackWriteChecks,
@@ -61,7 +61,7 @@ import {
   quickLevelLabel,
   quickRunSql,
   quickSqlProblem,
-} from "@/lib/quick-run";
+} from "@/lib/deploy/quick-run";
 
 export type QuickRunConnection = {
   id: number | string;

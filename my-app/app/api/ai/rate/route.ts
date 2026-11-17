@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import { actorFor } from "@/lib/auth-mode";
+import { requirePermission } from "@/lib/auth/guard";
+import { actorFor } from "@/lib/auth/mode";
 import { rateAiCall } from "@/lib/ai/store";
 
 /** ai_calls.id is a PostgreSQL INTEGER; a bigger number is not an id, it is a bad request. */

@@ -2,7 +2,7 @@
 // call with its fallback, the shape check, the feature's code checks and the
 // one retry. Everything outside run.ts is a fake, so no database and no model.
 
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,

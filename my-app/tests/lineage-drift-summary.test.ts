@@ -6,13 +6,13 @@
 // and extensions as well.
 //
 // Nothing here reaches a database: the metadata pool is a stand-in.
-jest.mock("../lib/version-db", () => ({
+jest.mock("../lib/db/version-db", () => ({
   __esModule: true,
   default: {},
   syncMetadataTables: async () => undefined,
 }));
 
-import { buildDriftSummary, type DriftCounts } from "../lib/lineage-db";
+import { buildDriftSummary, type DriftCounts } from "../lib/versions/lineage-db";
 
 const none: DriftCounts = { tablesAdded: 0, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0 };
 

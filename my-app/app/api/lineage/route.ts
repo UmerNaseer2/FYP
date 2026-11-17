@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth-guard";
-import pool, { syncMetadataTables } from "@/lib/version-db";
+import { requirePermission } from "@/lib/auth/guard";
+import pool, { syncMetadataTables } from "@/lib/db/version-db";
 import {
   listTrackedSchemas,
   type TrackedSchemaListItem,
-} from "@/lib/lineage-db";
+} from "@/lib/versions/lineage-db";
 
 // Re-export so existing callers can keep importing the list item type from here.
 export type { TrackedSchemaListItem };

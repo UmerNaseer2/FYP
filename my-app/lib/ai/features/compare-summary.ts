@@ -20,8 +20,8 @@
 // ---------------------------------------------------------------------------
 
 import { z } from "zod";
-import { buildDiffDocument, type ChangeRow } from "../../compare-export";
-import type { CompareReport } from "../../compare-types";
+import { buildDiffDocument, type ChangeRow } from "../../compare/export";
+import type { CompareReport } from "../../compare/types";
 import type { TableSnapshot } from "../../postgres";
 import { isKnownName, knownNames } from "../checks";
 import { schemaSlice, tableText } from "../context";
