@@ -138,17 +138,21 @@ normally has. If one is missing: `sudo apt install -y openssl coreutils unzip`.
 
 ## 2. Put the files in place and load the image
 
-You get the image and this kit from GitHub, as one download.
+You get the image and this kit as one file, `schema-studio-handover.zip`
+(about 107 MB), from the Google Drive link you were sent.
 
-1. Open the repository's **Actions** tab, choose the **CI** workflow, and open
-   the latest green run on the `handover` branch.
-2. Under **Artifacts**, download `schema-studio-handover`. GitHub asks you to
-   be signed in. You get `schema-studio-handover.zip`. GitHub keeps each
-   run's download for 90 days. If the run is older and the download is gone,
-   ask for the CI to be run again, or build the image yourself ("For
-   developers" at the end).
-3. Copy the zip into your Ubuntu home folder. On WSL, Windows downloads are at
-   `/mnt/c/Users/<your Windows name>/Downloads/`.
+1. Open the link and download the zip. Drive may say it cannot scan the file
+   for viruses because it is large; choose **Download anyway**. The check
+   below confirms the image arrived intact.
+2. Copy the zip into your Ubuntu home folder. On WSL, Windows downloads are
+   at `/mnt/c/Users/<your Windows name>/Downloads/`, so for example:
+
+```bash
+cp "/mnt/c/Users/<your Windows name>/Downloads/schema-studio-handover.zip" ~/
+```
+
+If the link no longer works, ask for a new one, or build the image yourself
+("For developers" at the end).
 
 Unzip it into a new folder and check the image arrived intact:
 
@@ -541,7 +545,7 @@ Everything else in this guide is the same.
 | What did it print? | `docker compose logs --tail 200 app` |
 | Change a setting | edit `.env`, then `docker compose up -d --wait` |
 
-**Install a new version:** download the new `schema-studio-handover` zip,
+**Install a new version:** download the new `schema-studio-handover.zip`,
 check and load the image as in step 2 (`sha256sum -c`, `docker load`), then
 `docker compose up -d --wait`. The new image replaces the `handover` tag, and
 the app adds any new tables or columns itself when it starts. Your data and
@@ -751,6 +755,13 @@ The source is in the repository's `my-app` folder (Next.js 16, React 19,
 TypeScript, PostgreSQL through `pg` and Sequelize). Start with
 `docs/DEVELOPER-MANUAL.md`: how the app is built, where each feature lives,
 how roles work, and step by step recipes for common changes.
+
+Every green CI run on the `handover` branch also offers the same zip:
+open the repository's **Actions** tab, the **CI** workflow, the run, then
+**Artifacts**, `schema-studio-handover` (you must be signed in to GitHub;
+each run's download is kept for 90 days). That is where the Drive copy comes
+from. Use the CI one rather than an image built on an Apple Silicon Mac, which
+is made for ARM and will not run properly on an ordinary Intel or AMD PC.
 
 Build the image yourself, from the repository root:
 
