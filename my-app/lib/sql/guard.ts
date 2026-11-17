@@ -475,7 +475,7 @@ export const ROW_DESTROYING_NOT_BREAKING: readonly string[] = ["TRUNCATE", "DELE
  * The inside of a DO block is read too. maskNonCode blanks a dollar-quoted body
  * whole, and the constraints a generated script adds now live in exactly such
  * blocks, each behind a lookup that skips it when it is already there (see
- * onlyIfMissing in lib/sql/generate.ts). Only the constraint and unique-index
+ * onlyIfMissing in lib/sql/generate/statement-helpers.ts). Only the constraint and unique-index
  * checks look inside. The one SET NOT NULL a generated script puts in a DO
  * block already skips a table that holds rows, so it cannot fail this way and
  * is deliberately not counted.
@@ -519,7 +519,7 @@ export function findMightFailStatements(sql: string): string[] {
  * maskNonCode blanks a dollar-quoted body whole. That is right for most scans,
  * but a generated script runs some of its statements from exactly such a body,
  * behind a lookup that skips them on a second run (see onlyIfMissing in
- * lib/sql/generate.ts). A scan that has to see those statements reads this as
+ * lib/sql/generate/statement-helpers.ts). A scan that has to see those statements reads this as
  * well as the masked script.
  */
 export function doBlockBodies(sql: string): string {

@@ -72,7 +72,7 @@ things specifically:
   pairs on weighted similarity and applies `tableNameRenameGuard` to demote
   structurally-similar-but-unrelated names. Where does this get it wrong, and
   what does a wrong answer cost?
-- `lib/sql/generate.ts` — is the generated SQL correct, and is the *rollback*
+- `lib/sql/generate/` — is the generated SQL correct, and is the *rollback*
   genuinely the inverse of the migration? `generateRollback` works by re-running
   the comparison backwards. Where does that reasoning break?
 - Ordering and dependency: does generated DDL respect foreign keys, inheritance

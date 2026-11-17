@@ -209,7 +209,7 @@ my-app/
 | `lib/compare/utils.ts` | Levenshtein, Jaccard, multiset helpers used by the scorer |
 | `lib/compare/types.ts` | Shared types for snapshots and reports |
 | `lib/postgres/` | Catalog introspection, connection-pool cache, schema-qualifier stripping |
-| `lib/sql/generate.ts` | Migration generator (`generateMigration()`) and its rollback (`generateRollback()`); the order it writes statements in is under *How the comparison engine works* below |
+| `lib/sql/generate/` | Migration generator, split into parts (see its own `README.md`) (`generateMigration()`) and its rollback (`generateRollback()`); the order it writes statements in is under *How the comparison engine works* below |
 | `lib/sql/guard.ts` | Destructive-statement detection |
 | `lib/versions/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
 | `lib/drift/runner.ts` | One drift check plus its audit row — shared by the button, the scheduler and tracking |
@@ -313,7 +313,7 @@ is read cannot produce a snapshot that never existed. `compareSchemas()` then:
    weak match becomes a create + drop instead of a rename;
 4. repeats the same process for columns inside each matched table.
 
-`generateMigration()` in `lib/sql/generate.ts` then writes the script. It writes
+`generateMigration()` in `lib/sql/generate/migration.ts` then writes the script. It writes
 its sections in this order, so that each statement finds what it depends on:
 extensions, collations, types and standalone sequences, the functions a new
 table needs, dropping views that must be rebuilt, table renames, renames of

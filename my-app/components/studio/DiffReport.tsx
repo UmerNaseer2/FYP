@@ -60,7 +60,7 @@ type DiffKind = "add" | "rem" | "chg";
  *   "armed": a script is rendered and its DROP statements will run.
  *
  * These map 1:1 onto generateMigration()'s allowDataLoss option, see
- * lib/sql/generate.ts, which is the only thing that actually emits SQL.
+ * lib/sql/generate/, which is the only thing that actually emits SQL.
  */
 export type DropMode = "none" | "safe" | "armed";
 

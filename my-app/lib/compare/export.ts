@@ -11,7 +11,7 @@
 //
 // Severity is never decided here. Every row's grade comes from the graders in
 // compare.ts, which are the same ones the diff canvas reads and are checked
-// against what lib/sql/generate.ts writes. An export that graded a change
+// against what lib/sql/generate/ writes. An export that graded a change
 // differently from the screen it was exported from would be worse than no
 // export at all.
 //

@@ -217,8 +217,8 @@ route into the codebase.
 |---|---|---|
 | `fetchSchemaSnapshot(cfg, schema)` | `lib/postgres/:1394` | The single introspection entry point. Everything downstream consumes its `SchemaSnapshot`. |
 | `compareSchemas(left, right)` | `lib/compare/diff.ts:2784` | The diff engine. 2,874 lines; the only entry point the app calls. |
-| `generateMigration(report, opts)` | `lib/sql/generate.ts:4222` | Diff → migration SQL. |
-| `generateRollback(report, opts)` | `lib/sql/generate.ts:4884` | The inverse, by re-running the comparison backwards. |
+| `generateMigration(report, opts)` | `lib/sql/generate/migration.ts` | Diff → migration SQL. |
+| `generateRollback(report, opts)` | `lib/sql/generate/rollback.ts` | The inverse, by re-running the comparison backwards. |
 | `runComparison(query, record)` | `lib/compare/run.ts:1027` | Orchestrates a whole compare run; everything on `/compare` comes from here. |
 | `runDriftCheck(id, source, mode)` | `lib/drift/runner.ts:120` | One drift check, and the `drift_events` row it writes. |
 | `fetchSchemaVersionInfo(cfg, schema)` | `lib/versions/detection.ts:575` | Finds a target's own version table: Flyway, Liquibase, or hand-rolled. |

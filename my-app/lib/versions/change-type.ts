@@ -543,7 +543,7 @@ function tidy(text: string): string {
  *
  * The inside of a DO block is read as well. maskNonCode blanks it whole, and a
  * generated script puts some statements there, behind a lookup that skips them
- * on a second run (see onlyIfMissing in lib/sql/generate.ts). A column rename
+ * on a second run (see onlyIfMissing in lib/sql/generate/statement-helpers.ts). A column rename
  * written that way is still a rename. Inside the block, BEGIN / THEN / ELSE /
  * LOOP also end a piece, so "IF … THEN ALTER TABLE …" is read as a statement
  * starting with ALTER TABLE.

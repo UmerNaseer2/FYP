@@ -799,7 +799,7 @@ export function constraintDiffSeverity(diff: ConstraintDiff): ChangeSeverity {
  * This and the two rules below used to live inline in DiffReport's matchLevel,
  * which is exactly the arrangement that let a table wear an "additive" pill
  * over a script full of breaking statements. They are restatements of what
- * lib/sql/generate.ts grades ADD COLUMN / DROP COLUMN / ALTER COLUMN, and they
+ * lib/sql/generate/ grades ADD COLUMN / DROP COLUMN / ALTER COLUMN, and they
  * live here so the canvas, the export and the version picker all read the one
  * copy.
  */
@@ -841,7 +841,7 @@ export function columnMatchSeverity(match: ColumnMatch): ChangeSeverity {
  * table is breaking. Dropping a check, or dropping NOT NULL, only widens what
  * the columns may hold and cannot fail.
  *
- * lib/sql/generate.ts builds its ALTER DOMAIN statements from the two helpers this
+ * lib/sql/generate/ builds its ALTER DOMAIN statements from the two helpers this
  * calls, so the grade on screen and the grade on the statement are one answer.
  */
 export function domainNotNullTightens(
@@ -1978,7 +1978,7 @@ function objectChangeSeverity(
  *
  * Only a range type can be, and only when the snapshot does not describe it
  * well enough to write CREATE TYPE ... AS RANGE. rangeTypeIsCreatable is the
- * one place that decides it, and lib/sql/generate.ts asks the same function —
+ * one place that decides it, and lib/sql/generate/ asks the same function —
  * so the line on screen and the statement in the script cannot say different
  * things about the same type.
  */
