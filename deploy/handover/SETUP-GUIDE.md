@@ -2,9 +2,12 @@
 
 This guide takes one Ubuntu machine (Ubuntu on WSL counts) from nothing to a
 running Schema Studio that you sign in to with your own Microsoft account. It
-assumes Docker Engine and PostgreSQL 16 on that machine. Every step has the
-exact commands; run them in order. Allow about 45 minutes, most of it in the
-Microsoft and GitHub screens.
+assumes Docker Engine and PostgreSQL 16 on that machine.
+
+The quick way is one script, `setup.sh`, that does most of the work for you:
+see [The quick way: one command](#the-quick-way-one-command). Allow about 20
+minutes, most of it in the Microsoft screens. Every step also has its exact
+commands, for doing it by hand or for seeing exactly what the script does.
 
 What you end up with:
 
@@ -21,6 +24,11 @@ Nothing in this kit points at our accounts. Every ID, secret and address is
 yours.
 
 ## Contents
+
+**Quick way:** [one command](#the-quick-way-one-command) does steps 2 to 5
+and 7 for you.
+
+**Step by step:**
 
 1. [Check Docker and PostgreSQL](#1-check-docker-and-postgresql)
 2. [Put the files in place and load the image](#2-put-the-files-in-place-and-load-the-image)
@@ -67,6 +75,7 @@ does.
 | File | What it is |
 | --- | --- |
 | `SETUP-GUIDE.md` | This guide. |
+| `setup.sh` | Does steps 2 to 5 and 7 in one go, and asks for the values from step 6 ([The quick way](#the-quick-way-one-command)). |
 | `docker-compose.yml` | Runs the app container. The only service; there is no database container. |
 | `example.env` | Every setting the app reads, with notes. Copied to `.env` in step 5. |
 | `sql/01-database-and-login.sql` | Makes the login and the database, with its privileges (step 3). |
@@ -74,6 +83,73 @@ does.
 | `docker-compose.docker-desktop.yml` | Only for Docker Desktop on a Mac. Not used on Ubuntu. |
 | `make-sql.sh` | For developers: makes `02` again after a change to the app's tables. |
 | `schema-studio-app-<version>.tar.gz` | The app image, with a `.sha256` file to check it. In the download, not in the repository. |
+
+## The quick way: one command
+
+`setup.sh` does steps 2 to 5 and 7 for you, and asks for the three values
+from step 6. In this order:
+
+1. Do [step 1](#1-check-docker-and-postgresql): Docker Engine and PostgreSQL
+   16 installed.
+2. Do [step 6](#6-register-the-app-with-microsoft), the Microsoft app
+   registration, and keep its three values at hand: the **Application
+   (client) ID**, the **Directory (tenant) ID** and the client secret's
+   **Value**. Skip its last part (putting them in `.env` with `nano`); the
+   script does that.
+3. Download the zip and copy it into your Ubuntu home folder, as in the first
+   part of [step 2](#2-put-the-files-in-place-and-load-the-image) (up to the
+   `cp` command). Then unzip it:
+
+   ```bash
+   mkdir -p ~/schema-studio-download && cd ~/schema-studio-download && unzip -o ~/schema-studio-handover.zip
+   ```
+
+4. Run the script as yourself, not with `sudo`:
+
+   ```bash
+   bash ~/schema-studio-download/kit/setup.sh
+   ```
+
+   It asks for your sudo password, then for the three Microsoft values (the
+   secret stays hidden while you paste it). It ends with `Schema Studio is
+   running`.
+5. Carry on with [step 8](#8-sign-in-and-set-up-your-organization), and sign
+   in first yourself.
+
+What it does, and the step that does the same by hand:
+
+| The script | By hand |
+| --- | --- |
+| Starts PostgreSQL and Docker if they are stopped, and finds PostgreSQL 16's port | step 1 |
+| Checks the image file against its `.sha256` and loads it into Docker | step 2 |
+| Makes `/opt/schema-studio`, which only you can open, and copies the kit into it | step 2 |
+| Makes the login `schema_studio` and its database with a random password (`sql/01`, run as `postgres`), and checks the login works | step 3 |
+| Loads `sql/02` as that login, so it owns every table | step 4 |
+| Makes `.env`, which only you can read, with the database address and two random keys | step 5 |
+| Asks for the three Microsoft values and puts them in `.env` | step 6, last part |
+| Starts the app and waits until it answers | step 7 |
+
+Good to know:
+
+* It never prints a password, a key or the secret. They live in
+  `/opt/schema-studio/.env` only.
+* Press Enter at a Microsoft question to skip the questions. It then sets up
+  everything else and stops before starting the app. Do step 6, then run
+  `bash /opt/schema-studio/setup.sh`.
+* Running it again is safe. It keeps what is done already, above all the
+  password and the keys in `.env`, and does only what is missing. So it is
+  also how to start everything after Windows restarts, and, run from a newer
+  download, how to [install a new version](#day-to-day).
+* If `docker` needs `sudo` on your machine, the script uses `sudo` for it. It
+  stops on Docker Desktop (see [Docker Desktop instead of Docker
+  Engine](#docker-desktop-instead-of-docker-engine)).
+* When something stops it, it says what, and what to do or which part of this
+  guide helps. Fix that and run it again.
+* For your own Supabase as the app's database, see [Using your own Supabase
+  instead](#using-your-own-supabase-instead).
+
+Steps 2 to 7 below are the same work by hand. Read them to see exactly what
+the script did, or follow them instead of it.
 
 ## 1. Check Docker and PostgreSQL
 
@@ -119,7 +195,8 @@ pg_lsclusters
 ```
 
 This guide uses port 5432. If yours is different, put `-p <port>` after
-`psql` in steps 3 and 4 and use that port in step 5.
+`psql` in steps 3 and 4 and use that port in step 5. (`setup.sh` finds the
+port itself.)
 
 No PostgreSQL 16 yet? On Ubuntu 24.04 it is the standard package:
 
@@ -153,6 +230,9 @@ cp "/mnt/c/Users/<your Windows name>/Downloads/schema-studio-handover.zip" ~/
 
 If the link no longer works, ask for a new one, or build the image yourself
 ("For developers" at the end).
+
+Taking the quick way? Go back to [The quick way](#the-quick-way-one-command)
+now. By hand, carry on here.
 
 Unzip it into a new folder and check the image arrived intact:
 
@@ -342,8 +422,9 @@ the Application Developer role, or to do this step).
    `User.Read`, which is there already). If your directory requires admin
    consent for apps, an Entra admin presses **Grant admin consent** here.
 
-Put the three values into `.env` with an editor, so the secret never lands
-in your shell history:
+Taking the quick way? Stop here: `setup.sh` asks for the three values and
+puts them in `.env` itself. By hand, put them into `.env` with an editor, so
+the secret never lands in your shell history:
 
 ```bash
 nano /opt/schema-studio/.env
@@ -480,7 +561,8 @@ account menu.
 
 ## Who can read what
 
-This is the file and access setup from steps 2, 3 and 5, in one place.
+This is the file and access setup from steps 2, 3 and 5 (which `setup.sh`
+does the same way), in one place.
 
 | What | Who can read it | Set by |
 | --- | --- | --- |
@@ -519,13 +601,29 @@ It prints `700` and `600` with your user name.
 ## Using your own Supabase instead
 
 The app's own database can be a Supabase project of yours instead of the
-PostgreSQL on this machine. Skip steps 3 and 4, then:
+PostgreSQL on this machine. In your Supabase project press **Connect** and
+copy the **Transaction pooler** string (port 6543). Put your database
+password in place of `[YOUR-PASSWORD]`.
 
-1. In your Supabase project press **Connect** and copy the **Transaction
-   pooler** string (port 6543). Put your database password in place of
-   `[YOUR-PASSWORD]`.
-2. In step 5, put that string in `.env` as `DATABASE_URL_A` (with `nano`,
-   instead of the first `sed` line).
+**Quick way:** give the string to `setup.sh` the first time it runs. Type
+this, paste the string (it stays hidden) and press Enter:
+
+```bash
+read -rs DATABASE_URL_A && export DATABASE_URL_A
+```
+
+Then, in the same terminal:
+
+```bash
+bash ~/schema-studio-download/kit/setup.sh
+```
+
+It puts the string in `.env` and leaves PostgreSQL on this machine alone (you
+do not even need one). In the password, write `@`, `#`, a quote or a space as
+`%40`, `%23`, `%27` or `%20`, or the string does not work.
+
+**By hand:** skip steps 3 and 4, and in step 5 put that string in `.env` as
+`DATABASE_URL_A` (with `nano`, instead of the first `sed` line).
 
 The app creates its tables on its first start. To create them yourself
 first, paste `sql/02-schema-studio-tables.sql` into Supabase's **SQL Editor**
@@ -544,12 +642,29 @@ Everything else in this guide is the same.
 | Is it up? | `docker compose ps` |
 | What did it print? | `docker compose logs --tail 200 app` |
 | Change a setting | edit `.env`, then `docker compose up -d --wait` |
+| Start everything after Windows or the machine restarts | `bash /opt/schema-studio/setup.sh` |
 
 **Install a new version:** download the new `schema-studio-handover.zip`,
-check and load the image as in step 2 (`sha256sum -c`, `docker load`), then
-`docker compose up -d --wait`. The new image replaces the `handover` tag, and
-the app adds any new tables or columns itself when it starts. Your data and
-settings stay.
+copy it into your Ubuntu home folder as in step 2, unzip it into an empty
+folder and run the `setup.sh` inside it:
+
+```bash
+rm -rf ~/schema-studio-download && mkdir ~/schema-studio-download && cd ~/schema-studio-download && unzip ~/schema-studio-handover.zip
+```
+
+```bash
+bash ~/schema-studio-download/kit/setup.sh
+```
+
+It checks and loads the new image, copies the new kit files into
+`/opt/schema-studio` (your `.env` stays as it is) and restarts the app on the
+new image. The app adds any new tables or columns itself when it starts. Your
+data and settings stay.
+
+By hand: check and load the image as in step 2 (`sha256sum -c`, `docker
+load`), copy the new kit files over the old ones (`cp -r
+~/schema-studio-download/kit/. /opt/schema-studio/`, which leaves `.env`
+alone), then `docker compose up -d --wait`.
 
 **Back up the app's data** (run it on a schedule, keep copies off this
 machine):
@@ -600,6 +715,12 @@ Start with what the app printed:
 cd /opt/schema-studio && docker compose logs --tail 100 app
 ```
 
+### setup.sh stopped with a message
+
+Its last lines say what went wrong and, under it, what to do or which part of
+this guide helps. Fix that and run it again: it keeps what is done already
+and carries on. The headings it prints name the matching step of this guide.
+
 ### Compose says "required variable ... is missing a value"
 
 That line in `.env` is empty. Fill it in (steps 5 and 6) and run `docker
@@ -607,8 +728,15 @@ compose up -d --wait` again.
 
 ### "password authentication failed for user schema_studio"
 
-The password in `DATABASE_URL_A` does not match the login's. Set a new one
-and put it in `.env`:
+The password in `DATABASE_URL_A` does not match the login's. The quick fix:
+empty that line and run the script, which gives the login a new random
+password and puts it in `.env`:
+
+```bash
+sed -i 's|^DATABASE_URL_A=.*|DATABASE_URL_A=|' /opt/schema-studio/.env && bash /opt/schema-studio/setup.sh
+```
+
+By hand, set a new one and put it in `.env`:
 
 ```bash
 export SS_DB_PASSWORD="$(openssl rand -hex 24)"
@@ -762,12 +890,20 @@ open the repository's **Actions** tab, the **CI** workflow, the run, then
 each run's download is kept for 90 days). That is where the Drive copy comes
 from. Use the CI one rather than an image built on an Apple Silicon Mac, which
 is made for ARM and will not run properly on an ordinary Intel or AMD PC.
+CI also runs `setup.sh` from that same download on a fresh Ubuntu with
+PostgreSQL 16 (the `handover-script` job): before the Microsoft values, with
+them, again with nothing to do, and after a restart.
 
 Build the image yourself, from the repository root:
 
 ```bash
 docker build -t schema-studio-app:handover my-app
 ```
+
+With no image file beside the kit, `setup.sh` uses the
+`schema-studio-app:handover` already in Docker, so `bash
+deploy/handover/setup.sh` from the repository root sets up a locally built
+image the same way.
 
 After any change to the app's tables (`my-app/lib/db/models`,
 `my-app/lib/db/bootstrap.ts`), make `sql/02` again from the new image and

@@ -4,7 +4,7 @@ Where to read about Schema Studio, by what you want to do.
 
 | I want to | Read |
 |---|---|
-| Set the app up on a machine of my own (Docker, my own PostgreSQL, my own Microsoft sign-in) | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
+| Set the app up on a machine of my own (Docker, my own PostgreSQL, my own Microsoft sign-in), with one command (`setup.sh`) or step by step | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
 | Run it on Supabase and Vercel instead | [`deploy/SUPABASE-VERCEL.md`](../deploy/SUPABASE-VERCEL.md) |
 | Use the app, screen by screen | [`user-manual/schema-studio-user-manual.txt`](user-manual/schema-studio-user-manual.txt) |
 | Change the code: how it is built, where things live, which files a feature touches, the rules it follows | [`DEVELOPER-MANUAL.md`](DEVELOPER-MANUAL.md) |

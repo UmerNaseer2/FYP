@@ -1,4 +1,4 @@
-# Continuous integration. Four jobs, side by side:
+# Continuous integration. Four jobs side by side, and a fifth after one of them:
 #
 # - check runs the same four commands a developer runs before pushing, in the
 #   same order, so a green tick means the branch is in the state the repo
@@ -11,6 +11,9 @@
 #   on a fresh Ubuntu with PostgreSQL 16, command by command. When it all
 #   works, it offers the image and the kit as one download,
 #   "schema-studio-handover", under the run's Artifacts.
+# - handover-script takes that download to another fresh Ubuntu and runs
+#   deploy/handover/setup.sh from it, the guide's one-command way: before the
+#   Microsoft values, with them, again with nothing to do, and after a restart.
 #
 # The app lives in my-app/, not at the repository root, so every step of the
 # check job runs there and the npm cache is keyed on my-app/package-lock.json.
@@ -461,4 +464,153 @@ jobs:
           docker compose ps --all || true
           docker compose logs --no-color --tail 300 || true
           # The last lines again as an annotation, readable on the summary page.
+          echo "::warning title=The app's last log lines::$(docker compose logs --no-color --tail 50 2>&1 | head -c 4000 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+
+  # The one-command way in: deploy/handover/setup.sh, run from the very
+  # download the handover job offers, on another fresh Ubuntu. It runs as a
+  # person would run it: first before the Microsoft registration (it makes
+  # everything and stops short of starting the app), then with the three
+  # values (the app starts), then again with nothing left to do, and once more
+  # after PostgreSQL and the app were stopped, as when Windows restarts WSL.
+  handover-script:
+    name: Handover setup script on Ubuntu with PostgreSQL 16
+    needs: handover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        # With pipefail, so "setup.sh | tee" fails when setup.sh does.
+        shell: bash
+    env:
+      ENV_FILE: /opt/schema-studio/.env
+    steps:
+      - name: Get the download
+        uses: actions/download-artifact@v4
+        with:
+          name: schema-studio-handover
+          path: ~/schema-studio-download
+
+      - name: Check the scripts with shellcheck
+        run: |
+          ls -lR ~/schema-studio-download
+          if ! command -v shellcheck > /dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q shellcheck
+          fi
+          shellcheck ~/schema-studio-download/kit/setup.sh ~/schema-studio-download/kit/make-sql.sh
+
+      # PostgreSQL is left stopped, so the script has to start it.
+      - name: "Guide step 1: Docker and PostgreSQL 16"
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-16
+          sudo service postgresql stop
+          pg_lsclusters
+          docker compose version
+          if docker image inspect schema-studio-app:handover > /dev/null 2>&1; then
+            echo "::error::This runner has the image already, so the load is not tested."
+            exit 1
+          fi
+
+      - name: "Run 1: before the Microsoft registration"
+        run: |
+          bash ~/schema-studio-download/kit/setup.sh < /dev/null 2>&1 | tee "$RUNNER_TEMP/run1.txt"
+          grep -q 'Not started yet' "$RUNNER_TEMP/run1.txt"
+          [ "$(stat -c '%a %U' /opt/schema-studio)" = "700 $USER" ]
+          [ "$(stat -c '%a %U' "$ENV_FILE")" = "600 $USER" ]
+          grep -Eq '^DATABASE_URL_A=postgres://schema_studio:[0-9a-f]{48}@127\.0\.0\.1:5432/schema_studio$' "$ENV_FILE"
+          [ "$(grep -cE '^(NEXTAUTH_SECRET|APP_ENCRYPTION_KEY)=[0-9a-f]{64}$' "$ENV_FILE")" = 2 ]
+          [ "$(grep -cE '^AZURE_AD_(CLIENT_ID|TENANT_ID|CLIENT_SECRET)=$' "$ENV_FILE")" = 3 ]
+          # Neither the database password nor the keys reach the output.
+          for value in "$(sed -n 's/^DATABASE_URL_A=postgres:\/\/schema_studio:\([0-9a-f]*\)@.*/\1/p' "$ENV_FILE")" \
+            "$(sed -n 's/^NEXTAUTH_SECRET=//p' "$ENV_FILE")" "$(sed -n 's/^APP_ENCRYPTION_KEY=//p' "$ENV_FILE")"; do
+            echo "::add-mask::$value"
+            if grep -qF "$value" "$RUNNER_TEMP/run1.txt"; then
+              echo "::error::setup.sh printed a secret."
+              exit 1
+            fi
+          done
+          pg_isready
+          if [ -n "$(docker ps -aq --filter label=com.docker.compose.project=schema-studio)" ]; then
+            echo "::error::setup.sh started the app without the Microsoft values."
+            exit 1
+          fi
+          version="$(basename ~/schema-studio-download/schema-studio-app-*.tar.gz .tar.gz)"
+          [ "$(docker image inspect -f '{{.Id}}' schema-studio-app:handover)" = "$(docker image inspect -f '{{.Id}}' "schema-studio-app:${version#schema-studio-app-}")" ]
+          # sql/02 loaded as the app's login, so it owns every table.
+          read -r mine all <<< "$(cd / && sudo -u postgres psql -d schema_studio -tA -F ' ' -c "SELECT count(*) FILTER (WHERE tableowner = 'schema_studio'), count(*) FROM pg_tables WHERE schemaname = 'public'")"
+          echo "schema_studio owns $mine of $all tables."
+          [ "$mine" = "$all" ] && [ "$all" -gt 20 ]
+          install -m 600 "$ENV_FILE" "$RUNNER_TEMP/env-run1"
+
+      # The Secret ID is a GUID, and the commonest mix-up in step 6.
+      - name: "Run 1b: the Secret ID in place of the secret is refused"
+        run: |
+          if AZURE_AD_CLIENT_SECRET=11111111-2222-3333-4444-555555555555 \
+            bash ~/schema-studio-download/kit/setup.sh < /dev/null > "$RUNNER_TEMP/run1b.txt" 2>&1; then
+            cat "$RUNNER_TEMP/run1b.txt"
+            echo "::error::setup.sh took a Secret ID as the client secret."
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/run1b.txt"
+          grep -q 'that is the Secret ID' "$RUNNER_TEMP/run1b.txt"
+          cmp "$ENV_FILE" "$RUNNER_TEMP/env-run1"
+
+      # Made-up values stand in for step 6, as in the handover job, from the
+      # environment instead of the questions. The secret has the characters a
+      # real one has (~ . _ -). PostgreSQL is stopped again first.
+      - name: "Run 2: with the Microsoft values"
+        run: |
+          sudo service postgresql stop
+          secret="ci~$(openssl rand -hex 16).a_b-c"
+          echo "::add-mask::$secret"
+          AZURE_AD_CLIENT_ID=00000000-0000-0000-0000-000000000001 \
+            AZURE_AD_TENANT_ID=00000000-0000-0000-0000-000000000002 \
+            AZURE_AD_CLIENT_SECRET="$secret" \
+            bash ~/schema-studio-download/kit/setup.sh < /dev/null 2>&1 | tee "$RUNNER_TEMP/run2.txt"
+          grep -q 'Schema Studio is running' "$RUNNER_TEMP/run2.txt"
+          if grep -qF "$secret" "$RUNNER_TEMP/run2.txt"; then
+            echo "::error::setup.sh printed the client secret."
+            exit 1
+          fi
+          grep -qxF "AZURE_AD_CLIENT_SECRET=$secret" "$ENV_FILE"
+          grep -qx 'AZURE_AD_CLIENT_ID=00000000-0000-0000-0000-000000000001' "$ENV_FILE"
+          grep -qx 'AZURE_AD_TENANT_ID=00000000-0000-0000-0000-000000000002' "$ENV_FILE"
+          # The password and the keys from run 1 are kept, not made again.
+          for key in DATABASE_URL_A NEXTAUTH_SECRET APP_ENCRYPTION_KEY; do
+            [ "$(grep "^$key=" "$ENV_FILE")" = "$(grep "^$key=" "$RUNNER_TEMP/env-run1")" ]
+          done
+          [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]
+          cd /opt/schema-studio
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ]
+          other="$(cd / && sudo -u postgres psql -d schema_studio -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'schema_studio'")"
+          [ "$other" = 0 ]
+
+      # From the installed copy, with everything done: it changes nothing.
+      - name: "Run 3: again, with nothing left to do"
+        working-directory: /opt/schema-studio
+        run: |
+          before="$(sha256sum .env) $(docker compose ps -q app)"
+          bash /opt/schema-studio/setup.sh < /dev/null 2>&1 | tee "$RUNNER_TEMP/run3.txt"
+          grep -q 'No image file here' "$RUNNER_TEMP/run3.txt"
+          [ "$before" = "$(sha256sum .env) $(docker compose ps -q app)" ]
+          [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]
+
+      - name: "Run 4: after a restart"
+        working-directory: /opt/schema-studio
+        run: |
+          docker compose stop
+          sudo service postgresql stop
+          bash /opt/schema-studio/setup.sh < /dev/null 2>&1 | tee "$RUNNER_TEMP/run4.txt"
+          grep -q 'PostgreSQL 16 is stopped. Starting it.' "$RUNNER_TEMP/run4.txt"
+          [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]
+          sleep 10
+          ! docker compose logs app | grep 'tick failed'
+
+      - name: Show the app's logs
+        if: failure()
+        run: |
+          cd /opt/schema-studio 2> /dev/null || exit 0
+          docker compose ps --all || true
+          docker compose logs --no-color --tail 300 || true
           echo "::warning title=The app's last log lines::$(docker compose logs --no-color --tail 50 2>&1 | head -c 4000 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"

@@ -11,7 +11,7 @@ code is right and this file needs a fix.
 
 | To | Read |
 |---|---|
-| Install and run the finished image, with your own PostgreSQL and Microsoft sign-in | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
+| Install and run the finished image, with your own PostgreSQL and Microsoft sign-in (one command, `deploy/handover/setup.sh`, or step by step) | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
 | Understand the code: architecture, where each feature lives, conventions, roles, recipes | [`docs/DEVELOPER-MANUAL.md`](../docs/DEVELOPER-MANUAL.md) |
 | Know why the SQL is written by hand, and how older PostgreSQL is handled | [`docs/RAW-SQL.md`](../docs/RAW-SQL.md) |
 | Run it on Supabase and Vercel instead | [`deploy/SUPABASE-VERCEL.md`](../deploy/SUPABASE-VERCEL.md) |
@@ -341,7 +341,7 @@ How the answers are kept honest:
 | Microsoft OAuth via NextAuth | NextAuth v5 with Microsoft Entra ID (`auth.config.ts`, `auth.ts`), and GitHub as a second provider. Real sign-in by default |
 | fetch with UI and API kept apart | Every page gets its data from a route in `app/api/` through `apiFetch` |
 | Tailwind or standard CSS | Tailwind v4 for layout and spacing, plus the hand-written classes in `app/globals.css` and `app/styles/` (section 8) |
-| Docker | A three-stage `my-app/Dockerfile` on the Next.js standalone output, a root `docker-compose.yml` for development, and `deploy/handover/` for running the image beside an existing PostgreSQL |
+| Docker | A three-stage `my-app/Dockerfile` on the Next.js standalone output, a root `docker-compose.yml` for development, and `deploy/handover/` for running the image beside an existing PostgreSQL (`setup.sh` does it in one command) |
 | Jest unit tests | **The test numbers live in this row only; update them here.** Measured 2026-11-17: 6,561 tests in 251 suites, all passing with a test database set. Without one, 9 suites holding 225 tests skip themselves. Coverage is measured on `lib/` (`collectCoverageFrom` in `jest.config.mjs`): lines 92.35%, statements 90.19%, branches 81.54%, functions 92.96%. Every page is tested: of the 19 `page.tsx` files, the 17 that show something have suites in `tests/page-*.test.tsx` (the 13 studio pages, login, onboarding, the invitation page and the landing page), and the two that only redirect (`/acme` and `/studio`) are covered by `tests/org-redirect.test.ts`. There are also 45 component suites (`tests/component-*.test.tsx`) |
 
 ---

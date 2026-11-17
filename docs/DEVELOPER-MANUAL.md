@@ -11,7 +11,7 @@ Other documents:
 
 | For | Read |
 |---|---|
-| Installing and running the finished image | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
+| Installing and running the finished image (one command, `setup.sh`, or step by step) | [`deploy/handover/SETUP-GUIDE.md`](../deploy/handover/SETUP-GUIDE.md) |
 | Using the app, screen by screen | [`user-manual/schema-studio-user-manual.txt`](user-manual/schema-studio-user-manual.txt) |
 | Why the SQL is written by hand | [`RAW-SQL.md`](RAW-SQL.md) |
 | How a schema is read | [`my-app/lib/postgres/README.md`](../my-app/lib/postgres/README.md) |
@@ -115,7 +115,7 @@ Two rules follow from this, and the whole codebase keeps them:
 | Path | What it is |
 |---|---|
 | `my-app/` | The app. Everything below is inside it unless it says otherwise. |
-| `deploy/handover/` | The kit for running the finished image on a machine with its own PostgreSQL: compose files, `example.env`, the SQL files, `make-sql.sh`, `SETUP-GUIDE.md` |
+| `deploy/handover/` | The kit for running the finished image on a machine with its own PostgreSQL: `setup.sh` (the guide's steps in one command), compose files, `example.env`, the SQL files, `make-sql.sh`, `SETUP-GUIDE.md` |
 | `deploy/SUPABASE-VERCEL.md` | Running it on Supabase and Vercel instead |
 | `docs/` | This manual, the raw SQL write-up, the user manual |
 | `docker-compose.yml` | A developer stack: PostgreSQL 17 and the app built from source |
@@ -699,6 +699,7 @@ also needs a sample row in `tests/org-migration.test.ts`.
 | Schema reading on PostgreSQL 13 to 18 | The schema reader and the SQL generator against six PostgreSQL versions |
 | Developer Docker stack | Builds and starts the root `docker-compose.yml` |
 | Handover kit on Ubuntu with PostgreSQL 16 | Builds the image, follows `SETUP-GUIDE.md` on a fresh PostgreSQL 16, checks `sql/02` is up to date, and offers the image file as a download |
+| Handover setup script on Ubuntu with PostgreSQL 16 | Takes that download to another fresh Ubuntu and runs `deploy/handover/setup.sh` from it: before the Microsoft values, with them, again with nothing to do, and after a restart. Also runs shellcheck on the kit's scripts |
 
 ### Settings
 
