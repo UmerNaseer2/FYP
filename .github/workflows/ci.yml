@@ -427,19 +427,34 @@ jobs:
       - name: The first start kept sql/02's tables
         working-directory: /opt/schema-studio
         run: |
-          done_sql="SELECT pg_try_advisory_xact_lock(7365786101) AND EXISTS (SELECT 1 FROM organizations o JOIN roles r ON r.org_id = o.id WHERE o.is_default AND r.role = 'admin')"
+          # A failure here is also written as an annotation, which anyone can
+          # read on the run's summary page.
+          annotate() {
+            echo "::error title=$1::$(head -c 4000 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          }
+          done_sql="SELECT pg_try_advisory_xact_lock(7365786101) AND EXISTS (SELECT 1 FROM organizations o JOIN roles r ON r.org_id = o.id WHERE o.is_default AND r.name = 'admin')"
           for _ in $(seq 120); do
-            [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql")" = t ] && break
+            [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql" 2>&1)" = t ] && break
             sleep 1
           done
-          [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql")" = t ]
+          if [ "$(sudo -u postgres psql -d schema_studio -tAc "$done_sql" 2>&1)" != t ]; then
+            { sudo -u postgres psql -d schema_studio -tAc "$done_sql" 2>&1
+              docker compose logs --no-color --tail 40 app; } | annotate "The first start did not finish"
+            exit 1
+          fi
           sudo -u postgres psql -d schema_studio -c 'SELECT slug, name, is_default FROM organizations'
           sudo -u postgres /usr/lib/postgresql/16/bin/pg_dump -d schema_studio \
             --schema-only --no-owner --no-privileges --no-comments --quote-all-identifiers \
             | grep -vE '^\\(un)?restrict |^-- Dumped (from database|by pg_dump) version ' > "$RUNNER_TEMP/after.sql"
-          diff <(sed -n '/^-- PostgreSQL database dump$/,$p' sql/02-schema-studio-tables.sql) \
-               <(sed -n '/^-- PostgreSQL database dump$/,$p' "$RUNNER_TEMP/after.sql")
-          ! docker compose logs app | grep 'tick failed'
+          if ! diff <(sed -n '/^-- PostgreSQL database dump$/,$p' sql/02-schema-studio-tables.sql) \
+                    <(sed -n '/^-- PostgreSQL database dump$/,$p' "$RUNNER_TEMP/after.sql") > "$RUNNER_TEMP/tables.diff"; then
+            annotate "The first start changed sql/02's tables" < "$RUNNER_TEMP/tables.diff"
+            exit 1
+          fi
+          if docker compose logs app | grep -q 'tick failed'; then
+            docker compose logs --no-color app | grep -A5 'tick failed' | annotate "The app logged tick failed"
+            exit 1
+          fi
 
       # What the guide's "Who can read what" says about the container.
       - name: The container is confined as the guide says
@@ -485,3 +500,5 @@ jobs:
           cd /opt/schema-studio 2> /dev/null || exit 0
           docker compose ps --all || true
           docker compose logs --no-color --tail 300 || true
+          # The last lines again as an annotation, readable on the summary page.
+          echo "::warning title=The app's last log lines::$(docker compose logs --no-color --tail 50 2>&1 | head -c 4000 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
