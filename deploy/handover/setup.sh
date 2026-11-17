@@ -521,7 +521,9 @@ echo
 info "Keep a copy of $ENV_FILE in your password manager, above all the"
 info "APP_ENCRYPTION_KEY line: without it, saved passwords cannot be read."
 if [ "$FROM_INSTALL" = no ] && [ "$(basename "$DOWNLOAD_DIR")" = schema-studio-download ]; then
-  info "The download is no longer needed: rm -r $DOWNLOAD_DIR ~/schema-studio-handover.zip"
+  info "The download is no longer needed. Its source/ folder has the code and the"
+  info "developer manual; to keep it: mv $DOWNLOAD_DIR/source ~/schema-studio-source"
+  info "Then: rm -r $DOWNLOAD_DIR ~/schema-studio-handover.zip"
 fi
 info "Run this again at any time, for example after Windows restarts:"
 info "  bash $INSTALL_DIR/setup.sh"

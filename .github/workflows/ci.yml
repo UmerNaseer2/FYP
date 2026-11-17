@@ -271,17 +271,21 @@ jobs:
           bash deploy/handover/make-sql.sh schema-studio-app:handover
           git diff --exit-code -- deploy/handover/sql/02-schema-studio-tables.sql
 
-      # What the download holds: the image as one file, its checksum, and the
+      # What the download holds: the image as one file, its checksum, the
       # kit folder (this guide, the compose file, the SQL, the settings
-      # template).
+      # template), and source/, the repository at this commit without its
+      # history, so the developer manual and the code travel with the image.
       - name: Pack the download
         run: |
           mkdir -p "$RUNNER_TEMP/download/kit"
           cp -r deploy/handover/. "$RUNNER_TEMP/download/kit/"
+          git archive --prefix=source/ HEAD | tar -x -C "$RUNNER_TEMP/download"
+          test -f "$RUNNER_TEMP/download/source/docs/DEVELOPER-MANUAL.md"
+          test -f "$RUNNER_TEMP/download/source/my-app/package.json"
           cd "$RUNNER_TEMP/download"
           docker save schema-studio-app:handover "schema-studio-app:$VERSION" | gzip > "schema-studio-app-$VERSION.tar.gz"
           sha256sum "schema-studio-app-$VERSION.tar.gz" > "schema-studio-app-$VERSION.tar.gz.sha256"
-          ls -lR
+          ls -l . kit
 
       - name: "Guide step 1: Docker and PostgreSQL 16"
         run: |
@@ -492,7 +496,7 @@ jobs:
 
       - name: Check the scripts with shellcheck
         run: |
-          ls -lR ~/schema-studio-download
+          ls -l ~/schema-studio-download ~/schema-studio-download/kit
           if ! command -v shellcheck > /dev/null; then
             sudo apt-get update -q
             sudo apt-get install -y -q shellcheck

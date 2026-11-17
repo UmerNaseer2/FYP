@@ -84,6 +84,11 @@ does.
 | `make-sql.sh` | For developers: makes `02` again after a change to the app's tables. |
 | `schema-studio-app-<version>.tar.gz` | The app image, with a `.sha256` file to check it. In the download, not in the repository. |
 
+The download has two more things beside this `kit` folder: the image file
+above, and `source/`, the code at the same version as the image. In it,
+`docs/DEVELOPER-MANUAL.md` explains how the app is built; see [For
+developers](#for-developers).
+
 ## The quick way: one command
 
 `setup.sh` does steps 2 to 5 and 7 for you, and asks for the three values
@@ -272,7 +277,14 @@ docker image ls schema-studio-app
 
 You see the image twice, as `handover` and as a 12 character version, both
 with the same IMAGE ID. `docker-compose.yml` uses `handover`. Once loaded,
-the download folder can be deleted:
+the download is no longer needed. Its `source/` folder has the code and the
+developer manual; to keep it, move it out first:
+
+```bash
+mv ~/schema-studio-download/source ~/schema-studio-source
+```
+
+Then delete the rest:
 
 ```bash
 rm -r ~/schema-studio-download ~/schema-studio-handover.zip
@@ -547,14 +559,64 @@ use this screen.
 
 ## 10. Add your first database
 
-Open **Connections** and add a database. Because the container shares this
-machine's network, a PostgreSQL on this machine is host `localhost` (or
-`127.0.0.1`), port 5432, exactly as for `psql`. Databases elsewhere on your
-network work too, by name or address.
+These are the databases you compare and deploy to, not the app's own
+`schema_studio` database. Give Schema Studio its own login on each one, with
+only what you want it to do there.
 
-Give Schema Studio its own login on each database you add, with only what you
-want it to do there: reading the catalog is enough to compare schemas and
-watch for drift; deploying scripts needs the rights those scripts need.
+**Make a login that can read.** This is enough to compare schemas, write
+scripts and watch for drift. On the machine with that database, open `psql`
+on it (here the database is called `mydb`; use yours):
+
+```bash
+sudo -u postgres psql -d mydb
+```
+
+Then, inside `psql`, make the login and set its password (`\password` asks
+for it twice and does not show it):
+
+```sql
+CREATE ROLE ss_reader LOGIN;
+```
+
+```sql
+\password ss_reader
+```
+
+Let it read each schema you want to compare (here `app_v1`; repeat the
+three lines for every schema):
+
+```sql
+GRANT CONNECT ON DATABASE mydb TO ss_reader;
+GRANT USAGE ON SCHEMA app_v1 TO ss_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA app_v1 TO ss_reader;
+```
+
+Leave with `\q`.
+
+**To deploy scripts as well,** the login needs the rights the scripts need:
+usually it must own the tables it changes, and it needs `CREATE` on the
+schema, because the app keeps a small `script_patch` table there that
+records which scripts ran. The simplest choice is the login your own
+application already uses for that schema.
+
+**Add it in the app.** Open **Connections**, then **Add connection**, and fill
+in:
+
+| Field | For a PostgreSQL on this machine |
+| --- | --- |
+| Quick start | Press **Local Postgres** first. It fills in a name, `localhost`, port 5432 and the security setting; then change the fields below to yours. |
+| Friendly name | Anything you will recognise, for example `mydb (test)`. |
+| Host | `localhost`. The container shares this machine's network, so this is the same address `psql` uses. A database elsewhere on your network: its name or address. |
+| Port | `5432` |
+| Database | `mydb` |
+| User | `ss_reader` |
+| Password | The one you just set. It is saved encrypted with `APP_ENCRYPTION_KEY`. |
+| Security | **Off** for a database on this machine. **Require** for a hosted one (Supabase, Neon, RDS). |
+| Who may run migrations here | Leave it as it is. It only decides who may deploy here, and **Read-only** stops everyone. |
+| Application table | Leave it empty. |
+
+Press **Test connection**, then **Save connection**. If it says the address
+is private, see [Common problems](#connecting-to-a-database-says-the-address-is-private).
 
 Then try **Compare & Author** on two schemas, and **Take the tour** in the
 account menu.
@@ -879,10 +941,15 @@ failing to reach the app's database; it tries again on its next round.
 
 ## For developers
 
-The source is in the repository's `my-app` folder (Next.js 16, React 19,
-TypeScript, PostgreSQL through `pg` and Sequelize). Start with
-`docs/DEVELOPER-MANUAL.md`: how the app is built, where each feature lives,
-how roles work, and step by step recipes for common changes.
+The code comes in the download, in `source/` beside `kit/`: the whole
+repository at the version of the image, without its history. The app is in
+`source/my-app` (Next.js 16, React 19, TypeScript, PostgreSQL through `pg`
+and Sequelize). Start with `source/docs/DEVELOPER-MANUAL.md`, the design
+document: how the app is built, where each feature lives, how roles work, the
+data model, and step by step recipes for common changes. Next to it,
+`source/docs/RAW-SQL.md` explains why most of the SQL is written by hand.
+The commands below run from the repository root, or from `source/`, which is
+the same files.
 
 Every green CI run on the `handover` branch also offers the same zip:
 open the repository's **Actions** tab, the **CI** workflow, the run, then

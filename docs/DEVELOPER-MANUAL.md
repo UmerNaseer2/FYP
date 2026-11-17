@@ -17,6 +17,41 @@ Other documents:
 | How a schema is read | [`my-app/lib/postgres/README.md`](../my-app/lib/postgres/README.md) |
 | How a migration script is written | [`my-app/lib/sql/generate/README.md`](../my-app/lib/sql/generate/README.md) |
 
+## Not in this handover
+
+The project also has a desktop app and a phone link. They live on the `main`
+branch of the same repository, not here, because this handover is the web
+app on a server. In short, so you know what they are:
+
+- **The desktop app** (`desktop/` on `main`). An Electron app for Ubuntu,
+  shipped as a `.deb` for amd64 and arm64 through a signed apt source. It
+  wraps this same web app: it starts the same Next.js server on the computer,
+  listening on `127.0.0.1` only, and shows its pages in its own window.
+  `desktop/src/server/desktop-gate.ts` runs inside that server and turns away
+  every request that does not come from the app itself, which carries a token
+  the app makes when it starts. The app keeps its data in a PostgreSQL 17 of
+  its own that it starts and stops itself, finds the PostgreSQL databases
+  already on the computer (ports 5432 to 5439, and Docker), signs in with
+  Microsoft in the computer's own browser, keeps its keys in the login
+  keyring, and can keep running with its window closed. The web app talks to
+  it through `my-app/lib/desktop-bridge.ts` on `main`, an exact copy of
+  `desktop/src/shared/bridge.ts`.
+- **The relay and the phone app** (`relay/` on `main`). A small service on
+  Cloudflare Workers, with one Durable Object (a "room") for each computer. A
+  phone and the desktop app it is paired with both open a WebSocket out to
+  it, and it passes on their messages, which they encrypt end to end, so the
+  relay cannot read them. It also serves the phone app, which browses
+  schemas, watches drift and approves deploys with a passkey.
+- **Linking the website and the desktop apps.** On `main`, an organization's
+  website and its desktop apps share its connections, and a signed-in phone
+  can reach a computer's databases through the website.
+- **The trial.** A "Try it now" sign-in that let a visitor use the app on
+  demo databases without a Microsoft account.
+
+To take any of these on, read `desktop/README.md` (what the app does,
+building, publishing, and "How it fits together"), `desktop/SECURITY.md`
+(what it protects, from whom and how) and `relay/README.md`, all on `main`.
+
 ## Contents
 
 1. [The system in one picture](#1-the-system-in-one-picture)
@@ -698,7 +733,7 @@ also needs a sample row in `tests/org-migration.test.ts`.
 | Lint, type-check, test, build | Everything above, with a PostgreSQL 16 for the database suites |
 | Schema reading on PostgreSQL 13 to 18 | The schema reader and the SQL generator against six PostgreSQL versions |
 | Developer Docker stack | Builds and starts the root `docker-compose.yml` |
-| Handover kit on Ubuntu with PostgreSQL 16 | Builds the image, follows `SETUP-GUIDE.md` on a fresh PostgreSQL 16, checks `sql/02` is up to date, and offers the image file as a download |
+| Handover kit on Ubuntu with PostgreSQL 16 | Builds the image, follows `SETUP-GUIDE.md` on a fresh PostgreSQL 16, checks `sql/02` is up to date, and offers the image file, the kit and `source/` (the code and these documents) as one download |
 | Handover setup script on Ubuntu with PostgreSQL 16 | Takes that download to another fresh Ubuntu and runs `deploy/handover/setup.sh` from it: before the Microsoft values, with them, again with nothing to do, and after a restart. Also runs shellcheck on the kit's scripts |
 
 ### Settings
