@@ -387,7 +387,7 @@ distribution does, if systemd is on).
 ## 8. Sign in and set up your organization
 
 Open http://localhost:3000 in a browser on this machine (on WSL, a Windows
-browser works too), press **Sign in**, then **Continue with Microsoft**.
+browser works too), press **Log in**, then **Continue with Microsoft**.
 
 * **The first person from your directory to sign in becomes the Admin of the
   default organization.** That is Admin of that organization only. There is
@@ -729,9 +729,15 @@ container is not your machine. On a Mac with Docker Desktop:
 
 1. Uncomment the `COMPOSE_FILE=` line at the bottom of `.env`.
 2. Use `host.docker.internal` as the host, both in `DATABASE_URL_A` (ending
-   with `?sslmode=disable`) and for databases you add in the app.
+   with `?sslmode=disable`) and for databases you add in the app (there, set
+   **Security** to **Off**).
 
-We have tested Docker Desktop only on a Mac.
+PostgreSQL on the Mac sees these connections coming from `127.0.0.1`, so a
+PostgreSQL that only listens on `localhost` (the default) accepts them with no
+change to its settings.
+
+We have tested Docker Desktop only on a Mac (with PostgreSQL 16 from
+Homebrew).
 
 ### The app keeps restarting
 
