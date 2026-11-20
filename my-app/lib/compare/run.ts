@@ -36,7 +36,7 @@ import { credentialsMessage } from "@/lib/connections/secret-store";
 import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import { fetchSchemaNames, fetchSchemaSnapshot, POOL_MAX } from "@/lib/postgres";
 import { mapWithLimit } from "@/lib/ui/concurrency";
-import { compareSchemas, type CompareReport } from "@/lib/compare/diff";
+import { compareSchemas, namedSchemaLabel, type CompareReport } from "@/lib/compare/diff";
 import type { ChangeSeverity } from "@/lib/compare/types";
 import { compareRowData, type DataCompareReport } from "@/lib/compare/data";
 import {
@@ -681,6 +681,8 @@ async function compareOneTarget(
   source: {
     snapshot: SchemaSnapshot;
     config: CompareTarget["config"];
+    /** "Name (database)" of the source's saved connection. */
+    displayName: string;
     schema: string;
     versionInfo: VersionDetectionResult;
   },
@@ -806,10 +808,19 @@ async function compareOneTarget(
   // Safe mode. DROP TABLE / DROP COLUMN are always generated so the diff can
   // show what a full sync would remove, but they are only armed in the rendered
   // SQL when the user explicitly ticks "allow data loss" on the form.
-  const script = generateMigration(report, { allowDataLoss });
+  //
+  // The two ends are named by their saved connections in the script's header.
+  // The generator only knows "database.schema", and a staging and a live copy
+  // of one app share a database name, so its header read
+  // "appdb.public -> appdb.public" and did not say which way the script goes.
+  const ends = {
+    sourceSchema: namedSchemaLabel(source.displayName, report.left.database, report.left.schema),
+    targetSchema: namedSchemaLabel(slot.displayName, report.right.database, report.right.schema),
+  };
+  const script = { ...generateMigration(report, { allowDataLoss }), ...ends };
   // The down script that undoes the migration above. It is built from the same
   // flag so its header can say whether the drops it is "restoring" ever ran.
-  const rollback = generateRollback(report, { allowDataLoss });
+  const rollback = { ...generateRollback(report, { allowDataLoss }), ...ends };
 
   // The tally grades the run, not the file: safe mode comments its destructive
   // statements out, so counting them made a script that does nothing advertise
@@ -1374,6 +1385,7 @@ export async function runComparison(
             {
               snapshot: snapshot.data,
               config: sourceTarget.config,
+              displayName: sourceTarget.displayName,
               schema: sourceSchema,
               versionInfo: srcVersion,
             },

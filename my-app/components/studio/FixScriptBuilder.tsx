@@ -21,6 +21,7 @@ import {
 import { AskAdmin } from "./AskAdmin";
 import { downloadText } from "./ExportBar";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { copyText } from "@/lib/ui/copy-text";
 
 /**
  * "Put these fixes in one script", under the findings on both Performance
@@ -144,11 +145,11 @@ export function FixScriptBuilder({
 
   async function copyScript() {
     try {
-      await navigator.clipboard.writeText(build(new Date()).script);
+      await copyText(build(new Date()).script);
       setNotice({ items, kind: "copied" });
       setTimeout(() => setNotice((now) => (now?.kind === "copied" ? null : now)), 1500);
     } catch {
-      // Refused, e.g. on a page not served over HTTPS. Download needs no permission.
+      // Refused by the browser. Download needs no permission.
       setNotice({ items, kind: "copy-failed" });
     }
   }

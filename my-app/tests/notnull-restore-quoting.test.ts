@@ -55,8 +55,8 @@ describe("a name containing a percent sign", () => {
     // The format string is a bare '%' and the message is the parameter. Put the
     // message in the format string instead and PostgreSQL counts the percent
     // signs, finds no arguments for them, and aborts the block.
-    expect(block.sql).toContain("RAISE NOTICE '%',");
-    const raiseLine = block.sql.split("\n").find((line) => line.includes("RAISE NOTICE"));
+    expect(block.sql).toContain("RAISE WARNING '%',");
+    const raiseLine = block.sql.split("\n").find((line) => line.includes("RAISE WARNING"));
     expect(raiseLine).toBeDefined();
     // Exactly one % before the comma: the placeholder. Everything after the
     // comma is a quoted literal and is printed as-is.
@@ -74,7 +74,7 @@ describe("a name containing a percent sign", () => {
   it("handles a percent in the table name too", () => {
     const block = restoreBlock("100%_done", "note");
 
-    expect(block.sql).toContain("RAISE NOTICE '%',");
+    expect(block.sql).toContain("RAISE WARNING '%',");
     expect(block.sql).toContain("100%_done");
   });
 });
@@ -119,7 +119,18 @@ describe("an ordinary name", () => {
     const sql = restoreBlock("orders", "shipped_at").sql;
 
     expect(openingTag(sql)).toBe("$guard$");
-    expect(sql).toContain("RAISE NOTICE '%',");
+    expect(sql).toContain("RAISE WARNING '%',");
     expect(sql).toContain('ALTER TABLE "orders" ALTER COLUMN "shipped_at" SET NOT NULL;');
+  });
+});
+
+describe("the message level", () => {
+  it("is a WARNING, the only level Deploy keeps and shows", () => {
+    // Deploy and Quick run drop every NOTICE (lib/deploy/run-warnings.ts), so a
+    // NOTICE here told nobody that the column was left without NOT NULL.
+    const sql = restoreBlock("orders", "shipped_at").sql;
+
+    expect(sql).toContain("RAISE WARNING '%',");
+    expect(sql).not.toContain("RAISE NOTICE");
   });
 });

@@ -100,11 +100,11 @@ function accessFromStatus(view: AiStatusView | null, feature: AiFeature): AiAcce
   if (!view) return off("Could not check whether AI is on here. Reload the page to try again.");
   if (!view.configured) return off(view.problem ?? "AI is not set up on this server.");
   if (!view.enabled) {
-    return off("AI is switched off for this organization. An Admin can switch it on in Admin, AI.");
+    return off("AI is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.");
   }
   if (!view.features[feature]) {
     return off(
-      `${FEATURE_LABELS[feature]} is switched off for this organization. An Admin can switch it on in Admin, AI.`
+      `${FEATURE_LABELS[feature]} is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.`
     );
   }
   return { kind: "on" };

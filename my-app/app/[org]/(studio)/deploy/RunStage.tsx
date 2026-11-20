@@ -20,16 +20,18 @@ import { countOf } from "@/lib/ui/plural";
 import { vLabel } from "@/lib/deploy/rollback-plan";
 import type { ApprovalRow } from "@/components/studio/ApprovalPanel";
 import type { GitHubScript, Connection, PreflightResult, RunStatus, RunCell } from "./types";
-import { scriptKey, fmtStatements, fmtSecs, warningNotes } from "./helpers";
+import { scriptKey, fmtStatements, fmtSecs, warningNotes, rollbackCheckNotes, rollbackFailedText } from "./helpers";
 import { MigRow } from "./MigRow";
 import type { SelectionChange } from "./helpers";
 
 // A run row's notes: the louder reading of its SQL, if any, then the warnings
-// PostgreSQL sent while it ran. None at all leaves the row without a notes box.
-function rowNotes(louderNote: string | null | undefined, cell: RunCell) {
+// PostgreSQL sent while it ran, then how the dry run's try of its rollback
+// went. None at all leaves the row without a notes box.
+function rowNotes(louderNote: string | null | undefined, cell: RunCell, versionLabel: string) {
   const notes = [
     ...(louderNote ? [{ text: louderNote, warn: true }] : []),
     ...warningNotes(cell),
+    ...rollbackCheckNotes(cell, versionLabel),
   ];
   return notes.length > 0 ? notes : undefined;
 }
@@ -43,6 +45,7 @@ export function RunHead({
   allRehearsed,
   runRefused,
   runNotStarted,
+  runLimited = false,
   enumAdditions,
   elapsedMs,
   stopBusy,
@@ -56,6 +59,8 @@ export function RunHead({
   allRehearsed: boolean;
   runRefused: boolean;
   runNotStarted: boolean;
+  /** The dry run stopped on a limit of the rehearsal, not on a fault. */
+  runLimited?: boolean;
   enumAdditions: string[];
   elapsedMs: number;
   stopBusy: boolean;
@@ -88,9 +93,11 @@ export function RunHead({
                       ? runIsDryRun
                         ? "Dry run did not start, nothing was run"
                         : "Run did not start, nothing was applied"
-                      : runIsDryRun
-                        ? "Dry run halted"
-                        : "Run halted, nothing was applied"}
+                      : runLimited
+                        ? "A dry run can't rehearse this run. Nothing was written"
+                        : runIsDryRun
+                          ? "Dry run halted, nothing was written"
+                          : "Run halted, nothing was applied"}
           </h2>
           <p className="dp-sub">
           {/* The enum values are lifted out and committed before the
@@ -146,6 +153,7 @@ export function RunList({
   runStatus,
   runRefused,
   runNotStarted,
+  runLimited = false,
   runOutcomeUnknown,
   runProgress,
   runIsDryRun,
@@ -157,6 +165,7 @@ export function RunList({
   runStatus: Record<string, RunCell>;
   runRefused: boolean;
   runNotStarted: boolean;
+  runLimited?: boolean;
   runOutcomeUnknown: boolean;
   runProgress: number;
   runIsDryRun: boolean;
@@ -191,7 +200,9 @@ export function RunList({
             ? "refused · the server's reason is below"
             : runNotStarted
               ? "not run · the server's reason is below"
-              : "failed · the whole run was rolled back",
+              : runLimited
+                ? "not rehearsed · a limit of the dry run, not a fault in this script"
+                : "failed · the whole run was rolled back",
           skipped: runRefused
             ? "skipped · the server refused the run, and nothing in it was applied"
             : runNotStarted
@@ -209,7 +220,8 @@ export function RunList({
             rightPill={vLabel(script.version)}
             cell={cell}
             sql={script.sql_content}
-            notes={rowNotes(reading.louderNote, cell)}
+            notes={rowNotes(reading.louderNote, cell, vLabel(script.version))}
+            limited={runLimited}
           />
         );
       })}
@@ -261,6 +273,8 @@ export function RunResults({
   failedScript = null,
   onRetire,
   warningTotal = 0,
+  runLimited = false,
+  brokenRollback = null,
 }: {
   runComplete: boolean;
   runRegistry: RegistryNote | null;
@@ -291,6 +305,10 @@ export function RunResults({
   onRetire?: (script: GitHubScript) => void;
   /** Warnings PostgreSQL sent during the run, over all its versions. */
   warningTotal?: number;
+  /** The dry run stopped on a limit of the rehearsal, not on a fault. */
+  runLimited?: boolean;
+  /** The version whose rollback failed when a clean dry run tried it. */
+  brokenRollback?: { versionLabel: string; error?: string } | null;
 }) {
   return (
     <>
@@ -352,6 +370,14 @@ export function RunResults({
                   `so expect ${warningTotal === 1 ? "it" : "them"} again.`}
               </div>
             )}
+            {/* A warning only: the migrations themselves rehearsed cleanly,
+                so Deploy for real stays open. It matters now because the
+                real run saves the rollback as it is. */}
+            {brokenRollback && (
+              <div className="dp-warn-text" role="status">
+                {rollbackFailedText(brokenRollback.versionLabel, brokenRollback.error)}
+              </div>
+            )}
             {askToRun && !approvedRun && (
               <div className="dp-warn-text">
                 A clean rehearsal is not an approval. Go back to Pre-flight to
@@ -388,8 +414,34 @@ export function RunResults({
         </div>
       )}
 
+      {/* A dry run that hit the one thing a rehearsal cannot do. Not a
+          failure: the script may be fine, so there is no "Rehearse again"
+          (it would stop the same way) and no offer to retire the version. */}
+      {runComplete && runLimited && !allRehearsed && (
+        <div className="dp-result dp-mid" role="status">
+          <h3>
+            <AlertTriangleIcon size={20} />
+            A dry run can&apos;t rehearse this run.
+          </h3>
+          <p>
+            This is a limit of the dry run, not a fault in your script. The run adds an enum
+            value and then uses it. A real deploy adds the value first, on its own, so the
+            same SQL can still work there. The dry run was rolled back and nothing was written.
+          </p>
+          <div className="dp-warn-text">
+            A real deploy of this run goes ahead without a rehearsal. Read the SQL on
+            Pre-flight first.
+          </div>
+          <div className="dp-row">
+            <button type="button" className="btn btn-primary" onClick={() => setStage(1)}>
+              Back to Pre-flight
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Recovery bar, only after a failed run */}
-      {runComplete && !allApplied && !allRehearsed && (
+      {runComplete && !allApplied && !allRehearsed && !runLimited && (
         <div className={runOutcomeUnknown ? "dp-result dp-mid" : "dp-result dp-bad"}>
           <h3>
             <AlertCircleIcon size={20} />

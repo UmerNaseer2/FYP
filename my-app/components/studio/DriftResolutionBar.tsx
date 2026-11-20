@@ -37,6 +37,7 @@ export function DriftResolutionBar({
   state,
   compareHref,
   shownFingerprint = null,
+  acknowledged = false,
   onDone,
 }: {
   trackedSchemaId: number;
@@ -48,6 +49,12 @@ export function DriftResolutionBar({
    * against one.
    */
   shownFingerprint?: string | null;
+  /**
+   * True when the differences on screen were already acknowledged. The
+   * Acknowledge button then gives way to a chip that says so, because a
+   * button that looks the same after the press reads as a press that failed.
+   */
+  acknowledged?: boolean;
   /** Make the screen re-read after any of the writes below. */
   onDone: () => void;
 }) {
@@ -133,7 +140,17 @@ export function DriftResolutionBar({
           {busy === "rebaseline" ? "Re-baselining…" : "Re-baseline to live"}
         </Button>
       )}
-      {canResolve && (
+      {canResolve && acknowledged && (
+        <span
+          className="btn btn-ghost btn-sm"
+          aria-disabled="true"
+          title="This drift is marked as reviewed. Nothing in the database was changed."
+          style={{ cursor: "default", opacity: 0.75 }}
+        >
+          <CheckIcon size={13} /> Acknowledged
+        </span>
+      )}
+      {canResolve && !acknowledged && (
         <Button
           variant="ghost"
           size="sm"

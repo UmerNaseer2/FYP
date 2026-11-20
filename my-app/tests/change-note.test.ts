@@ -122,6 +122,45 @@ describe("living beside the other headers", () => {
   });
 });
 
+describe("where the note goes in a generated script", () => {
+  // The shape renderMigrationScript writes: a header block, a blank line, then
+  // each statement under a comment of its own.
+  const generated = [
+    "-- ================",
+    "-- Migration: a  ->  b",
+    "-- Change-type: additive",
+    "-- ================",
+    "",
+    '-- [SAFE] Add column "invoice_no" (text) to "orders"',
+    SQL,
+    "",
+    "-- [SAFE] Create index",
+    "CREATE INDEX orders_invoice_no ON orders (invoice_no);",
+  ].join("\n");
+
+  it("sits after the header block, not between a statement's comment and its SQL", () => {
+    const lines = stampChangeNote(generated, "Adds invoice_no.").split("\n");
+    const note = lines.indexOf("-- Note: Adds invoice_no.");
+    expect(lines.slice(note - 2, note + 2)).toEqual(["-- ================", "", "-- Note: Adds invoice_no.", ""]);
+    // The first statement keeps its own comment straight above it.
+    expect(lines[lines.indexOf(SQL) - 1]).toBe('-- [SAFE] Add column "invoice_no" (text) to "orders"');
+    expect(readChangeNote(lines.join("\n"))).toBe("Adds invoice_no.");
+    expect(readChangeTypeHeader(lines.join("\n"))).toBe("additive");
+  });
+
+  it("gives the same file when stamped again, and the first file when cleared", () => {
+    const once = stampChangeNote(generated, "Adds invoice_no.");
+    expect(stampChangeNote(once, "Adds invoice_no.")).toBe(once);
+    expect(stampChangeNote(stampChangeNote(once, "Other."), "Adds invoice_no.")).toBe(once);
+    expect(stampChangeNote(once, null)).toBe(generated);
+  });
+
+  it("hands a script with no note back untouched when there is no note to add", () => {
+    expect(stampChangeNote(generated, null)).toBe(generated);
+    expect(stampChangeNote(`-- a header\n\n\n${SQL}`, "")).toBe(`-- a header\n\n\n${SQL}`);
+  });
+});
+
 describe("changeNoteSummary", () => {
   it("is the note itself when it is one line", () => {
     expect(changeNoteSummary("Adds invoice_no.")).toBe("Adds invoice_no.");

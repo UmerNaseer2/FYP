@@ -7,6 +7,7 @@ import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 // Type-only: erased at build time, so nothing from lib/ reaches the browser.
 import type { FixKind } from "@/lib/performance/sql";
 import { useOrgHref } from "@/hooks/useOrg";
+import { copyText } from "@/lib/ui/copy-text";
 
 /**
  * One piece of performance advice, however it was arrived at.
@@ -212,15 +213,17 @@ export function FixBlock({
 
 /** One block of SQL under a small heading, with its own Copy button. */
 function CodeBox({ heading, text }: { heading: string; text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"" | "done" | "blocked">("");
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      await copyText(text);
+      setCopied("done");
+      setTimeout(() => setCopied(""), 1500);
     } catch {
-      // Clipboard blocked (e.g. an insecure context) — leave the button as-is.
+      // Both ways of copying were refused. The text is on screen to select.
+      setCopied("blocked");
+      setTimeout(() => setCopied(""), 2500);
     }
   }
 
@@ -230,9 +233,14 @@ function CodeBox({ heading, text }: { heading: string; text: string }) {
         <span className="text-[11.5px] font-semibold" style={{ color: "var(--text-2)" }}>
           {heading}
         </span>
-        <button type="button" className="btn btn-ghost btn-xs" onClick={copy}>
-          {copied ? <CheckIcon size={11} /> : <ClipboardIcon size={11} />}
-          {copied ? "Copied" : "Copy"}
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs"
+          onClick={copy}
+          title={copied === "blocked" ? "The browser blocked the copy. Select the text and copy it yourself." : undefined}
+        >
+          {copied === "done" ? <CheckIcon size={11} /> : <ClipboardIcon size={11} />}
+          {copied === "done" ? "Copied" : copied === "blocked" ? "Copy blocked" : "Copy"}
         </button>
       </div>
       <pre className="sql px-3 py-2.5 overflow-x-auto whitespace-pre-wrap">{text}</pre>

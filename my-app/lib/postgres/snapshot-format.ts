@@ -35,7 +35,7 @@
  * row to SNAPSHOT_FORMAT_HISTORY saying what changed. Do not bump it for a bug
  * fix that leaves the shape alone.
  */
-export const SNAPSHOT_FORMAT_VERSION = 5;
+export const SNAPSHOT_FORMAT_VERSION = 6;
 
 /**
  * What each version of the capture added, newest last.
@@ -59,6 +59,12 @@ export const SNAPSHOT_FORMAT_HISTORY: ReadonlyArray<{
     adds:
       "definitions that keep the spaces inside strings, quoted names, comments and function bodies " +
       "(older baselines are brought up to this rule when read, by withCurrentNormalization in lib/postgres/)",
+  },
+  {
+    version: 6,
+    adds:
+      "the columns each view reads, a domain's default, grants on single columns, and extensions " +
+      "in other schemas that the schema uses (each is compared only when both sides recorded it)",
   },
 ];
 

@@ -8,6 +8,8 @@ import {
   nullabilityChangeSeverity,
   droppedColumnSeverity,
   addedColumnSeverity,
+  connectionNameOnly,
+  namedSchemaLabel,
 } from "@/lib/compare/diff";
 import type { ConstraintSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
@@ -499,5 +501,18 @@ describe("compareSchemas — the pair behind a changed column", () => {
 
     expect(change?.leftValue).toBe("not null");
     expect(change?.rightValue).toBe("nullable");
+  });
+});
+
+describe("naming the two ends of a comparison", () => {
+  it("takes the saved connection's name off its label", () => {
+    expect(connectionNameOnly("Production (appdb)", "appdb")).toBe("Production");
+    // A label with no database on the end is kept whole.
+    expect(connectionNameOnly("Local Postgres", "shop")).toBe("Local Postgres");
+  });
+
+  it("tells two databases with one name apart", () => {
+    expect(namedSchemaLabel("Staging (appdb)", "appdb", "public")).toBe("Staging (appdb.public)");
+    expect(namedSchemaLabel("Production (appdb)", "appdb", "public")).toBe("Production (appdb.public)");
   });
 });

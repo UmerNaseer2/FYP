@@ -1,7 +1,7 @@
 // generateMigration(): the entry point. Calls the other parts and lays their
 // statements out in the order the script runs.
 
-import type { CompareReport } from "../../compare/types";
+import type { CompareReport, TableMatch } from "../../compare/types";
 import { ownedSequenceRenamePairs, ownedSequenceRenameStatement, possibleTableRenameNote } from "./alter-helpers";
 import { alterStatementsForMatch } from "./alter-table";
 import { q } from "./basics";
@@ -228,7 +228,27 @@ export function generateMigration(
   // into the FK bucket so they run after every table's columns exist.
   // Counted for the safe-mode warnings at the end of this function.
   let retypesHeldForComputed = 0;
-  for (const match of report.matchedTables) {
+  for (const fullMatch of report.matchedTables) {
+    const match = withoutInheritedColumnChanges(fullMatch, report.matchedTables);
+    // A required column with nothing to fill it. The script adds it nullable
+    // and sets NOT NULL only if the table is empty, so on a table with rows the
+    // column stays nullable and the next comparison shows it again. Said here,
+    // so the person reads it BEFORE deploying instead of finding a difference
+    // left over afterwards.
+    const leftNullable = match.columnsOnlyInA
+      .filter((col) => !col.nullable && col.columnDefault === null && !col.generated && !col.identity)
+      .map((col) => `"${col.name}"`);
+    if (leftNullable.length > 0) {
+      const many = leftNullable.length > 1;
+      warnings.push(
+        `Table "${match.right.name}": new column${many ? "s" : ""} ${leftNullable.join(", ")} ` +
+          `${many ? "are" : "is"} NOT NULL in the source and ${many ? "have" : "has"} no default. ` +
+          `If the table has rows, the script adds ${many ? "them" : "it"} but leaves ` +
+          `${many ? "them" : "it"} nullable, because there is no value for the existing rows. ` +
+          `Fill the column, then run ALTER TABLE ... SET NOT NULL yourself, or give the column ` +
+          `a default in the source first.`,
+      );
+    }
     const { stmts, fkStmts } = alterStatementsForMatch(
       match,
       sourceSchema,
@@ -465,5 +485,43 @@ export function generateMigration(
     allowDataLoss,
     destructiveCount,
     heldBackCount,
+  };
+}
+
+/**
+ * The match for a partition (or an INHERITS child) without the column adds and
+ * drops its parent already makes.
+ *
+ * A partition gets every column from its parent. When the parent gains a
+ * column the partition gains it in the same statement, and PostgreSQL refuses
+ * the second one outright ("cannot add column to a partition"), which stopped
+ * the whole script. A dropped column is the same story the other way round
+ * ("cannot drop inherited column"). So when the parent is in this comparison
+ * and makes the same change, the child's own statement is left out.
+ */
+function withoutInheritedColumnChanges(match: TableMatch, all: TableMatch[]): TableMatch {
+  const parentsOf = (table: TableMatch["left"]) => [
+    ...(table.partitioning?.partitionOf ? [table.partitioning.partitionOf] : []),
+    ...(table.partitioning?.inherits ?? []),
+  ];
+  const sourceParents = parentsOf(match.left);
+  const targetParents = parentsOf(match.right);
+  if (sourceParents.length === 0 && targetParents.length === 0) return match;
+
+  // Columns a parent gains, by the parent's name in the source.
+  const addedByParent = new Set<string>();
+  // Columns a parent loses, by the parent's name in the target.
+  const droppedByParent = new Set<string>();
+  for (const other of all) {
+    if (sourceParents.includes(other.left.name) && targetParents.includes(other.right.name)) {
+      for (const col of other.columnsOnlyInA) addedByParent.add(col.name);
+      for (const col of other.columnsOnlyInB) droppedByParent.add(col.name);
+    }
+  }
+  if (addedByParent.size === 0 && droppedByParent.size === 0) return match;
+  return {
+    ...match,
+    columnsOnlyInA: match.columnsOnlyInA.filter((col) => !addedByParent.has(col.name)),
+    columnsOnlyInB: match.columnsOnlyInB.filter((col) => !droppedByParent.has(col.name)),
   };
 }

@@ -100,7 +100,7 @@ export function VerifyCards({
               <ChevronRightIcon size={16} />
               {/* The batch that ran, not the selection: Pre-flight can move
                   the selection after a deploy. */}
-              <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "None"}</b></span>
+              <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "No version"}</b></span>
               <span className="dp-quiet text-[12px]">
                 {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
                 {warningTotal > 0 ? ` · ${countOf(warningTotal, "warning")}` : ""}
@@ -116,14 +116,21 @@ export function VerifyCards({
               {/* Both buttons above lead back into this same screen, which
                   left a finished deploy with no way onward except the
                   sidebar. These are the two things that actually happen
-                  next: record the version against the schema, and start
+                  next: catch another schema up to this version, and start
                   watching the database that just changed, the moment it is
                   most likely to drift is right after somebody changed it.
 
                   Links and not primary buttons: the deploy is finished, so
                   neither of these is owed. */}
-              <Link href={orgPath("/versionsync")} className="btn btn-ghost">
-                Record it on Version Sync
+              <Link
+                href={orgPath(
+                  activeConn
+                    ? `/versionsync?source=${activeConn.id}&sourceSchema=${encodeURIComponent(schema)}`
+                    : "/versionsync"
+                )}
+                className="btn btn-ghost"
+              >
+                Catch another schema up on Version Sync
               </Link>
               <Link href={orgPath("/drift")} className="btn btn-ghost">
                 Watch it on Drift

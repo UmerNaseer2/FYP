@@ -38,6 +38,8 @@ import { readRunWarnings } from "@/lib/deploy/run-warnings";
 import { countOf } from "@/lib/ui/plural";
 import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
 import { describeChangeType } from "@/lib/versions/change-type";
+import { readRollbackCheck, rollbackFailedText } from "./helpers";
+import type { RollbackCheck } from "./types";
 import { canExecute, toExecuteRole } from "@/lib/connections/access";
 import { readAppliedVersion, readFamilyVersions } from "@/lib/versions/family-reads";
 import {
@@ -106,7 +108,16 @@ type VersionRead =
 
 // `warnings` are what PostgreSQL warned about while the version ran, and
 // `moreWarnings` counts any past those (lib/deploy/run-warnings.ts).
-type RunResult = { name: string; statements: number | null; warnings: string[]; moreWarnings: number };
+// `rollbackCheck` is how the dry run's try of the rollback went, with
+// `rollbackError` holding what PostgreSQL said when it failed.
+type RunResult = {
+  name: string;
+  statements: number | null;
+  warnings: string[];
+  moreWarnings: number;
+  rollbackCheck?: RollbackCheck;
+  rollbackError?: string;
+};
 
 type Phase =
   | { kind: "idle" }
@@ -412,6 +423,7 @@ export function QuickRun(props: Props) {
             name: typeof r.script_name === "string" ? r.script_name : group,
             statements: typeof r.statements === "number" ? r.statements : null,
             ...readRunWarnings(r),
+            ...readRollbackCheck(r),
           })),
         });
         return;
@@ -1225,6 +1237,9 @@ function DryPassed({
   const statements = phase.results.reduce((sum, r) => sum + (r.statements ?? 0), 0);
   const warnings = phase.results.flatMap((r) => r.warnings);
   const moreWarnings = phase.results.reduce((sum, r) => sum + r.moreWarnings, 0);
+  // The dry run also tries the rollback, then undoes that too.
+  const brokenRollback = phase.results.find((r) => r.rollbackCheck === "failed");
+  const rollbackOk = !brokenRollback && phase.results.some((r) => r.rollbackCheck === "ok");
   return (
     <div className={`qr-result qr-result--good${stale ? " qr-result--stale" : ""}`} role="status">
       <span className="qr-result__mark qr-result__mark--good">
@@ -1246,6 +1261,22 @@ function DryPassed({
             <span>Deploy runs the same SQL, so expect the same warnings then.</span>
           </div>
         )}
+        {/* A warning only: the version itself passed, so Deploy stays open.
+            Here the rollback is the box on this form, so that is where the
+            fix goes. */}
+        {brokenRollback && (
+          <div className="qr-note qr-note--warn qr-note--block">
+            <strong>The rollback failed</strong>
+            <span>
+              {rollbackFailedText(
+                savesAs ?? "this version",
+                brokenRollback.rollbackError,
+                "Fix the Rollback SQL above before you deploy. Deploy saves the rollback, and it can't be changed afterwards."
+              )}
+            </span>
+          </div>
+        )}
+        {rollbackOk && <span className="qr-small">The rollback was tried too, and it ran cleanly.</span>}
         {!stale && savesAs && (
           <div className="qr-when">
             <strong>When you press Deploy</strong>

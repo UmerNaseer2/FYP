@@ -71,7 +71,7 @@ import {
 } from "./statement-helpers";
 import { buildFkDef, lookupConstraintDef } from "./tables";
 import type { SqlStatement } from "./types";
-import { viewsCascadedBy } from "./views";
+import { viewsCascadedByColumns } from "./views";
 
 export function alterStatementsForMatch(
   match: TableMatch,
@@ -261,7 +261,11 @@ export function alterStatementsForMatch(
       // this tells them which of their views it is about to remove, and the
       // caller has already queued the source's copy of each for rebuild.
       const alsoDropped = targetViews
-        ? viewsCascadedBy(targetViews, new Set([match.right.name])).map((v) => v.name)
+        ? viewsCascadedByColumns(
+            targetViews,
+            match.right.name,
+            new Set([colMatch.right.name])
+          ).map((v) => v.name)
         : [];
       const cascadeNote =
         alsoDropped.length > 0 ? `; CASCADE also drops ${alsoDropped.join(", ")}` : "";

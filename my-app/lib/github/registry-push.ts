@@ -699,6 +699,19 @@ export type PushPreview = {
 };
 
 /**
+ * What to say in place of a "next version" once a version has just been saved
+ * and the script has not changed since.
+ *
+ * The next number is always worked out from the newest version, so straight
+ * after pushing v1.0.0 the screen read "Next version v2.0.0" beside a Push
+ * button that could not be pressed. Nothing is waiting to be pushed then. The
+ * useful next step is to deploy what was saved.
+ */
+export function savedVersionLine(version: string): string {
+  return `v${version.trim()} is saved in GitHub. Deploy it next.`;
+}
+
+/**
  * Describe a push before it happens. `floor` is the family's highest version
  * (applied to the target or published in GitHub; null for a new family),
  * `version` the number the push will use, and `withRollback` whether a

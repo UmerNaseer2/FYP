@@ -1,6 +1,7 @@
 import type {
   CollationSnapshot,
   ColumnSnapshot,
+  ExtensionElsewhere,
   ExtensionSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
@@ -23,7 +24,12 @@ import type {
 // It comes from snapshot-facts, not postgres: this module is imported by the
 // diff components, and a value import from postgres would put `pg` in the
 // browser bundle.
-import { rangeTypeIsCreatable } from "../postgres/snapshot-facts";
+import {
+  buildPrivilegeDefinition,
+  columnOfPrivilege,
+  rangeTypeIsCreatable,
+} from "../postgres/snapshot-facts";
+import { normalizeDefinition } from "../postgres/normalize";
 
 import type {
   ChangeSeverity,
@@ -1443,6 +1449,30 @@ export function renameMatchingSkipped(report: CompareReport): boolean {
   return renameMatchingTooBig(report.tablesOnlyInA, report.tablesOnlyInB);
 }
 
+/**
+ * The saved connection's own name, taken from the "Name (database)" label
+ * Compare shows for it. A label with no database on the end is returned whole.
+ */
+export function connectionNameOnly(displayName: string, database: string): string {
+  const suffix = ` (${database})`;
+  const name = displayName.endsWith(suffix)
+    ? displayName.slice(0, displayName.length - suffix.length)
+    : displayName;
+  return name.trim() || database;
+}
+
+/**
+ * One end of a comparison, named so two databases with the same name can be
+ * told apart: "Production (appdb.public)".
+ *
+ * "appdb.public" on its own says nothing when the source and the target are
+ * both called appdb, which is usual for a staging and a live copy of one app.
+ * The saved connection's name is the one thing that always differs.
+ */
+export function namedSchemaLabel(displayName: string, database: string, schema: string): string {
+  return `${connectionNameOnly(displayName, database)} (${database}.${schema})`;
+}
+
 // ============================================================================
 // Pairwise best-match (used for both tables and columns)
 // ============================================================================
@@ -2112,6 +2142,15 @@ export function extensionUpdateIsForward(source: string, target: string): boolea
  *     on any type a table column already uses, which is every case worth
  *     scripting.
  */
+/**
+ * Whether a domain's DEFAULT differs between the two sides. A snapshot taken
+ * before defaults were recorded has no answer, so it never counts as changed.
+ */
+export function domainDefaultChanged(left: TypeSnapshot, right: TypeSnapshot): boolean {
+  if (left.domainDefault === undefined || right.domainDefault === undefined) return false;
+  return (left.domainDefault ?? null) !== (right.domainDefault ?? null);
+}
+
 export function typeChangeIsAllManual(left: TypeSnapshot, right: TypeSnapshot): boolean {
   if (left.kind !== right.kind) return true;
 
@@ -2122,6 +2161,7 @@ export function typeChangeIsAllManual(left: TypeSnapshot, right: TypeSnapshot): 
 
   if (left.kind === "DOMAIN") {
     if (left.baseType !== right.baseType) return true;
+    if (domainDefaultChanged(left, right)) return false;
     if (left.notNull !== right.notNull) return false;
     const leftChecks = new Map(left.checks.map((check) => [check.name, check]));
     const anyDropped = right.checks.some((check) => {
@@ -2142,6 +2182,13 @@ function compareObjectLists(
   rightScope: string
 ): ObjectDiff[] {
   const diffs: ObjectDiff[] = [];
+  // "exists only in public" says nothing when both schemas are called public,
+  // which is the usual case. The side is what matters, so that is what the
+  // sentence says. The schema's name is added in brackets only when the two
+  // names differ and so tell the reader something.
+  const sameName = leftScope === rightScope;
+  const inSource = sameName ? "the source" : `the source (${leftScope})`;
+  const inTarget = sameName ? "the target" : `the target (${rightScope})`;
   const rightByKey = new Map(right.map((obj) => [obj.key, obj]));
   const matched = new Set<string>();
 
@@ -2153,7 +2200,7 @@ function compareObjectLists(
         name: obj.name,
         table: obj.table,
         status: "onlyA",
-        summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${leftScope}.`,
+        summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${inSource}.`,
         leftDefinition: obj.definition,
         severity: objectCreateSeverity(obj),
         needsManualWork: objectCreateNeedsManualWork(obj),
@@ -2174,7 +2221,7 @@ function compareObjectLists(
         status: "changedDefinition",
         summary:
           `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} is a ` +
-          `${OBJECT_KIND_LABEL[peer.kind].toLowerCase()} in ${rightScope}.`,
+          `${OBJECT_KIND_LABEL[peer.kind].toLowerCase()} in ${inTarget}.`,
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
         // A view that became a materialized view, or the reverse. The old one
@@ -2193,15 +2240,27 @@ function compareObjectLists(
     }
 
     if (obj.normalizedDefinition !== peer.normalizedDefinition) {
+      const severity = objectChangeSeverity(obj, peer);
+      // "changed definition" is true of everything and tells nobody anything
+      // for these two kinds, whose whole definition is one short state. So the
+      // sentence says what the cards say: the two states for row security, and
+      // which way access moved for grants and owners.
+      const label = `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name}`;
+      const summary =
+        obj.kind === "ROW SECURITY"
+          ? `${label}: ${peer.definition} in the target, ${obj.definition} in the source.`
+          : obj.kind === "PRIVILEGES"
+            ? `${label} changed: ${severity === "breaking" ? "the target loses some" : "the target only gains"}.`
+            : `${label} changed definition.`;
       diffs.push({
         kind: obj.kind,
         name: obj.name,
         table: obj.table,
         status: "changedDefinition",
-        summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} changed definition.`,
+        summary,
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
-        severity: objectChangeSeverity(obj, peer),
+        severity,
         needsManualWork: objectChangeNeedsManualWork(obj, peer),
         replaceNeedsDrop:
           obj.routine && peer.routine
@@ -2223,7 +2282,7 @@ function compareObjectLists(
       name: obj.name,
       table: obj.table,
       status: "onlyB",
-      summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${rightScope}.`,
+      summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${inTarget}.`,
       rightDefinition: obj.definition,
       severity: objectDropSeverity(obj),
       dropDestroysData: dropDestroysData(obj),
@@ -2478,6 +2537,24 @@ function typeObjectKind(type: TypeSnapshot): ObjectKind {
   return "RANGE TYPE";
 }
 
+/**
+ * A domain's DEFAULT is part of its definition line. A snapshot stored before
+ * defaults were read has no DEFAULT in that line, so against it a fresh
+ * snapshot would report every domain with a default as changed. When the other
+ * side's domain of the same name never recorded its default, the DEFAULT is
+ * taken out of this side's line, so the two are compared on what both know.
+ */
+function withoutUnrecordedDomainDefaults(mine: TypeSnapshot[], others: TypeSnapshot[]): TypeSnapshot[] {
+  const otherByName = new Map(others.map((type) => [normalizeIdentifier(type.name), type]));
+  return mine.map((type) => {
+    if (type.kind !== "DOMAIN" || !type.domainDefault) return type;
+    const other = otherByName.get(normalizeIdentifier(type.name));
+    if (!other || other.kind !== "DOMAIN" || other.domainDefault !== undefined) return type;
+    const definition = type.definition.replace(` DEFAULT ${type.domainDefault}`, "");
+    return { ...type, definition, normalizedDefinition: normalizeDefinition(definition) };
+  });
+}
+
 function typeObjects(types: TypeSnapshot[]): ComparableObject[] {
   return types.map((type) => ({
     key: normalizeIdentifier(type.name),
@@ -2508,6 +2585,72 @@ function collationObjects(collations: CollationSnapshot[]): ComparableObject[] {
  * may both be called "orders", and matching them to each other would report one
  * as having become the other.
  */
+/**
+ * Both sides' privilege entries, made fair to compare with each other.
+ *
+ * Grants on single columns ("SELECT (email)") are taken out of an entry when:
+ *   - the other side's entry never read column grants (an older stored
+ *     snapshot), because "not recorded" is not the same as "nobody has any";
+ *   - on the target, the column is one the source table does not have. That
+ *     column is already reported as a difference and its grants leave with
+ *     it. A REVOKE written for it would fail once the column is dropped.
+ *
+ * The script generator calls this too, so the cards and the script always
+ * work from the same lists.
+ */
+export function privilegesForCompare(
+  left: SchemaSnapshot,
+  right: SchemaSnapshot
+): { left: PrivilegeSnapshot[]; right: PrivilegeSnapshot[] } {
+  const keyOf = (privilege: PrivilegeSnapshot) =>
+    `${privilege.objectKind}\u0000${privilege.objectName}`;
+  const tableKinds = new Set(["TABLE", "VIEW", "MATERIALIZED VIEW"]);
+  const tidy = (
+    mine: PrivilegeSnapshot[],
+    others: PrivilegeSnapshot[],
+    sourceTables: SchemaSnapshot["tables"] | null
+  ) => {
+    const otherByKey = new Map(others.map((privilege) => [keyOf(privilege), privilege]));
+    return mine.map((privilege) => {
+      if (!tableKinds.has(privilege.objectKind)) return privilege;
+      const other = otherByKey.get(keyOf(privilege));
+      const bothRead = privilege.columnGrantsRead === true && other?.columnGrantsRead === true;
+      const sourceTable =
+        sourceTables && privilege.objectKind === "TABLE"
+          ? sourceTables.find((table) => table.name === privilege.objectName)
+          : undefined;
+      const sourceColumns = sourceTable ? new Set(sourceTable.columns.map((col) => col.name)) : null;
+      const keep = (name: string) => {
+        const column = columnOfPrivilege(name);
+        if (column === null) return true;
+        // No entry on the other side means the object is new there, so there
+        // is nothing older to be unfair to.
+        if (other && !bothRead) return false;
+        return sourceColumns === null || sourceColumns.has(column);
+      };
+      const grants = privilege.grants
+        .map((grant) => ({
+          ...grant,
+          privileges: grant.privileges.filter(keep),
+          grantable: grant.grantable.filter(keep),
+        }))
+        .filter((grant) => grant.privileges.length > 0);
+      const unchanged =
+        grants.length === privilege.grants.length &&
+        grants.every((grant, i) => grant.privileges.length === privilege.grants[i].privileges.length);
+      if (unchanged) return privilege;
+      const definition = buildPrivilegeDefinition(privilege.owner, grants);
+      return { ...privilege, grants, definition, normalizedDefinition: normalizeDefinition(definition) };
+    });
+  };
+  const leftList = left.privileges ?? [];
+  const rightList = right.privileges ?? [];
+  return {
+    left: tidy(leftList, rightList, null),
+    right: tidy(rightList, leftList, left.tables),
+  };
+}
+
 function privilegeObjects(privileges: PrivilegeSnapshot[]): ComparableObject[] {
   return privileges.map((privilege) => {
     // A routine's arguments are what tell two overloads apart, so they are part
@@ -2537,6 +2680,21 @@ function privilegeObjects(privileges: PrivilegeSnapshot[]): ComparableObject[] {
       privilege,
     };
   });
+}
+
+/**
+ * An extension from another schema in the shape the rest of the comparison
+ * and the script generator read, with the schema it lives in filled in.
+ */
+export function extensionElsewhereAsSnapshot(extension: ExtensionElsewhere): ExtensionSnapshot {
+  const definition = `version ${extension.version}, in schema ${extension.schema}`;
+  return {
+    name: extension.name,
+    version: extension.version,
+    definition,
+    normalizedDefinition: definition,
+    schema: extension.schema,
+  };
 }
 
 function extensionObjects(extensions: ExtensionSnapshot[]): ComparableObject[] {
@@ -2678,6 +2836,22 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
         right.schema
       )
     );
+    // An extension the source keeps in ANOTHER schema (usually public) and
+    // uses from this one. It is a difference only when the target's database
+    // does not have it anywhere, and only when both sides recorded the list:
+    // an older snapshot never looked outside its own schema.
+    if (left.extensionsElsewhere && right.extensionsElsewhere) {
+      const targetHas = new Set(
+        [...right.extensions, ...right.extensionsElsewhere].map((extension) =>
+          normalizeIdentifier(extension.name)
+        )
+      );
+      const missing = left.extensionsElsewhere
+        .filter((extension) => extension.usedHere)
+        .filter((extension) => !targetHas.has(normalizeIdentifier(extension.name)))
+        .map((extension) => extensionElsewhereAsSnapshot(extension));
+      diffs.push(...compareObjectLists(extensionObjects(missing), [], left.schema, right.schema));
+    }
   }
 
   // Second in the list on purpose. A column, a domain and an index can all name
@@ -2701,12 +2875,13 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
     // table that will not be there" is noise, not a difference to fix. What
     // remains is real work: the objects both sides have, and the ones the
     // script is creating and has to grant access on.
-    const sourceEntries = privilegeObjects(left.privileges);
+    const fair = privilegesForCompare(left, right);
+    const sourceEntries = privilegeObjects(fair.left);
     const sourceKeys = new Set(sourceEntries.map((obj) => obj.key));
     diffs.push(
       ...compareObjectLists(
         sourceEntries,
-        privilegeObjects(right.privileges).filter((obj) => sourceKeys.has(obj.key)),
+        privilegeObjects(fair.right).filter((obj) => sourceKeys.has(obj.key)),
         left.schema,
         right.schema
       )
@@ -2734,7 +2909,14 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
     );
   }
   if (left.types && right.types) {
-    diffs.push(...compareObjectLists(typeObjects(left.types), typeObjects(right.types), left.schema, right.schema));
+    diffs.push(
+      ...compareObjectLists(
+        typeObjects(withoutUnrecordedDomainDefaults(left.types, right.types)),
+        typeObjects(withoutUnrecordedDomainDefaults(right.types, left.types)),
+        left.schema,
+        right.schema
+      )
+    );
   }
   if (left.routines && right.routines) {
     diffs.push(

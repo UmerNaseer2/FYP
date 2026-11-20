@@ -7,7 +7,12 @@
 import type { ClientConfig, PoolClient } from "pg";
 import { buildCollations, readCollations } from "./catalog/collations";
 import { addConstraints, readConstraints } from "./catalog/constraints";
-import { buildExtensions, readExtensions } from "./catalog/extensions";
+import {
+  buildExtensions,
+  buildExtensionsElsewhere,
+  readExtensions,
+  readExtensionsElsewhere,
+} from "./catalog/extensions";
 import {
   addIndexes,
   addTriggers,
@@ -193,6 +198,7 @@ export async function fetchSchemaSnapshot(
     const sequenceRows = await readSequences(client, schemaName);
     const typeRows = await readTypes(client, schemaName);
     const extensionRows = await readExtensions(client, schemaName);
+    const extensionElsewhereRows = await readExtensionsElsewhere(client, schemaName);
     const collationRows = await readCollations(client, schemaName);
     const routineRows = await readRoutines(client, schemaName);
     const privilegeRows = await readPrivileges(client, schemaName);
@@ -229,6 +235,7 @@ export async function fetchSchemaSnapshot(
     const types = buildTypes(typeRows, schemaName);
     const collations = buildCollations(collationRows);
     const extensions = buildExtensions(extensionRows);
+    const extensionsElsewhere = buildExtensionsElsewhere(extensionElsewhereRows);
     const privileges = buildPrivileges(privilegeRows, schemaName);
     const routines = buildRoutines(routineRows, schemaName);
 
@@ -260,6 +267,7 @@ export async function fetchSchemaSnapshot(
         collations,
         routines,
         extensions,
+        extensionsElsewhere,
         privileges,
       },
     };

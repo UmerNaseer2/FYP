@@ -25,6 +25,7 @@ import type {
 import { CheckIcon } from "@/components/ui/icons";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { HelpHint } from "@/components/ui/HelpHint";
+import { countOf } from "@/lib/ui/plural";
 
 // ---------------------------------------------------------------------------
 // DiffReport: the reusable diff canvas.
@@ -665,6 +666,19 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
  */
 function DeltaChips({ adds, chgs, rems, sides }: Tally & { sides: ReportSides }) {
   const drift = sides === "expected-live";
+  // On /drift the signs count the work of going back to the baseline, so a
+  // column the live database gained showed as "− 1" beside "+ 0" and "~ 0",
+  // which read backwards. There the chips say it in words, and only the
+  // counts that are not zero.
+  if (drift && adds + chgs + rems > 0) {
+    return (
+      <span className="flex items-center gap-1.5">
+        {rems > 0 && <span className="delta delta-rem">{`− ${rems} only in live`}</span>}
+        {adds > 0 && <span className="delta delta-add">{`+ ${adds} missing from live`}</span>}
+        {chgs > 0 && <span className="delta delta-chg">{`~ ${chgs} altered`}</span>}
+      </span>
+    );
+  }
   return (
     <span className="flex items-center gap-1.5">
       <span
@@ -1155,6 +1169,7 @@ function ChangedTableCard({
               key={`${cand.leftName}-${cand.rightName}`}
               candidate={cand}
               sides={sides}
+              dropMode={dropMode}
             />
           ))}
         </div>
@@ -1314,13 +1329,30 @@ function SchemaObjectsCard({
   );
 }
 
+/** How many dropped things the banner names before it says "and N more". */
+const DROPPED_NAMES_SHOWN = 5;
+
+/** "a", "a and b", "a, b and c". */
+function joinWithAnd(words: string[]): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** The first `cap` names, then "and N more" for the rest. */
+function listWithCap(names: string[], cap: number): string {
+  if (names.length <= cap) return joinWithAnd(names);
+  return `${names.slice(0, cap).join(", ")} and ${names.length - cap} more`;
+}
+
 /** Dashed "possible rename" suggestion with similarity score. */
 function RenameChip({
   candidate,
   sides,
+  dropMode,
 }: {
   candidate: MatchCandidate;
   sides: ReportSides;
+  dropMode: DropMode;
 }) {
   // The struck-through name is the one that already exists on the side being
   // read as "before", exactly like the confirmed-rename line in
@@ -1334,6 +1366,19 @@ function RenameChip({
   // A table score is already out of 100; a column one is out of 60.
   const percent =
     candidate.kind === "column" ? columnMatchPercent(candidate.score) : candidate.score;
+  // What to do about it. The chip used to stop at "verify", which left the
+  // reader to work out that the script treats the pair as an add and a drop,
+  // and that the ready RENAME is in a note inside the script. Said only where
+  // there is a script: a drift report and a saved report have none.
+  const kept = candidate.kind === "column" ? "values" : "rows";
+  const guidance =
+    sides === "expected-live" || dropMode === "none"
+      ? null
+      : `The script adds ${after} as a new, empty ${candidate.kind} and ${
+          dropMode === "armed"
+            ? `drops ${before}, so the ${kept} are lost`
+            : `holds back the drop of ${before}, so the ${kept} stay in ${before}`
+        }. If this is a rename, find the "Possible rename" note in the script and run its RENAME statement in place of that pair.`;
   return (
     <div className="rename">
       <svg
@@ -1358,6 +1403,7 @@ function RenameChip({
           <s>{before}</s> → <b style={{ color: "var(--text)" }}>{after}</b>{" "}
           · {percent}% similarity, verify before treating as a rename
         </div>
+        {guidance && <div className="what mt-0.5">{guidance}</div>}
       </div>
     </div>
   );
@@ -1420,6 +1466,26 @@ export function DiffReport({
   // put a destructive DROP in the script this banner sits above.
   const droppedMatviews = report.objectDiffs.filter((d) => d.dropDestroysData).length;
   const destructiveCount = droppedTables + droppedColumns + droppedMatviews;
+  // The same drops by name. Counts alone sent the reader down the whole report
+  // to find out which table or column the banner was about.
+  const droppedNames = [
+    ...report.tablesOnlyInB.map((table) => `table ${table.name}`),
+    ...report.matchedTables.flatMap((m) =>
+      m.columnsOnlyInB.map((column) => `column ${m.right.name}.${column.name}`),
+    ),
+    ...report.objectDiffs
+      .filter((d) => d.dropDestroysData)
+      .map((d) => `materialized view ${d.name}`),
+  ];
+  const droppedNamesLine = listWithCap(droppedNames, DROPPED_NAMES_SHOWN);
+  // The same counts in words, for the drift title: "1 table and 2 columns".
+  const droppedInWords = joinWithAnd(
+    [
+      droppedTables > 0 ? countOf(droppedTables, "table") : "",
+      droppedColumns > 0 ? countOf(droppedColumns, "column") : "",
+      droppedMatviews > 0 ? countOf(droppedMatviews, "materialized view") : "",
+    ].filter((part) => part !== ""),
+  );
 
   // Object differences count as changes. They did not, which meant a schema
   // whose only difference was a dropped view rendered "Schemas are in sync"
@@ -1531,7 +1597,10 @@ export function DiffReport({
           <div>
             <div className="title">
               {sides === "expected-live"
-                ? `Going back to the baseline would drop ${destructiveCount} thing${destructiveCount === 1 ? "" : "s"}`
+                ? // A drift report is about what the live database did, so it
+                  // counts what the live database gained. It used to count
+                  // what undoing the drift would drop, in "things".
+                  `The live database gained ${droppedInWords} since the baseline`
                 : dropMode === "armed"
                   ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} armed`
                   : dropMode === "safe"
@@ -1540,7 +1609,7 @@ export function DiffReport({
             </div>
             <div className="body">
               {sides === "expected-live"
-                ? "Undoing this drift needs "
+                ? "Going back to the baseline needs "
                 : "Making the target match the source needs "}
               {droppedTables > 0 && (
                 <b>
@@ -1562,7 +1631,8 @@ export function DiffReport({
                   </b>
                 </>
               )}
-              .{" "}
+              . {destructiveCount === 1 ? "It is" : "They are"}{" "}
+              <span className="mono">{droppedNamesLine}</span>.{" "}
               {sides === "expected-live"
                 ? "This page writes no SQL and drops nothing. Author a migration opens Compare with the live database already on the target side, and you choose what to compare it against."
                 : dropMode === "armed"
@@ -1592,6 +1662,7 @@ export function DiffReport({
       {(only === null ? tableRenames : []).map((cand) => (
         <RenameChip
           key={`${cand.leftName}-${cand.rightName}`}
+          dropMode={dropMode}
           candidate={cand}
           sides={sides}
         />

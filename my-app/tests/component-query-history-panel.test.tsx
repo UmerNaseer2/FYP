@@ -519,7 +519,10 @@ describe("the day chart", () => {
     show();
 
     await listed();
-    expect(screen.getByText(/Nothing in this window was timed/)).toBeInTheDocument();
+    // It names the tick box by the label the Analyze form really shows.
+    expect(screen.getByText(/Nothing in this window was timed/)).toHaveTextContent(
+      "Tick \u201cRun it and measure\u201d when you analyse a query, and its time is recorded here."
+    );
     expect(screen.queryByText(/peak median/)).not.toBeInTheDocument();
   });
 });

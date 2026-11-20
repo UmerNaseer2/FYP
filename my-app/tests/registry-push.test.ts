@@ -4,6 +4,7 @@
 // splits into two, a comment-only rollback saved as if it undid something.
 import {
   CHANGE_LEVELS,
+  savedVersionLine,
   MAX_RETIRE_REASON_LENGTH,
   ROLLBACK_AND_NO_ROLLBACK,
   ROLLBACK_COMMENTS_ONLY,
@@ -592,6 +593,12 @@ describe("describeGitHubFailure and githubErrorCode", () => {
     expect(githubErrorCode(429)).toBe("github_rate_limited");
     expect(githubErrorCode(503)).toBe("github_down");
     expect(githubErrorCode(418)).toBe("github_error");
+  });
+});
+
+describe("savedVersionLine", () => {
+  it("says the version is saved and what to do next", () => {
+    expect(savedVersionLine("1.0.0")).toBe("v1.0.0 is saved in GitHub. Deploy it next.");
   });
 });
 

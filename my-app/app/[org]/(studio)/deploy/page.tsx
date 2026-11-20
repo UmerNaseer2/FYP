@@ -84,6 +84,7 @@ import {
   nameTwoRuns,
   retiredNote,
   warningCount,
+  readRollbackCheck,
 } from "./helpers";
 import {
   BEFORE_FIRST,
@@ -356,6 +357,10 @@ function DeployBody() {
   const [runRegistry, setRunRegistry] = useState<RegistryNote | null>(null);
   const runRefused = runFailure === "refused";
   const runNotStarted = runFailure === "not-started";
+  // The last dry run stopped on a limit of the rehearsal itself (the server's
+  // dryRunLimitation): an enum value added and then used in one run. The page
+  // says so instead of calling the script failed.
+  const [runLimited, setRunLimited] = useState(false);
   // What the ledger re-read after a run found (runBatch starts it right after
   // runComplete). While it is in flight the old reading is still on screen,
   // and a failed one sets preflightResult to null (nothing else does once a
@@ -668,7 +673,8 @@ function DeployBody() {
             currentVersion: preflightResult.currentVersion,
           },
           targetStage,
-          pendingScripts.length > 0 ? vLabel(pendingScripts[0].version) : null
+          pendingScripts.length > 0 ? vLabel(pendingScripts[0].version) : null,
+          (preflightResult.reverted ?? []).length > 0
         )
       : null;
 
@@ -854,7 +860,7 @@ function DeployBody() {
       ? "A deploy is running on this target. Wait for it to finish"
       : askToRun && !approvedRollback
         ? "Your role may not roll back here by itself, so this waits for an Admin to approve it. " +
-          "A dry run is not open to you here"
+          "A dry run runs the same SQL on the live database, so your role can't start one here either"
         : "The rollback runs in one transaction: every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
   // (see rollbackError) is shown whatever the plan.
@@ -977,8 +983,8 @@ function DeployBody() {
       .catch(() => {
         if (cancelled) return;
         setRollbackHashError(
-          "This browser cannot check the approval: crypto.subtle needs " +
-            "https or localhost. Open the app over https to approve a rollback."
+          "This browser could not hash the rollback to check its approval. " +
+            "Reload the page and try again."
         );
       });
     return () => {
@@ -1144,13 +1150,13 @@ function DeployBody() {
       })
       .catch(() => {
         if (cancelled) return;
-        // crypto.subtle is missing outside a secure context. Say so instead of
-        // silently reporting every run as unapproved, which would look like the
-        // approval had gone missing.
+        // sha256Hex falls back to a plain version when crypto.subtle is
+        // missing, so this is rare. Say so instead of silently reporting every
+        // run as unapproved, which would look like the approval had gone missing.
         setRunHash(null);
         setHashError(
-          "This browser cannot check the approval: crypto.subtle needs " +
-            "https or localhost. Open the app over https to approve a run."
+          "This browser could not hash the run to check its approval. " +
+            "Reload the page and try again."
         );
       });
     return () => {
@@ -1345,7 +1351,11 @@ function DeployBody() {
   const dryRunLabel = selectionCount === 0 ? "Dry run" : `Dry run ${selectionRange}`;
   // The version the selection ends at, for "Deploy to" and the summary.
   const selectionLastLabel =
-    selectionCount > 0 ? vLabel(selectionVersions[selectionCount - 1]) : "None";
+    selectionCount > 0
+      ? vLabel(selectionVersions[selectionCount - 1])
+      : pendingScripts.length === 0
+        ? "Up to date"
+        : "Nothing selected";
 
   // The run on screen (the Run stage) against the selection. "Deploy for
   // real" after a clean rehearsal and "Run again" after a failed run both
@@ -1957,6 +1967,7 @@ function DeployBody() {
     setRunComplete(false);
     setRunError(null);
     setRunFailure(null);
+    setRunLimited(false);
     setRunIsDryRun(false);
     setRehearsedBody(null);
     setElapsedMs(0);
@@ -2109,6 +2120,7 @@ function DeployBody() {
     setRunInitialised(targetStage === "needs-init");
     setRunError(null);
     setRunFailure(null);
+    setRunLimited(false);
     setRunRegistry(null);
     // Every migration goes to "running" at once because they really do run
     // together. Ticking them off one at a time would be a story about a loop
@@ -2139,6 +2151,8 @@ function DeployBody() {
     // Whether the server says the run was stopped partway (Stop, or a time
     // limit). It rolled back like any failure; only the toast says "stopped".
     let stopped = false;
+    // The dry run stopped on a limit of the rehearsal (dryRunLimitation).
+    let limited = false;
 
     try {
       const res = await apiFetch("/api/scripts/apply", {
@@ -2206,6 +2220,7 @@ function DeployBody() {
         // back otherwise.
         failureKind = readApplyFailure(res.status, data);
         stopped = data?.code === "run_stopped";
+        limited = dryRun && data?.dryRunLimitation === true;
       }
     } catch {
       // A genuine transport failure: the request may or may not have reached the
@@ -2250,12 +2265,15 @@ function DeployBody() {
           error: outcome.error,
           statements: outcome.statements,
           ...(warnings.length > 0 ? { warnings, moreWarnings } : {}),
+          // Only a dry run tries the rollbacks, so only it has an answer.
+          ...(dryRun ? readRollbackCheck(outcome) : {}),
         };
       }
       return next;
     });
     setRunError(failure);
     setRunFailure(failureKind);
+    setRunLimited(limited);
     // A clean rehearsal pins what it rehearsed. "Clean" is the rehearsal
     // card's own rule (every script came back rehearsed), so the card and the
     // pin always appear together.
@@ -2296,7 +2314,13 @@ function DeployBody() {
     const warned = (where: string) =>
       warningTotal > 0 ? ` · ${countOf(warningTotal, "warning")} from PostgreSQL, see ${where}` : "";
 
-    if (failure) {
+    // A rollback that failed when the dry run tried it. A warning: the dry
+    // run is still clean, but the toast must not read as "all good".
+    const rollbackBroken = dryRun && batch.some((script) => readRollbackCheck(outcomeOf(script)).rollbackCheck === "failed");
+
+    if (failure && limited) {
+      showToast("A dry run can't rehearse this run. Nothing was written", "bad");
+    } else if (failure) {
       showToast(
         outcomeUnknown
           ? "Deploy outcome not known. Check the target before retrying"
@@ -2318,7 +2342,10 @@ function DeployBody() {
         "bad"
       );
     } else if (dryRun) {
-      showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed${warned("the rows")}`);
+      showToast(
+        `Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed${warned("the rows")}` +
+          (rollbackBroken ? " · a rollback failed, see the rows" : "")
+      );
     } else {
       setStage(3);
       // The batch's own last version: the selection can move after this.
@@ -2368,7 +2395,18 @@ function DeployBody() {
   // the recovery bar offers to retire it.
   const failedRunScript =
     runScripts.find((s) => runStatus[scriptKey(s)]?.status === "failed") ?? null;
+  // The first version (newest first, the order the dry run tries them) whose
+  // rollback failed in the rehearsal. The clean rehearsal card warns about it.
+  const brokenRollbackScript =
+    [...runScripts].reverse().find((s) => runStatus[scriptKey(s)]?.rollbackCheck === "failed") ?? null;
+  const brokenRollback = brokenRollbackScript
+    ? {
+        versionLabel: vLabel(brokenRollbackScript.version),
+        error: runStatus[scriptKey(brokenRollbackScript)]?.rollbackError,
+      }
+    : null;
   const failedStillOffered =
+    !runLimited &&
     failedRunScript !== null &&
     (githubScripts ?? []).some(
       (s) => scriptKey(s) === scriptKey(failedRunScript) && !s.retired
@@ -2528,7 +2566,7 @@ function DeployBody() {
   // The colour of the bar under the run's title on stage 2.
   const runTone = isDeploying
     ? "dp-busy"
-    : runOutcomeUnknown
+    : runOutcomeUnknown || runLimited
       ? "dp-mid"
       : allApplied || allRehearsed
         ? "dp-good"
@@ -2953,6 +2991,7 @@ function DeployBody() {
             allRehearsed={allRehearsed}
             runRefused={runRefused}
             runNotStarted={runNotStarted}
+            runLimited={runLimited}
             enumAdditions={enumAdditions}
             elapsedMs={elapsedMs}
             stopBusy={stopBusy}
@@ -2968,7 +3007,7 @@ function DeployBody() {
             (describeError(runError).kind === "password" ? (
               <ErrorNotice error={runError} connectionName={activeConn?.name} connectionId={connectionId} />
             ) : (
-              <div className="dp-result dp-bad">
+              <div className={runLimited ? "dp-result dp-mid" : "dp-result dp-bad"}>
                 <div className="dp-result-body">{runError}</div>
               </div>
             ))}
@@ -2978,6 +3017,7 @@ function DeployBody() {
             runStatus={runStatus}
             runRefused={runRefused}
             runNotStarted={runNotStarted}
+            runLimited={runLimited}
             runOutcomeUnknown={runOutcomeUnknown}
             runProgress={runProgress}
             runIsDryRun={runIsDryRun}
@@ -3013,6 +3053,8 @@ function DeployBody() {
             failedScript={failedStillOffered ? failedRunScript : null}
             onRetire={mayRetire ? openRetire : undefined}
             warningTotal={runWarningTotal}
+            runLimited={runLimited}
+            brokenRollback={brokenRollback}
           />
         </section>
       )}

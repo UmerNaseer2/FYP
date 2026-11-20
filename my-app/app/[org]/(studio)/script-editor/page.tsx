@@ -81,6 +81,7 @@ type Connection = {
   id: number;
   name: string;
   host: string;
+  port: number;
   database_name: string;
 };
 
@@ -1216,7 +1217,7 @@ export default function ScriptEditorPage() {
                   placeholder="Select a connection…"
                   options={connections.map((c) => ({
                     value: String(c.id),
-                    label: `${c.name} · ${c.host}/${c.database_name}`,
+                    label: `${c.name} · ${c.host}:${c.port}/${c.database_name}`,
                   }))}
                   onChange={(value) => {
                     setConnectionId(value);

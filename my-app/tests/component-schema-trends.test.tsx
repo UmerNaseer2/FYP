@@ -331,6 +331,8 @@ describe("readings that could not be taken", () => {
     await charted();
     expect(screen.getByText("Total size could not be measured in this window.")).toBeInTheDocument();
     expect(screen.getAllByText("Nothing measurable in this window.")).toHaveLength(3);
+    // The row estimate says why it is missing and what fixes it. Only that card does.
+    expect(screen.getAllByText(/no row estimate for a table until it has been analysed/)).toHaveLength(1);
     // The counts beside them are fine, so the tab is still worth opening.
     expect(screen.getByText(/14 tables, up 2/)).toBeInTheDocument();
   });

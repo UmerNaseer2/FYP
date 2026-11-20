@@ -32,6 +32,7 @@ import {
   type PendingInvite,
 } from "@/lib/orgs/invites";
 import { BUILT_IN_ROLE_INFO, DEFAULT_ROLE } from "@/lib/roles/permissions";
+import { copyText } from "@/lib/ui/copy-text";
 
 /**
  * "Invite people", under the member list on the Users tab (UsersTab.tsx),
@@ -438,7 +439,7 @@ function MadeInvite({ made, onDone }: { made: Made; onDone: () => void }) {
 
   async function copyLink() {
     try {
-      await navigator.clipboard.writeText(made.link);
+      await copyText(made.link);
       setCopy("copied");
       if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => setCopy("idle"), 1500);

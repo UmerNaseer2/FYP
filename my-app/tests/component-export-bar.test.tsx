@@ -218,7 +218,7 @@ describe("copying the diff", () => {
     fireEvent.click(button(/Copy as Markdown/));
     await settle();
     expect(problem(container)).toBe(
-      "Copy blocked by the browser — use the JSON or CSV download."
+      "The browser blocked the copy. Use the JSON or CSV download instead."
     );
     expect(screen.queryByRole("button", { name: /Copied/ })).not.toBeInTheDocument();
   });
@@ -335,6 +335,32 @@ describe("printing", () => {
     fireEvent(window, new Event("afterprint"));
     expect(getByTestId("collapsed")).not.toHaveAttribute("open");
     expect(getByTestId("expanded")).toHaveAttribute("open");
+  });
+
+  it("names the PDF after the export for the length of the print", () => {
+    // The browser offers the tab title as the PDF's file name, and that title
+    // is the same on every page of the app.
+    window.document.title = "Schema Studio";
+    render(<ExportBar doc={doc()} />);
+    fireEvent(window, new Event("beforeprint"));
+    expect(window.document.title).toBe("diff_shop_dev_public_to_shop_prod_public");
+    fireEvent(window, new Event("afterprint"));
+    expect(window.document.title).toBe("Schema Studio");
+  });
+
+  it("uses the pressed bar's name when a page has two bars", () => {
+    window.document.title = "Schema Studio";
+    render(
+      <>
+        <ExportBar doc={doc()} />
+        <ExportBar doc={doc({ target: { database: "shop_stage", schema: "public" } })} />
+      </>
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /Print \/ PDF/ })[1]);
+    fireEvent(window, new Event("beforeprint"));
+    expect(window.document.title).toBe("diff_shop_dev_public_to_shop_stage_public");
+    fireEvent(window, new Event("afterprint"));
+    expect(window.document.title).toBe("Schema Studio");
   });
 
   it("borrows the light palette, then gives the reader their theme back", () => {

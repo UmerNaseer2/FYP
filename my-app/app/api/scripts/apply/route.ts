@@ -104,7 +104,133 @@ type ScriptOutcome = {
   warnings?: string[];
   /** How many warnings came after the ones listed. */
   moreWarnings?: number;
+  /**
+   * Dry runs only: how this version's rollback (down) script did when the
+   * rehearsal tried it. "none" means the version carries no rollback, and
+   * "not_checked" means the rehearsal stopped at a later version first.
+   * A warning only: it never fails the dry run. See rehearseRollbacks.
+   */
+  rollbackCheck?: RollbackCheck;
+  /** What PostgreSQL said when the rollback failed in the rehearsal. */
+  rollbackError?: string;
+  /** What PostgreSQL warned about while the rollback ran in the rehearsal. */
+  rollbackWarnings?: string[];
 };
+
+type RollbackCheck = "ok" | "failed" | "none" | "not_checked";
+
+/**
+ * Errors that say the run itself was cut short, not that a rollback script is
+ * wrong: a cancelled statement (Stop, or a time limit), a lock that never
+ * came free, or a session the database ended. rehearseRollbacks hands these
+ * on to the route's catch block, which already knows how to word each one.
+ */
+const RUN_CUT_SHORT_CODES = new Set(["57014", "55P03", "25P03", "57P01", "57P02", "57P03"]);
+
+/**
+ * Dry runs only: try each version's rollback (down) script, newest first.
+ *
+ * A real run stores the rollback beside the version and nothing changes it
+ * afterwards, so a rollback that cannot run is otherwise found on the day
+ * someone needs it. The dry run has just run every migration inside its
+ * transaction, which is the one moment the rollbacks can be tried against the
+ * schema they will meet.
+ *
+ * Everything here happens inside a SAVEPOINT that is rolled back, and the
+ * caller rolls the whole transaction back straight after. The checks are the
+ * ones the migrations get: the same script check, the same run settings
+ * before each script, and the same transaction id check afterwards. A
+ * rollback that ends the transaction throws ScriptEndedTransactionError and
+ * the route reports it the way it reports a migration that did.
+ *
+ * It stops at the first rollback that fails and at the first version with no
+ * rollback, because the versions before it would then be tried against a
+ * schema their rollback will never meet. Those stay "not_checked".
+ *
+ * A failed rollback is written on the outcome and nothing else: the dry run
+ * still succeeds.
+ */
+async function rehearseRollbacks(
+  client: PoolClient,
+  queue: ScriptJob[],
+  outcomes: ScriptOutcome[],
+  check: {
+    runSettings: RunSettings;
+    runTransactionId: string | null;
+    entry: RunEntry;
+    clientError: () => unknown;
+  }
+): Promise<void> {
+  queue.forEach((job, index) => {
+    outcomes[index].rollbackCheck = job.downSql ? "not_checked" : "none";
+  });
+
+  await client.query("SAVEPOINT rollback_rehearsal");
+  for (let index = queue.length - 1; index >= 0; index--) {
+    const job = queue[index];
+    const outcome = outcomes[index];
+    if (!job.downSql) break;
+    throwIfStopped(check.entry);
+
+    // Step 3 already refused a rollback with a COMMIT in it. Asked again
+    // here so this function is safe whoever calls it.
+    if (containsTransactionControl(job.downSql)) {
+      outcome.rollbackCheck = "failed";
+      outcome.rollbackError = "It contains a COMMIT, END or ROLLBACK statement.";
+      break;
+    }
+
+    await applyRunSettings(client, check.runSettings);
+    const collector = warningCollector();
+    client.on("notice", collector.listener);
+    let failure: unknown = null;
+    try {
+      await client.query(job.downSql);
+    } catch (error) {
+      failure = error;
+    } finally {
+      client.off("notice", collector.listener);
+    }
+
+    if (failure) {
+      const code = (failure as { code?: string }).code;
+      if (check.entry.stopReason || check.clientError() || (code && RUN_CUT_SHORT_CODES.has(code))) {
+        throw failure;
+      }
+      outcome.rollbackCheck = "failed";
+      outcome.rollbackError = failure instanceof Error ? failure.message : String(failure);
+      // The failed statement left the transaction refusing every statement.
+      // Going back to the savepoint is what makes it usable again, so the id
+      // check below it can be asked. If the savepoint is gone, the rollback
+      // ended the transaction before it failed, which the same check reports.
+      let savepointGone = false;
+      try {
+        await client.query("ROLLBACK TO SAVEPOINT rollback_rehearsal");
+      } catch (savepointError) {
+        if (check.clientError()) throw savepointError;
+        savepointGone = true;
+      }
+      if (savepointGone || (await currentTransactionId(client)) !== check.runTransactionId) {
+        throw new ScriptEndedTransactionError(
+          `The rollback of ${scriptLabel(job.scriptName, job.version)} ended this run's transaction ` +
+            `itself (with a COMMIT, END or ROLLBACK the script check did not recognise).`
+        );
+      }
+      return;
+    }
+
+    if ((await currentTransactionId(client)) !== check.runTransactionId) {
+      throw new ScriptEndedTransactionError(
+        `The rollback of ${scriptLabel(job.scriptName, job.version)} ended this run's transaction ` +
+          `itself (with a COMMIT, END or ROLLBACK the script check did not recognise).`
+      );
+    }
+    outcome.rollbackCheck = "ok";
+    const warned = collector.result();
+    if (warned.warnings?.length) outcome.rollbackWarnings = warned.warnings;
+  }
+  await client.query("ROLLBACK TO SAVEPOINT rollback_rehearsal");
+}
 
 /**
  * The part of a node-postgres result the dry-run report reads.
@@ -1510,6 +1636,18 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // with the transaction, and the two steps that would have outlived it — the
     // ledger INSERTs and the lineage advance — are simply never reached.
     if (dryRun) {
+      // Try the rollbacks while the migrations are still in place. A rollback
+      // that fails is a warning on its version, not a failed dry run.
+      await rehearseRollbacks(client, queue, outcomes, {
+        runSettings,
+        runTransactionId,
+        entry,
+        clientError,
+      });
+      if (clientError()) throw clientError();
+      throwIfStopped(entry);
+      const brokenRollback = outcomes.find((outcome) => outcome.rollbackCheck === "failed");
+
       await client.query("ROLLBACK");
       transactionStarted = false;
       client.release(true);
@@ -1538,7 +1676,12 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
           `Dry run of ${describeRun(queue)} completed on schema "${schemaName}" — ` +
           `${totalStatements} statement${totalStatements === 1 ? " was" : "s were"} ` +
           `run and rolled back. Nothing was written. Sequence numbers the script ` +
-          `used are the one thing a rollback does not give back.`,
+          `used are the one thing a rollback does not give back.` +
+          (brokenRollback
+            ? ` The rollback of ${scriptLabel(brokenRollback.script_name, brokenRollback.version)} ` +
+              `failed in the rehearsal: ${brokenRollback.rollbackError ?? "no reason given"}. ` +
+              `Fix it before the real run. The real run saves the rollback, and it can't be changed afterwards.`
+            : ""),
       });
     }
 

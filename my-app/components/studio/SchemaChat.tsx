@@ -23,6 +23,7 @@ import { refusalMessage } from "@/lib/roles/permissions";
 import { MAX_MIGRATION_DESCRIPTION } from "@/lib/performance/sql";
 import { AI_SUGGESTION_LABEL, RateButtons, rateAiAnswer, useAiFeature } from "./AiPanel";
 import { withNames } from "./ai-names";
+import { copyText } from "@/lib/ui/copy-text";
 
 /** What each lookup is called on screen. */
 const LOOKUP_LABEL: Record<string, string> = {
@@ -101,7 +102,7 @@ function AnswerView({
   async function copy() {
     if (!answer.sql) return;
     try {
-      await navigator.clipboard.writeText(answer.sql);
+      await copyText(answer.sql);
       setCopied("yes");
     } catch {
       setCopied("blocked");

@@ -11,6 +11,7 @@
 import type { ClientConfig } from "pg";
 import type {
   CollationSnapshot,
+  ExtensionElsewhere,
   ExtensionSnapshot,
   PrivilegeSnapshot,
   RoutineSnapshot,
@@ -31,6 +32,7 @@ export type {
   CollationProvider,
   CollationSnapshot,
   RoutineSnapshot,
+  ExtensionElsewhere,
   ExtensionSnapshot,
   PrivilegeGrant,
   PrivilegeObjectKind,
@@ -384,6 +386,13 @@ export type SchemaSnapshot = {
   routines?: RoutineSnapshot[];
   /** Extensions installed into this schema. See the optionality note above. */
   extensions?: ExtensionSnapshot[];
+  /**
+   * Extensions installed in OTHER schemas of the same database, and whether
+   * this schema uses each. Never compared as a list: it only answers whether
+   * an extension this schema needs is missing on the other side. See the
+   * optionality note above.
+   */
+  extensionsElsewhere?: ExtensionElsewhere[];
   /**
    * Ownership and grants, one entry per object plus one for the schema
    * itself. See the optionality note above.

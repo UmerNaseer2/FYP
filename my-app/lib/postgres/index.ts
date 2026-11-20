@@ -19,6 +19,7 @@ export type {
   ConstraintKind,
   ConstraintSnapshot,
   DomainCheck,
+  ExtensionElsewhere,
   ExtensionSnapshot,
   ForeignKeySnapshot,
   GeneratedColumn,

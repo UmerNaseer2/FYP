@@ -312,7 +312,14 @@ export default function ConnectionsPage() {
   const pickedName = useRef<string | null>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   // The connection string box, which holds the password of a connection saved that way.
-  const uriRef = useRef<HTMLInputElement>(null);
+  const uriRef = useRef<HTMLTextAreaElement>(null);
+  // Reading the clipboard only exists on https and on localhost. On a plain
+  // http address the Paste button could never work, so it is left out.
+  // Checked after mount so the server and the first client render agree.
+  const [canPaste, setCanPaste] = useState(false);
+  useEffect(() => {
+    setCanPaste(typeof navigator !== "undefined" && typeof navigator.clipboard?.readText === "function");
+  }, []);
   // Names the line that says why buttons are off, for aria-describedby.
   const whyOffId = useId();
   // The "?edit=" value already acted on, so it is used once.
@@ -1503,33 +1510,52 @@ export default function ConnectionsPage() {
           {fieldMode === "uri" && (
             <div className="space-y-3">
               <div className="relative">
-                <input
+                {/* A box of three lines: a real connection string is longer
+                    than one line of the drawer. It is still one value, so
+                    line breaks are dropped as they are typed or pasted. */}
+                <textarea
                   className="input mono"
-                  style={{ paddingRight: 70 }}
+                  rows={3}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  style={{
+                    paddingRight: canPaste ? 70 : undefined,
+                    paddingTop: 9,
+                    paddingBottom: 9,
+                    resize: "vertical",
+                    wordBreak: "break-all",
+                    display: "block",
+                  }}
                   placeholder="postgres://user:pass@host:5432/database?sslmode=require"
                   value={form.uri}
-                  onChange={(e) => editConnectionField({ uri: e.target.value })}
+                  onChange={(e) => editConnectionField({ uri: e.target.value.replace(/[\r\n]+/g, "") })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.preventDefault();
+                  }}
                   ref={uriRef}
                   aria-label="Connection string"
                   aria-required={editingId === null ? "true" : undefined}
                   {...fieldProps("connection_string")}
                 />
-                <button
-                  className="btn btn-ghost btn-xs"
-                  style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)" }}
-                  onClick={async () => {
-                    try {
-                      const text = await navigator.clipboard.readText();
-                      if (text) editConnectionField({ uri: text.trim() });
-                    } catch {
-                      showToast("Clipboard not available, so paste it by hand.");
-                    }
-                  }}
-                  type="button"
-                >
-                  <ClipboardIcon size={11} />
-                  Paste
-                </button>
+                {canPaste && (
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    style={{ position: "absolute", right: 6, top: 6 }}
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) editConnectionField({ uri: text.replace(/[\r\n]+/g, "").trim() });
+                      } catch {
+                        showToast("The browser did not allow reading the clipboard. Paste it by hand.");
+                      }
+                    }}
+                    type="button"
+                  >
+                    <ClipboardIcon size={11} />
+                    Paste
+                  </button>
+                )}
               </div>
               <FieldError
                 id={`${formId}-connection_string-problem`}

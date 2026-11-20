@@ -21,6 +21,7 @@ import { readAppliedVersion, readFamilyVersions } from "@/lib/versions/family-re
 import {
   CHANGE_LEVELS,
   describePush,
+  savedVersionLine,
   MIGRATION_NO_STATEMENTS,
   rollbackChoiceProblem,
   rollbackToSend,
@@ -36,6 +37,7 @@ import type { NewerSchemaVerdict } from "@/lib/versions/detection";
 import { backwardsWarning } from "@/lib/compare/timeline";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
+import { copyText } from "@/lib/ui/copy-text";
 
 // The change level a migration is published as. compare-run imports this name.
 export type ChangeKind = "breaking" | "additive" | "patch";
@@ -278,6 +280,7 @@ export function MigrationWorkbench({
   const [pushWithoutRollback, setPushWithoutRollback] = useState(false);
   const [backwardsAck, setBackwardsAck] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyBlocked, setCopyBlocked] = useState(false);
   const [ownFullScreen, setOwnFullScreen] = useState(false);
   const full = fullScreen ?? ownFullScreen;
   const setFull = onFullScreen ?? setOwnFullScreen;
@@ -439,6 +442,10 @@ export function MigrationWorkbench({
   // rollback to the version already pushed, so the offer below Push does that.
   const pushedHere = lastPushed !== null && lastPushed.key === familyKey ? lastPushed : null;
   const sameMigration = pushedHere !== null && pushedHere.sql === sql;
+  // The version pushed from this tab while the migration is still the one that
+  // was pushed, or null. Nothing is waiting to be pushed then, so the panel
+  // shows the saved version and not a "next" one nobody can push.
+  const justSaved = pushedHere !== null && sameMigration ? pushedHere.version : null;
   const attachOffer =
     pushedHere !== null &&
     sameMigration &&
@@ -524,11 +531,14 @@ export function MigrationWorkbench({
 
   async function copySql() {
     try {
-      await navigator.clipboard.writeText(activeSql);
+      await copyText(activeSql);
       setCopied(true);
+      setCopyBlocked(false);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard blocked (e.g. insecure context) — leave the button as-is.
+      // Both ways of copying were refused. The script is on screen to select.
+      setCopyBlocked(true);
+      setTimeout(() => setCopyBlocked(false), 2500);
     }
   }
 
@@ -752,24 +762,29 @@ export function MigrationWorkbench({
       ? "Retry saving the rollback"
       : `Add this rollback to v${pushedHere !== null ? pushedHere.version : ""}`;
 
-  // Under the editor, here and in full screen.
+  // Under the editor, here and in full screen. Only the migration holds
+  // statements back; the rollback tab has none.
+  const heldBackHere = showingDown ? 0 : heldBackCount;
   const tally = (
     <>
       {countOf(lineCount, "line")} · {countOf(activeStatementCount, "statement")}
-      {activeManualCount > 0 && (
+      {/* One pair of brackets for both facts. Each used to bring its own, and
+          two brackets in a row read as a mistake. */}
+      {(activeManualCount > 0 || heldBackHere > 0) && (
         <>
-          {" "}
-          <span style={{ color: "var(--drift)" }}>
-            ({activeManualCount} {activeManualCount === 1 ? "note" : "notes"}, nothing to run)
-          </span>
-        </>
-      )}
-      {!showingDown && heldBackCount > 0 && (
-        <>
-          {" "}
+          {" ("}
+          {activeManualCount > 0 && (
+            <span style={{ color: "var(--drift)" }}>
+              {activeManualCount} {activeManualCount === 1 ? "note" : "notes"} with nothing to run
+            </span>
+          )}
+          {activeManualCount > 0 && heldBackHere > 0 && ", "}
           {/* "held back" is the word the diff report uses for the same fact,
               said in both places so the two pages line up. */}
-          <span style={{ color: "var(--break)" }}>({heldBackCount} held back, commented out)</span>
+          {heldBackHere > 0 && (
+            <span style={{ color: "var(--break)" }}>{heldBackHere} held back and commented out</span>
+          )}
+          {")"}
         </>
       )}{" "}
       · {showingDown ? "rollback SQL" : "SQL"}
@@ -883,9 +898,14 @@ export function MigrationWorkbench({
                       <RefreshIcon size={12} />
                       Reset
                     </button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={copySql}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={copySql}
+                      title={copyBlocked ? "The browser blocked the copy. Select the script and copy it yourself." : undefined}
+                    >
                       {copied ? <CheckIcon size={12} /> : <ClipboardIcon size={12} />}
-                      {copied ? "Copied" : "Copy"}
+                      {copied ? "Copied" : copyBlocked ? "Copy blocked" : "Copy"}
                     </button>
                     <button
                       type="button"
@@ -1073,12 +1093,16 @@ export function MigrationWorkbench({
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                            Next version
+                            {justSaved !== null ? "Saved version" : "Next version"}
                           </div>
-                          <div className="text-[15px] mt-0.5 font-semibold mono">{vLabel(nextVersion)}</div>
+                          <div className="text-[15px] mt-0.5 font-semibold mono">
+                            {vLabel(justSaved ?? nextVersion)}
+                          </div>
                         </div>
                         <span className="help break-words sm:text-right sm:max-w-[260px]">
-                          {floor === null
+                          {justSaved !== null
+                            ? `${savedVersionLine(justSaved)} Edit the migration to make a new version.`
+                            : floor === null
                             ? // The push preview below already says "First version of this
                               // family"; this line says why, in the same shape as the one below.
                               `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new script group starts at ${vLabel(nextVersion)}; the level you pick is still recorded`
@@ -1182,7 +1206,7 @@ export function MigrationWorkbench({
                 )}
 
                 {/* The push preview: the step, and the exact files. */}
-                {versionsReady && (
+                {versionsReady && justSaved === null && (
                   <div className="text-[12px] space-y-0.5" style={{ color: "var(--text-2)" }}>
                     <div>{preview.stepLine}</div>
                     <div className="min-w-0">
@@ -1214,7 +1238,7 @@ export function MigrationWorkbench({
                   >
                     {push.kind === "pushing"
                       ? "Pushing…"
-                      : versionsReady
+                      : versionsReady && justSaved === null
                         ? `Push v${nextVersion} to GitHub`
                         : "Push to GitHub"}
                   </button>
@@ -1338,7 +1362,7 @@ export function MigrationWorkbench({
 
         {/* "What this will do": only once the number is known, so it never
             names a file that would not be written. */}
-        {!inSync && versionsReady && (
+        {!inSync && versionsReady && justSaved === null && (
           <div className="card p-4">
             <div className="section-title mb-2">What this will do</div>
             <ul className="space-y-1.5 text-[12.5px]" style={{ color: "var(--text-2)" }}>

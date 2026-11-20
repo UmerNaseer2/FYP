@@ -4,7 +4,6 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
-import { displayVersion } from "@/lib/versions/timeline";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -649,6 +648,13 @@ function DetailTab({
           // What this page is showing, so a re-baseline accepts these differences
           // and not whatever the live database holds by the time of the click.
           shownFingerprint={view.fingerprint ?? null}
+          // The newest record is an acknowledgement of these same differences.
+          acknowledged={
+            view.state === "drifted" &&
+            !!view.lastRecorded?.acknowledgedAt &&
+            !!view.fingerprint &&
+            view.lastRecorded.fingerprint === view.fingerprint
+          }
           onDone={() => {
             void load();
             onListChanged();
@@ -675,8 +681,10 @@ function DetailTab({
           <div>
             <div className="dr-kicker">Agreed and live</div>
             <h3 className="dr-h3">
+              {/* The number counts saved snapshots, so it never gets a "v":
+                  beside the script versions on Deploy it read as one. */}
               {view.expected.version
-                ? `Lineage ${displayVersion(view.expected.version, true)} vs the live database`
+                ? `Snapshot ${view.expected.version.trim()} vs the live database`
                 : "Expected snapshot vs the live database"}
             </h3>
           </div>
@@ -766,7 +774,9 @@ function caseHead(view: DriftDetailAnswer): {
   title: React.ReactNode;
   lead: string;
 } {
-  const version = view.expected.version ? displayVersion(view.expected.version, true) : null;
+  // The snapshot's number, never with a "v": it counts saved snapshots and
+  // is not a script version.
+  const version = view.expected.version?.trim() ? `snapshot ${view.expected.version.trim()}` : null;
 
   if (view.state === "drifted") {
     const t = view.report ? tallyDelta(view.report) : null;

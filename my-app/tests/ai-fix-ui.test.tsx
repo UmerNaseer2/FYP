@@ -251,12 +251,12 @@ describe("why AI is off (U31)", () => {
     [
       "AI is switched off",
       SWITCHED_OFF,
-      "AI is switched off for this organization. An Admin can switch it on in Admin, AI.",
+      "AI is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.",
     ],
     [
       "the feature is switched off",
       { ...ON, features: { ...FEATURES, "compare-summary": false } },
-      "Compare change summary is switched off for this organization. An Admin can switch it on in Admin, AI.",
+      "Compare change summary is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.",
     ],
   ])("%s", async (_name, status, reason) => {
     setRoutes([statusRoute(status)]);

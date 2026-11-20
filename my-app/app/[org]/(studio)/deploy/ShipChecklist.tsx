@@ -227,9 +227,12 @@ export function ShipChecklist({
         {driftPhase === "ready" && driftResult && (
           driftResult.status === "in_sync" ? (
             <ChecklistItem ok>
-              Drift check · in sync
+              {/* The snapshot's number counts saved snapshots. It is not a
+                  script version, so it gets no "v" and is not called one:
+                  a database with nothing deployed still has snapshot 1.0.0. */}
+              Drift check · no drift since its tracked snapshot
               {driftResult.expectedVersion ? (
-                <> with lineage <span className="mono">{vLabel(driftResult.expectedVersion)}</span></>
+                <> (snapshot <span className="mono">{driftResult.expectedVersion}</span>)</>
               ) : null}
             </ChecklistItem>
           ) : driftResult.status === "drifted" ? (

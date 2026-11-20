@@ -1,5 +1,6 @@
 "use client";
 
+import { copyText as copyToClipboard } from "@/lib/ui/copy-text";
 import { useRef, useState, type KeyboardEvent } from "react";
 
 /** The small line under the editor: what the text in the open tab amounts to. */
@@ -91,9 +92,9 @@ export function SqlEditor({
     openTab(tab === "up" ? "down" : "up", true);
   }
 
-  async function copyText() {
+  async function copyAll() {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       setCopied("done");
     } catch {
       setCopied("failed");
@@ -145,7 +146,7 @@ export function SqlEditor({
         <span className="se-file" title={file}>
           {file}
         </span>
-        <button type="button" className="se-ib" disabled={text === ""} onClick={copyText}>
+        <button type="button" className="se-ib" disabled={text === ""} onClick={copyAll}>
           Copy
         </button>
         <button type="button" className="se-ib" disabled={text === ""} onClick={downloadText}>

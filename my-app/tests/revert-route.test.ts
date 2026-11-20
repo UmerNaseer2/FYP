@@ -618,8 +618,11 @@ describe("failures", () => {
     const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"] });
     expect(res.status).toBe(500);
     expect(String(res.body.error)).toBe(
-      "The rollback of v2.0.0 failed, so nothing was changed - every version in this rollback is " +
-        'still applied. PostgreSQL said: table "t2" does not exist'
+      "The real rollback failed at v2.0.0, so nothing was changed. Every version in this rollback is " +
+        'still applied. PostgreSQL said: table "t2" does not exist. What to do next: if the database ' +
+        "was changed by hand after the deploy, undo that change and try again. If the rollback SQL " +
+        "itself is wrong, it can't be edited. Deploy a new version from Script Editor that makes the " +
+        "change instead."
     );
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(count(mockClient, "COMMIT")).toBe(0);
@@ -912,7 +915,7 @@ describe("the audit trail", () => {
     const [context, status, body] = recorded();
     expect(context).toMatchObject({ action: "revert", scripts: [{ script_name: "orders_fix", version: "3.0.0" }] });
     expect(status).toBe(500);
-    expect(String(body.error)).toContain("The rollback of v3.0.0 failed");
+    expect(String(body.error)).toContain("The real rollback failed at v3.0.0");
   });
 
   it("records an unknown outcome as unknown", async () => {

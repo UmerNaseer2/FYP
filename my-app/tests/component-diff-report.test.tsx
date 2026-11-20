@@ -181,8 +181,54 @@ describe("what the report promises about a drop", () => {
       "only in the live database, added since the baseline"
     );
     expect(
-      screen.getByText("Going back to the baseline would drop 1 thing")
+      screen.getByText("The live database gained 1 materialized view since the baseline")
     ).toBeInTheDocument();
+    // By name, so nobody has to hunt through the report for it.
+    expect(screen.getByText("materialized view sales_rollup")).toBeInTheDocument();
+  });
+
+  it("names the first five drops and counts the rest", () => {
+    const views = ["a", "b", "c", "d", "e", "f", "g"].map((name) => droppedView(`mv_${name}`, true));
+    render(<DiffReport report={report(views)} allowDataLoss={false} />);
+
+    expect(
+      screen.getByText(
+        "materialized view mv_a, materialized view mv_b, materialized view mv_c, " +
+          "materialized view mv_d, materialized view mv_e and 2 more"
+      )
+    ).toBeInTheDocument();
+  });
+});
+
+describe("a possible rename", () => {
+  const candidate = {
+    kind: "table" as const,
+    leftName: "customers",
+    rightName: "clients",
+    score: 80,
+    accepted: false,
+    breakdown: {} as never,
+  };
+
+  it("says what the script does with the pair and where the RENAME is", () => {
+    render(
+      <DiffReport report={{ ...report([]), possibleTableMatches: [candidate] }} allowDataLoss={false} />
+    );
+    expect(
+      screen.getByText(
+        "The script adds customers as a new, empty table and holds back the drop of clients, " +
+          "so the rows stay in clients. If this is a rename, find the \"Possible rename\" note " +
+          "in the script and run its RENAME statement in place of that pair."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about a script on a drift report, which has none", () => {
+    render(
+      <DiffReport report={{ ...report([]), possibleTableMatches: [candidate] }} sides="expected-live" />
+    );
+    expect(screen.getByText("Possible table rename")).toBeInTheDocument();
+    expect(screen.queryByText(/The script adds/)).not.toBeInTheDocument();
   });
 });
 

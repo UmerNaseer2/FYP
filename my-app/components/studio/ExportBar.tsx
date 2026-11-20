@@ -10,6 +10,7 @@ import {
 } from "@/lib/compare/export-format";
 import type { DiffDocument } from "@/lib/compare/export";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
+import { copyText } from "@/lib/ui/copy-text";
 
 /**
  * The four ways a diff can leave this page.
@@ -54,9 +55,23 @@ export function downloadText(filename: string, text: string, mime: string) {
 let savedTheme: string | null = null;
 let themeIsSaved = false;
 
+/**
+ * The tab title the page had before printing, saved for the page the same way
+ * the theme is.
+ *
+ * A browser offers the tab title as the PDF's file name, and that title is
+ * "Schema Studio" on every page, so every saved diff had the same name. For
+ * the length of the print the title is the export's own file name, the one
+ * the JSON and CSV downloads use. With several bars on one page the bar whose
+ * button was pressed names the file; for Ctrl-P it is the first bar.
+ */
+let savedTitle: string | null = null;
+let pressedStem: string | null = null;
+
 export function ExportBar({ doc }: { doc: DiffDocument }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState("");
+  const stem = exportFileStem(doc);
 
   // Two things the print stylesheet cannot do for itself, done once for both
   // Ctrl-P and the button below:
@@ -70,7 +85,10 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
   //      <html data-theme="light">, so borrowing it for the duration of the
   //      print costs one attribute.
   //
-  // Both are put back on afterprint. useTheme only writes the attribute on
+  //   3. The tab title becomes the PDF's suggested file name, so it is set to
+  //      this export's file name. See savedTitle above.
+  //
+  // All are put back on afterprint. useTheme only writes the attribute on
   // mount and on the toggle button, so nothing else is racing for it — but a
   // sibling export bar is, which is why the saved theme lives at module scope
   // above.
@@ -89,11 +107,22 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
         themeIsSaved = true;
       }
       root.setAttribute("data-theme", "light");
+
+      if (savedTitle === null) {
+        savedTitle = window.document.title;
+        window.document.title = pressedStem ?? stem;
+      }
     }
 
     function restore() {
       for (const element of reclose) element.open = false;
       reclose = [];
+
+      if (savedTitle !== null) {
+        window.document.title = savedTitle;
+        savedTitle = null;
+      }
+      pressedStem = null;
 
       if (!themeIsSaved) return;
       const root = window.document.documentElement;
@@ -109,23 +138,21 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       window.removeEventListener("beforeprint", prepare);
       window.removeEventListener("afterprint", restore);
     };
-  }, []);
+  }, [stem]);
 
   const counted = countedChanges(doc.totals);
   const suggested = doc.totals.renameSuggestions;
-  const stem = exportFileStem(doc);
 
   async function copyMarkdown() {
     try {
-      await navigator.clipboard.writeText(documentToMarkdown(doc));
+      await copyText(documentToMarkdown(doc));
       setCopied(true);
       setFailed("");
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard writes are blocked outside a secure context, and there is no
-      // way to feature-detect that ahead of time — so say so rather than
-      // leaving a button that looks like it did nothing.
-      setFailed("Copy blocked by the browser — use the JSON or CSV download.");
+      // Both ways of copying were refused. Say so rather than leaving a
+      // button that looks like it did nothing.
+      setFailed("The browser blocked the copy. Use the JSON or CSV download instead.");
     }
   }
 
@@ -163,7 +190,10 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       <button
         type="button"
         className="btn btn-ghost btn-sm"
-        onClick={() => window.print()}
+        onClick={() => {
+          pressedStem = stem;
+          window.print();
+        }}
         title="Opens the browser print dialog — choose “Save as PDF” there for a PDF"
       >
         Print / PDF

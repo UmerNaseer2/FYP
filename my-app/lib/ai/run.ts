@@ -138,10 +138,10 @@ export function defaultAiDeps(): AiDeps {
 }
 
 export const NOT_CONFIGURED =
-  "AI assistance is not set up yet. An Admin can save the organization's own AI key in Admin, AI, " +
+  "AI assistance is not set up yet. An Admin can save the organization's own AI key in the AI tab on the Admin page, " +
   "or a server administrator can add an AI service key to the server's settings.";
 export const KEY_UNREADABLE =
-  "This organization's AI key cannot be read on this server. An Admin can save it again in Admin, AI.";
+  "This organization's AI key cannot be read on this server. An Admin can save it again in the AI tab on the Admin page.";
 export const SETTINGS_UNREADABLE = "Could not read this organization's AI settings. Is the app database reachable?";
 
 /**
@@ -165,8 +165,8 @@ export async function aiDepsFor(orgId: number): Promise<AiDeps> {
   return { ...server, config, provider: providerFor(config) };
 }
 
-export const SWITCHED_OFF = "AI assistance is switched off for this organization. An Admin can switch it on in Admin, AI.";
-export const FEATURE_OFF = "This AI feature is switched off for this organization. An Admin can switch it on in Admin, AI.";
+export const SWITCHED_OFF = "AI assistance is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.";
+export const FEATURE_OFF = "This AI feature is switched off for this organization. An Admin can switch it on in the AI tab on the Admin page.";
 
 /** The JSON Schema the service is asked to follow, from the zod shape. */
 // Keywords left out of the answer format sent to the service. Gemini's
@@ -383,7 +383,7 @@ function usedUpMessage(retryAfterMs: number | null, ownKey: boolean): string {
 }
 
 export const OWN_KEY_REFUSED =
-  "The AI service refused your organization's AI key. An Admin can check it, or save a new one, in Admin, AI.";
+  "The AI service refused your organization's AI key. An Admin can check it, or save a new one, in the AI tab on the Admin page.";
 
 /** What the failure message should know about the key the calls used. */
 export type FailureContext = {

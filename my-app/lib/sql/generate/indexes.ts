@@ -25,7 +25,16 @@ import type { SqlStatement } from "./types";
 // (see dropIndexesFirst, where objects.indexes is emitted) so the common
 // moved-name case clears the old name first and never has to fail at all.
 function indexCreateSql(index: IndexSnapshot, tableName: string): string {
-  const definition = index.definition.trim();
+  // PostgreSQL describes an index on a partitioned table as "ON ONLY events".
+  // Run back as written, ONLY builds the index on the parent alone: nothing is
+  // created on the partitions, and the parent's index stays marked invalid, so
+  // no query can use it. Without ONLY, PostgreSQL builds (or attaches) the
+  // matching index on every partition and the result is valid. A table that is
+  // not partitioned never has ONLY in its definition, so this changes nothing
+  // for it.
+  const definition = index.definition
+    .trim()
+    .replace(/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:"(?:[^"]|"")+"|\S+)\s+ON)\s+ONLY\s+/i, "$1 ");
   return onlyIfMissing(tableIndexQuery(tableName, index.name), `${definition};`);
 }
 

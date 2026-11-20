@@ -94,6 +94,11 @@ export function constraintsAfterColumnRebuild(
  * column starts empty and the values stay behind in the old one (or go with it
  * when data loss is allowed). The note says so and gives the ready RENAME, so
  * the reader who knows it is a rename has the statement to use.
+ *
+ * The note does not say whether the drop is held back. The same note is written
+ * into a rollback, which has no safe mode and runs the drop, and the old words
+ * "(the drop is held back in safe mode)" were wrong there. A held-back drop is
+ * marked on its own statement.
  */
 export function possibleColumnRenameNote(
   match: TableMatch,
@@ -109,9 +114,9 @@ export function possibleColumnRenameNote(
   return manualNote(
     `"${guess.rightName}" and "${guess.leftName}" in "${tName}" may be one column that was ` +
       `renamed (${columnMatchPercent(guess.score)}% match). This script adds ` +
-      `"${guess.leftName}" as a new, empty column and drops "${guess.rightName}" (the drop ` +
-      `is held back in safe mode), so the values are not carried over. If it is a rename, run this in place of that ADD COLUMN ` +
-      `and DROP COLUMN pair, then compare again: ${rename}`,
+      `"${guess.leftName}" as a new, empty column and drops "${guess.rightName}" in a ` +
+      `separate statement, so the values are not carried over. If it is a rename, run this ` +
+      `in place of that ADD COLUMN and DROP COLUMN pair, then compare again: ${rename}`,
     `Possible rename of column "${guess.rightName}" to "${guess.leftName}" in "${tName}"`,
     tName
   );
@@ -126,8 +131,8 @@ export function possibleTableRenameNote(report: CompareReport, newTable: string)
   return manualNote(
     `"${guess.rightName}" and "${guess.leftName}" may be one table that was renamed ` +
       `(${guess.score}% match). This script creates "${guess.leftName}" as a new, empty ` +
-      `table and drops "${guess.rightName}" (the drop is held back in safe mode), so the ` +
-      `rows are not carried over. If it is a ` +
+      `table and drops "${guess.rightName}" in a separate statement, so the rows are not ` +
+      `carried over. If it is a ` +
       `rename, run this on the target first, then compare again: ${rename}`,
     `Possible rename of table "${guess.rightName}" to "${guess.leftName}"`,
     newTable

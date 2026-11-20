@@ -138,8 +138,13 @@ export type DiffDocument = {
   /** Stamped so a file found on disk months later identifies itself. */
   format: "schema-studio-diff";
   version: 1;
-  source: { database: string; schema: string };
-  target: { database: string; schema: string };
+  /**
+   * Each end of the comparison. `connection` is the saved connection's own
+   * name ("Staging"), when the page that built this knew it: two databases are
+   * often both called appdb, and the connection name is what tells them apart.
+   */
+  source: { database: string; schema: string; connection?: string };
+  target: { database: string; schema: string; connection?: string };
   totals: {
     /**
      * Every row in `changes`, rename suggestions included. The number of
@@ -236,7 +241,8 @@ function describeColumn(column: ColumnSnapshot): string {
 
 export function buildDiffDocument(
   report: CompareReport,
-  data?: DataCompareReport | null
+  data?: DataCompareReport | null,
+  connections?: { source?: string; target?: string }
 ): DiffDocument {
   const changes: ChangeRow[] = [];
 
@@ -445,8 +451,16 @@ export function buildDiffDocument(
   return {
     format: "schema-studio-diff",
     version: 1,
-    source: { database: report.left.database, schema: report.left.schema },
-    target: { database: report.right.database, schema: report.right.schema },
+    source: {
+      database: report.left.database,
+      schema: report.left.schema,
+      ...(connections?.source ? { connection: connections.source } : {}),
+    },
+    target: {
+      database: report.right.database,
+      schema: report.right.schema,
+      ...(connections?.target ? { connection: connections.target } : {}),
+    },
     totals: {
       changes: counted.length,
       added: count("added"),

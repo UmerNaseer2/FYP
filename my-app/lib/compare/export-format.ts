@@ -365,9 +365,20 @@ export function documentToMarkdown(document: DiffDocument): string {
  * A filename stem both ends of the comparison can be read out of.
  *
  * Two targets on one page are usually both called "public", so naming a file
- * after the schema alone produces two files called the same thing.
+ * after the schema alone produces two files called the same thing. A staging
+ * and a live copy of one app are often both called appdb too, so the saved
+ * connection's name goes in front when the document carries it:
+ * diff_staging_appdb_public_to_production_appdb_public.
  */
 export function exportFileStem(document: DiffDocument): string {
-  const raw = `diff_${document.source.database}_${document.source.schema}_to_${document.target.database}_${document.target.schema}`;
+  const end = (side: DiffDocument["source"]) => {
+    const parts = [side.database, side.schema];
+    // A connection named after its database would only say the name twice.
+    if (side.connection && side.connection.toLowerCase() !== side.database.toLowerCase()) {
+      parts.unshift(side.connection);
+    }
+    return parts.join("_");
+  };
+  const raw = `diff_${end(document.source)}_to_${end(document.target)}`;
   return raw.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
 }

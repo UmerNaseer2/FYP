@@ -24,6 +24,7 @@ import type {
   DriftPhase,
 } from "./types";
 import { getSqlLineCount, fmtDate } from "./helpers";
+import { utcStamp } from "@/lib/ui/format-date";
 import { rollbackLossSentence } from "./row-notes";
 import { DriftPanel } from "./DriftPanel";
 import type { RollbackStep } from "@/lib/deploy/rollback-plan";
@@ -215,7 +216,7 @@ export function RollbackCard({
 
           {/* A sticky message (see rollbackError) is shown even with the planner shut. */}
           {!rollbackPlannerShown && rollbackErrorShown && (
-            <pre className="dp-err mt-3">{rollbackErrorShown}</pre>
+            <pre className="dp-err mt-3" role="alert">{rollbackErrorShown}</pre>
           )}
 
           {rollbackPlannerShown && (
@@ -257,7 +258,11 @@ export function RollbackCard({
                       <div className="flex items-center justify-between gap-3">
                         <span className="mono text-[13px]">{`${index + 1}. Undo ${v}`}</span>
                         {step.appliedAt && (
-                          <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
+                          <span
+                            className="text-[11px]"
+                            style={{ color: "var(--ink-3)" }}
+                            title={utcStamp(step.appliedAt) || undefined}
+                          >
                             {`applied ${fmtDate(step.appliedAt)}`}
                           </span>
                         )}
@@ -339,7 +344,10 @@ export function RollbackCard({
                 >
                   <ul className="mono text-[12px] space-y-0.5">
                     {rollbackOthers.slice(0, 10).map((other) => (
-                      <li key={`${other.script_name}@${other.version}`}>
+                      <li
+                        key={`${other.script_name}@${other.version}`}
+                        title={utcStamp(other.applied_at) || undefined}
+                      >
                         {`${other.script_name} ${vLabel(other.version)}`}
                         {other.applied_at ? ` · applied ${fmtDate(other.applied_at)}` : ""}
                       </li>
@@ -407,7 +415,7 @@ export function RollbackCard({
                   )
               )}
 
-              {rollbackErrorShown && <pre className="dp-err">{rollbackErrorShown}</pre>}
+              {rollbackErrorShown && <pre className="dp-err" role="alert">{rollbackErrorShown}</pre>}
               {rollbackDryRun && rollbackDryRun.key === rollbackKey && (
                 <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--ink-2)" }}>
                   <span className="flex-none mt-0.5" style={{ color: "var(--add)" }}>
@@ -468,7 +476,18 @@ export function RollbackCard({
                   className="dp-hist dp-hist-top"
                 >
                   <span className="mono text-[13px]">{vLabel(row.version)}</span>
-                  <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
+                  <span
+                    className="text-[11px]"
+                    style={{ color: "var(--ink-3)" }}
+                    title={
+                      [
+                        row.applied_at ? `Applied ${utcStamp(row.applied_at)}` : "",
+                        `Rolled back ${utcStamp(row.reverted_at)}`,
+                      ]
+                        .filter(Boolean)
+                        .join(". ") || undefined
+                    }
+                  >
                     {`${
                               row.applied_at
                                 ? `applied ${fmtDate(row.applied_at)}${

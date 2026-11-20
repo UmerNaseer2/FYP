@@ -486,6 +486,63 @@ describe("the add drawer", () => {
     }
   });
 
+  it("gives the connection string a box of several lines that holds one line of text", async () => {
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+    const drawer = within(document.querySelector(".drawer") as HTMLElement);
+
+    const uri = drawer.getByLabelText("Connection string") as HTMLTextAreaElement;
+    expect(uri.tagName).toBe("TEXTAREA");
+    expect(uri).toHaveAttribute("rows", "3");
+    fireEvent.change(uri, { target: { value: "postgres://u:p@db.example.com:5432/\nappdb\r\n" } });
+    expect(uri.value).toBe("postgres://u:p@db.example.com:5432/appdb");
+  });
+
+  describe("the Paste button", () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    function setClipboard(value: unknown) {
+      Object.defineProperty(navigator, "clipboard", { value, configurable: true });
+    }
+    afterEach(() => {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+    });
+
+    async function openDrawer() {
+      setRoutes([{ match: "/api/connections", body: [] }]);
+      render(<ConnectionsPage />);
+      await loaded();
+      fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+      return within(document.querySelector(".drawer") as HTMLElement);
+    }
+
+    it("is left out where the browser cannot read the clipboard, as on plain http", async () => {
+      setClipboard(undefined);
+      const drawer = await openDrawer();
+      expect(drawer.queryByRole("button", { name: "Paste" })).not.toBeInTheDocument();
+    });
+
+    it("pastes the clipboard into the box where the browser can read it", async () => {
+      setClipboard({ readText: jest.fn().mockResolvedValue("  postgres://u:p@h:5432/appdb\n") });
+      const drawer = await openDrawer();
+      fireEvent.click(drawer.getByRole("button", { name: "Paste" }));
+      await waitFor(() =>
+        expect(drawer.getByLabelText("Connection string")).toHaveValue("postgres://u:p@h:5432/appdb")
+      );
+    });
+
+    it("says so when the browser refuses the read", async () => {
+      setClipboard({ readText: jest.fn().mockRejectedValue(new Error("denied")) });
+      const drawer = await openDrawer();
+      fireEvent.click(drawer.getByRole("button", { name: "Paste" }));
+      expect(
+        await screen.findByText("The browser did not allow reading the clipboard. Paste it by hand.")
+      ).toBeInTheDocument();
+    });
+  });
+
   /** Opens the add drawer and returns queries kept inside it. */
   async function openAdd() {
     setRoutes([{ match: "/api/connections", body: [] }]);

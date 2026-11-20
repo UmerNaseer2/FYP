@@ -8,7 +8,8 @@
  * functions are not, so the ones the UI needs live here.
  */
 
-import type { TypeSnapshot } from "./";
+import { quoteRole } from "./helpers";
+import type { PrivilegeGrant, TypeSnapshot } from "./";
 
 /**
  * Whether a range type can be written out as a real CREATE TYPE statement.
@@ -96,4 +97,37 @@ export function sequenceOwnerTable(
   if (parts.length === 1) return parts[0];
   if (parts.length === 2 && schema !== undefined && parts[0] === schema) return parts[1];
   return null;
+}
+
+/**
+ * A grant on single columns is kept in the same list as the table's own
+ * grants, written the way GRANT itself takes it: SELECT (email). This reads
+ * the column back out of such an entry, or null for a whole-table privilege.
+ */
+export function columnOfPrivilege(privilege: string): string | null {
+  const match = /^[A-Z]+ \((.+)\)$/.exec(privilege);
+  if (!match) return null;
+  const quoted = match[1];
+  // quote_ident wrote it, so a quoted name doubles its own quotes.
+  return quoted.startsWith('"') ? quoted.slice(1, -1).replace(/""/g, '"') : quoted;
+}
+
+/**
+ * The one-line rendering the comparison diffs, e.g.
+ * `owned by "app" — "api": SELECT, INSERT; PUBLIC: SELECT (SELECT grantable)`.
+ */
+export function buildPrivilegeDefinition(
+  owner: string,
+  grants: PrivilegeGrant[]
+): string {
+  const head = `owned by ${quoteRole(owner)}`;
+  if (grants.length === 0) return `${head} — no grants to anybody else`;
+  const parts = grants.map((grant) => {
+    const passOn =
+      grant.grantable.length > 0
+        ? ` (may pass on ${grant.grantable.join(", ")})`
+        : "";
+    return `${quoteRole(grant.grantee)}: ${grant.privileges.join(", ")}${passOn}`;
+  });
+  return `${head} — ${parts.join("; ")}`;
 }

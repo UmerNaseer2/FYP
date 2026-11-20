@@ -157,6 +157,10 @@ describe("a target whose comparison throws", () => {
     // call rejected and the screen showed nothing at all.
     expect(screen.outcomes[0].failure).toBeNull();
     expect(screen.outcomes[0].report).not.toBeNull();
+    // Every database here is called "app", so the script's header names the
+    // saved connections. "app.x -> app.y" would not say which way it goes.
+    expect(screen.outcomes[0].sqlText).toMatch(/^-- Migration: Dev \(app\.\w+\)  →  Staging \(app\.\w+\)$/m);
+    expect(screen.outcomes[0].rollbackText).toMatch(/^-- Runs against: Staging \(app\.\w+\)$/m);
     expect(screen.outcomes[1].failure).toBe("failed");
     expect(screen.outcomes[1].report).toBeNull();
   });

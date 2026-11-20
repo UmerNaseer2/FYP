@@ -118,3 +118,39 @@ export function viewsCascadedBy(views: ViewSnapshot[], doomedRelations: Set<stri
   }
   return views.filter((view) => doomed.has(view.name));
 }
+
+/**
+ * The views that read one of the named columns of a table, and so are removed
+ * by a `DROP COLUMN ... CASCADE` on it. Views built on those views are NOT
+ * added here: pass the result's names to viewsCascadedBy for that.
+ *
+ * A view from an old snapshot has no column list. For those the answer is the
+ * careful one, "it reads the table, so it may read the column".
+ */
+export function viewsReadingColumns(
+  views: ViewSnapshot[],
+  tableName: string,
+  columnNames: Set<string>
+): ViewSnapshot[] {
+  if (columnNames.size === 0) return [];
+  return views.filter((view) => {
+    if (!view.dependsOn.includes(tableName)) return false;
+    if (view.dependsOnColumns === undefined) return true;
+    const read = view.dependsOnColumns.filter((entry) => entry.table === tableName);
+    // It depends on the table but on no single column of it (it reads the row
+    // as a whole), so any column may matter to it.
+    if (read.length === 0) return true;
+    return read.some((entry) => columnNames.has(entry.column));
+  });
+}
+
+/** viewsReadingColumns plus every view built on one of them. */
+export function viewsCascadedByColumns(
+  views: ViewSnapshot[],
+  tableName: string,
+  columnNames: Set<string>
+): ViewSnapshot[] {
+  const direct = viewsReadingColumns(views, tableName, columnNames);
+  if (direct.length === 0) return [];
+  return viewsCascadedBy(views, new Set(direct.map((view) => view.name)));
+}

@@ -24,7 +24,7 @@
 
 import { Fragment, useId, useState, type ReactNode } from "react";
 import type { ChangeLevel } from "@/lib/versions/change-level";
-import { shortUtcDate } from "@/lib/ui/format-date";
+import { shortUtcDate, utcStamp } from "@/lib/ui/format-date";
 import {
   displayVersion,
   headVersionOf,
@@ -193,8 +193,8 @@ function SideCell({ row, side, label }: { row: TimelineRow; side: Side; label: s
             className="vtl__when"
             title={
               entry.appliedBy
-                ? `Applied ${fmtDate(entry.appliedAt)} by ${entry.appliedBy}`
-                : `Applied ${fmtDate(entry.appliedAt)}. This row does not record who ran it.`
+                ? `Applied ${utcStamp(entry.appliedAt) || fmtDate(entry.appliedAt)} by ${entry.appliedBy}`
+                : `Applied ${utcStamp(entry.appliedAt) || fmtDate(entry.appliedAt)}. This row does not record who ran it.`
             }
           >
             {fmtDate(entry.appliedAt)}

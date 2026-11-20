@@ -606,7 +606,7 @@ describe("findMightFailStatements", () => {
       "  IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('\"orders\"') AND attname = 'note' AND attnotnull) THEN",
       "    NULL;",
       "  ELSIF EXISTS (SELECT 1 FROM \"orders\" LIMIT 1) THEN",
-      "    RAISE NOTICE 'Backfill it, then run: ALTER TABLE \"orders\" ALTER COLUMN \"note\" SET NOT NULL;';",
+      "    RAISE WARNING 'Backfill it, then run: ALTER TABLE \"orders\" ALTER COLUMN \"note\" SET NOT NULL;';",
       "  ELSE",
       "    ALTER TABLE \"orders\" ALTER COLUMN \"note\" SET NOT NULL;",
       "  END IF;",

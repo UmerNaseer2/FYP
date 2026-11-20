@@ -396,7 +396,7 @@ export function RunPanel({
       <div className={deployBlocked ? "dp-zone dp-live" : "dp-zone dp-live dp-armed"}>
         <h3 className="dp-h-sm">Ship for real</h3>
         <p>
-          Writes to <span className="mono">{schema}</span>. This is the real run.
+          Writes to {activeConn.name} (<span className="mono">{activeConn.database_name}.{schema}</span>). This is the real run.
         </p>
         <button
           type="button"
@@ -431,7 +431,8 @@ export function RunPanel({
             ? "Checking the target for drift first. These unlock when the check finishes"
             : askToRun && !approvedRun
               ? "Your role may not run migrations here by itself, so the deploy waits " +
-                "for an Admin to approve it. A dry run is not open to you here"
+                "for an Admin to approve it. A dry run runs the same SQL on the live database, " +
+                "so your role can't start one here either"
               : enumAdditions.length > 0
               ? "All migrations run in one transaction: all of them or " +
                 "none, apart from the enum values noted above"

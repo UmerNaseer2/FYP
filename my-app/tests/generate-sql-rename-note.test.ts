@@ -1,5 +1,5 @@
 import { compareSchemas } from "@/lib/compare/diff";
-import { generateMigration, statementsThatRun } from "@/lib/sql/generate";
+import { generateMigration, generateRollback, statementsThatRun } from "@/lib/sql/generate";
 import { column, schema, table } from "./helpers/snapshots";
 
 // The comparison can be unsure whether a new column (or table) is an old one
@@ -73,5 +73,22 @@ describe("the note for a possible rename", () => {
     expect(create).toBeGreaterThan(note);
     expect(sql[note]).toContain('ALTER TABLE "legacy_notes" RENAME TO "shipments";');
     expect(sql[note]).not.toMatch(/[\u2013\u2014]/);
+  });
+
+  it("does not speak of safe mode, so it is also true in a rollback", () => {
+    // The same note is written into the rollback, which runs its drops. It used
+    // to say "(the drop is held back in safe mode)" there, two statements above
+    // the live DROP COLUMN.
+    const report = compareSchemas(source, target);
+    const rollback = generateRollback(report, { allowDataLoss: false });
+    const note = rollback.statements.find((s) => s.kind === "MANUAL" && s.sql.includes("may be one column"));
+    expect(note).toBeDefined();
+    expect(note!.sql).not.toMatch(/safe mode|held back/i);
+    expect(note!.sql).toContain("in a separate statement");
+    expect(rollback.statements.some((s) => s.kind === "DROP_COLUMN" && s.destructive)).toBe(true);
+
+    const forward = generateMigration(report, { allowDataLoss: false });
+    const forwardNote = forward.statements.find((s) => s.kind === "MANUAL");
+    expect(forwardNote!.sql).not.toMatch(/safe mode|held back/i);
   });
 });

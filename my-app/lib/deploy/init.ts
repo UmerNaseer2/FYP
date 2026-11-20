@@ -78,7 +78,9 @@ export type StagePrompt = {
 export function stagePrompt(
   state: TargetState,
   stage: DeployStage,
-  firstPending: string | null
+  firstPending: string | null,
+  /** True when the rollback history shows versions were deployed here and rolled back. */
+  rolledBackBefore = false
 ): StagePrompt | null {
   if (stage === "needs-init") {
     const where = state.schemaExists
@@ -97,6 +99,19 @@ export function stagePrompt(
         (state.schemaExists
           ? ""
           : " The schema is created by the script itself; this app does not create it for you."),
+      warn: true,
+    };
+  }
+
+  if (stage === "unversioned" && rolledBackBefore) {
+    return {
+      title: "This schema has tables but no version applied right now",
+      body:
+        "Versions were deployed here through this app and then rolled back, so no " +
+        "version is applied now. The rollback history on this page lists them. " +
+        (firstPending ? `${firstPending} would run first. ` : "") +
+        "Check the first script does not try to create a table that is still here " +
+        "before you run it.",
       warn: true,
     };
   }

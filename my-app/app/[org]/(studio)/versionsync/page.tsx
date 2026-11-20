@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { TargetPicker, TargetPickerPair } from "@/components/studio/TargetPicker";
@@ -53,6 +53,7 @@ import { countOf } from "@/lib/ui/plural";
 import { utcStamp } from "@/lib/ui/format-date";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import { VersionLine, type LineStep } from "./VersionLine";
+import { readRollbackCheck, rollbackFailedText } from "../deploy/helpers";
 import "@/app/styles/atelier-versionsync.css";
 
 // Version Sync (version replay). Pick a Source (ahead) and a Target (behind).
@@ -110,8 +111,15 @@ function useLedgerSource() {
         const res = await apiFetch(`/api/scripts/schemas?connectionId=${connectionId}`, { cache: "no-store" });
         const data = await res.json();
         if (!active) return;
-        if (Array.isArray(data?.schemas)) setSchemas(data.schemas);
-        else setSchemasError(data?.error ?? "Could not load schemas.");
+        if (Array.isArray(data?.schemas)) {
+          const list: string[] = data.schemas;
+          setSchemas(list);
+          // One schema leaves nothing to choose, so it is picked straight away,
+          // the way the Visualizer and Deploy do.
+          if (list.length === 1) setSchema((current) => (current === "" ? list[0] : current));
+        } else {
+          setSchemasError(data?.error ?? "Could not load schemas.");
+        }
       } catch {
         if (active) setSchemasError("Could not load schemas. Is the database reachable?");
       } finally {
@@ -252,7 +260,7 @@ async function sendReplay({
   sourceSchema: string;
   entries: LedgerEntry[];
   dryRun: boolean;
-}): Promise<ReplayOutcome> {
+}): Promise<ReplayOutcome & { brokenRollback?: BrokenRollback | null }> {
   let res: Response;
   try {
     res = await apiFetch("/api/scripts/apply", {
@@ -292,7 +300,40 @@ async function sendReplay({
   } catch {
     data = null;
   }
-  return readReplayAnswer(res.status, data);
+  const outcome = readReplayAnswer(res.status, data);
+  // A clean dry run also tried each version's rollback. One that failed is a
+  // warning beside the clean result, not a failure of the dry run.
+  return dryRun && outcome.ok ? { ...outcome, brokenRollback: firstBrokenRollback(data) } : outcome;
+}
+
+/** A version whose rollback failed when the dry run tried it. */
+type BrokenRollback = { label: string; error?: string };
+
+/**
+ * The newest version whose rollback failed in a dry run, if any. The apply
+ * route tries rollbacks newest first and stops at the first failure, so there
+ * is at most one.
+ */
+function firstBrokenRollback(answer: ReplayAnswer | null): BrokenRollback | null {
+  const results = Array.isArray(answer?.results) ? (answer.results as unknown[]) : [];
+  for (const result of results) {
+    const check = readRollbackCheck(result);
+    if (check.rollbackCheck !== "failed") continue;
+    const row = result as { script_name?: unknown; version?: unknown };
+    const name = typeof row.script_name === "string" ? row.script_name : "";
+    const version = typeof row.version === "string" ? row.version : "";
+    return { label: scriptLabel(name, version), error: check.rollbackError };
+  }
+  return null;
+}
+
+/**
+ * A saved connection and schema, named so two databases with the same schema
+ * name cannot be mixed up: "Staging, public". Just the schema when the
+ * connection's name is not known.
+ */
+function placeName(connectionName: string, schema: string): string {
+  return connectionName ? `${connectionName}, ${schema}` : schema;
 }
 
 /** What a failed replay's banner says. Every one offers to read the Target's ledger again. */
@@ -319,6 +360,19 @@ export default function VersionSyncPage() {
 
   const source = useLedgerSource();
   const target = useLedgerSource();
+
+  // Deploy's Verify step links here with the database it just deployed to
+  // (?source=<connection id>&sourceSchema=<schema>), so it arrives picked as
+  // the Source. Read once, from the address, when the page opens.
+  const { setConnectionId: setSourceConnection, setSchema: setSourceSchema } = source;
+  useEffect(() => {
+    const asked = new URLSearchParams(window.location.search);
+    const connection = asked.get("source") ?? "";
+    if (!/^\d+$/.test(connection)) return;
+    setSourceConnection(connection);
+    const schemaName = asked.get("sourceSchema") ?? "";
+    if (schemaName) setSourceSchema(schemaName);
+  }, [setSourceConnection, setSourceSchema]);
 
   // A replay writes to the Target through the same route Deploy uses, so it
   // follows the same rules: "Deploy: Run" and the connection's "who may run".
@@ -361,6 +415,8 @@ export default function VersionSyncPage() {
 
   const targetConnection = connections.find((c) => String(c.id) === target.connectionId) ?? null;
   const targetDatabase = targetConnection?.database_name ?? "";
+  // The Target as sentences name it: the saved connection, then the schema.
+  const targetPlace = placeName(targetConnection?.name ?? "", target.schema);
   // Who may replay onto the Target. A role that may not run here by itself
   // gets the Run buttons too, and the check then asks an Admin to approve that
   // exact replay (askToRun). Only a read-only connection has nothing to press.
@@ -429,8 +485,8 @@ export default function VersionSyncPage() {
     setRegistryNote(null);
     setProgress(
       entries.length === 1
-        ? `Replaying ${scriptLabel(entries[0].scriptName, entries[0].version)} onto ${target.schema}…`
-        : `Replaying ${entries.length} versions onto ${target.schema} in one transaction…`,
+        ? `Replaying ${scriptLabel(entries[0].scriptName, entries[0].version)} onto ${targetPlace}…`
+        : `Replaying ${entries.length} versions onto ${targetPlace} in one transaction…`,
     );
 
     const result = await sendReplay({
@@ -488,7 +544,7 @@ export default function VersionSyncPage() {
         appliedAt,
       });
     }
-    setApplyDone(`Replayed ${countOf(entries.length, "version")} onto ${target.schema}.`);
+    setApplyDone(`Replayed ${countOf(entries.length, "version")} onto ${targetPlace}.`);
     // A replayed version's SQL came from the Source's ledger, so the Target's
     // registry folder had no file for it until the apply route wrote one. This
     // is the case spec 07's automatic push exists for, so say plainly what
@@ -651,6 +707,7 @@ export default function VersionSyncPage() {
         connectionId={target.connectionId}
         schema={target.schema}
         databaseName={targetDatabase}
+        connectionName={targetConnection?.name ?? ""}
         sourceSchema={source.schema}
         diverged={diff?.diverged.length ?? 0}
         askToRun={askToRun}
@@ -766,6 +823,24 @@ function Result({
       ? ` It also has ${countOf(diff.diverged.length, "version")} the Source does not. See below.`
       : "");
 
+  // Versions only the Target has, in plain words. A client tester read
+  // "diverged" as broken, but after Compare then Deploy it is the usual state:
+  // the Source was changed by hand, and only a run through this app (Deploy,
+  // Quick run or a replay here) records a version.
+  const divergedCount = diff.diverged.length;
+  const them = divergedCount === 1 ? "it" : "them";
+  const divergedTitle = `The Target has ${countOf(divergedCount, "version")} the Source doesn't`;
+  const divergedHelp =
+    `That is normal when the Target got ${them} from Deploy or Quick run and the Source never ran ${them}, ` +
+    "for example because the Source was changed by hand, which records no version. " +
+    `Version Sync only copies the Source's versions to the Target, so it never runs or undoes ${them}. ` +
+    "To check whether the two schemas match, compare them in Compare & Author.";
+
+  const sourceEmptyHelp =
+    "A version is recorded each time Deploy, Quick run or a replay here runs a script on a database. " +
+    "Nothing has run on the Source that way, so there is nothing to copy. Changes made by hand record no version. " +
+    "Pick a Source that got its changes through Deploy, or compare the two schemas in Compare & Author.";
+
   // The note behind the "?" beside the list's title. It only describes Run
   // buttons that are on the page. The longer account is in lib/help/versionsync.
   const listHelp =
@@ -873,10 +948,8 @@ function Result({
             <div className="vs-calm vs-calm--plain">
               <span className="vs-calm-ico"><InfoIcon size={20} /></span>
               <div>
-                <b>The Source has no applied scripts</b>
-                <p>
-                  Its ledger is empty, so there&apos;s nothing to replay. Pick a Source that has migrations applied.
-                </p>
+                <b>The Source has no recorded versions</b>
+                <p>{sourceEmptyHelp}</p>
               </div>
             </div>
           ) : inSync ? (
@@ -1056,12 +1129,8 @@ function Result({
         <div className="banner vs-amber">
           <AlertTriangleIcon size={16} className="ico" />
           <div className="body">
-            <div className="title">These schemas have diverged.</div>
-            <div className="help mt-0.5">
-              The Target has {countOf(diff.diverged.length, "version")}{" "}
-              the Source doesn&apos;t. They&apos;re on different branches.
-              Review before syncing; nothing is merged automatically.
-            </div>
+            <div className="title">{divergedTitle}</div>
+            <div className="help mt-0.5">{divergedHelp}</div>
             {/* "Review before syncing" needs something to review, so the
                 stored script is one click away here. */}
             {diff.diverged.map((e) => (
@@ -1114,6 +1183,8 @@ type ReplayDialogProps = {
   connectionId: string;
   schema: string;
   databaseName: string;
+  /** The Target's saved connection name, so the dialog can say which database. */
+  connectionName?: string;
   sourceSchema: string;
   /** How many versions only the Target has. */
   diverged: number;
@@ -1151,10 +1222,14 @@ function ReplayBody({
   connectionId,
   schema,
   databaseName,
+  connectionName = "",
   sourceSchema,
   diverged,
   askToRun,
 }: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
+  // Two saved connections can share a schema name, so every sentence here
+  // names the connection too.
+  const place = placeName(connectionName, schema);
   const { user, roleLabel, bypass, can } = useUser();
   const orgPath = useOrgHref();
   // Each of these is a box an admin ticks for a role on the Admin screen.
@@ -1263,7 +1338,7 @@ function ReplayBody({
       () => {
         if (active) {
           setHashError(
-            "This browser cannot check the approval, because crypto.subtle needs https or localhost. Open the app over https to approve a run.",
+            "This browser could not hash the run to check its approval. Reload the page and try again.",
           );
         }
       },
@@ -1463,7 +1538,13 @@ function ReplayBody({
 
   // ── Dry run ───────────────────────────────────────────────────────────────
   const [dryRunning, setDryRunning] = useState(false);
-  const [dryResult, setDryResult] = useState<{ ok: boolean; title: string; detail: string } | null>(null);
+  const [dryResult, setDryResult] = useState<{ ok: boolean; title: string; detail: string; warn?: boolean } | null>(null);
+  // The result lands at the bottom of a long, scrolling dialog, so it is
+  // brought into view when it arrives.
+  const dryResultRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (dryResult) dryResultRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [dryResult]);
 
   async function rehearse() {
     setDryRunning(true);
@@ -1471,10 +1552,22 @@ function ReplayBody({
     const result = await sendReplay({ connectionId, schemaName: schema, sourceSchema, entries, dryRun: true });
     setDryRunning(false);
     if (result.ok) {
+      const broken = result.brokenRollback ?? null;
       setDryResult({
         ok: true,
-        title: `Dry run clean: rehearsed ${countOf(count, "version")} on ${schema}. Nothing was written.`,
-        detail: "",
+        title: `Dry run clean: rehearsed ${countOf(count, "version")} on ${place}. Nothing was written.`,
+        // A replay carries the Source's rollback as it is, so there is no
+        // script to fix here. The reader still needs to know before the
+        // real run saves it.
+        detail: broken
+          ? rollbackFailedText(
+              broken.label,
+              broken.error,
+              "The replay saves this rollback on the Target as it is, and it can't be changed afterwards. " +
+                "Rolling this version back there later would fail the same way."
+            )
+          : "",
+        warn: broken !== null,
       });
       return;
     }
@@ -1512,8 +1605,10 @@ function ReplayBody({
         ? "Both buttons stay off until the Target's tracking record can be read."
         : askToRun
           ? awaitingApproval
-            ? "Replay needs an Admin's approval first. A dry run is not open to you here."
-            : "A dry run is not open to you here. The approved replay is."
+            ? "Replay needs an Admin's approval first. A dry run runs the same SQL on the live database, " +
+              "so your role can't start one here either."
+            : "A dry run runs the same SQL on the live database, so your role can't start one here. " +
+              "The approved replay is open to you."
           : "";
 
   const louderSentence =
@@ -1536,18 +1631,24 @@ function ReplayBody({
     <div className="vs-dialog">
       <div className="vs-dialog-head">
         <h4 id={titleId}>
-          Replay {runName} onto {schema}?
+          Replay {runName} onto {place}?
         </h4>
         <p>
           {"This runs on "}
-          <b className="mono">{schema}</b>
-          {`${databaseName ? ` (${databaseName})` : ""}, a live database, as one transaction: every version in it applies, or none does${
+          {connectionName ? <b>{connectionName}</b> : <b className="mono">{schema}</b>}
+          {`${
+            connectionName
+              ? ` (${databaseName ? `${databaseName}.` : ""}${schema})`
+              : databaseName
+                ? ` (${databaseName})`
+                : ""
+          }, a live database, as one transaction: every version in it applies, or none does${
             enumCount > 0 ? ", apart from the enum values named below" : ""
           }.`}
         </p>
         {diverged > 0 && (
           <p className="vs-warn-text">
-            {`The schemas have diverged: the Target has ${countOf(diverged, "version")} the Source does not, so a replayed script may clash with the Target's own changes.`}
+            {`The Target has ${countOf(diverged, "version")} the Source does not, so a replayed script may clash with the Target's own changes.`}
           </p>
         )}
       </div>
@@ -1758,14 +1859,19 @@ function ReplayBody({
 
           {dryResult &&
             (dryResult.ok ? (
-              <div className="banner vs-good">
+              <div className="banner vs-good" role="status" ref={dryResultRef}>
                 <CheckIcon size={16} className="ico" />
                 <div className="body">
                   <div className="title">{dryResult.title}</div>
+                  {dryResult.detail && (
+                    <div className={dryResult.warn ? "help mt-0.5 vs-warn-text" : "help mt-0.5"}>
+                      {dryResult.detail}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
-              <div className="banner">
+              <div className="banner" role="alert" ref={dryResultRef}>
                 <AlertTriangleIcon size={16} className="ico" />
                 <div className="body">
                   <div className="title">{dryResult.title}</div>

@@ -91,6 +91,25 @@ describe("drift resolution bar", () => {
     expect(screen.getByRole("button", { name: /Check drift now/ })).toBeEnabled();
   });
 
+  it("shows Acknowledged in place of the button once the drift on screen is acknowledged", () => {
+    setRoutes(OK_ROUTES);
+    render(
+      <DriftResolutionBar
+        trackedSchemaId={7}
+        state="drifted"
+        compareHref="/compare?schema=7"
+        acknowledged
+        onDone={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText("Acknowledged")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Acknowledge/ })).toBeNull();
+    // The other ways to resolve the drift stay open.
+    expect(screen.getByRole("button", { name: "Re-baseline to live" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Check drift now/ })).toBeEnabled();
+  });
+
   it("offers only a re-check once the schema is back in sync", () => {
     setRoutes(OK_ROUTES);
     render(

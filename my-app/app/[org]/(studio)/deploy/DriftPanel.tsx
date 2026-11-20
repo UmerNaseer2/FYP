@@ -11,7 +11,6 @@ import {
   InfoIcon,
 } from "@/components/ui/icons";
 import { vLabel } from "@/lib/deploy/rollback-plan";
-import { displayVersion } from "@/lib/versions/timeline";
 import type { DriftResult, DriftPhase } from "./types";
 
 // Drift pre-check panel (Phase 6). Renders the real lineage drift state for the
@@ -62,9 +61,11 @@ export function DriftPanel({
     body = error ?? "Something went wrong running the drift check.";
     pillText = "error";
   } else if (phase === "ready" && result) {
-    // The snapshot's number is Schema Studio's lineage counter, not a script
-    // version, so it says so, the way the dashboard labels it.
-    const v = result.expectedVersion ? `lineage ${displayVersion(result.expectedVersion, true)}` : "its snapshot";
+    // The snapshot's number counts the snapshots Schema Studio has saved of
+    // this schema. It is not a script version: it sat beside "now reports
+    // v1.0.0" reading "v2.0.0", which looked like a second, different version.
+    // So it is printed bare, with no "v", and the line under it says what it is.
+    const snapshotNumber = result.expectedVersion?.trim() ?? "";
     if (result.status === "unreachable") {
       icon = <AlertTriangleIcon size={16} />;
       tone = "dp-warn";
@@ -76,9 +77,12 @@ export function DriftPanel({
       tone = "dp-good";
       title =
         context === "precheck"
-          ? `No drift: target matches ${v}`
-          : `Verified: live schema matches ${v}`;
-      body = result.summary;
+          ? "No drift: the target matches its tracked snapshot"
+          : "Verified: the live schema matches its tracked snapshot";
+      body = snapshotNumber
+        ? `Nothing has changed since snapshot ${snapshotNumber} was saved. That number counts saved ` +
+          `snapshots of this schema. It is not a script version.`
+        : "Nothing has changed since its snapshot was saved.";
       pillClass = "pill pill-sync";
       pillText = "in sync";
     } else {
@@ -96,11 +100,11 @@ export function DriftPanel({
             </>
           ) : context === "rollback" ? (
             /* The revert route records the structure it leaves as the new
-               baseline, and its message says "Lineage advanced to ..." when it
-               did, so drift seen here is not the rollback itself. */
+               baseline, and its message says "A new snapshot ... was saved"
+               when it did, so drift seen here is not the rollback itself. */
             "A rollback records the structure it leaves as the new baseline, so this " +
             "drift is not the rollback itself. Either that record failed (the message " +
-            "above says “Lineage advanced to …” when it worked), or something changed " +
+            "above says a new snapshot was saved when it worked), or something changed " +
             "the schema outside Schema Studio. Check the difference on the Dashboard " +
             "before re-snapshotting the target there."
           ) : (

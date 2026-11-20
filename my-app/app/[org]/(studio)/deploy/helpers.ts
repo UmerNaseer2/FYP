@@ -9,7 +9,7 @@ import { listVersions, versionRange } from "@/lib/deploy/rollback-plan";
 import type { TimelineStatus } from "@/lib/versions/timeline";
 import { shortUtcDate } from "@/lib/ui/format-date";
 import { countOf } from "@/lib/ui/plural";
-import type { ChangeKind, GitHubScript, RevertedEntry, RunCell } from "./types";
+import type { ChangeKind, GitHubScript, RevertedEntry, RollbackCheck, RunCell } from "./types";
 
 // The change_type this page sends with a migration, to the apply route and to
 // the approvals route: its stamp when it has one, its SQL's grade otherwise.
@@ -245,4 +245,60 @@ export function warningNotes(cell: CellWarnings): { text: string; warn: boolean 
 /** How many warnings PostgreSQL sent for one version, listed or not. */
 export function warningCount(cell: CellWarnings): number {
   return (cell?.warnings?.length ?? 0) + (cell?.moreWarnings ?? 0);
+}
+
+// The rollback check on one outcome of an apply answer, as a page reads it.
+// Anything else counts as no answer, so a server without the check reads as
+// a dry run that did not try the rollbacks.
+export function readRollbackCheck(outcome: unknown): { rollbackCheck?: RollbackCheck; rollbackError?: string } {
+  const record =
+    typeof outcome === "object" && outcome !== null ? (outcome as Record<string, unknown>) : {};
+  const check = record.rollbackCheck;
+  if (check !== "ok" && check !== "failed" && check !== "none" && check !== "not_checked") return {};
+  return {
+    rollbackCheck: check,
+    ...(check === "failed" && typeof record.rollbackError === "string"
+      ? { rollbackError: record.rollbackError }
+      : {}),
+  };
+}
+
+// What to say about a rollback that failed when the dry run tried it. A
+// warning only: the dry run itself is still clean and the real run is open.
+// `fixIn` names where the rollback can be changed ("Script Editor" on
+// Deploy; Version Sync replays rollbacks it cannot change, so it passes its
+// own ending).
+export function rollbackFailedText(
+  versionLabel: string,
+  error: string | undefined,
+  ending = "Fix it in Script Editor before the real run. The real run saves the rollback, and it can't be changed afterwards."
+): string {
+  const said = (error ?? "").trim().replace(/[.\s]+$/, "");
+  return `The rollback of ${versionLabel} failed in the rehearsal${said ? `: ${said}` : ""}. ${ending}`;
+}
+
+// The note a dry run row shows for its rollback check. Nothing for a row
+// whose rollback passed or that has none: Pre-flight already says which
+// versions carry no rollback.
+export function rollbackCheckNotes(
+  cell: Pick<RunCell, "rollbackCheck" | "rollbackError"> | undefined,
+  versionLabel: string
+): { text: string; warn: boolean }[] {
+  if (cell?.rollbackCheck === "failed") {
+    return [{ text: rollbackFailedText(versionLabel, cell.rollbackError), warn: true }];
+  }
+  if (cell?.rollbackCheck === "not_checked") {
+    return [
+      {
+        text:
+          `The rollback of ${versionLabel} was not tried. The rehearsal tries rollbacks newest first ` +
+          `and stops at the first one that fails or is missing.`,
+        warn: false,
+      },
+    ];
+  }
+  if (cell?.rollbackCheck === "ok") {
+    return [{ text: `The rollback of ${versionLabel} also ran cleanly in the rehearsal.`, warn: false }];
+  }
+  return [];
 }

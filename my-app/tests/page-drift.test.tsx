@@ -284,7 +284,7 @@ describe("when the screen cannot find out", () => {
     setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(
-      await screen.findByText("Live schema matches v3.", { exact: false })
+      await screen.findByText("Live schema matches snapshot v3.", { exact: false })
     ).toBeInTheDocument();
   });
 });
@@ -326,6 +326,7 @@ describe("where the report on screen came from", () => {
             status: "in_sync",
             detectedAt: "2026-06-09T14:21:00.000Z",
             acknowledgedAt: null,
+            fingerprint: null,
           },
         })
       )
@@ -449,6 +450,47 @@ describe("re-baselining from the detail screen", () => {
     );
     const sent = fetchCalls.find((c) => c.url.includes("/api/lineage/rebaseline"))!;
     expect(sent.body).toBe(JSON.stringify({ trackedSchemaId: 1, shownFingerprint: "f1ngerpr1nt" }));
+  });
+});
+
+describe("a drift that was already acknowledged", () => {
+  const acknowledgedRoutes = (recordedFingerprint: string) => [
+    { match: /\/api\/lineage$/, body: [tracked({ id: 1, driftStatus: "drifted" })] },
+    {
+      match: "/api/lineage/drift",
+      body: {
+        ...detail({
+          trackedSchemaId: 1,
+          state: "drifted",
+          report: emptyReport(),
+          lastRecorded: {
+            status: "drifted",
+            detectedAt: "2026-06-09T14:21:00.000Z",
+            acknowledgedAt: "2026-06-09T14:21:00.000Z",
+            fingerprint: recordedFingerprint,
+          },
+        }),
+        fingerprint: "f1ngerpr1nt",
+      },
+    },
+    { match: "/api/lineage/audit", body: [] },
+  ];
+
+  it("says Acknowledged in place of the button", async () => {
+    setRoutes(acknowledgedRoutes("f1ngerpr1nt"));
+    render(<DriftPage />);
+
+    await screen.findByRole("button", { name: "Re-baseline to live" });
+    expect(screen.getByText("Acknowledged")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Acknowledge/ })).toBeNull();
+  });
+
+  it("offers the button again when the differences have changed since", async () => {
+    setRoutes(acknowledgedRoutes("an-older-drift"));
+    render(<DriftPage />);
+
+    expect(await screen.findByRole("button", { name: /Acknowledge/ })).toBeEnabled();
+    expect(screen.queryByText("Acknowledged")).toBeNull();
   });
 });
 

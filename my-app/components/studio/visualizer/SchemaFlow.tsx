@@ -150,11 +150,12 @@ function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
         <SearchIcon size={13} className="viz-search-ico" />
         <input
           className="viz-search mono"
-          placeholder="Find a table…  (Enter to zoom)"
+          placeholder="Find a table"
+          title="Type a table name, then press Enter to zoom to it."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={onSearchKeyDown}
-          aria-label="Find a table"
+          aria-label="Find a table. Press Enter to zoom to it."
         />
         {term && <span className="viz-search-count">{matches.length}</span>}
       </Panel>

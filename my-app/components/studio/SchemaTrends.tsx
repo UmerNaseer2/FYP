@@ -335,6 +335,12 @@ function TrendCard({ metric, samples }: { metric: MetricKey; samples: MetricSamp
           of the line rather than drawn as zero.
         </p>
       )}
+      {metric === "estimatedRows" && series.missing > 0 && (
+        <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+          PostgreSQL has no row estimate for a table until it has been analysed.
+          Run ANALYZE on the database, or wait for autovacuum to do it.
+        </p>
+      )}
     </Card>
   );
 }

@@ -22,6 +22,16 @@ export type ViewSnapshot = {
    */
   dependsOn: string[];
   /**
+   * The columns of those tables and views that this view reads, also from
+   * pg_depend. Dropping a column with CASCADE only takes the views that read
+   * that one column, so this is what tells the script which views a column
+   * drop really removes.
+   *
+   * Optional: a snapshot captured before this was read has no record of it,
+   * and the script then falls back to "every view on the table".
+   */
+  dependsOnColumns?: { table: string; column: string }[];
+  /**
    * The view's `WITH (...)` settings, exactly as pg_class.reloptions stores
    * them — `security_invoker=true`, `check_option=cascaded`,
    * `security_barrier=true`, and a materialized view's storage settings.
@@ -161,6 +171,11 @@ export type TypeSnapshot = {
   /** DOMAIN only. */
   notNull: boolean;
   /**
+   * A domain's DEFAULT expression, or null when it has none. Undefined on
+   * other kinds of type, and on a snapshot captured before this was recorded.
+   */
+  domainDefault?: string | null;
+  /**
    * DOMAIN only: the CHECK constraints, schema-stripped.
    *
    * The name is carried alongside the expression because ALTER DOMAIN drops a
@@ -275,6 +290,29 @@ export type ExtensionSnapshot = {
   /** A one-line human-readable rendering; this is what the comparator diffs. */
   definition: string;
   normalizedDefinition: string;
+  /**
+   * The schema the extension lives in, set only when that is NOT the schema
+   * being compared (see ExtensionElsewhere). The script then installs it with
+   * WITH SCHEMA, so it lands where the source has it.
+   */
+  schema?: string;
+};
+
+/**
+ * An extension installed in the database but in ANOTHER schema than the one
+ * being compared, usually "public".
+ *
+ * It is recorded for one question only: "the compared schema uses citext, is
+ * citext there on the other side?". Without it a column of type public.citext
+ * reached a database that had never installed citext, and the script stopped
+ * on "type public.citext does not exist".
+ */
+export type ExtensionElsewhere = {
+  name: string;
+  version: string;
+  schema: string;
+  /** True when something in the compared schema depends on it. */
+  usedHere: boolean;
 };
 
 /**
@@ -351,6 +389,14 @@ export type PrivilegeSnapshot = {
   identityArguments?: string;
   /** pg_get_userbyid of the object's owner. */
   owner: string;
+  /**
+   * True on a table or view entry whose grants on single columns were read
+   * too. Such a grant sits in `grants` beside the others, written the way
+   * GRANT takes it: "SELECT (email)". A snapshot stored before this field
+   * existed has no column grants in it, so the comparison leaves them out
+   * unless BOTH sides carry this mark.
+   */
+  columnGrantsRead?: boolean;
   /**
    * Everyone with access, sorted by grantee, WITHOUT the owner's own entry.
    *

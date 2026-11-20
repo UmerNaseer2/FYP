@@ -113,15 +113,23 @@ export function changeNoteHeaderLines(note: string): string[] {
  * The note goes after the other header comments, not at the very top: a reader
  * opening the file wants the machine-read stamps (Change-type, Applies-to) in
  * the same place every time, and a three-line note in front of them buries
- * them. Anything below the header is body and is never moved.
+ * them.
+ *
+ * The header is the FIRST block of comment lines, up to the first blank line.
+ * A generated script goes on with a blank line and then each statement under a
+ * comment of its own, and that comment belongs to its statement. The note used
+ * to land between the first statement's comment and its SQL, which read as if
+ * the note were about that one statement. Anything below the header is never
+ * moved.
  */
 export function stampChangeNote(sql: string, note: string | null): string {
   const lines = (sql ?? "").split("\n");
 
-  // Take out every note line that is already in the header. Walking it once
-  // and rebuilding is simpler to follow than splicing indexes as they shift.
-  const header: string[] = [];
+  // Take out every note line that sits above the first statement. Walking it
+  // once and rebuilding is simpler to follow than splicing indexes as they shift.
+  const leading: string[] = [];
   let bodyFrom = lines.length;
+  let removed = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const trimmed = line.trim();
@@ -129,24 +137,34 @@ export function stampChangeNote(sql: string, note: string | null): string {
       bodyFrom = index;
       break;
     }
-    if (!HEADER_PATTERN.test(line)) header.push(line);
+    if (HEADER_PATTERN.test(line)) removed += 1;
+    else leading.push(line);
   }
-  const body = lines.slice(bodyFrom);
 
-  // Blank lines at the end of the header are put back deliberately below.
-  // Dropping them first is what makes this idempotent: without it, restamping
-  // would keep the blank line the old note sat in AND add a new one, so a file
+  // Split what is left into the header (the first comment block) and the
+  // comments that belong to the statements below it.
+  let headEnd = 0;
+  while (headEnd < leading.length && leading[headEnd].trim() === "") headEnd += 1;
+  while (headEnd < leading.length && leading[headEnd].trim() !== "") headEnd += 1;
+  let restFrom = headEnd;
+  while (restFrom < leading.length && leading[restFrom].trim() === "") restFrom += 1;
+  const header = leading.slice(0, headEnd);
+  const body = [...leading.slice(restFrom), ...lines.slice(bodyFrom)];
+
+  // Blank lines after the header are put back deliberately below. Dropping
+  // them first is what makes this idempotent: without it, restamping would
+  // keep the blank line the old note sat in AND add a new one, so a file
   // pushed five times would carry five blank lines above its SQL.
-  const hadGap = header.length > 0 && header[header.length - 1].trim() === "";
+  const hadGap = restFrom > headEnd || (header.length > 0 && header[header.length - 1].trim() === "");
   while (header.length > 0 && header[header.length - 1].trim() === "") header.pop();
 
   const clean = (note ?? "").trim();
   if (clean === "") {
-    // No note to add, so this only takes one out — and it must change NOTHING
+    // No note to add, so this only takes one out, and it must change NOTHING
     // else. A file with no note at all is the common case (every script pushed
-    // without one), and a stamp that quietly added a blank line to it would
-    // make this function rewrite files it has no business touching. The gap is
-    // put back only when the header already had one.
+    // without one), so it is handed back exactly as it came. After a note is
+    // taken out, the gap is put back only when the header already had one.
+    if (removed === 0) return sql ?? "";
     const keepGap = hadGap && header.length > 0 && body.length > 0 ? [""] : [];
     return [...header, ...keepGap, ...body].join("\n");
   }

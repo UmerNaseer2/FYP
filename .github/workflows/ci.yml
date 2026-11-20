@@ -165,8 +165,10 @@ jobs:
       # tests/generate-sql-db-owner-guard.test.ts for owner changes the login
       # running the script may not make. Cases for objects only newer servers
       # have skip themselves on older ones.
+      # tests/generate-sql-db-realistic.test.ts takes release-shaped pairs
+      # (staging ahead of a production with rows) through Compare and Deploy.
       - name: Read and write schemas
-        run: npx jest tests/schema-reading-db.test.ts tests/generate-sql-db.test.ts tests/generate-sql-db-name-clashes.test.ts tests/generate-sql-db-owner-guard.test.ts
+        run: npx jest tests/schema-reading-db.test.ts tests/generate-sql-db.test.ts tests/generate-sql-db-name-clashes.test.ts tests/generate-sql-db-owner-guard.test.ts tests/generate-sql-db-realistic.test.ts
         env:
           TEST_DATABASE_URL: postgres://postgres@127.0.0.1:55432/schema_studio_test
           REQUIRE_TEST_DATABASE: "1"

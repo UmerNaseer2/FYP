@@ -26,8 +26,34 @@ export function createExtensionStatement(extension: ExtensionSnapshot): SqlState
   return objectStatement({
     sql:
       `CREATE EXTENSION IF NOT EXISTS ${q(extension.name)} ` +
+      // The one exception to "no WITH SCHEMA": an extension the source keeps
+      // in another schema and uses from the compared one. Columns name its
+      // types with that schema ("public.citext"), so it has to land there.
+      (extension.schema ? `WITH SCHEMA ${q(extension.schema)} ` : "") +
       `VERSION ${literal(extension.version)};`,
     description: `Install extension "${extension.name}" ${extension.definition}`,
+    kind: "CREATE_EXTENSION",
+    tableName: extension.name,
+  });
+}
+
+/**
+ * Lets the rest of the script find what an extension in ANOTHER schema brought.
+ *
+ * The run's search_path is worked out before the script starts, when the
+ * extension was not there yet, so a later "ADD COLUMN email citext" stopped on
+ * "type citext does not exist". This adds the extension's schema to the END of
+ * the path, for this transaction only (the third argument, true, is what
+ * SET LOCAL means), so the target schema still comes first.
+ */
+export function extensionSearchPathStatement(extension: ExtensionSnapshot): SqlStatement | null {
+  if (!extension.schema) return null;
+  return objectStatement({
+    sql:
+      `SELECT set_config('search_path', current_setting('search_path') || ', ' || ` +
+      `quote_ident(${literal(extension.schema)}), true);`,
+    description:
+      `Let the rest of this script use "${extension.name}" from schema "${extension.schema}"`,
     kind: "CREATE_EXTENSION",
     tableName: extension.name,
   });

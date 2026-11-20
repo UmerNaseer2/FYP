@@ -375,7 +375,9 @@ function DriftCard({
   onRechecked: () => void;
 }) {
   const tone = driftMeta(status).tone;
-  const version = headVersion ? displayVersion(headVersion, true) : null;
+  // The snapshot's number as the drift sentences give it, never with a "v":
+  // it counts saved snapshots and is not a script version.
+  const version = headVersion?.trim() ? headVersion.trim() : null;
 
   // Drifted: the loud state, with the way to the drift screen.
   if (status === "drifted") {
@@ -386,7 +388,7 @@ function DriftCard({
           The live schema has drifted from{" "}
           {version ? (
             <>
-              lineage <span className="mono">{version}</span>
+              snapshot <span className="mono">{version}</span>
             </>
           ) : (
             "its baseline"
@@ -442,7 +444,7 @@ function DriftCard({
         : "The connection for this tracked schema has been removed.");
   } else if (status === "in_sync") {
     title = version
-      ? `Live schema matches lineage ${version}.`
+      ? `Live schema matches snapshot ${version}.`
       : "Live schema matches its baseline.";
     body = summary ?? "No structural drift was found at the last check.";
   }

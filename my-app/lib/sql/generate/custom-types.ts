@@ -5,6 +5,7 @@ import type { ObjectDiff } from "../../compare/types";
 import type { TypeSnapshot } from "../../postgres";
 import {
   domainAddedChecks,
+  domainDefaultChanged,
   typeChangeIsAllManual,
   domainNotNullTightens,
 } from "../../compare/diff";
@@ -38,6 +39,9 @@ export function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
   }
   if (type.kind === "DOMAIN") {
     const parts = [`CREATE DOMAIN ${q(type.name)} AS ${type.baseType ?? "text"}`];
+    // DEFAULT goes before NOT NULL so a new column of this domain on a table
+    // that already has rows gets the default instead of a refused null.
+    if (type.domainDefault) parts.push(`  DEFAULT ${type.domainDefault}`);
     if (type.notNull) parts.push("  NOT NULL");
     for (const check of type.checks) {
       parts.push(`  CONSTRAINT ${q(check.name)} ${check.expression}`);
@@ -337,6 +341,23 @@ export function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): Sq
     // these, so the pill on the report and the warning on the statement cannot
     // drift. (They used to: the report graded every changed type "info" while
     // the script marked the SET NOT NULL below breaking.)
+    if (domainDefaultChanged(left, right)) {
+      const wanted = left.domainDefault ?? null;
+      stmts.push(
+        objectStatement({
+          sql:
+            wanted === null
+              ? `ALTER DOMAIN ${q(left.name)} DROP DEFAULT;`
+              : `ALTER DOMAIN ${q(left.name)} SET DEFAULT ${wanted};`,
+          description:
+            wanted === null
+              ? `Remove the default of domain "${left.name}"`
+              : `Set the default of domain "${left.name}" to ${wanted}`,
+          kind: "ALTER_TYPE",
+          tableName: left.name,
+        })
+      );
+    }
     if (left.notNull !== right.notNull) {
       const tightens = domainNotNullTightens(left, right);
       stmts.push(

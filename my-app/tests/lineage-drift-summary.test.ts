@@ -28,14 +28,14 @@ describe("buildDriftSummary", () => {
         objectsChanged: 1,
       })
     ).toBe(
-      "Drift vs v1.2.0: 1 table added, 2 tables removed, 1 table changed, 2 constraints changed, 1 other object change."
+      "Drifted from snapshot 1.2.0: 1 table added, 2 tables removed, 1 table changed, 2 constraints changed, 1 other object change."
     );
     expect(buildDriftSummary("1.2.0", { ...none, constraintsChanged: 1, objectsChanged: 3 })).toBe(
-      "Drift vs v1.2.0: 1 constraint changed, 3 other object changes."
+      "Drifted from snapshot 1.2.0: 1 constraint changed, 3 other object changes."
     );
   });
 
   it("says in sync when nothing differs", () => {
-    expect(buildDriftSummary("1.2.0", none)).toBe("In sync with v1.2.0 — no structural drift.");
+    expect(buildDriftSummary("1.2.0", none)).toBe("In sync with snapshot 1.2.0. No structural drift.");
   });
 });

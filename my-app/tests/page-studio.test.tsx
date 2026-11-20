@@ -379,6 +379,48 @@ describe("the skyline", () => {
     expect(screen.getByText(/A taller one has more recorded versions/)).toBeInTheDocument();
   });
 
+  it("names the connection when two tracked schemas share a name", async () => {
+    const staging = { ...TRACKED, id: 11, schemaName: "public", connectionName: "Staging" };
+    const production = { ...TRACKED, id: 12, schemaName: "public", connectionName: "Production" };
+    setRoutes(baseRoutes([staging, production, SECOND]));
+    render(<StudioPage />);
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Staging · public, Not checked yet, 0 recorded versions",
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Production · public, Not checked yet, 0 recorded versions",
+      })
+    ).toBeInTheDocument();
+    // A name nobody else has stays as it is.
+    expect(screen.getByRole("button", { name: /^billing, / })).toBeInTheDocument();
+  });
+
+  it("keeps the checked schema's card, and the page, on screen after a check", async () => {
+    setRoutes([
+      ...baseRoutes([TRACKED, SECOND]),
+      { match: "/api/lineage/drift", method: "POST", body: { status: "in_sync" } },
+    ]);
+    render(<StudioPage />);
+
+    // billing is drifted, so it stands first. Check the other one.
+    fireEvent.click(await screen.findByRole("button", { name: /^shop, / }));
+    const release = holdNext("/api/lineage", "GET");
+    fireEvent.click(screen.getByRole("button", { name: /Check drift/ }));
+    await flushAsync();
+
+    // The list is being read again. The page is still there, not a loading block.
+    expect(screen.queryByRole("status", { name: "Loading the dashboard" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^shop, / })).toHaveAttribute("aria-pressed", "true");
+
+    release();
+    await flushAsync();
+    expect(screen.getByRole("button", { name: /^shop, / })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("shows the building you press, by mouse or by keyboard", async () => {
     setRoutes(baseRoutes([TRACKED, SECOND]));
     render(<StudioPage />);

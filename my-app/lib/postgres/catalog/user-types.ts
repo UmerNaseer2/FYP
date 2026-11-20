@@ -21,6 +21,7 @@ export type TypeRow = {
   range_subtype_diff_schema: string | null;
   range_multirange: string | null;
   domain_not_null: boolean | null;
+  domain_default: string | null;
   domain_checks: DomainCheck[] | string | null;
   composite_fields: string[] | null;
 };
@@ -78,6 +79,11 @@ export async function readTypes(client: PoolClient, schemaName: string): Promise
            WHERE mt.oid::text = (to_jsonb(rng) ->> 'rngmultitypid')
          ) AS range_multirange,
          CASE WHEN t.typtype = 'd' THEN t.typnotnull END AS domain_not_null,
+         -- The domain's DEFAULT, as an expression. typdefaultbin is the parsed
+         -- form and typdefault the text someone typed; the parsed one is read
+         -- first so the text comes back the same way on both sides.
+         CASE WHEN t.typtype = 'd'
+           THEN COALESCE(pg_get_expr(t.typdefaultbin, 0), t.typdefault) END AS domain_default,
          CASE WHEN t.typtype = 'd' THEN (
            SELECT json_agg(json_build_object(
                     'name', con.conname,
@@ -139,6 +145,11 @@ export function buildTypes(rows: TypeRow[], schemaName: string): TypeSnapshot[] 
     const baseTypeRaw = row.base_type ?? row.range_subtype;
     const baseType = stripSchemaFromExpr(baseTypeRaw, schemaName);
     const notNull = row.domain_not_null === true;
+    // Only a domain can have one. Null means "no default".
+    const domainDefault =
+      row.kind === "domain"
+        ? (stripSchemaFromExpr(row.domain_default ?? null, schemaName) ?? null)
+        : undefined;
 
     // Only a range type has any of this, and only the options someone
     // actually chose are kept: the default operator class is what CREATE
@@ -180,6 +191,9 @@ export function buildTypes(rows: TypeRow[], schemaName: string): TypeSnapshot[] 
     } else if (row.kind === "domain") {
       const parts = [`DOMAIN ${baseType ?? "?"}`];
       if (notNull) parts.push("NOT NULL");
+      // Written only when there is one, so a domain without a default reads
+      // the way it did before defaults were recorded.
+      if (domainDefault) parts.push(`DEFAULT ${domainDefault}`);
       parts.push(...checks.map((check) => check.expression));
       definition = parts.join(" ");
     } else if (row.kind === "composite") {
@@ -220,6 +234,7 @@ export function buildTypes(rows: TypeRow[], schemaName: string): TypeSnapshot[] 
       labels,
       baseType,
       notNull,
+      ...(domainDefault !== undefined ? { domainDefault } : {}),
       checks,
       attributes,
       rangeDetails,

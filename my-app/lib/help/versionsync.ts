@@ -69,8 +69,8 @@ export const versionsyncHelp: HelpTopic = {
       fix: "Write it as a new version in the Script Editor and deploy it.",
     },
     {
-      problem: "The page says the schemas have diverged.",
-      fix: "Open each version listed there and read its script before you replay anything.",
+      problem: "The page says the Target has versions the Source doesn't.",
+      fix: "That is normal when the Target got them from Deploy and the Source was changed by hand, which records no version. Version Sync never runs or undoes them. Open each one listed there to read its script, and use Compare & Author to check whether the two schemas match.",
     },
     {
       problem: "Dry run and Replay stay off in the dialog.",

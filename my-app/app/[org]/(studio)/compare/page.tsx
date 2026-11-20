@@ -16,7 +16,11 @@ import {
   swapSourceWithTarget,
 } from "@/lib/compare/selection";
 import { buildDiffDocument } from "@/lib/compare/export";
-import { renameMatchingSkipped } from "@/lib/compare/diff";
+import {
+  connectionNameOnly,
+  namedSchemaLabel,
+  renameMatchingSkipped,
+} from "@/lib/compare/diff";
 import type {
   CompareScreen,
   ConnectionView,
@@ -1055,7 +1059,10 @@ function CompareScreenView({ query }: { query: string }) {
           // else may build a second copy. Two copies could grade one change
           // differently.
           const diffDoc = outcome.report
-            ? buildDiffDocument(outcome.report, outcome.data)
+            ? buildDiffDocument(outcome.report, outcome.data, {
+                source: connectionNameOnly(source.displayName, outcome.report.left.database),
+                target: connectionNameOnly(outcome.displayName, outcome.report.right.database),
+              })
             : null;
           const filter = filters[outcome.index] ?? null;
           return (
@@ -1337,11 +1344,19 @@ function CompareScreenView({ query }: { query: string }) {
                       // targets on one page they are usually all called "public",
                       // and three drafts called sync_public_to_public would be
                       // impossible to tell apart in the registry or in review.
-                      suggestedName={`sync_${outcome.report.right.database}_${outcome.report.right.schema}_from_${outcome.report.left.database}_${outcome.report.left.schema}`
+                      // The ends are the saved connections' names, because a
+                      // staging and a live copy of one app share a database
+                      // name too: "sync_appdb_public_from_appdb_public".
+                      suggestedName={`sync_${connectionNameOnly(outcome.displayName, outcome.report.right.database)}_${outcome.report.right.schema}_from_${connectionNameOnly(source.displayName, outcome.report.left.database)}_${outcome.report.left.schema}`
                         .replace(/[^a-z0-9_]/gi, "_")
+                        .replace(/_+/g, "_")
                         .toLowerCase()}
-                      suggestedDescription={`Sync ${outcome.report.right.database}.${outcome.report.right.schema} to match ${outcome.report.left.database}.${outcome.report.left.schema}`}
-                      targetLabel={`${outcome.report.right.database}.${outcome.report.right.schema}`}
+                      suggestedDescription={`Sync ${namedSchemaLabel(outcome.displayName, outcome.report.right.database, outcome.report.right.schema)} to match ${namedSchemaLabel(source.displayName, outcome.report.left.database, outcome.report.left.schema)}`}
+                      targetLabel={namedSchemaLabel(
+                        outcome.displayName,
+                        outcome.report.right.database,
+                        outcome.report.right.schema,
+                      )}
                       targetSchema={outcome.report.right.schema}
                       targetDatabase={
                         outcome.connectionDatabase ?? outcome.report.right.database

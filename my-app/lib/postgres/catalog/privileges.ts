@@ -4,7 +4,8 @@
  * per object.
  */
 import type { PoolClient } from "pg";
-import { COMPARE_IGNORED_TABLES, quoteRole } from "../helpers";
+import { COMPARE_IGNORED_TABLES } from "../helpers";
+import { buildPrivilegeDefinition } from "../snapshot-facts";
 import { normalizeDefinition, stripSchemaFromExpr } from "../normalize";
 import type { PrivilegeGrant, PrivilegeObjectKind, PrivilegeSnapshot } from "../types";
 
@@ -19,7 +20,10 @@ export type PrivilegeRow = {
   grantee: string | null;
   privilege_type: string | null;
   is_grantable: boolean | null;
+  /** True on a table or view row: its column grants were read too. */
+  column_grants_read?: boolean;
 };
+
 
 /**
  * The order GRANT lists privileges in, which is the order PostgreSQL's own
@@ -61,25 +65,6 @@ function sortPrivileges(privileges: string[]): string[] {
   });
 }
 
-/**
- * The one-line rendering the comparison diffs, e.g.
- * `owned by "app" — "api": SELECT, INSERT; PUBLIC: SELECT (SELECT grantable)`.
- */
-function buildPrivilegeDefinition(
-  owner: string,
-  grants: PrivilegeGrant[]
-): string {
-  const head = `owned by ${quoteRole(owner)}`;
-  if (grants.length === 0) return `${head} — no grants to anybody else`;
-  const parts = grants.map((grant) => {
-    const passOn =
-      grant.grantable.length > 0
-        ? ` (may pass on ${grant.grantable.join(", ")})`
-        : "";
-    return `${quoteRole(grant.grantee)}: ${grant.privileges.join(", ")}${passOn}`;
-  });
-  return `${head} — ${parts.join("; ")}`;
-}
 
 export async function readPrivileges(client: PoolClient, schemaName: string): Promise<PrivilegeRow[]> {
   // One row per (object, grantee, privilege), for every kind of object GRANT
@@ -174,14 +159,44 @@ export async function readPrivileges(client: PoolClient, schemaName: string): Pr
          CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END
            AS grantee,
          a.privilege_type,
-         a.is_grantable
+         a.is_grantable,
+         o.object_kind IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW') AS column_grants_read
        FROM objects o
        LEFT JOIN LATERAL aclexplode(o.acl) a
          -- The owner's own entry is dropped here rather than in JS, so the
          -- rows that travel back are only the ones the comparison looks at.
          ON a.grantee <> o.owner_oid
-       ORDER BY o.object_kind, o.object_name, o.identity_arguments,
-                grantee, a.privilege_type`,
+       UNION ALL
+       -- Grants on single columns: GRANT SELECT (email) ON customers TO app.
+       -- A column has no default access list, so an empty attacl means nobody
+       -- was given anything on that column alone. The column goes into the
+       -- privilege text itself, quoted the way GRANT wants it, so the grant
+       -- and revoke statements can be written from it as it stands.
+       SELECT
+         CASE c.relkind
+           WHEN 'v' THEN 'VIEW'
+           WHEN 'm' THEN 'MATERIALIZED VIEW'
+           ELSE 'TABLE'
+         END,
+         c.relname::text,
+         NULL::text,
+         pg_get_userbyid(c.relowner),
+         CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
+         a.privilege_type || ' (' || quote_ident(att.attname) || ')',
+         a.is_grantable,
+         true
+       FROM pg_attribute att
+       JOIN pg_class c ON c.oid = att.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       CROSS JOIN LATERAL aclexplode(att.attacl) a
+       WHERE n.nspname = $1
+         AND c.relkind IN ('r', 'p', 'v', 'm')
+         AND c.relname <> ALL($2)
+         AND att.attnum > 0
+         AND NOT att.attisdropped
+         AND att.attacl IS NOT NULL
+         AND a.grantee <> c.relowner
+       ORDER BY 1, 2, 3, 5, 6`,
       [schemaName, COMPARE_IGNORED_TABLES]
   );
   return result.rows;
@@ -213,6 +228,7 @@ export function buildPrivileges(rows: PrivilegeRow[], schemaName: string): Privi
         objectName: row.object_name,
         ...(identityArguments === null ? {} : { identityArguments }),
         owner: row.owner,
+        ...(row.column_grants_read ? { columnGrantsRead: true } : {}),
         grants: [],
         definition: "",
         normalizedDefinition: "",

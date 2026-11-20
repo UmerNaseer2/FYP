@@ -166,7 +166,16 @@ export type RunCell = {
   statements?: number;
   warnings?: string[];
   moreWarnings?: number;
+  /** Dry runs only: how the rehearsal of this version's rollback went. */
+  rollbackCheck?: RollbackCheck;
+  /** What PostgreSQL said when that rollback failed. */
+  rollbackError?: string;
 };
+
+// How a dry run's try of one version's rollback went (the apply route's
+// rehearseRollbacks). "none": the version has no rollback. "not_checked":
+// the rehearsal stopped at a later version first.
+export type RollbackCheck = "ok" | "failed" | "none" | "not_checked";
 
 // What POST /api/scripts/apply reports for one migration in the run.
 export type ApplyOutcome = {
@@ -177,6 +186,8 @@ export type ApplyOutcome = {
   error?: string;
   warnings?: string[];
   moreWarnings?: number;
+  rollbackCheck?: RollbackCheck;
+  rollbackError?: string;
 };
 // The parts of the apply response this page reads.
 export type ApplyResponse = {

@@ -230,14 +230,19 @@ export function buildColumnDef(
  * with rows there is no value to give the new column, so no statement can put
  * the constraint back — and failing the script over it would mean the column
  * itself never came back either. The DO block takes the outcome that loses
- * least: the column is restored, the constraint is not, and PostgreSQL prints
- * exactly what to run once the rows have been backfilled.
+ * least: the column is restored, the constraint is not, and PostgreSQL raises
+ * a WARNING with exactly what to run once the rows have been backfilled.
+ *
+ * It is a WARNING, not a NOTICE, because Deploy and Quick run keep only the
+ * warnings a script raises (lib/deploy/run-warnings.ts). As a NOTICE the
+ * message reached nobody: the run looked like a full success, and every later
+ * compare offered the same NOT NULL change again.
  *
  * The column itself is looked at first. The first run of a script often puts
  * NOT NULL on while the table is still empty, so on a second run it is already
- * there, and testing the rows then would print a notice saying it is missing
+ * there, and testing the rows then would raise a warning saying it is missing
  * when it is not. The same block serves the forward script (a new NOT NULL
- * column with no default) and the rollback, which is why the notice says the
+ * column with no default) and the rollback, which is why the warning says the
  * column has been "left" without it rather than "restored" without it.
  */
 export function restoreNotNullStatement(col: ColumnSnapshot, tableName: string): SqlStatement {
@@ -253,12 +258,12 @@ export function restoreNotNullStatement(col: ColumnSnapshot, tableName: string):
     `SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(${literal(q(tableName))}) ` +
     `AND attname = ${literal(col.name)} AND attnotnull`;
 
-  // RAISE NOTICE's first argument is a FORMAT string, not a message: every `%`
+  // RAISE's first argument is a FORMAT string, not a message: every `%`
   // in it wants a parameter after the comma, and a table or column named
   // "done_%" therefore aborted the whole block with "too few parameters
   // specified for RAISE". Passing '%' as the format and the text as the one
   // parameter means the text is printed exactly as written, whatever is in it.
-  const raise = `RAISE NOTICE '%', ${literal(notice)};`;
+  const raise = `RAISE WARNING '%', ${literal(notice)};`;
   // And the block's own tag has to be one nothing inside it contains. The
   // notice quotes both names back, so a column named `a$$b` closed the block on
   // its own name and left `b" on ...` sitting outside it as broken SQL.

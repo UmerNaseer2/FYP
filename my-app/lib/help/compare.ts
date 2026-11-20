@@ -119,6 +119,15 @@ export const compareHelp: HelpTopic = {
       ],
     },
     {
+      title: "What Compare does not read",
+      body: [
+        "Comments written with COMMENT ON are not compared and are not copied to the target.",
+        "Default privileges set with ALTER DEFAULT PRIVILEGES are not compared. They are rules for objects made later, so set them on the target yourself.",
+        "Grants on tables, views, single columns, sequences, functions and the schema are compared and copied.",
+        "An extension in another schema is installed on the target only when the compared schema uses it. It is never dropped or updated from here.",
+      ],
+    },
+    {
       title: "Row data",
       body: [
         "Rows are compared by checksum, so the order they are stored in does not matter and no primary key is needed.",

@@ -5,7 +5,11 @@
 
 import type { CompareReport, ObjectDiff } from "../../compare/types";
 import type { PrivilegeSnapshot, RoutineSnapshot, ViewSnapshot } from "../../postgres";
-import { extensionUpdateIsForward } from "../../compare/diff";
+import {
+  extensionElsewhereAsSnapshot,
+  extensionUpdateIsForward,
+  privilegesForCompare,
+} from "../../compare/diff";
 import { sequenceOwnerTable } from "../../postgres/snapshot-facts";
 import { findByName, normalizeType, q } from "./basics";
 import { indexTouchesColumn, namesChangingColumn, rebuiltComputedColumns } from "./column-changes";
@@ -20,6 +24,7 @@ import {
   createExtensionStatement,
   dropCollationStatement,
   dropExtensionStatement,
+  extensionSearchPathStatement,
 } from "./extensions";
 import {
   createIndexStatement,
@@ -54,6 +59,8 @@ import {
   dropViewStatement,
   sortViewsByDependency,
   viewsCascadedBy,
+  viewsCascadedByColumns,
+  viewsReadingColumns,
 } from "./views";
 
 export function objectPhases(
@@ -90,6 +97,9 @@ export function objectPhases(
     retypeBlockedBy: new Map(),
     warnings: [],
   };
+  // The privilege lists the comparison itself used, so the grants written
+  // here are for exactly the differences the cards show.
+  const fairPrivileges = privilegesForCompare(report.left, report.right);
 
   const leftViews = report.left.views ?? [];
   const rightViews = report.right.views ?? [];
@@ -301,11 +311,12 @@ export function objectPhases(
   }[] = [];
 
   /** Queue a drop and record it in both sets — the only place that does. */
-  function queueViewDrop(view: ViewSnapshot, reason: string) {
+  function queueViewDrop(view: ViewSnapshot, reason: string): SqlStatement {
     const statement = dropViewStatement(view, reason);
     phases.viewDrops.push(statement);
     viewsBeingDropped.add(view.name);
     if (statement.destructive) heldBackViewDrops.add(view.name);
+    return statement;
   }
 
   for (const diff of withTypesInDependencyOrder(
@@ -398,10 +409,19 @@ export function objectPhases(
     }
 
     if (diff.kind === "EXTENSION") {
-      const source = findByName(report.left.extensions, diff.name);
+      const elsewhere = (report.left.extensionsElsewhere ?? []).find(
+        (extension) => extension.name === diff.name && extension.usedHere
+      );
+      const source =
+        findByName(report.left.extensions, diff.name) ??
+        (elsewhere ? extensionElsewhereAsSnapshot(elsewhere) : undefined);
       const target = findByName(report.right.extensions, diff.name);
       if (diff.status === "onlyA") {
-        if (source) phases.extensions.push(createExtensionStatement(source));
+        if (source) {
+          phases.extensions.push(createExtensionStatement(source));
+          const usePath = extensionSearchPathStatement(source);
+          if (usePath) phases.extensions.push(usePath);
+        }
       } else if (diff.status === "onlyB") {
         if (target) phases.extensionDrops.push(dropExtensionStatement(target));
       } else if (source && target) {
@@ -566,39 +586,66 @@ export function objectPhases(
   // ── Views a CASCADE would take silently ───────────────────────────────────
   // Dropping a table or a column with CASCADE removes every view built on it
   // without naming any of them. Anything the source still has is put back.
-  const cascadingRelations = new Set<string>();
-  for (const table of report.tablesOnlyInB) cascadingRelations.add(table.name);
+  //
+  // Two lists, because it matters WHICH statement takes the view away:
+  //  - liveSeeds: taken by a statement that runs in every mode (a plain view
+  //    dropped by name, a computed column rebuilt in place);
+  //  - heldSeeds: taken by a statement safe mode holds back (DROP TABLE, DROP
+  //    COLUMN, a materialized view's drop). In safe mode that statement does
+  //    not run, the view is still there, and writing it again would only
+  //    reset its owner and grants on every single deploy.
+  const liveSeeds = new Set<string>();
+  const heldSeeds = new Set<string>();
+  for (const table of report.tablesOnlyInB) heldSeeds.add(table.name);
   for (const match of report.matchedTables) {
-    if (match.columnsOnlyInB.length > 0) cascadingRelations.add(match.right.name);
+    // A dropped column only takes the views that READ that column. Marking the
+    // whole table here is what rebuilt every view on a table that lost any
+    // column at all, read or not, and left changes behind after each deploy.
+    const dropped = new Set(match.columnsOnlyInB.map((col) => col.name));
+    for (const view of viewsReadingColumns(rightViews, match.right.name, dropped)) {
+      heldSeeds.add(view.name);
+    }
     // A changed GENERATED ALWAYS AS (...) expression is another DROP COLUMN
     // CASCADE, even though the column comes straight back: PostgreSQL cannot
     // change a generated column in place, so the only portable answer is to
-    // rebuild it. The CASCADE is just as wide as any other, and this table was
-    // in none of the sets above — it is matched, it lost no column, and it is
-    // not a view — so the walk below never saw the victims and nothing put them
-    // back. Same test as the branch that emits the statement.
-    if (rebuiltComputedColumns(match).size > 0) cascadingRelations.add(match.right.name);
+    // rebuild it. Same test as the branch that emits the statement, and the
+    // same rule for when that statement is held back (it loses values).
+    const rebuilt = rebuiltComputedColumns(match);
+    for (const col of match.columnMatches) {
+      if (!rebuilt.has(col.left.name)) continue;
+      const losesValues = !col.right.generated || !col.left.generated;
+      const readers = viewsReadingColumns(
+        rightViews,
+        match.right.name,
+        new Set([col.right.name])
+      );
+      for (const view of readers) (losesValues ? heldSeeds : liveSeeds).add(view.name);
+    }
   }
   // A view the script drops by name cascades as well. A second view built on
   // that one is usually byte-identical in both schemas, so the comparator says
   // nothing about it and it was in neither list: the CASCADE took it and
-  // nothing put it back — in the migration, and again in the rollback, which
-  // still called itself complete. Seeding the set with the views being dropped
-  // makes the walk below find those dependents and queue them for rebuild.
-  for (const name of viewsBeingDropped) cascadingRelations.add(name);
+  // nothing put it back. Seeding the sets with the views being dropped makes
+  // the walk below find those dependents and queue them for rebuild.
+  for (const name of viewsBeingDropped) {
+    (heldBackViewDrops.has(name) ? heldSeeds : liveSeeds).add(name);
+  }
 
   // ── Views standing in the way of a column type change ─────────────────────
   // PostgreSQL refuses ALTER TABLE ... ALTER COLUMN ... TYPE while any view
   // selects that column, and a view identical on both sides is in no diff, so
   // nothing dropped it. The migration died on a statement the report had shown
   // as clean, and the rollback died on the mirror image of it. Drop them up
-  // front and let the CASCADE walk above queue the rebuild.
-  // Keyed by the table's name in the SOURCE, because that is the name the
-  // ALTER statements use: the rename step above has already run by then.
-  const retypedTables = new Map<string, string>();
+  // front and let the CASCADE walk below queue the rebuild.
+  // Keyed by the table's name in the TARGET, because that is the name the
+  // views there know it by. sourceName is the name the ALTER statements use:
+  // the rename step above has already run by then. columns holds the retyped
+  // columns under the names the target's views read them by.
+  const retypedTables = new Map<string, { sourceName: string; columns: Set<string> }>();
   for (const match of report.matchedTables) {
-    const retyped = match.columnMatches.some(
-      (col) =>
+    const columns = new Set<string>();
+    for (const col of match.columnMatches) {
+      const retyped =
         normalizeType(col.left.typeDisplay) !== normalizeType(col.right.typeDisplay) ||
         // A collation change is written as ALTER COLUMN ... TYPE too — there is
         // no SET COLLATE, so the only way to change one is to re-state the type
@@ -608,16 +655,31 @@ export function objectPhases(
         // emits it, so the two cannot drift apart.
         (col.left.collation !== undefined &&
           col.right.collation !== undefined &&
-          col.left.collation !== col.right.collation)
-    );
-    if (retyped) retypedTables.set(match.right.name, match.left.name);
+          col.left.collation !== col.right.collation);
+      if (retyped) columns.add(col.right.name);
+    }
+    if (columns.size > 0) {
+      retypedTables.set(match.right.name, { sourceName: match.left.name, columns });
+    }
   }
   // One table at a time rather than one call over the whole set, so each view
-  // found is attributable to the table whose column change needs it gone. The
-  // union is the same either way; what the per-table walk buys is the map
-  // below, which safe mode needs to hold the ALTER back beside the drop.
-  for (const [targetName, sourceName] of retypedTables) {
-    for (const view of viewsCascadedBy(rightViews, new Set([targetName]))) {
+  // found is attributable to the table whose column change needs it gone.
+  //
+  // First pass: work out, per table, which views are in the way and whether
+  // one of them is a materialized view. A materialized view is dropped
+  // destructively (it holds its own rows), so safe mode comments the drop out.
+  // The ALTER is not destructive and would stay live, hit a matview that is
+  // still sitting there, and fail with "cannot alter type of a column used by
+  // a view or rule". The apply route runs the whole script in one
+  // transaction, so that failure rolls the entire migration back. The ALTER
+  // is held back beside the drop instead (retypeBlockedBy).
+  const neededGoneInEveryMode = new Set<string>();
+  const neededGoneOnlyWhenArmed = new Map<string, ViewSnapshot>();
+  for (const [targetName, { sourceName, columns }] of retypedTables) {
+    const inTheWay = viewsCascadedByColumns(rightViews, targetName, columns);
+    const blockers: string[] = [];
+    const plainToDrop: ViewSnapshot[] = [];
+    for (const view of inTheWay) {
       if (!viewsBeingDropped.has(view.name)) {
         // Only drop what can be put back. A view the source does not have would
         // already be a diff and already be in the set above, so reaching here
@@ -625,20 +687,45 @@ export function objectPhases(
         // and dropping a view this script cannot recreate is worse than the
         // ALTER failing loudly.
         if (!findByName(leftViews, view.name)) continue;
-        queueViewDrop(view, " so a column it reads can change type");
-        cascadingRelations.add(view.name);
+        if (view.materialized) {
+          queueViewDrop(view, " so a column it reads can change type");
+          heldSeeds.add(view.name);
+        } else {
+          plainToDrop.push(view);
+        }
       }
-      // A materialized view is dropped destructively — it holds its own rows —
-      // so safe mode comments the drop out. The ALTER is not destructive and
-      // would stay live, hit a matview that is still sitting there, and fail
-      // with "cannot alter type of a column used by a view or rule". The apply
-      // route runs the whole script in one transaction, so that failure rolls
-      // the entire migration back: the safest mode produced the one script that
-      // cannot finish. Held back beside the drop instead.
-      if (heldBackViewDrops.has(view.name)) {
-        const blocked = phases.retypeBlockedBy.get(sourceName) ?? [];
-        if (!blocked.includes(view.name)) blocked.push(view.name);
-        phases.retypeBlockedBy.set(sourceName, blocked);
+      if (heldBackViewDrops.has(view.name)) blockers.push(view.name);
+    }
+    if (blockers.length > 0) {
+      const blocked = phases.retypeBlockedBy.get(sourceName) ?? [];
+      for (const name of blockers) if (!blocked.includes(name)) blocked.push(name);
+      phases.retypeBlockedBy.set(sourceName, blocked);
+    }
+    // When the ALTER is held back, the plain views dropped to make room for it
+    // have no reason to go in safe mode either. Dropping and recreating them
+    // anyway came back as the same few "changes" after every deploy.
+    for (const view of plainToDrop) {
+      if (blockers.length > 0) neededGoneOnlyWhenArmed.set(view.name, view);
+      else neededGoneInEveryMode.add(view.name);
+    }
+  }
+  /**
+   * Plain views whose drop is held back beside a held back type change, with
+   * the drop statement, so a later block that needs one gone in every mode
+   * can release it.
+   */
+  const softHeldDrops = new Map<string, SqlStatement>();
+  for (const [targetName, { columns }] of retypedTables) {
+    for (const view of viewsCascadedByColumns(rightViews, targetName, columns)) {
+      if (viewsBeingDropped.has(view.name)) continue;
+      if (neededGoneInEveryMode.has(view.name)) {
+        queueViewDrop(view, " so a column it reads can change type");
+        liveSeeds.add(view.name);
+      } else if (neededGoneOnlyWhenArmed.has(view.name)) {
+        const statement = queueViewDrop(view, " so a column it reads can change type");
+        statement.needsArmedDrop = true;
+        softHeldDrops.set(view.name, statement);
+        heldSeeds.add(view.name);
       }
     }
   }
@@ -668,7 +755,11 @@ export function objectPhases(
       if (!expressionCallsRoutine(view.definition, name)) continue;
       // Already dropped by name, and the view drops run before the functions
       // (but after the hoisted ones, which is why those are not let through).
-      if (viewsBeingDropped.has(view.name) && !replaced.hoisted) continue;
+      // A drop that is held back beside a type change does not count: in safe
+      // mode that view is still there when the function is dropped.
+      if (viewsBeingDropped.has(view.name) && !softHeldDrops.has(view.name) && !replaced.hoisted) {
+        continue;
+      }
       // DROP VIEW ... CASCADE reaches the views built on this one. If one of
       // them is a materialized view its rows would go too, and safe mode must
       // never do that, so such a view counts as still in use.
@@ -691,10 +782,20 @@ export function objectPhases(
 
     if (uses.length === 0) {
       for (const view of viewsInTheWay) {
+        // Held back beside a type change so far, and now needed gone in every
+        // mode: let its drop run.
+        const softHeld = softHeldDrops.get(view.name);
+        if (softHeld) {
+          delete softHeld.needsArmedDrop;
+          softHeldDrops.delete(view.name);
+          heldSeeds.delete(view.name);
+          liveSeeds.add(view.name);
+          continue;
+        }
         // A view that calls two replaced functions is only queued once.
         if (viewsBeingDropped.has(view.name)) continue;
         queueViewDrop(view, " so a function it calls can be replaced");
-        cascadingRelations.add(view.name);
+        liveSeeds.add(view.name);
       }
       continue;
     }
@@ -733,8 +834,25 @@ export function objectPhases(
     );
   }
 
-  const cascaded = viewsCascadedBy(rightViews, cascadingRelations);
-  const alreadyQueued = new Set(viewsToCreate.map((view) => view.name));
+  const cascaded = viewsCascadedBy(rightViews, new Set([...liveSeeds, ...heldSeeds]));
+  /** The views a statement that runs in EVERY mode takes away. */
+  const takenInEveryMode = new Set(
+    viewsCascadedBy(rightViews, liveSeeds).map((view) => view.name)
+  );
+  /** Every view some statement of this script takes away, held back or not. */
+  const takenAtAll = new Set(cascaded.map((view) => view.name));
+  /** The views queued because the comparison itself lists them as different. */
+  const queuedByOwnDiff = new Set(viewsToCreate.map((view) => view.name));
+  const alreadyQueued = new Set(queuedByOwnDiff);
+  /**
+   * Whether everything written to put this view back has to be held back in
+   * safe mode. True when its own drop is held back (a materialized view), and
+   * true when it is only here because a held back statement would take it:
+   * in safe mode that statement does not run and the view never left.
+   */
+  const rebuildIsHeld = (name: string) =>
+    heldBackViewDrops.has(name) ||
+    (!queuedByOwnDiff.has(name) && !takenInEveryMode.has(name));
   const unrecoverable: string[] = [];
 
   for (const victim of cascaded) {
@@ -763,7 +881,7 @@ export function objectPhases(
 
   // A view built on another view has to be created after it.
   for (const view of sortViewsByDependency(viewsToCreate)) {
-    const held = heldBackViewDrops.has(view.name);
+    const held = rebuildIsHeld(view.name);
     phases.views.push(createViewStatement(view, held));
     // Every index and trigger the source's copy carries, unconditionally.
     //
@@ -837,10 +955,44 @@ export function objectPhases(
   // no guide, and every grant the source has is written out as if the view
   // were new. Comparing against the target instead skipped exactly the grants
   // both sides shared, which is how a rebuilt view lost every reader.
+  //
+  // That is only true when the view really is dropped. Three cases:
+  //  - "fresh": a statement that runs in every mode takes the view away (or
+  //    its own drop is the held back one), so the source's grants are written
+  //    in full;
+  //  - "armed-only": only a held back statement takes it away. In safe mode
+  //    the view is still there with the target's grants, so the ordinary
+  //    difference is written live (REVOKEs included), and the rest of the
+  //    full list is held back beside the rebuild;
+  //  - "in-place": nothing drops it (CREATE OR REPLACE over the old view,
+  //    which keeps the old grants), so it is compared like any other object.
+  const rebuildKind = (name: string): "fresh" | "armed-only" | "in-place" | null => {
+    if (!rebuiltViews.has(name)) return null;
+    if (heldBackViewDrops.has(name) || takenInEveryMode.has(name)) return "fresh";
+    if (takenAtAll.has(name)) return "armed-only";
+    // A view the target does not have yet is new, which reads as "fresh".
+    return findByName(rightViews, name) ? "in-place" : "fresh";
+  };
+  const viewRebuildKind = (privilege: PrivilegeSnapshot) =>
+    privilege.objectKind === "VIEW" || privilege.objectKind === "MATERIALIZED VIEW"
+      ? rebuildKind(privilege.objectName)
+      : null;
   const isRebuiltView = (privilege: PrivilegeSnapshot) =>
-    (privilege.objectKind === "VIEW" ||
-      privilege.objectKind === "MATERIALIZED VIEW") &&
-    rebuiltViews.has(privilege.objectName);
+    viewRebuildKind(privilege) === "fresh";
+  /**
+   * The statements for a view only a held back statement takes away: the
+   * ordinary difference live, then whatever else a rebuilt view would need,
+   * held back with the rebuild.
+   */
+  const armedOnlyViewPrivileges = (
+    source: PrivilegeSnapshot,
+    target: PrivilegeSnapshot | null
+  ): SqlStatement[] => {
+    const live = target ? privilegeStatements(source, target, appliesToSchema, false) : [];
+    const written = new Set(live.map((statement) => statement.sql));
+    const full = privilegeStatements(source, null, appliesToSchema, true);
+    return [...live, ...full.filter((statement) => !written.has(statement.sql))];
+  };
   // A sequence a serial or identity column owns in the source is owned by that
   // column in the target too once the script has run (the column creates it,
   // or the table step ties it), so its owner comes from the table's OWNER TO.
@@ -877,7 +1029,7 @@ export function objectPhases(
     // Privilege entries are keyed by kind and name together, and the diff
     // carries them already joined, so look them up by the same joined string
     // the compare engine wrote — see privilegeObjects there.
-    const source = findPrivilege(report.left.privileges, diff.name);
+    const source = findPrivilege(fairPrivileges.left, diff.name);
     // "onlyB" never arrives: the compare engine leaves out an entry the target
     // has and the source does not, because the object it belongs to is one this
     // script is already dropping.
@@ -886,18 +1038,21 @@ export function objectPhases(
     const target =
       diff.status === "onlyA" || isRebuiltView(source) || isParkedSequence(source)
         ? null
-        : findPrivilege(report.right.privileges, diff.name);
-    const statements = privilegeStatements(
-      source,
-      target,
-      appliesToSchema,
-      // Only a view or a materialized view is ever dropped and put back, so
-      // only those two can be sitting there in the old shape.
-      (source.objectKind === "VIEW" ||
-        source.objectKind === "MATERIALIZED VIEW") &&
-        heldBackViewDrops.has(source.objectName),
-      ownerFollowsTable(source)
-    );
+        : findPrivilege(fairPrivileges.right, diff.name);
+    const statements =
+      viewRebuildKind(source) === "armed-only"
+        ? armedOnlyViewPrivileges(source, target)
+        : privilegeStatements(
+            source,
+            target,
+            appliesToSchema,
+            // Only a view or a materialized view is ever dropped and put back, so
+            // only those two can be sitting there in the old shape.
+            (source.objectKind === "VIEW" ||
+              source.objectKind === "MATERIALIZED VIEW") &&
+              heldBackViewDrops.has(source.objectName),
+            ownerFollowsTable(source)
+          );
     if (source.objectKind === "SCHEMA") {
       phases.privileges.push(...statements.filter((statement) => statement.kind !== "REVOKE"));
       schemaRevokes.push(...statements.filter((statement) => statement.kind === "REVOKE"));
@@ -911,17 +1066,18 @@ export function objectPhases(
   for (const view of viewsToCreate) {
     const key = `${view.materialized ? "materialized view" : "view"} ${view.name}`;
     if (privilegesWritten.has(key)) continue;
-    const source = findPrivilege(report.left.privileges, key);
+    const source = findPrivilege(fairPrivileges.left, key);
     // No entry means the source snapshot never recorded privileges, so there
     // is nothing to put back.
     if (!source) continue;
+    const kind = rebuildKind(view.name);
+    // Replaced where it stands, with the same owner and grants on both sides:
+    // nothing to write.
+    if (kind === "in-place") continue;
     phases.privileges.push(
-      ...privilegeStatements(
-        source,
-        null,
-        appliesToSchema,
-        heldBackViewDrops.has(view.name)
-      )
+      ...(kind === "armed-only"
+        ? armedOnlyViewPrivileges(source, findPrivilege(fairPrivileges.right, key) ?? null)
+        : privilegeStatements(source, null, appliesToSchema, heldBackViewDrops.has(view.name)))
     );
   }
 
@@ -930,7 +1086,7 @@ export function objectPhases(
   for (const name of parkedSequences) {
     const key = `sequence ${name}`;
     if (privilegesWritten.has(key)) continue;
-    const source = findPrivilege(report.left.privileges, key);
+    const source = findPrivilege(fairPrivileges.left, key);
     if (!source) continue;
     privilegesWritten.add(key);
     phases.privileges.push(...privilegeStatements(source, null, appliesToSchema, false, ownerFollowsTable(source)));

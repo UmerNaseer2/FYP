@@ -63,24 +63,8 @@ export type ApprovalRow = {
   run_by_requester?: boolean;
 };
 
-/**
- * Hash the text of a run the same way the server does.
- *
- * The server uses node:crypto and this uses the Web Crypto API, but both hash
- * the string lib/deploy/approval-fingerprint builds, so the two hex strings match and
- * this screen can tell whether the run in front of the user is the approved
- * one. crypto.subtle only exists in a secure context — https or localhost — so
- * the caller has to cope with this throwing rather than assume it cannot.
- */
-export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(text)
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
+// Hash the text of a run the way the server does, on https and plain http alike.
+export { sha256Hex } from "@/lib/ui/sha256";
 
 /**
  * An ask for approval, on screen.

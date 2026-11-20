@@ -723,7 +723,7 @@ describe("generateRollback — restoring a NOT NULL column with no default", () 
     // missing once the first run has put it on.
     expect(sql).toMatch(/attnotnull/);
     expect(sql).toMatch(/ELSIF EXISTS \(SELECT 1 FROM "orders" LIMIT 1\) THEN/);
-    expect(sql).toMatch(/RAISE NOTICE/);
+    expect(sql).toMatch(/RAISE WARNING/);
     expect(sql).toMatch(/ALTER COLUMN "note" SET NOT NULL;/);
   });
 
@@ -731,6 +731,26 @@ describe("generateRollback — restoring a NOT NULL column with no default", () 
     const script = rollback();
     expect(script.nullableOnRestore).toEqual(["orders.note"]);
     expect(renderRollbackScript(script)).toContain("orders.note");
+  });
+
+  it("says the column comes back without NOT NULL, in plain words", () => {
+    const script = rollback();
+    const sql = renderRollbackScript(script);
+    expect(sql).toContain("COLUMN RESTORED WITHOUT ITS NOT NULL.");
+    expect(sql).not.toContain("NOT NULL NOT.");
+    expect(script.warnings.some((w) => w.includes("back without NOT NULL"))).toBe(true);
+  });
+
+  it("says nothing about a lost NOT NULL after a safe mode migration", () => {
+    // Safe mode dropped nothing, so the column never left and still has its
+    // NOT NULL. The header used to say both "dropped none of the following" and
+    // "comes back nullable" about the same column.
+    const script = generateRollback(compareSchemas(after, before), { allowDataLoss: false });
+    const sql = renderRollbackScript(script);
+    expect(sql).toContain("SAFE MODE");
+    expect(sql).not.toContain("COLUMN RESTORED");
+    expect(sql).not.toMatch(/back (nullable|without NOT NULL)/);
+    expect(script.warnings.some((w) => w.includes("NOT NULL and no default"))).toBe(false);
   });
 
   it("leaves a column that has a default alone", () => {

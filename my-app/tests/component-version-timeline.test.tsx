@@ -177,7 +177,7 @@ describe("what each side's cell says", () => {
     });
 
     const when = screen.getByText("Sep 10, 2026");
-    expect(when).toHaveAttribute("title", "Applied Sep 10, 2026 by umer@example.com");
+    expect(when).toHaveAttribute("title", "Applied 2026-09-10 23:30 UTC by umer@example.com");
   });
 
   it("says plainly that a row does not record who ran it", () => {
@@ -192,7 +192,7 @@ describe("what each side's cell says", () => {
 
     expect(screen.getByText("Sep 10, 2026")).toHaveAttribute(
       "title",
-      "Applied Sep 10, 2026. This row does not record who ran it."
+      "Applied 2026-09-10 09:00 UTC. This row does not record who ran it."
     );
   });
 

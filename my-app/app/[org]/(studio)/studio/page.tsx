@@ -86,6 +86,7 @@ type ConnectionRow = {
   id: number;
   name: string;
   host: string;
+  port: number;
   database_name: string;
   type: string;
 };
@@ -194,8 +195,11 @@ export default function DashboardPage() {
   const [untrackTarget, setUntrackTarget] = useState<TrackedSchema | null>(null);
 
   // ── Load the list ──────────────────────────────────────────────────────────
-  const loadList = useCallback(async () => {
-    setListPhase("loading");
+  // `quiet` keeps the page on screen while the list is read again (after a
+  // drift check, say). Swapping it for the loading block made the page jump
+  // to the top. A failed quiet read still shows the error.
+  const loadList = useCallback(async (quiet = false) => {
+    if (!quiet) setListPhase("loading");
     try {
       const res = await apiFetch("/api/lineage", { cache: "no-store" });
       const data = await res.json().catch(() => null);
@@ -421,7 +425,9 @@ export default function DashboardPage() {
         return;
       }
       setTrackOpen(false);
-      await loadList();
+      // Show the schema that was just tracked, not whichever sorts first.
+      if (typeof data?.trackedSchema?.id === "number") setSelectedId(data.trackedSchema.id);
+      await loadList(true);
     } catch {
       setTrackError("Network error while tracking the schema.");
     } finally {
@@ -432,6 +438,9 @@ export default function DashboardPage() {
   // ── Actions on the picked schema ───────────────────────────────────────────────────────
   async function checkDrift(item: TrackedSchema) {
     if (checkRefusal !== null) return;
+    // Keep this schema's card on screen. The list is sorted by state, so a
+    // new result can move it, and "the first one" would then be another schema.
+    setSelectedId(item.id);
     setCheckingId(item.id);
     setCardError(null);
     try {
@@ -446,7 +455,7 @@ export default function DashboardPage() {
         return;
       }
       // The check wrote a drift_event; reload so the card + summary reflect it.
-      await loadList();
+      await loadList(true);
     } catch {
       setCardError({ id: item.id, msg: "Network error during the drift check.", from: "check" });
     } finally {
@@ -479,7 +488,7 @@ export default function DashboardPage() {
       }
       setCardError(null);
       setUntrackTarget(null);
-      await loadList();
+      await loadList(true);
     } catch {
       setCardError({
         id: target.id,
@@ -517,6 +526,18 @@ export default function DashboardPage() {
   );
   const noConnections = connPhase.kind === "ready" && connections.length === 0;
 
+  // Two tracked schemas can share a name (public in Staging and public in
+  // Production). Those are told apart by their saved connection's name,
+  // which goes first so a shortened label still shows it.
+  const nameCounts = new Map<string, number>();
+  for (const item of sorted) {
+    nameCounts.set(item.schemaName, (nameCounts.get(item.schemaName) ?? 0) + 1);
+  }
+  const displayName = (item: TrackedSchema): string =>
+    (nameCounts.get(item.schemaName) ?? 0) > 1 && item.connectionName
+      ? `${item.connectionName} · ${item.schemaName}`
+      : item.schemaName;
+
   const buildings: Building[] = sorted.map((item) => {
     const tables = tableCounts[item.id];
     const amount =
@@ -527,11 +548,11 @@ export default function DashboardPage() {
           : "table count not known";
     return {
       id: item.id,
-      name: item.schemaName,
+      name: displayName(item),
       status: item.driftStatus ?? "unchecked",
       value: heightBy === "versions" ? item.migrationCount : (tables ?? null),
       label:
-        `${item.schemaName}, ` +
+        `${displayName(item)}, ` +
         `${statusLook(item.driftStatus).label}, ${amount}`,
     };
   });
@@ -815,10 +836,10 @@ export default function DashboardPage() {
                             <td>
                               <button
                                 type="button"
-                                aria-label={`Show ${item.schemaName} in the skyline`}
+                                aria-label={`Show ${displayName(item)} in the skyline`}
                                 onClick={() => setSelectedId(item.id)}
                               >
-                                {item.schemaName}
+                                {displayName(item)}
                               </button>
                             </td>
                             <td>
@@ -866,7 +887,7 @@ export default function DashboardPage() {
                 onClick={() => setSelectedId(item.id)}
               >
                 <span className="sk-nr-main">
-                  <b title={item.schemaName}>{item.schemaName}</b>
+                  <b title={displayName(item)}>{displayName(item)}</b>
                   <StatusChip status={item.driftStatus} variant="mark" size="sm" />
                   <span className="sk-nr-sum">{item.driftSummary ?? "No details were recorded."}</span>
                 </span>
@@ -900,7 +921,8 @@ export default function DashboardPage() {
         }
       >
         <p className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-          A baseline snapshot is taken now, as lineage <span className="mono">v1.0.0</span>.
+          Schema Studio saves what this schema looks like right now, as version{" "}
+          <span className="mono">1.0.0</span>. Later checks compare the live schema with that copy.
         </p>
 
         <div>
@@ -915,7 +937,7 @@ export default function DashboardPage() {
             }
             options={connections.map((c) => ({
               value: String(c.id),
-              label: `${c.name} · ${c.host}/${c.database_name}`,
+              label: `${c.name} · ${c.host}:${c.port}/${c.database_name}`,
             }))}
             onChange={(value) => void onPickConnection(value)}
           />

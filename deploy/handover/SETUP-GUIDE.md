@@ -175,9 +175,24 @@ docker info --format '{{.OperatingSystem}}'
 You need Docker 24 or newer and Compose 2.20 or newer. The last command must
 name your Ubuntu (for example `Ubuntu 24.04.1 LTS`). If it says `Docker
 Desktop`, see [Docker Desktop instead of Docker
-Engine](#docker-desktop-instead-of-docker-engine). If `docker` needs `sudo`,
-either put `sudo` in front of every `docker` command below or add yourself to
-the `docker` group (read [Who can read what](#who-can-read-what) first).
+Engine](#docker-desktop-instead-of-docker-engine).
+
+**If a `docker` command says "permission denied while trying to connect to the
+Docker daemon socket"**, your user may not use Docker yet. Pick one way and
+keep to it for the whole guide:
+
+* put `sudo` in front of every `docker` command in this guide, for example
+  `sudo docker compose ps`; or
+* add yourself to the `docker` group once, then sign out of Ubuntu and back
+  in (on WSL: close Ubuntu, run `wsl --shutdown` in Windows PowerShell, open
+  Ubuntu again). Read [Who can read what](#who-can-read-what) first: that
+  group is as strong as root.
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+After signing back in, `docker info` works without `sudo`.
 
 PostgreSQL 16:
 
@@ -265,7 +280,8 @@ cp -r ~/schema-studio-download/kit/. /opt/schema-studio/
 cd /opt/schema-studio && ls
 ```
 
-Load the image into Docker, then check its name:
+Load the image into Docker, then check its name (if `docker` needs `sudo` for
+you, put it in front, as [step 1](#1-check-docker-and-postgresql) says):
 
 ```bash
 docker load -i ~/schema-studio-download/schema-studio-app-*.tar.gz
@@ -460,7 +476,8 @@ cd /opt/schema-studio && docker compose up -d --wait
 
 `--wait` returns once the app answers its health check, usually within 30
 seconds. If Compose names a missing setting instead, fill it in `.env` and run
-the command again. Then:
+the command again. If it says "permission denied" on the Docker socket, run it
+as `sudo docker compose up -d --wait` (see [step 1](#1-check-docker-and-postgresql)). Then:
 
 ```bash
 docker compose ps
@@ -706,6 +723,9 @@ Everything else in this guide is the same.
 | Change a setting | edit `.env`, then `docker compose up -d --wait` |
 | Start everything after Windows or the machine restarts | `bash /opt/schema-studio/setup.sh` |
 
+If `docker` needs `sudo` for you (see [step 1](#1-check-docker-and-postgresql)),
+put `sudo` in front of each `docker` command, for example `sudo docker compose ps`.
+
 **Install a new version:** download the new `schema-studio-handover.zip`,
 copy it into your Ubuntu home folder as in step 2, unzip it into an empty
 folder and run the `setup.sh` inside it:
@@ -782,6 +802,13 @@ cd /opt/schema-studio && docker compose logs --tail 100 app
 Its last lines say what went wrong and, under it, what to do or which part of
 this guide helps. Fix that and run it again: it keeps what is done already
 and carries on. The headings it prints name the matching step of this guide.
+
+### "permission denied while trying to connect to the Docker daemon socket"
+
+Your user may not use Docker yet. Put `sudo` in front of the command (`sudo
+docker compose ps`), or add yourself to the `docker` group with `sudo usermod
+-aG docker "$USER"` and sign out and back in. The [step 1](#1-check-docker-and-postgresql)
+note has both ways, and the WSL restart.
 
 ### Compose says "required variable ... is missing a value"
 

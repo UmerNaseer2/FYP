@@ -990,6 +990,20 @@ describe("pushing the same migration again", () => {
     await screen.findByText(/pushed to shop\/public\/add_due_date on GitHub/);
   }
 
+  it("shows the saved version, not a next one nobody can push", async () => {
+    await pushOnce(true);
+
+    await waitFor(() => expect(pushButton()).toBeDisabled());
+    expect(screen.getByText("Saved version")).toBeInTheDocument();
+    expect(screen.queryByText("Next version")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("v1.1.0 is saved in GitHub. Deploy it next. Edit the migration to make a new version.")
+    ).toBeInTheDocument();
+    expect(pushButton()).toHaveTextContent("Push to GitHub");
+    expect(screen.queryByText(/Will become/)).not.toBeInTheDocument();
+    expect(screen.queryByText("What this will do")).not.toBeInTheDocument();
+  });
+
   it("refuses, rather than publishing a copy as the next number", async () => {
     await pushOnce(true);
 
@@ -1160,7 +1174,7 @@ describe("what the editor reports about the script", () => {
     await versionReady();
 
     const line = screen.getByText(/statements/).closest("span");
-    expect(line).toHaveTextContent("2 lines · 4 statements (2 notes, nothing to run) (1 held back, commented out) · SQL");
+    expect(line).toHaveTextContent("2 lines · 4 statements (2 notes with nothing to run, 1 held back and commented out) · SQL");
   });
 
   it("marks the script as edited only once it differs", async () => {

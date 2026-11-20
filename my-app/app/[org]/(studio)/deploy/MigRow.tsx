@@ -11,7 +11,10 @@ import type { ChangeKind, RunCell } from "./types";
 import { getSqlLineCount, fmtStatements } from "./helpers";
 
 // The right-hand status cell of a migration row.
-export function RightStatus({ cell }: { cell: RunCell }) {
+// `limited` marks a dry run that stopped on a limit of the rehearsal itself
+// (an enum value added and used in one run), where "failed" would blame a
+// script that is fine.
+export function RightStatus({ cell, limited = false }: { cell: RunCell; limited?: boolean }) {
   if (cell.status === "running") {
     return (
       <span className="dp-stat">
@@ -28,6 +31,16 @@ export function RightStatus({ cell }: { cell: RunCell }) {
         </span>
         {cell.status}
         {cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : ""}
+      </span>
+    );
+  }
+  if (cell.status === "failed" && limited) {
+    return (
+      <span className="dp-stat dp-unsure">
+        <span className="dp-stat-i">
+          <AlertTriangleIcon size={11} />
+        </span>
+        not rehearsed
       </span>
     );
   }
@@ -87,6 +100,7 @@ export function MigRow({
   sqlOpen,
   notes,
   action,
+  limited,
 }: {
   seq: string;
   /**
@@ -118,6 +132,8 @@ export function MigRow({
   notes?: { text: string; warn: boolean }[];
   /** A control under the notes. The pending list puts its "Run …" button here. */
   action?: ReactNode;
+  /** The dry run stopped on a limit of the rehearsal, not on this script. */
+  limited?: boolean;
 }) {
   const cls = ["dp-mig-row", cell.status, selected ? "selected" : ""]
     .filter(Boolean)
@@ -155,9 +171,11 @@ export function MigRow({
           {action && <div className="dp-mig-act">{action}</div>}
         </div>
         <span className="pill pill-outline mono">{rightPill}</span>
-        <RightStatus cell={cell} />
+        <RightStatus cell={cell} limited={limited} />
       </div>
-      {cell.error && <pre className="dp-err">{cell.error}</pre>}
+      {/* On a rehearsal limit the card above the list already carries what
+          PostgreSQL said, so the red box would only make it look like a fault. */}
+      {cell.error && !limited && <pre className="dp-err">{cell.error}</pre>}
       {sql && (
         <details className="dp-sql" open={sqlOpen}>
           <summary>

@@ -427,6 +427,55 @@ describe("the number beside Requests on the rail", () => {
   });
 });
 
+describe("what the replay check says about where it runs and its dry run", () => {
+  it("names the saved connection, not just the schema", async () => {
+    setRoutes([
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [] } },
+    ]);
+    await openReplayCheck();
+    expect(await screen.findByRole("heading", { name: /onto Live, public\?$/ })).toBeInTheDocument();
+  });
+
+  it("warns when a rollback failed in the dry run, as a status the reader is told about", async () => {
+    setRoutes([
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [] } },
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: {
+          success: true,
+          dryRun: true,
+          results: [
+            {
+              script_name: "orders",
+              version: "2.0.0",
+              status: "rehearsed",
+              rollbackCheck: "failed",
+              rollbackError: 'column "note" does not exist',
+            },
+          ],
+        },
+      },
+    ]);
+    await openReplayCheck();
+    const dry = await screen.findByRole("button", { name: "Dry run" });
+    await waitFor(() => expect(dry).toBeEnabled());
+    fireEvent.click(dry);
+
+    const title = await screen.findByText("Dry run clean: rehearsed 1 version on Live, public. Nothing was written.");
+    expect(title.closest('[role="status"]')).not.toBeNull();
+    expect(
+      screen.getByText(
+        /failed in the rehearsal: column "note" does not exist\. The replay saves this rollback on the Target as it is/
+      )
+    ).toBeInTheDocument();
+    // A warning only: the replay itself stays open.
+    expect(screen.getByRole("button", { name: "Replay 1 version" })).toBeEnabled();
+  });
+});
+
 describe("what the replay check says about deleting rows", () => {
   /** The usual routes, with the SQL of the one version to replay swapped. */
   function routesReplaying(sql: string): FetchRoute[] {
@@ -568,7 +617,52 @@ describe("the version line", () => {
     ]);
     await pickStagingToLive();
 
-    expect(await screen.findByText("The Source has no applied scripts")).toBeInTheDocument();
+    expect(await screen.findByText("The Source has no recorded versions")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "The Source's versions" })).toBeNull();
+  });
+});
+
+describe("picking the pair", () => {
+  it("picks a connection's only schema by itself", async () => {
+    setRoutes(baseRoutes());
+    render(<VersionSyncPage />);
+    const [first] = await screen.findAllByRole("button", { name: "Choose a connection and schema" });
+    fireEvent.click(first);
+    const panel = screen.getByRole("dialog");
+    fireEvent.click(
+      within(within(panel).getByRole("group", { name: "Connections" })).getByRole("button", { name: /Staging/ })
+    );
+
+    // The ledger is read only once a schema is chosen, and nobody chose one.
+    await waitFor(() =>
+      expect(
+        fetchCalls.some(
+          (call) =>
+            call.url.includes("/api/versionsync/ledger") &&
+            call.url.includes("connectionId=1") &&
+            call.url.includes("schema=public")
+        )
+      ).toBe(true)
+    );
+  });
+});
+
+describe("versions only the Target has", () => {
+  it("are explained in plain words, not as a broken state", async () => {
+    setRoutes([
+      {
+        match: "/api/versionsync/ledger",
+        body: (url: string) =>
+          url.includes("connectionId=1")
+            ? { entries: SOURCE_LEDGER }
+            : { entries: [...SOURCE_LEDGER, entry("3.0.0", "2026-03-01T00:00:00Z")] },
+      },
+      ...baseRoutes(),
+    ]);
+    await pickStagingToLive();
+
+    expect(await screen.findByText("The Target has 1 version the Source doesn't")).toBeInTheDocument();
+    expect(screen.getByText(/Version Sync only copies the Source's versions to the Target/)).toBeInTheDocument();
+    expect(screen.queryByText(/diverged/)).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { compareSchemas } from "@/lib/compare/diff";
 import { buildDiffDocument, type DiffDocument } from "@/lib/compare/export";
-import { countedChanges, documentToMarkdown } from "@/lib/compare/export-format";
+import { countedChanges, documentToMarkdown, exportFileStem } from "@/lib/compare/export-format";
 import { tallyDelta } from "@/components/studio/DiffReport";
 import { column, schema, table } from "./helpers/snapshots";
 
@@ -182,5 +182,30 @@ describe("header and export agree", () => {
     const acceptedRename = reports.some((r) => r.matchedTables.some((m) => !m.exact));
     const suggestion = reports.some((r) => buildDiffDocument(r).totals.renameSuggestions > 0);
     expect({ acceptedRename, suggestion }).toEqual({ acceptedRename: true, suggestion: true });
+  });
+});
+
+describe("exportFileStem", () => {
+  it("names both ends by database and schema", () => {
+    expect(exportFileStem(documentWith(totals()))).toBe("diff_src_app_to_tgt_app");
+  });
+
+  it("puts each connection's name in front, so two databases called appdb can be told apart", () => {
+    const same = schema([table("orders", [column("id")])]);
+    const document = buildDiffDocument(compareSchemas(same, same), null, {
+      source: "Staging",
+      target: "Production",
+    });
+    expect(document.source.connection).toBe("Staging");
+    expect(document.target.connection).toBe("Production");
+    expect(exportFileStem(document)).toMatch(/^diff_staging_.+_to_production_/);
+  });
+
+  it("leaves out a connection named after its database", () => {
+    const document: DiffDocument = {
+      ...documentWith(totals()),
+      source: { database: "src", schema: "app", connection: "SRC" },
+    };
+    expect(exportFileStem(document)).toBe("diff_src_app_to_tgt_app");
   });
 });

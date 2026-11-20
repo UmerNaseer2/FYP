@@ -55,7 +55,9 @@ export type RollbackScript = {
    * "table.column". The down script re-adds each one, but PostgreSQL has no
    * value to put in the rows that are already there, so on a non-empty table
    * the column comes back nullable and the constraint has to be re-applied by
-   * hand after a backfill.
+   * hand after a backfill. The list is filled in either mode, but the warning
+   * and the header only mention it when the migration really ran its drops
+   * (forwardAllowedDataLoss).
    */
   nullableOnRestore: string[];
   /** True when the rollback restores the target exactly, data included. */
@@ -319,13 +321,17 @@ export function generateRollback(
     );
   }
 
-  if (nullableOnRestore.length > 0) {
+  // Only when the migration really dropped them. In safe mode the columns never
+  // left, so they still have their NOT NULL, and the warning above already says
+  // the restoring statements do nothing.
+  if (nullableOnRestore.length > 0 && forwardAllowedDataLoss) {
     const n = nullableOnRestore.length;
     warnings.push(
       `${n} restored column${n === 1 ? "" : "s"} had NOT NULL and no default. ` +
         `On a table that already holds rows there is no value to give them, so ` +
-        `${n === 1 ? "it comes" : "they come"} back nullable and the script prints ` +
-        `the ALTER to run once you have backfilled ${n === 1 ? "it" : "them"}.`,
+        `${n === 1 ? "it comes" : "they come"} back without NOT NULL. The script ` +
+        `raises a warning with the ALTER to run once you have backfilled ` +
+        `${n === 1 ? "it" : "them"}.`,
     );
   }
 
@@ -521,13 +527,15 @@ export function renderRollbackScript(script: RollbackScript): string {
     );
   }
 
-  if (script.nullableOnRestore.length > 0) {
+  // Left out after a safe mode migration: the columns were never dropped, so
+  // they still have their NOT NULL and there is nothing to warn about.
+  if (script.nullableOnRestore.length > 0 && script.forwardAllowedDataLoss) {
     header.push(
       `--`,
-      `-- COLUMN RESTORED, NOT NULL NOT. These columns had NOT NULL and no`,
-      `-- default, and there is no value to give rows that already exist — so on`,
-      `-- a non-empty table each comes back nullable and prints the ALTER to run`,
-      `-- after you backfill it:`,
+      `-- COLUMN RESTORED WITHOUT ITS NOT NULL. These columns had NOT NULL and no`,
+      `-- default, and there is no value to give rows that already exist. On a`,
+      `-- table that holds rows each one comes back without NOT NULL, and the`,
+      `-- script raises a warning with the ALTER to run after you backfill it:`,
       ...script.nullableOnRestore.map((label) => `--     ${oneLine(label)}`),
     );
   }

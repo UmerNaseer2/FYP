@@ -6,7 +6,9 @@
 
 .ad-page .ad-panel { margin-top: 20px; }
 .ad-page .ad-panel[hidden] { display: none; }
-.ad-page .ad-panel > * { animation: rise var(--dur-3) var(--ease-out) backwards; }
+/* No entrance animation on a panel's contents. It started each card at
+   opacity 0, and a tester on Windows saw the Admin tabs empty; a panel that
+   only appears once its animation runs is not worth the risk. */
 .ad-page .ad-stack { display: grid; gap: 16px; min-width: 0; }
 .ad-page .ad-stack > * { min-width: 0; }
 
@@ -163,7 +165,7 @@
 .ad-page .ad-dz { box-shadow: var(--lift), inset 0 0 0 1.5px var(--remove-soft); }
 
 @media (prefers-reduced-motion: reduce) {
-  .ad-page .ad-panel > *, .ad-page .ad-bar { animation: none; }
+  .ad-page .ad-bar { animation: none; }
   .ad-page .ad-role, .ad-page input[role="switch"]::after { transition: none; }
   .ad-page .ad-role:hover { transform: none; }
 }

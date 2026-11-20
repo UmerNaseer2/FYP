@@ -966,7 +966,11 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
         name: `Revert ${name} ${undone.map(vLabel).join(", ")}`,
         sqlRef: null,
       });
-      if (lineage.advanced) lineageNote = ` Lineage advanced to ${lineage.version}.`;
+      // The number counts saved snapshots. It is not a script version, so
+      // the sentence says "snapshot" and never puts it beside a "v".
+      if (lineage.advanced) {
+        lineageNote = ` A new snapshot of the schema (snapshot ${lineage.version}) was saved as its tracked baseline.`;
+      }
     } catch (lineageError) {
       console.error(
         "Revert — lineage advance failed (rollback already committed, response unaffected):",
@@ -1066,10 +1070,18 @@ async function runRevert(request: NextRequest, attempt: AttemptContext): Promise
     }
 
     // Before any rollback SQL ran, name the first (newest) version.
+    // Say which run this was, a dry run or the real one, and what to do next.
+    const failedVersion = vLabel(runningVersion ?? versions[0]);
+    const said = message.replace(/[.\s]+$/, "");
     return fail(500, {
       error:
-        `The rollback of ${vLabel(runningVersion ?? versions[0])} failed, so nothing was ` +
-        `changed - every version in this rollback is still applied. PostgreSQL said: ${message}`,
+        (dryRun
+          ? `The dry run of the rollback failed at ${failedVersion}. A dry run writes nothing, so nothing was changed. `
+          : `The real rollback failed at ${failedVersion}, so nothing was changed. `) +
+        `Every version in this rollback is still applied. PostgreSQL said: ${said}. ` +
+        `What to do next: if the database was changed by hand after the deploy, undo that ` +
+        `change and try again. If the rollback SQL itself is wrong, it can't be edited. ` +
+        `Deploy a new version from Script Editor that makes the change instead.`,
     });
   } finally {
     // The run is over whichever way it ended: Stop and its timer let go of it.

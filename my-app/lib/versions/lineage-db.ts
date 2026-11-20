@@ -742,8 +742,8 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
     objectsChanged;
   if (total === 0) {
     return version
-      ? `In sync with v${version} — no structural drift.`
-      : "In sync — no structural drift.";
+      ? `In sync with snapshot ${version}. No structural drift.`
+      : "In sync. No structural drift.";
   }
   // Counted properly, as the rest of the interface is: this line is shown on
   // the Drift and Lineage screens, where "1 table(s) added" read as unfinished.
@@ -757,7 +757,11 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
   // Not "view/function/grant": the count covers sequences, types and
   // extensions too.
   if (objectsChanged) parts.push(countOf(objectsChanged, "other object change"));
-  return `Drift vs v${version ?? "?"}: ${parts.join(", ")}.`;
+  // "snapshot", not "v": the version here counts saved snapshots, and a "v"
+  // beside it read like the script version on Deploy.
+  return version
+    ? `Drifted from snapshot ${version}: ${parts.join(", ")}.`
+    : `Drifted: ${parts.join(", ")}.`;
 }
 
 /** Row holding everything needed to reach the live DB + name its connection. */
@@ -961,6 +965,8 @@ export type DriftDetailView = {
     status: DriftStatus;
     detectedAt: string;
     acknowledgedAt: string | null;
+    /** Which differences that record was about. Null on a record with no comparison. */
+    fingerprint: string | null;
   } | null;
 };
 
@@ -981,8 +987,9 @@ export async function getDriftDetail(
     status: DriftStatus;
     detected_at: string;
     acknowledged_at: string | null;
+    fingerprint: string | null;
   }>(
-    `SELECT status, detected_at, acknowledged_at
+    `SELECT status, detected_at, acknowledged_at, fingerprint
      FROM drift_events
      WHERE tracked_schema_id = $1 AND org_id = $2
      ORDER BY detected_at DESC, id DESC
@@ -995,6 +1002,7 @@ export async function getDriftDetail(
           status: rec.rows[0].status,
           detectedAt: rec.rows[0].detected_at,
           acknowledgedAt: rec.rows[0].acknowledged_at,
+          fingerprint: rec.rows[0].fingerprint ?? null,
         }
       : null;
 

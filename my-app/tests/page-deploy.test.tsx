@@ -285,7 +285,7 @@ describe("who is allowed to run anything here", () => {
     expect(
       screen.getByText(
         "Your role may not run migrations here by itself, so the deploy waits for an Admin to " +
-          "approve it. A dry run is not open to you here"
+          "approve it. A dry run runs the same SQL on the live database, so your role can't start one here either"
       )
     ).toBeInTheDocument();
     expect(screen.queryByText(/may run deployments/)).not.toBeInTheDocument();
@@ -883,6 +883,76 @@ describe("the run itself", () => {
       )
     ).toBeInTheDocument();
     expect(lastApply()).toMatchObject({ dryRun: true });
+    await flushAsync();
+  });
+
+  it("warns when a rollback failed in the dry run, and still offers the real deploy", async () => {
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: {
+          success: true,
+          dryRun: true,
+          results: [
+            { script_name: "invoices", version: "1.0.1", status: "rehearsed", statements: 1, rollbackCheck: "not_checked" },
+            {
+              script_name: "invoices",
+              version: "1.0.2",
+              status: "rehearsed",
+              statements: 1,
+              rollbackCheck: "failed",
+              rollbackError: 'column "note" does not exist',
+            },
+          ],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const dryRun = await dryRunButton();
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    fireEvent.click(dryRun);
+
+    const said =
+      'The rollback of v1.0.2 failed in the rehearsal: column "note" does not exist. Fix it in Script Editor ' +
+      "before the real run. The real run saves the rollback, and it can't be changed afterwards.";
+    const notes = await screen.findAllByText(said, undefined, { timeout: 3000 });
+    expect(notes.length).toBeGreaterThan(0);
+    // A warning only: the real deploy stays open.
+    expect(screen.getByRole("button", { name: /^Deploy for real/ })).toBeEnabled();
+    await flushAsync();
+  });
+
+  it("says a dry run that hit its own limit is not a fault in the script", async () => {
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        status: 422,
+        body: {
+          success: false,
+          dryRunLimitation: true,
+          error: "A dry run can't rehearse a new enum value that the same run then uses.",
+          results: [
+            { script_name: "invoices", version: "1.0.1", status: "failed", error: "unsafe use of new value" },
+            { script_name: "invoices", version: "1.0.2", status: "skipped" },
+          ],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const dryRun = await dryRunButton();
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    fireEvent.click(dryRun);
+
+    const titles = await screen.findAllByText(/^A dry run can't rehearse this run\./, undefined, { timeout: 3000 });
+    expect(titles.length).toBeGreaterThan(0);
+    expect(screen.getAllByText("not rehearsed").length).toBeGreaterThan(0);
+    expect(screen.queryByText("unsafe use of new value")).not.toBeInTheDocument();
     await flushAsync();
   });
 });

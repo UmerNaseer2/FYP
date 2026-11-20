@@ -471,9 +471,9 @@ function TrendChart({
 
       {timed.length === 0 ? (
         <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-          Nothing in this window was timed. Tick &ldquo;really run it&rdquo; when
-          analysing a query and its time is recorded here, an estimate has no
-          time to plot.
+          Nothing in this window was timed. Tick &ldquo;Run it and measure&rdquo;
+          when you analyse a query, and its time is recorded here. An estimate
+          has no time to plot.
         </div>
       ) : (
         <>
