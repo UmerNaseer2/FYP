@@ -468,3 +468,54 @@ describe("the list of tables above the cards", () => {
     expect(within(added).getByRole("button", { name: "Show fewer" })).toHaveAttribute("aria-expanded", "true");
   });
 });
+
+describe("folding the cards, as Compare asks", () => {
+  afterEach(cleanup);
+
+  const id = column("id", { typeDisplay: "integer", nullable: false });
+  const cards = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll<HTMLDetailsElement>("details[data-table-card]"));
+
+  it("starts every card shut when there is more than one", () => {
+    const left = schema([table("customers", [id]), table("orders", [id, column("note", { typeDisplay: "text" })])]);
+    const right = schema([table("orders", [id]), table("legacy_log", [id])]);
+    const { container } = render(
+      <DiffReport report={compareSchemas(left, right)} allowDataLoss={false} foldCards />
+    );
+    expect(cards(container)).toHaveLength(3);
+    expect(cards(container).every((card) => !card.open)).toBe(true);
+  });
+
+  it("leaves a lone card open, since folding it would only add a click", () => {
+    const left = schema([table("orders", [id, column("note", { typeDisplay: "text" })])]);
+    const right = schema([table("orders", [id])]);
+    const { container } = render(
+      <DiffReport report={compareSchemas(left, right)} allowDataLoss={false} foldCards />
+    );
+    expect(cards(container)).toHaveLength(1);
+    expect(cards(container)[0].open).toBe(true);
+  });
+
+  it("keeps the cards open without it, as Drift has them", () => {
+    const left = schema([table("customers", [id]), table("orders", [id])]);
+    const right = schema([table("legacy_log", [id]), table("orders", [id])]);
+    const { container } = render(
+      <DiffReport report={compareSchemas(left, right)} allowDataLoss={false} />
+    );
+    expect(cards(container).every((card) => card.open)).toBe(true);
+  });
+
+  it("does not flip a card the reader opened when a tile narrows the list", () => {
+    const left = schema([table("customers", [id]), table("orders", [id, column("note", { typeDisplay: "text" })])]);
+    const right = schema([table("orders", [id]), table("legacy_log", [id])]);
+    const report = compareSchemas(left, right);
+    const { container, rerender } = render(
+      <DiffReport report={report} allowDataLoss={false} foldCards />
+    );
+    const changed = container.querySelector<HTMLDetailsElement>('[data-table-card="chg:orders"]')!;
+    changed.open = true;
+    rerender(<DiffReport report={report} allowDataLoss={false} foldCards only="add" />);
+    // Two cards left (customers and orders), and orders still as the reader left it.
+    expect(container.querySelector<HTMLDetailsElement>('[data-table-card="chg:orders"]')!.open).toBe(true);
+  });
+});

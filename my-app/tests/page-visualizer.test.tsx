@@ -131,6 +131,9 @@ describe("the visualizer with connections", () => {
     /** Pick a connection in one pane. Its only schema is then picked for it. */
     function pickConnection(pane: number, name: RegExp) {
       fireEvent.click(screen.getAllByRole("button", { name: PICKER })[pane]);
+      // A pane that holds a connection opens on its schemas; step back first.
+      const back = within(screen.getByRole("dialog")).queryByRole("button", { name: "Back to connections" });
+      if (back) fireEvent.click(back);
       const list = within(screen.getByRole("dialog")).getByRole("group", { name: "Connections" });
       fireEvent.click(within(list).getByRole("button", { name }));
       // A press outside shuts the panel, so the next pane's panel is the only one open.

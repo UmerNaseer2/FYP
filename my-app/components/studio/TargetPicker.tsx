@@ -6,12 +6,13 @@ import {
   useId,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { StatusChip } from "@/components/ui/StatusChip";
-import { CheckIcon, ChevronDownIcon, SearchIcon } from "@/components/ui/icons";
+import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SearchIcon } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import "@/app/styles/atelier-picker.css";
 
@@ -48,8 +49,13 @@ import "@/app/styles/atelier-picker.css";
 //   no schemas          an ErrorNotice saying so, with Open Connections
 //   can't connect       an ErrorNotice with Try again
 //
-// Change opens a panel with a search box, the connections, and the schemas on
-// the chosen connection. Escape closes it and focus goes back to Change.
+// Change opens a panel that shows one step at a time. Step one lists the
+// connections. Picking one slides to step two, that connection's schemas,
+// with a Connections button to step back out. With a connection already
+// chosen the panel opens on its schemas, so changing the schema is one press.
+// Each step has its own search box; the arrow keys walk the rows, Backspace in
+// an empty search box steps back, and Escape closes the panel and puts focus
+// back on Change.
 //
 // Usage, with the useSchemaList hook below doing the loading:
 //
@@ -104,6 +110,11 @@ export type TargetPickerProps = {
   className?: string;
 };
 
+type Step = "connections" | "schemas";
+
+/** How the next step slides in: deeper (forward), back out, or not at all. */
+type Motion = "forward" | "back" | "none";
+
 export function TargetPicker({
   label = "Connection and schema",
   hint,
@@ -125,12 +136,20 @@ export function TargetPicker({
   const connectionName = connection?.name ?? null;
 
   const [open, setOpen] = useState(false);
+  const [step, setStep] = useState<Step>("connections");
+  const [motion, setMotion] = useState<Motion>("none");
   const [search, setSearch] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const changeRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const stepRef = useRef<HTMLDivElement>(null);
   const labelId = useId();
   const panelId = useId();
+
+  const nothingChosen = chosenId === "";
+  // The schemas step needs a connection. Until the page has taken one, the
+  // panel stays on the connections.
+  const view: Step = step === "schemas" && !nothingChosen ? "schemas" : "connections";
 
   /** Close the panel. `refocus` puts the keyboard back on the Change button. */
   const close = useCallback((refocus: boolean) => {
@@ -139,17 +158,38 @@ export function TargetPicker({
     if (refocus) changeRef.current?.focus();
   }, []);
 
-  // While the panel is open: start in the search box, and close on a press
-  // anywhere outside the picker.
+  /**
+   * Open on the step that needs a decision. With a connection already chosen
+   * that is its schemas, one press from done; with none it is the connections.
+   */
+  function toggle() {
+    if (open) {
+      close(false);
+      return;
+    }
+    setStep(nothingChosen ? "connections" : "schemas");
+    setMotion("none");
+    setSearch("");
+    setOpen(true);
+  }
+
+  // While the panel is open: close on a press anywhere outside the picker.
   useEffect(() => {
     if (!open) return;
-    searchRef.current?.focus();
     function onPress(event: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) close(false);
     }
     document.addEventListener("mousedown", onPress);
     return () => document.removeEventListener("mousedown", onPress);
   }, [open, close]);
+
+  // Each step starts in its own search box, with the chosen row in view.
+  useEffect(() => {
+    if (!open) return;
+    searchRef.current?.focus();
+    const chosen = stepRef.current?.querySelector<HTMLElement>('.tp__row[aria-pressed="true"]');
+    chosen?.scrollIntoView?.({ block: "nearest" });
+  }, [open, view]);
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (open && event.key === "Escape") {
@@ -159,9 +199,18 @@ export function TargetPicker({
     }
   }
 
-  function pickConnection(id: string) {
-    // The panel stays open: the schemas for this connection come next.
+  /** Into a connection's schemas. A new connection is handed up at once. */
+  function openConnection(id: string) {
     if (id !== chosenId) onChange({ connectionId: id, schema: "" });
+    setMotion("forward");
+    setStep("schemas");
+    setSearch("");
+  }
+
+  function backToConnections() {
+    setMotion("back");
+    setStep("connections");
+    setSearch("");
   }
 
   function pickSchema(name: string) {
@@ -182,17 +231,42 @@ export function TargetPicker({
   const shownSchemas = loading ? [] : rows.filter((name) => query === "" || name.toLowerCase().includes(query));
 
   function onSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Backspace" && search === "" && view === "schemas") {
+      // An empty search box has nothing left to delete, so Backspace steps
+      // back out to the connections, the way a breadcrumb would.
+      event.preventDefault();
+      backToConnections();
+      return;
+    }
     if (event.key !== "Enter") return;
-    // Never let Enter submit a form the picker happens to sit in. With one
-    // schema left in the list, Enter chooses it.
+    // Never let Enter submit a form the picker happens to sit in. With one row
+    // left in the list, Enter takes it.
     event.preventDefault();
-    if (query !== "" && shownSchemas.length === 1) pickSchema(shownSchemas[0]);
+    if (query === "") return;
+    if (view === "connections" && shownConnections.length === 1) openConnection(String(shownConnections[0].id));
+    if (view === "schemas" && shownSchemas.length === 1) pickSchema(shownSchemas[0]);
   }
 
-  const nothingChosen = chosenId === "";
+  /** Up and down walk the rows; up from the first row lands back in the search box. */
+  function onStepKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const list = Array.from(stepRef.current?.querySelectorAll<HTMLButtonElement>("button.tp__row") ?? []);
+    if (list.length === 0) return;
+    event.preventDefault();
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown") {
+      list[Math.min(at + 1, list.length - 1)].focus();
+    } else if (at <= 0) {
+      searchRef.current?.focus();
+    } else {
+      list[at - 1].focus();
+    }
+  }
+
   const noSchemas = !nothingChosen && !loading && !error && schemas.length === 0 && chosenSchema === "";
   const lowerLabel = label.toLowerCase();
   const loadingText = `Loading schemas from ${connectionName ?? "this connection"}…`;
+  const here = connectionName ?? "this connection";
 
   return (
     <div
@@ -219,7 +293,7 @@ export function TargetPicker({
           aria-controls={open ? panelId : undefined}
           aria-describedby={labelId}
           disabled={disabled}
-          onClick={() => setOpen((now) => !now)}
+          onClick={toggle}
         >
           <span>Choose a connection and schema</span>
           <ChevronDownIcon size={16} />
@@ -254,7 +328,7 @@ export function TargetPicker({
             aria-expanded={open}
             aria-controls={open ? panelId : undefined}
             disabled={disabled}
-            onClick={() => setOpen((now) => !now)}
+            onClick={toggle}
           >
             Change
           </button>
@@ -268,90 +342,139 @@ export function TargetPicker({
           role="dialog"
           aria-label={`Choose ${lowerLabel} connection and schema`}
         >
-          <label className="tp__search">
-            <SearchIcon size={16} />
-            <input
-              ref={searchRef}
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              onKeyDown={onSearchKeyDown}
-              placeholder="Search connections and schemas"
-              aria-label="Search connections and schemas"
-              autoComplete="off"
-            />
-          </label>
-
-          <div className="tp__scroll">
-            <div role="group" aria-label="Connections">
-              <p className="tp__group">Connections</p>
-              {connections.length === 0 ? (
-                <p className="tp__say">No connections yet. Add one on Connections.</p>
-              ) : shownConnections.length === 0 ? (
-                <p className="tp__say">No connection matches.</p>
-              ) : (
-                shownConnections.map((item) => {
-                  const selected = String(item.id) === chosenId;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="tp__row"
-                      aria-pressed={selected}
-                      onClick={() => pickConnection(String(item.id))}
-                    >
-                      <span className="tp__tick" aria-hidden="true">
-                        {selected && <CheckIcon size={14} />}
-                      </span>
-                      <span className="tp__name tp__clip">{item.name}</span>
-                      {item.detail && <span className="tp__detail tp__clip">{item.detail}</span>}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-
-            {!nothingChosen && (
-              <div role="group" aria-label="Schemas">
-                <p className="tp__group">
-                  Schemas on <span className="tp__clip">{connectionName ?? "this connection"}</span>
-                </p>
-                {loading ? (
-                  <p className="tp__say" role="status">
-                    {loadingText}
-                  </p>
-                ) : rows.length === 0 ? (
-                  <p className="tp__say">
-                    {error ? "The schemas could not be listed." : "No schemas to show."}
-                  </p>
-                ) : shownSchemas.length === 0 ? (
-                  <p className="tp__say">No schema matches.</p>
-                ) : (
-                  shownSchemas.map((name) => {
-                    const selected = name === chosenSchema;
-                    const known = statuses !== undefined && name in statuses;
-                    return (
-                      <button
-                        key={name}
-                        type="button"
-                        className="tp__row"
-                        aria-pressed={selected}
-                        onClick={() => pickSchema(name)}
-                      >
-                        <span className="tp__tick" aria-hidden="true">
-                          {selected && <CheckIcon size={14} />}
-                        </span>
-                        <span className="tp__name tp__name--schema tp__clip">{name}</span>
-                        {known && <StatusChip status={statuses[name]} size="sm" />}
-                      </button>
-                    );
-                  })
-                )}
+          {/* One step at a time: the connections, then the schemas on the one
+              picked. The key restarts the slide each time the step changes. */}
+          <div
+            key={view}
+            ref={stepRef}
+            className={`tp__step tp__step--${motion}`}
+            onKeyDown={onStepKeyDown}
+          >
+            {view === "schemas" && (
+              <div className="tp__crumb">
+                <button type="button" className="tp__back" aria-label="Back to connections" onClick={backToConnections}>
+                  <ChevronLeftIcon size={16} />
+                  <span>Connections</span>
+                </button>
+                <span className="tp__crumb-here">
+                  <b className="tp__clip" title={here}>{here}</b>
+                  {connection?.detail && <span className="tp__detail tp__clip">{connection.detail}</span>}
+                </span>
               </div>
             )}
+
+            <label className="tp__search">
+              <SearchIcon size={16} />
+              <input
+                ref={searchRef}
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={onSearchKeyDown}
+                placeholder={view === "schemas" ? `Search schemas on ${here}` : "Search connections"}
+                aria-label={view === "schemas" ? "Search schemas" : "Search connections"}
+                autoComplete="off"
+              />
+            </label>
+
+            <div className="tp__scroll">
+              {view === "connections" ? (
+                <div role="group" aria-label="Connections">
+                  <p className="tp__group">
+                    Connections
+                    {connections.length > 0 && <span className="tp__count">{connections.length}</span>}
+                  </p>
+                  {connections.length === 0 ? (
+                    <p className="tp__say">No connections yet. Add one on Connections.</p>
+                  ) : shownConnections.length === 0 ? (
+                    <p className="tp__say">No connection matches.</p>
+                  ) : (
+                    shownConnections.map((item, index) => {
+                      const selected = String(item.id) === chosenId;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className="tp__row"
+                          style={{ "--i": Math.min(index, 8) } as CSSProperties}
+                          aria-pressed={selected}
+                          onClick={() => openConnection(String(item.id))}
+                        >
+                          <span className="tp__tick" aria-hidden="true">
+                            {selected && <CheckIcon size={14} />}
+                          </span>
+                          <span className="tp__name tp__clip">{item.name}</span>
+                          {item.detail && <span className="tp__detail tp__clip">{item.detail}</span>}
+                          <span className="tp__go" aria-hidden="true">
+                            <ChevronRightIcon size={16} />
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : (
+                <div role="group" aria-label="Schemas">
+                  <p className="tp__group">
+                    Schemas
+                    {!loading && rows.length > 0 && <span className="tp__count">{rows.length}</span>}
+                  </p>
+                  {loading ? (
+                    <div className="tp__skels">
+                      <p className="tp__hide" role="status">
+                        {loadingText}
+                      </p>
+                      {[64, 48, 72].map((width, index) => (
+                        <span key={index} className="tp__skel" aria-hidden="true" style={{ "--i": index } as CSSProperties}>
+                          <i />
+                          <i style={{ width: `${width}%` }} />
+                        </span>
+                      ))}
+                    </div>
+                  ) : rows.length === 0 ? (
+                    <p className="tp__say">
+                      {error ? "The schemas could not be listed." : "No schemas to show."}
+                    </p>
+                  ) : shownSchemas.length === 0 ? (
+                    <p className="tp__say">No schema matches.</p>
+                  ) : (
+                    shownSchemas.map((name, index) => {
+                      const selected = name === chosenSchema;
+                      const known = statuses !== undefined && name in statuses;
+                      return (
+                        <button
+                          key={name}
+                          type="button"
+                          className="tp__row"
+                          style={{ "--i": Math.min(index, 8) } as CSSProperties}
+                          aria-pressed={selected}
+                          onClick={() => pickSchema(name)}
+                        >
+                          <span className="tp__tick" aria-hidden="true">
+                            {selected && <CheckIcon size={14} />}
+                          </span>
+                          <span className="tp__name tp__name--schema tp__clip">{name}</span>
+                          {known && <StatusChip status={statuses[name]} size="sm" />}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          <p className="tp__foot">Only schemas your role can read are listed.</p>
+          <div className="tp__foot">
+            <span>
+              {view === "schemas"
+                ? "Only schemas your role can read are listed."
+                : "Pick a connection to see its schemas."}
+            </span>
+            <span className="tp__dots" aria-hidden="true">
+              <i className={view === "connections" ? "on" : ""} />
+              <i className={view === "schemas" ? "on" : ""} />
+            </span>
+          </div>
         </div>
       )}
       </div>

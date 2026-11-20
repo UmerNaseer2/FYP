@@ -1,9 +1,9 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Card, EmptyState, Skeleton } from "@/components/ui";
+import { Card, ConfirmDialog, EmptyState, Skeleton } from "@/components/ui";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -25,6 +25,8 @@ import { statusLook } from "@/lib/ui/status-look";
 import { describeCadence } from "@/lib/drift/schedule";
 import { utcStamp } from "@/lib/ui/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
+import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/roles/permissions";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -247,6 +249,8 @@ function useTrackedSchemas(): {
 
 function DetailContent({ schema }: { schema: string | undefined }) {
   const { tracked, failed, reload } = useTrackedSchemas();
+  const router = useRouter();
+  const orgPath = useOrgHref();
   // The schema on screen when the list was last read again. With no schema in
   // the URL the page shows the one with the worst drift, and right after that
   // one is fixed it no longer is, so the page would jump to another schema.
@@ -269,6 +273,15 @@ function DetailContent({ schema }: { schema: string | undefined }) {
     reload();
   };
 
+  // The schema on screen is no longer tracked: read the list again and let
+  // the worst drift left take its place. A ?schema= naming the removed one
+  // would only fall back the same way, so the address drops it.
+  const untracked = () => {
+    setKept(null);
+    reload();
+    if (schema) router.replace(orgPath("/drift?tab=detail"));
+  };
+
   return (
     <div className="dr-grid">
       <WatchList tracked={byPriority} selectedId={selected.id} />
@@ -280,6 +293,7 @@ function DetailContent({ schema }: { schema: string | undefined }) {
         connectionId={selected.connectionId}
         connectionName={selected.connectionName}
         onListChanged={listChanged}
+        onUntracked={untracked}
       />
     </div>
   );
@@ -468,6 +482,7 @@ function DetailTab({
   connectionId,
   connectionName,
   onListChanged,
+  onUntracked,
 }: {
   selectedId: number;
   /** The schema's connection, so a failed read can say which one and link to it. */
@@ -475,12 +490,43 @@ function DetailTab({
   connectionName: string | null;
   /** A fix changed this schema's drift status, which the watch list shows too. */
   onListChanged: () => void;
+  /** The schema was removed from tracking, so the page picks another. */
+  onUntracked: () => void;
 }) {
   const orgPath = useOrgHref();
   const [view, setView] = useState<DriftDetailAnswer | null>(null);
   const [history, setHistory] = useState<DriftEventFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Stop tracking, the same check, words and route as on the dashboard. The
+  // dialog closes itself on confirm, so a failure lands on the card instead.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const stopRefusal =
+    sessionLoading || can("drift:delete") ? null : refusalMessage(roleLabel, "drift:delete");
+  const [askStop, setAskStop] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+
+  async function confirmStop() {
+    setAskStop(false);
+    if (stopRefusal !== null) return;
+    try {
+      const res = await apiFetch("/api/lineage", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setStopError(data?.error ?? "Could not stop tracking this schema.");
+        return;
+      }
+      setStopError(null);
+      onUntracked();
+    } catch {
+      setStopError("Network error while untracking the schema.");
+    }
+  }
 
   // The live recompute for the selected schema, plus its recent recorded
   // history. The resolution bar calls this again after every write, because
@@ -758,6 +804,57 @@ function DetailTab({
           </ol>
         </section>
       )}
+
+      {/* The last thing on the case, on its own quiet row under a hairline:
+          easy to find, hard to press by mistake, and it asks first. A role
+          that may not use it sees it switched off with the reason beside it. */}
+      <div className="dr-stop">
+        <button
+          type="button"
+          className="dr-stop__btn"
+          onClick={() => {
+            setStopError(null);
+            setAskStop(true);
+          }}
+          disabled={stopRefusal !== null}
+          title={stopRefusal ?? undefined}
+          aria-label={`Stop tracking ${view.schemaName}${connectionName ? ` on ${connectionName}` : ""}`}
+          aria-describedby="dr-stop-note"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7c2.1 0 3.9.7 5.4 1.7M22 12s-3.5 7-10 7c-2.1 0-3.9-.7-5.4-1.7" />
+            <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+            <path d="m3 3 18 18" />
+          </svg>
+          Stop tracking
+        </button>
+        <span className="dr-stop__note" id="dr-stop-note">
+          {stopRefusal ?? "Removes its snapshots and drift history. The database is not touched."}
+        </span>
+        {stopError && (
+          <p className="dr-stop__error" role="alert">
+            <AlertCircleIcon size={14} />
+            {stopError}
+          </p>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={askStop}
+        onClose={() => setAskStop(false)}
+        onConfirm={() => void confirmStop()}
+        destructive
+        title="Stop tracking this schema?"
+        description={
+          <>
+            <span className="mono">{view.schemaName}</span>
+            {connectionName ? ` on ${connectionName}` : ""}{" "}
+            and its captured snapshots, lineage, and drift history will be removed. This can&apos;t
+            be undone.
+          </>
+        }
+        confirmLabel="Stop tracking"
+      />
     </div>
   );
 }

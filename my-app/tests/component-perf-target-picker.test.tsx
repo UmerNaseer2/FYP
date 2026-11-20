@@ -119,9 +119,21 @@ function panel() {
   return screen.getByRole("dialog");
 }
 
-/** The names on the rows of one of the panel's two lists. */
+/**
+ * The panel shows one step at a time. With a connection chosen it opens on
+ * the schemas, and Connections steps back out to the list of connections.
+ */
+function step(list: "Connections" | "Schemas"): HTMLElement {
+  const open = panel();
+  if (list === "Connections" && !within(open).queryByRole("group", { name: list })) {
+    fireEvent.click(within(open).getByRole("button", { name: "Back to connections" }));
+  }
+  return within(open).getByRole("group", { name: list });
+}
+
+/** The names on the rows of one of the panel's two steps. */
 function rowNames(list: "Connections" | "Schemas"): string[] {
-  const group = within(panel()).getByRole("group", { name: list });
+  const group = step(list);
   return within(group)
     .queryAllByRole("button")
     .map((row) => row.querySelector(".tp__name")?.textContent ?? "");
@@ -129,7 +141,7 @@ function rowNames(list: "Connections" | "Schemas"): string[] {
 
 /** Open the panel and choose another connection, the way a reader would. */
 function pickConnection(name: string) {
-  const group = within(panel()).getByRole("group", { name: "Connections" });
+  const group = step("Connections");
   const row = within(group)
     .getAllByRole("button")
     .find((button) => button.querySelector(".tp__name")?.textContent === name);

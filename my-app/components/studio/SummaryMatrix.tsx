@@ -34,6 +34,7 @@ export function SummaryMatrix({
   report,
   sides = "source-target",
   allowDataLoss,
+  defaultOpen = true,
 }: {
   report: CompareReport;
   sides?: ReportSides;
@@ -42,6 +43,11 @@ export function SummaryMatrix({
    * /drift, where no script is generated at all.
    */
   allowDataLoss?: boolean;
+  /**
+   * Whether the board starts open. /compare starts it closed, since the four
+   * count tiles above it already say how much changed; /drift keeps it open.
+   */
+  defaultOpen?: boolean;
 }) {
   const rows = summaryRows(report);
   // Same switch the diff and the row compare below read, so the header cannot
@@ -72,7 +78,7 @@ export function SummaryMatrix({
   const manualLabels = rows.filter((row) => row.manual > 0).map((row) => row.label);
 
   return (
-    <details className="table-group" open>
+    <details className="table-group" open={defaultOpen}>
       <summary className="tg-header">
         <ChevronDownIcon className="chev" size={12} />
         {/* A heading, not a span, so this board is reachable by heading

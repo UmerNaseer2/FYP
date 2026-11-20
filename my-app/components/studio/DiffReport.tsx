@@ -754,7 +754,10 @@ function NewTableCard({
   table,
   grants,
   sides,
+  open = true,
 }: {
+  /** Whether the card starts open. See foldCards on DiffReport. */
+  open?: boolean;
   table: TableSnapshot;
   /** Owner and grants entries for this table and its id sequences, see grantsOfNewTables. */
   grants: ObjectDiff[];
@@ -794,7 +797,7 @@ function NewTableCard({
     policies.length;
 
   return (
-    <details className="table-group" open data-table-card={`add:${table.name}`}>
+    <details className="table-group" open={open} data-table-card={`add:${table.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
@@ -975,7 +978,10 @@ function ExtraTableCard({
   table,
   dropMode,
   sides,
+  open = true,
 }: {
+  /** Whether the card starts open. See foldCards on DiffReport. */
+  open?: boolean;
   table: TableSnapshot;
   dropMode: DropMode;
   sides: ReportSides;
@@ -984,8 +990,9 @@ function ExtraTableCard({
   return (
     // Open by default, like every other card in this file: this is the only one
     // whose sync deletes rows, so hiding its explanation behind a click inverts
-    // the page's risk ordering.
-    <details className="table-group" open data-table-card={`rem:${table.name}`}>
+    // the page's risk ordering. Folded only with the rest on /compare, where the
+    // red banner above the cards already counts what the script would delete.
+    <details className="table-group" open={open} data-table-card={`rem:${table.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
@@ -1073,7 +1080,10 @@ function ChangedTableCard({
   match,
   dropMode,
   sides,
+  open = true,
 }: {
+  /** Whether the card starts open. See foldCards on DiffReport. */
+  open?: boolean;
   match: TableMatch;
   dropMode: DropMode;
   sides: ReportSides;
@@ -1091,7 +1101,7 @@ function ChangedTableCard({
   const constraintDiffs = match.constraintDiffs;
 
   return (
-    <details className="table-group" open data-table-card={`chg:${match.left.name}`}>
+    <details className="table-group" open={open} data-table-card={`chg:${match.left.name}`}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">
@@ -1269,7 +1279,10 @@ function SchemaObjectsCard({
   diffs,
   sides,
   dropMode,
+  open = true,
 }: {
+  /** Whether the card starts open. See foldCards on DiffReport. */
+  open?: boolean;
   diffs: ObjectDiff[];
   sides: ReportSides;
   dropMode: DropMode;
@@ -1290,7 +1303,7 @@ function SchemaObjectsCard({
   const breaking = diffs.some((d) => objectDiffSeverity(d) === "breaking");
 
   return (
-    <details className="table-group" open>
+    <details className="table-group" open={open}>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">Schema objects</span>
@@ -1427,6 +1440,7 @@ export function DiffReport({
   allowDataLoss,
   sides = "source-target",
   only = null,
+  foldCards = false,
 }: {
   report: CompareReport;
   /**
@@ -1442,6 +1456,13 @@ export function DiffReport({
   sides?: ReportSides;
   /** Show one kind of change only. Null (the default) shows everything. */
   only?: DiffFilter | null;
+  /**
+   * Start every card closed when there is more than one, so a long result
+   * reads as a list of headings first. /compare passes it; the index above
+   * the cards (and a jump from the map) still opens any one of them. A lone
+   * card stays open, since folding it would only add a click.
+   */
+  foldCards?: boolean;
 }) {
   const dropMode = dropModeFrom(allowDataLoss);
   const everyChangedTable = report.matchedTables.filter((m) => m.hasChanges);
@@ -1544,6 +1565,14 @@ export function DiffReport({
     return false;
   });
   const showUnchanged = (only === null || only === "same") && unchanged.length > 0;
+  // Counted on the whole report, not the narrowed list, so pressing a tile
+  // never flips a card the reader opened or closed.
+  const cardCount =
+    report.tablesOnlyInA.length +
+    everyChangedTable.length +
+    report.tablesOnlyInB.length +
+    (report.objectDiffs.length > 0 ? 1 : 0);
+  const cardsOpen = !(foldCards && cardCount > 1);
   const nothingLeft =
     only !== null &&
     newTables.length === 0 &&
@@ -1719,6 +1748,7 @@ export function DiffReport({
           table={table}
           grants={grantsByTable.get(table.name) ?? []}
           sides={sides}
+          open={cardsOpen}
         />
       ))}
 
@@ -1729,6 +1759,7 @@ export function DiffReport({
           match={match}
           dropMode={dropMode}
           sides={sides}
+          open={cardsOpen}
         />
       ))}
 
@@ -1740,12 +1771,18 @@ export function DiffReport({
           table={table}
           dropMode={dropMode}
           sides={sides}
+          open={cardsOpen}
         />
       ))}
 
       {/* Views, sequences, types and functions, after the tables, because they
           are usually consequences of a table change rather than the point. */}
-      <SchemaObjectsCard diffs={objectDiffs} sides={sides} dropMode={dropMode} />
+      <SchemaObjectsCard
+        diffs={objectDiffs}
+        sides={sides}
+        dropMode={dropMode}
+        open={cardsOpen}
+      />
 
       {/* Unchanged tables: collapsed summary so the diff stays focused */}
       {showUnchanged && (

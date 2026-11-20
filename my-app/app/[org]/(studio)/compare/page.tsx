@@ -56,7 +56,6 @@ import {
   PlusIcon,
   RefreshIcon,
   XIcon,
-  CodeIcon,
 } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import { revealCard } from "@/lib/ui/reveal-card";
@@ -1104,18 +1103,6 @@ function CompareScreenView({ query }: { query: string }) {
                     </span>
                   </Link>
                 )}
-                {outcome.report && diffDoc && !outcome.sameAsSource && !outcome.error &&
-                  outcome.statementCount > 0 && (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => setScriptFull(outcome.index)}
-                      title="The migration script over the whole window. Edits there are the same script as the side panel."
-                    >
-                      <CodeIcon size={14} />
-                      Open the script
-                    </button>
-                  )}
               </div>
 
               {outcome.sameAsSource ? (
@@ -1319,6 +1306,7 @@ function CompareScreenView({ query }: { query: string }) {
                       <SummaryMatrix
                         report={outcome.report}
                         allowDataLoss={allowDataLoss}
+                        defaultOpen={false}
                       />
                       {/* data-jump: where Tables in the bar above takes the reader. */}
                       <div data-jump="tables">
@@ -1326,6 +1314,7 @@ function CompareScreenView({ query }: { query: string }) {
                           report={outcome.report}
                           allowDataLoss={allowDataLoss}
                           only={filter}
+                          foldCards
                         />
                       </div>
                       {outcome.data && (

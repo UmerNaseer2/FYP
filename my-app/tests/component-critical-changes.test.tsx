@@ -217,15 +217,14 @@ describe("what makes the panel appear", () => {
     expect(panel()).toBeInTheDocument();
   });
 
-  test("opens itself when something is breaking", () => {
+  test("starts shut even when something is breaking, its head saying how many", () => {
+    // The red head is the warning; the list under it is for whoever opens it.
     renderPanel([breaking()]);
-    expect(panel().open).toBe(true);
+    expect(panel().open).toBe(false);
+    expect(panel().querySelector("summary")).toHaveTextContent("1 breaking difference");
   });
 
   test("stays shut when the only trouble is work for a person", () => {
-    // There is no list to show in that case — the list is the breaking rows —
-    // so opening it would present an empty box under a sentence. The sentence
-    // is in the summary, which is the part that is shut.
     renderPanel([manualOnly()]);
     expect(panel().open).toBe(false);
   });

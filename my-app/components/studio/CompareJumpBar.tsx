@@ -214,6 +214,8 @@ export function CompareJumpBar({
       revealCard(card, headingOf(card));
       return;
     }
+    // The map starts folded; it opens before the scroll lands on it.
+    if (part === "map") element.dispatchEvent(new CustomEvent("cp:reveal"));
     const still =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;

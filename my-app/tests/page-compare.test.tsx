@@ -93,9 +93,18 @@ const compareButton = () => screen.findByRole("button", { name: /^Compare( again
 /** Opens the target picker's panel, where its connections and schemas are listed. */
 const openTargetPicker = () =>
   fireEvent.click(screen.getByRole("button", { name: "Change target connection and schema" }));
-/** One of the two lists in the open panel: "Connections" or "Schemas". */
-const pickerList = (name: "Connections" | "Schemas") =>
-  within(screen.getByRole("dialog", { name: /^Choose target/ })).getByRole("group", { name });
+/**
+ * One of the open panel's two steps: "Connections" or "Schemas". The panel
+ * shows one at a time and opens on the schemas, so asking for the connections
+ * steps back out to them first.
+ */
+function pickerList(name: "Connections" | "Schemas") {
+  const panel = screen.getByRole("dialog", { name: /^Choose target/ });
+  if (name === "Connections" && !within(panel).queryByRole("group", { name })) {
+    fireEvent.click(within(panel).getByRole("button", { name: "Back to connections" }));
+  }
+  return within(panel).getByRole("group", { name });
+}
 /** Picks a schema, which also closes the panel. */
 function pickTargetSchema(schema: string) {
   openTargetPicker();
@@ -317,8 +326,8 @@ describe("the picker's schema list", () => {
 
     // Pick the second connection and hold its answer; then pick the first back,
     // which answers at once. Two requests, and the held one is the older.
-    // The panel stays open after a connection is picked, so both picks happen
-    // in the one panel.
+    // The panel stays open after a connection is picked and moves on to its
+    // schemas, so both picks happen in the one panel, stepping back between.
     const releaseWarehouse = holdNext("connectionId=2");
     openTargetPicker();
     fireEvent.click(within(pickerList("Connections")).getByRole("button", { name: /^Warehouse/ }));

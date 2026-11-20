@@ -48,10 +48,33 @@
 
 /* --- The panel that Change opens ------------------------------------------ */
 
+/* One step at a time: the connections, then the schemas on the one picked. The
+   panel drops in from the field; each step slides in from the side it came
+   from, and its rows settle in one after another. */
 .tp__panel { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 70;
   display: grid; gap: 0; min-width: min(280px, 100%);
   border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
-  box-shadow: var(--shadow-lg); overflow: hidden; }
+  box-shadow: var(--shadow-lg); overflow: hidden;
+  transform-origin: top center; animation: tp-drop 180ms cubic-bezier(.2, .8, .2, 1); }
+.tp__step { display: grid; min-width: 0; }
+.tp__step--forward { animation: tp-from-right 220ms cubic-bezier(.2, .8, .2, 1); }
+.tp__step--back { animation: tp-from-left 220ms cubic-bezier(.2, .8, .2, 1); }
+
+/* The way back out, and where the schemas below come from. */
+.tp__crumb { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 12px 6px 6px;
+  border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.tp__back { flex: none; display: inline-flex; align-items: center; gap: 2px; min-height: 36px;
+  padding: 0 10px 0 4px; border: 0; border-radius: var(--r-md); background: none; color: var(--ink-2);
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease; }
+.tp__back svg { transition: transform 160ms cubic-bezier(.2, .8, .2, 1); }
+.tp__back:hover { background: var(--surface); color: var(--ink); }
+.tp__back:hover svg { transform: translateX(-2px); }
+.tp__back:focus-visible { outline: 3px solid var(--accent); outline-offset: -1px; }
+.tp__crumb-here { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px;
+  padding-left: 10px; border-left: 1px solid var(--line); }
+.tp__crumb-here b { flex: 0 1 auto; font-size: 13.5px; line-height: 20px; font-weight: 700; color: var(--ink); }
+.tp__crumb-here .tp__detail { flex: 0 1 auto; }
 
 .tp__search { display: flex; align-items: center; gap: 8px; padding: 0 14px; min-height: 48px;
   border-bottom: 1px solid var(--line); color: var(--ink-3); }
@@ -61,13 +84,17 @@
 .tp__search:focus-within { box-shadow: inset 0 -2px 0 var(--accent); }
 
 .tp__scroll { max-height: min(340px, 50vh); overflow-y: auto; padding: 4px 6px 6px; }
-.tp__group { display: flex; gap: 4px; margin: 0; padding: 10px 10px 4px; font-size: 12px; line-height: 16px;
-  font-weight: 700; color: var(--ink-3); }
+.tp__group { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 10px 4px;
+  font-size: 12px; line-height: 16px; font-weight: 700; color: var(--ink-3); }
+.tp__count { padding: 0 7px; border-radius: var(--r-pill); background: var(--surface-2);
+  font: 600 11px/18px var(--mono), ui-monospace, monospace; color: var(--ink-2); }
 .tp__say { margin: 0; padding: 8px 10px 10px; font-size: 13px; color: var(--ink-2); }
 
 .tp__row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 44px;
   padding: 4px 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--ink);
-  font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+  font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+  transition: background-color 120ms ease;
+  animation: tp-row 200ms cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 18ms); }
 .tp__row:hover { background: var(--surface-2); }
 .tp__row:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
 .tp__row[aria-pressed="true"] { background: var(--tint); font-weight: 600; }
@@ -77,8 +104,37 @@
 .tp__detail { flex: 1; font: 400 12.5px/18px var(--mono), ui-monospace, monospace; color: var(--ink-3); }
 .tp__row .st-chip { flex: none; margin-left: auto; }
 
-.tp__foot { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface-2);
+/* A connection row leads somewhere, so it ends in an arrow that leans in on hover. */
+.tp__go { flex: none; display: grid; place-items: center; margin-left: auto; color: var(--ink-3);
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1), color 120ms ease; }
+.tp__row:hover .tp__go, .tp__row:focus-visible .tp__go { color: var(--ink); transform: translateX(3px); }
+
+/* Rows that stand in while the schema list is on its way. */
+.tp__skels { display: grid; gap: 2px; padding: 2px 0 4px; }
+.tp__skel { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 10px;
+  animation: tp-row 200ms cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.tp__skel i { display: block; height: 12px; border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%; animation: sk 1.4s ease-in-out infinite; }
+.tp__skel i:first-child { flex: none; width: 16px; height: 16px; border-radius: 5px; }
+
+/* Read aloud, never drawn. The panel is positioned, so this stays inside it. */
+.tp__hide { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.tp__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0;
+  padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface-2);
   font-size: 12.5px; color: var(--ink-2); }
+/* Which of the two steps this is. The lit dot stretches into a bar. */
+.tp__dots { flex: none; display: flex; gap: 4px; }
+.tp__dots i { display: block; width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--line-strong);
+  transition: width 220ms cubic-bezier(.2, .8, .2, 1), background-color 220ms ease; }
+.tp__dots i.on { width: 16px; background: var(--ink); }
+
+@keyframes tp-drop { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes tp-from-right { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes tp-from-left { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@keyframes tp-row { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* --- Two pickers side by side, with one error line under both -------------- */
 
@@ -97,5 +153,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tp__loading i { animation: none; }
+  .tp__loading i, .tp__panel, .tp__step, .tp__row, .tp__skel, .tp__skel i { animation: none; }
+  .tp__go, .tp__back svg, .tp__dots i { transition: none; }
+  .tp__row:hover .tp__go, .tp__back:hover svg { transform: none; }
 }

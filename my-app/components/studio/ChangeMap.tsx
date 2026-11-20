@@ -93,7 +93,21 @@ export function ChangeMap({ report, filter, onJump, visualizerHref }: ChangeMapP
     const saved = changed > 0 ? readFlag(ONLY_KEY) : null;
     return saved ?? (counts.same > BUSY && changed > 0);
   });
-  const [hidden, setHidden] = useState(() => readFlag(HIDDEN_KEY) ?? false);
+  // Folded until somebody opens it: the count tiles above already say what
+  // changed, and the canvas is the tallest thing on the page. Show map is
+  // remembered, so whoever wants it every time gets it every time.
+  const [hidden, setHidden] = useState(() => readFlag(HIDDEN_KEY) ?? true);
+  const sectionRef = useRef<HTMLElement>(null);
+
+  // Map in the bar above sends this, so the jump lands on a drawn map, not on
+  // a folded header. It opens the map for this visit without saving a choice.
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    const reveal = () => setHidden(false);
+    section.addEventListener("cp:reveal", reveal);
+    return () => section.removeEventListener("cp:reveal", reveal);
+  }, []);
 
   const [full, setFull] = useState(false);
   const openRef = useRef<HTMLButtonElement>(null);
@@ -169,7 +183,13 @@ export function ChangeMap({ report, filter, onJump, visualizerHref }: ChangeMapP
   const flowProps = { report, filter, onlyChanged };
 
   return (
-    <section className="cp-map" aria-labelledby={titleId} data-tour="compare-map">
+    <section
+      ref={sectionRef}
+      className="cp-map"
+      aria-labelledby={titleId}
+      data-tour="compare-map"
+      data-hidden={hidden ? "" : undefined}
+    >
       <header className="cp-map__head">
         <h3 id={titleId} className="cp-map__title">
           Map of changes

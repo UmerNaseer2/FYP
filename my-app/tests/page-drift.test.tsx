@@ -31,8 +31,10 @@ import {
   fetchCalls,
   render,
   resetPageState,
+  routerCalls,
   setRoutes,
   setSearchParams,
+  setUser,
 } from "./helpers/render-page";
 import { schema } from "./helpers/snapshots";
 
@@ -521,5 +523,87 @@ describe("the audit tab", () => {
     // Four tiles reading zero over "nothing recorded" summarise nothing; they
     // only make an empty log look like a dashboard that has lost its data.
     expect(screen.queryByText("Recorded checks")).not.toBeInTheDocument();
+  });
+});
+
+describe("stopping tracking from the detail screen", () => {
+  /** The DELETE first: the list route answers any method on the same path. */
+  function stopRoute(over: { status?: number; body?: unknown } = {}) {
+    return {
+      match: /\/api\/lineage$/,
+      method: "DELETE",
+      status: over.status,
+      body: over.body ?? { success: true },
+    };
+  }
+  const deletes = () => fetchCalls.filter((c) => c.method === "DELETE");
+
+  it("asks first, then removes it and shows the worst drift left", async () => {
+    setSearchParams("tab=detail&schema=1");
+    setRoutes([
+      stopRoute(),
+      ...routesFor(
+        [tracked({ id: 1, driftStatus: "in_sync" }), tracked({ id: 2, driftStatus: "drifted" })],
+        detail({ trackedSchemaId: 1 })
+      ),
+    ]);
+    render(<DriftPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop tracking schema_1 on Local Postgres" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Stop tracking this schema?")).toBeInTheDocument();
+    // Two connections can each hold a schema of the same name, so it says which.
+    expect(dialog).toHaveTextContent("schema_1 on Local Postgres and its captured snapshots");
+    // Opening the dialog removes nothing.
+    expect(deletes()).toHaveLength(0);
+
+    // What the server says once schema 1 is gone.
+    setRoutes([
+      stopRoute(),
+      ...routesFor(
+        [tracked({ id: 2, driftStatus: "drifted" })],
+        detail({ trackedSchemaId: 2, state: "drifted" })
+      ),
+    ]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop tracking" }));
+
+    await waitFor(() => expect(deletes()).toHaveLength(1));
+    expect(deletes()[0].body).toBe(JSON.stringify({ id: 1 }));
+    // The address no longer names the schema that was removed.
+    await waitFor(() => expect(routerCalls.replace).toEqual(["/test-org/drift?tab=detail"]));
+    await waitFor(() =>
+      expect(
+        fetchCalls.filter((c) => c.url.includes("/api/lineage/drift")).map((c) => c.url.split("?")[1])
+      ).toEqual(["trackedSchemaId=1", "trackedSchemaId=2"])
+    );
+  });
+
+  it("keeps the schema on screen and says why when the server refuses", async () => {
+    setRoutes([
+      stopRoute({ status: 500, body: { error: "Failed to stop tracking this schema." } }),
+      ...routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })),
+    ]);
+    render(<DriftPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop tracking schema_1 on Local Postgres" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Stop tracking" }));
+
+    // The dialog is gone by then, so the failure has to land on the card.
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to stop tracking this schema.");
+    expect(screen.getByRole("button", { name: "Stop tracking schema_1 on Local Postgres" })).toBeInTheDocument();
+    expect(routerCalls.replace).toEqual([]);
+  });
+
+  it("switches the button off for a role that may not stop tracking, and says why", async () => {
+    setUser("viewer");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+
+    const stop = await screen.findByRole("button", { name: "Stop tracking schema_1 on Local Postgres" });
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAccessibleDescription(
+      `Your role (Viewer) can't stop tracking a schema. ` +
+        `Ask an admin to turn on "Stop tracking a schema" for this role.`
+    );
   });
 });

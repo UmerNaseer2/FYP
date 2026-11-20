@@ -25,7 +25,9 @@ export function CompareHistory({ history }: { history: ComparisonHistoryView }) 
   const hasLists = history.appeared.length > 0 || history.resolved.length > 0;
 
   return (
-    <details className="table-group history" open={history.appeared.length > 0}>
+    // Closed until opened, like the other panels over a result: the sentence
+    // in the head is the news, the lists under it are the detail.
+    <details className="table-group history">
       <summary className="tg-header">
         <span className="ico history__ico">
           <TrendIcon size={14} />

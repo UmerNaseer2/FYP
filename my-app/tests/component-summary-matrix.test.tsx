@@ -237,6 +237,13 @@ describe("the board", () => {
     expect(container.querySelector("details")).toHaveAttribute("open");
     expect(screen.getByRole("heading", { level: 3, name: "Summary" })).toBeInTheDocument();
   });
+
+  it("starts shut when the page asks, as Compare does", () => {
+    // Compare's four count tiles already answer "how much changed", so the
+    // board waits to be opened there. Drift leaves it open.
+    const { container } = board({ defaultOpen: false });
+    expect(container.querySelector("details")).not.toHaveAttribute("open");
+  });
 });
 
 describe("what a row says", () => {

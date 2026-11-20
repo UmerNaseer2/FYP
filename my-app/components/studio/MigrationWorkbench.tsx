@@ -907,14 +907,16 @@ export function MigrationWorkbench({
                       {copied ? <CheckIcon size={12} /> : <ClipboardIcon size={12} />}
                       {copied ? "Copied" : copyBlocked ? "Copy blocked" : "Copy"}
                     </button>
+                    {/* Right over the script it opens, so the way to the
+                        roomy view is where the reader is already looking. */}
                     <button
                       type="button"
-                      className="btn btn-ghost btn-sm"
+                      className="btn btn-primary btn-sm"
                       onClick={() => setFull(true)}
-                      title="Open the script over the whole window, with its statements listed in run order"
+                      title="The script over the whole window, with its statements listed in run order. Edits there are the same script as this panel."
                     >
                       <ExpandIcon size={12} />
-                      Full screen
+                      Open the script
                     </button>
                   </div>
                 </div>

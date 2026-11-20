@@ -12,10 +12,9 @@
  * Three of its decisions are judgements rather than plumbing, and they are
  * what most of the tests below are about.
  *
- * It opens on what APPEARED, not on whether anything moved. Differences going
- * away is good news and can stay folded up; new ones are the reason somebody
- * came back to this screen. A panel that opened on either would be open on
- * nearly every comparison and stop meaning anything.
+ * It starts folded, whatever moved. The sentence in its head is the news
+ * ("2 new differences since ..."), and a result that opens every panel at
+ * once is a wall to scroll past; the lists are there for whoever opens it.
  *
  * It offers a chevron only when there is something under the summary worth
  * opening onto. When neither list has anything in it the body is one line of
@@ -49,7 +48,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 
 import { CompareHistory } from "@/components/studio/CompareHistory";
 import type { ComparisonHistoryView, HistoryLine } from "@/lib/compare/run";
@@ -152,27 +151,26 @@ describe("the summary line", () => {
 });
 
 describe("whether it starts open", () => {
-  test("opens when new differences have appeared", () => {
+  test("starts shut even when new differences have appeared", () => {
     renderPanel(view({ appeared: [line("orders.total added")] }));
-    expect(panel().open).toBe(true);
+    expect(panel().open).toBe(false);
   });
 
-  test("stays shut when the only movement is differences going away", () => {
-    // Good news folds up. Opening on this as well would leave the panel open
-    // on nearly every comparison, which is the same as it never being open.
+  test("starts shut when the only movement is differences going away", () => {
     renderPanel(view({ resolved: [line("orders.notes added")] }));
     expect(panel().open).toBe(false);
   });
 
-  test("stays shut when nothing moved at all", () => {
+  test("starts shut when nothing moved at all", () => {
     renderPanel(view());
     expect(panel().open).toBe(false);
   });
 
-  test("opens on what appeared even when things were resolved too", () => {
+  test("opens when its head is pressed", () => {
     renderPanel(
       view({ appeared: [line("orders.total added")], resolved: [line("orders.notes added")] })
     );
+    fireEvent.click(panel().querySelector("summary")!);
     expect(panel().open).toBe(true);
   });
 });

@@ -51,7 +51,9 @@ export function CriticalChanges({
   const hidden = breaking.length - shown.length;
 
   return (
-    <details className="table-group critical" open={breaking.length > 0}>
+    // Closed until opened: the red head already says how many there are, and a
+    // result that opens on every panel at once is a wall to scroll past.
+    <details className="table-group critical">
       <summary className="tg-header">
         <span className="ico critical__ico">
           <AlertTriangleIcon size={14} />

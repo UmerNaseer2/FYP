@@ -157,6 +157,9 @@ async function pick(side: "source" | "target", connection: RegExp, schema: strin
   fireEvent.click(change ?? (side === "source" ? empty[0] : empty[empty.length - 1]));
 
   const panel = screen.getByRole("dialog");
+  // A picker that holds a connection opens on its schemas; step back first.
+  const back = within(panel).queryByRole("button", { name: "Back to connections" });
+  if (back) fireEvent.click(back);
   const connections = within(panel).getByRole("group", { name: "Connections" });
   fireEvent.click(within(connections).getByRole("button", { name: connection }));
   // The schemas are read from the connection, so the row arrives a moment later.

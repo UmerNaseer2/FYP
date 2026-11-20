@@ -228,6 +228,10 @@ async function pick(box: "Connection" | "Schema" | "Script group", option: strin
     return;
   }
   const panel = await targetPanel();
+  // The panel shows one step at a time and opens on the schemas once a
+  // connection is chosen, so a connection is picked after stepping back.
+  const back = within(panel).queryByRole("button", { name: "Back to connections" });
+  if (box === "Connection" && back) fireEvent.click(back);
   const list = within(panel).getByRole("group", { name: box === "Connection" ? "Connections" : "Schemas" });
   const name = typeof option === "string" ? new RegExp(`^${option}`) : option;
   fireEvent.click(await within(list).findByRole("button", { name }, { timeout: 3000 }));
