@@ -62,7 +62,7 @@ export type TimelineEntry = {
 /** A status word for one side of a row, such as Deploy's Applied / Pending / Skipped. */
 export type TimelineStatus = {
   text: string;
-  tone: "applied" | "pending" | "skipped" | "rolled-back" | "failed";
+  tone: "applied" | "pending" | "skipped" | "retired" | "rolled-back" | "failed";
   /** The sentence that explains the word, shown as a tooltip. */
   title?: string;
 };

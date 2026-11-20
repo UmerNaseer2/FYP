@@ -1,8 +1,10 @@
 // Pure helpers for reasoning about migration-script versions: comparing
 // semver-ish strings, and labelling each version of a script family
-// Applied / Pending / Skipped against a target database's applied history.
-// Skipped means never applied and at or below the highest applied version, so
-// a deploy (which only moves forward) will never run it.
+// Applied / Pending / Skipped / Retired against a target database's applied
+// history. Skipped means never applied and at or below the highest applied
+// version, so a deploy (which only moves forward) will never run it. Retired
+// means set aside in GitHub (a v<version>.retired.md note), so Deploy offers
+// it to no database.
 //
 // "Pure" on purpose — no DB, no fetch, no React — so it can be unit-tested in
 // isolation and reused by the deploy page without dragging UI state along. The
@@ -319,7 +321,7 @@ export type AppliedVersion = {
   applied_at: string | null;
 };
 
-export type LedgerStatus = "applied" | "pending" | "skipped";
+export type LedgerStatus = "applied" | "pending" | "skipped" | "retired";
 
 export type LedgerEntry = {
   /**
@@ -343,6 +345,12 @@ export type LedgerEntry = {
    * but has no file here to read or to re-deploy from.
    */
   inRegistry: boolean;
+  /**
+   * Retired in GitHub: a v<version>.retired.md note sits beside its file, so
+   * Deploy offers it to no database. Set on a retired version whatever its
+   * status, so an applied one can say it was retired later.
+   */
+  retired?: true;
 };
 
 /**
@@ -361,6 +369,11 @@ export type LedgerEntry = {
  *               save its change again as a new version above the current one.
  *               It is left behind when a later version reached the database
  *               first (a hotfix line, or a version applied from elsewhere).
+ *   - retired → in GitHub, never applied, and retired there (a
+ *               v<version>.retired.md note beside it). Deploy offers it to no
+ *               database, whatever its number, so the versions after it can
+ *               run. An applied version that was retired stays "applied",
+ *               since the database has it, and is marked retired: true.
  *
  * An applied version that GitHub does not have for this schema is still listed,
  * marked inRegistry: false. Leaving it out used to hide it entirely — a Version
@@ -375,7 +388,8 @@ export type LedgerEntry = {
  */
 export function buildVersionLedger(
   githubVersions: string[],
-  appliedHistory: AppliedVersion[]
+  appliedHistory: AppliedVersion[],
+  retiredVersions: ReadonlyArray<string> = []
 ): LedgerEntry[] {
   // Each applied version by its key (the first row wins if one is duplicated).
   //
@@ -408,6 +422,10 @@ export function buildVersionLedger(
     if (!registryByKey.has(key)) registryByKey.set(key, version);
   }
 
+  // The retired versions, by key. Only a version the registry holds can be
+  // retired, since the note sits beside its file.
+  const retiredKeys = new Set(retiredVersions.map((version) => versionKey(version)));
+
   // Every version either side knows about, once each.
   const keys = new Set<string>([...registryByKey.keys(), ...appliedByKey.keys()]);
 
@@ -416,6 +434,8 @@ export function buildVersionLedger(
     const registryVersion = registryByKey.get(key) ?? null;
     // A key comes from one of the two maps, so one of these is always set.
     const version = registryVersion ?? row?.version ?? key;
+    const retired = registryVersion !== null && retiredKeys.has(key);
+    const retiredMark = retired ? { retired: true as const } : {};
     if (row) {
       return {
         version,
@@ -423,12 +443,17 @@ export function buildVersionLedger(
         appliedAt: row.applied_at ?? null,
         appliedVersion: row.version,
         inRegistry: registryVersion !== null,
+        ...retiredMark,
       };
     }
-    // Not applied, so it came from the registry.
-    const status: LedgerStatus =
-      current === null || compareVersions(version, current) > 0 ? "pending" : "skipped";
-    return { version, status, appliedAt: null, appliedVersion: null, inRegistry: true };
+    // Not applied, so it came from the registry. Retired comes first: Deploy
+    // does not offer a retired version, whatever its number.
+    const status: LedgerStatus = retired
+      ? "retired"
+      : current === null || compareVersions(version, current) > 0
+        ? "pending"
+        : "skipped";
+    return { version, status, appliedAt: null, appliedVersion: null, inRegistry: true, ...retiredMark };
   });
 
   return entries.sort((a, b) => compareVersions(a.version, b.version));

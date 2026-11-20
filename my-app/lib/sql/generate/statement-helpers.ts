@@ -27,6 +27,7 @@ export function objectStatement(fields: {
   tableName: string;
   destructive?: boolean;
   needsArmedDrop?: boolean;
+  role?: string;
 }): SqlStatement {
   return {
     sql: fields.sql,
@@ -36,6 +37,8 @@ export function objectStatement(fields: {
     tableName: fields.tableName,
     destructive: fields.destructive === true,
     needsArmedDrop: fields.needsArmedDrop === true,
+    // Only on the statements that name a role, so every other one keeps its shape.
+    ...(fields.role === undefined ? {} : { role: fields.role }),
   };
 }
 
@@ -95,6 +98,51 @@ export function onlyIfMissing(existsQuery: string, statement: string): string {
     "END",
     `${tag};`,
   ].join("\n");
+}
+
+/**
+ * The other way round from onlyIfMissing: run `statement` only while the thing
+ * `existsQuery` looks for is still there. For a rename that a second run of the
+ * same script has to skip, because by then the name may belong to something
+ * else.
+ */
+export function onlyIfPresent(existsQuery: string, statement: string): string {
+  const tag = dollarTagFor(existsQuery, statement);
+  return [
+    `DO ${tag}`,
+    "BEGIN",
+    `  IF EXISTS (${existsQuery}) THEN`,
+    `    ${statement}`,
+    "  END IF;",
+    "END",
+    `${tag};`,
+  ].join("\n");
+}
+
+/**
+ * The lookup for a sequence tied to a column of `tableName`, by the given kinds
+ * of link. With `columnName`, only to that column: on a second run of the same
+ * script that column is gone, so nothing matches.
+ */
+export function ownedSequenceQuery(
+  sequenceName: string,
+  tableName: string,
+  deptypes: string,
+  columnName: string | null = null
+): string {
+  const column =
+    columnName === null
+      ? ""
+      : ` AND refobjsubid = (SELECT a.attnum FROM pg_attribute a ` +
+        `WHERE a.attrelid = to_regclass(${literal(q(tableName))}) ` +
+        `AND a.attname = ${literal(columnName)} AND NOT a.attisdropped)`;
+  return (
+    `SELECT 1 FROM pg_depend WHERE classid = 'pg_class'::regclass ` +
+    `AND objid = to_regclass(${literal(q(sequenceName))}) ` +
+    `AND refclassid = 'pg_class'::regclass AND refobjid = to_regclass(${literal(q(tableName))}) ` +
+    `AND deptype IN (${deptypes})` +
+    column
+  );
 }
 
 /** The onlyIfMissing lookup for a named constraint on a table. */

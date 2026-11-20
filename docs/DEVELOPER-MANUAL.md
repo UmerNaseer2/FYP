@@ -293,10 +293,10 @@ by working down its row. Paths under `app/[org]/(studio)/` are written as
 
 - **Page:** `(studio)/deploy/page.tsx`, with its parts beside it: `QuickRun.tsx`, `RunPanel.tsx`, `RunStage.tsx`, `RunTimeline.tsx`, `PreflightCards.tsx`, `PendingCard.tsx`, `MigRow.tsx`, `RollbackCard.tsx`, `VerifyStage.tsx`, `ShipChecklist.tsx`, `DriftPanel.tsx`, `helpers.ts`, `row-notes.ts`, `types.ts`
 - **Components:** `ApprovalPanel`, `RiskGate`, `VersionTimeline`, `TargetPicker`, `MigrationReviewPanel` and `AiPanel` (AI)
-- **Routes:** `scripts/preflight`, `scripts/apply`, `scripts/cancel`, `scripts/revert`, `scripts/attempts`, `deploy/approvals`, `deploy/approvals/[id]`, `github/pull`, `lineage/drift`, `scripts/review` (AI)
+- **Routes:** `scripts/preflight`, `scripts/apply`, `scripts/cancel`, `scripts/revert`, `scripts/attempts`, `deploy/approvals`, `deploy/approvals/[id]`, `github/pull`, `github/retire`, `lineage/drift`, `scripts/review` (AI)
 - **Logic:** `lib/deploy/`, `lib/versions/script-status.ts`, `lib/connections/access.ts`
 - **Help:** `lib/help/deploy.ts`
-- **Permissions:** `deploy:*`, `approvals:*`
+- **Permissions:** `deploy:*`, `approvals:*`, and `scripts:delete` to retire a version
 - **Tests:** `page-deploy`, `apply-*`, `approvals-*`, `deploy-*`, `preflight-*`, `quick-*`, `revert-*`, `rollback-*`, `run-*`
 
 ### Version sync
@@ -634,6 +634,14 @@ on it.
    the script in an order where each statement finds what it needs (extensions
    and types first, tables, then keys, views, grants, and the drops last).
    `generateRollback()` (`rollback.ts`) writes the script that undoes it.
+   Two things keep one refused statement from undoing a whole run:
+   `name-clashes.ts` first moves an index, key or sequence out of the way
+   when the target still uses a name the script creates on something else,
+   and an owner change sits in a DO block that skips it with a warning when
+   the login may not give the object away (`ownerStatement` in
+   `privileges.ts`). PostgreSQL gives an object only to a role that may
+   create in its schema, so the schema's own grants run before every owner
+   change and its revokes run last (`objectPhases`).
 4. `runComparison()` (`lib/compare/run.ts`) ties these together for the route,
    and records the run in `comparison_runs` so the next one can say what
    changed since.
@@ -647,9 +655,23 @@ on it.
    cap, a time cap and the target schema first on the search path
    (`lib/deploy/run-settings.ts`, `script-transaction.ts`), and writes the
    `script_patch` row in the same transaction. Every attempt is recorded in
-   `deploy_attempts`, whether it landed or not.
+   `deploy_attempts`, whether it landed or not. The warnings PostgreSQL sends
+   while a script runs are kept on that version's outcome
+   (`lib/deploy/run-warnings.ts`: warnings, not notices, at most 20, one line each),
+   and Deploy and Quick run show them under the version.
 3. **Revert** (`scripts/revert`) runs a version's rollback the same way.
-4. **Version sync** reads the ledgers of two schemas and replays on the target
+4. **Retire** (`github/retire`, permission `scripts:delete`) adds one note,
+   `v<version>.retired.md`, beside a version in the GitHub registry. Like a
+   push it fails closed, and the write is create-only. `familyVersions()`
+   (`lib/github/registry-push.ts`) reads the notes, `github/pull` and
+   `github/family` mark the version `retired`, and Deploy and Quick run leave
+   it out of what they offer, so the versions after a failed one can run. The
+   `.sql` files stay, so the number stays taken and a rollback still works.
+   Deleting the note in GitHub undoes it, and older copies of the app skip
+   the note because it is not a `.sql` file. The apply route never reads
+   GitHub, so retiring is about what the page offers, the same as the order
+   of versions.
+5. **Version sync** reads the ledgers of two schemas and replays on the target
    what the source has and the target is missing.
 
 ### Drift

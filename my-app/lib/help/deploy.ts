@@ -54,6 +54,11 @@ export const deployHelp: HelpTopic = {
         "An older version that was never applied and sits below the version the target is on now. It will not run.",
     },
     {
+      term: "Retired",
+      meaning:
+        "A version set aside in GitHub because it should never run. Deploy stops offering it to every database, so the versions after it can run. Its SQL stays and its number stays taken.",
+    },
+    {
       term: "Breaking",
       meaning:
         "A migration that drops or rewrites structure that is already there. Anything that reads the old shape stops working once it is applied.",
@@ -88,7 +93,7 @@ export const deployHelp: HelpTopic = {
     },
     {
       problem: "A version I saved is missing from the pending list.",
-      fix: "Look for a line that starts with Not in this run. The version was skipped, or its Applies-to header names an application this database does not host. If a note at the top says some of the registry could not be read, reload the page.",
+      fix: "Look for a line that starts with Not in this run, or one that starts with Retired. The version was skipped, was retired in GitHub, or its Applies-to header names an application this database does not host. If a note at the top says some of the registry could not be read, reload the page.",
     },
     {
       problem: "A dry run fails on a new enum value but the real run works.",
@@ -96,7 +101,15 @@ export const deployHelp: HelpTopic = {
     },
     {
       problem: "The run stopped part way.",
-      fix: "Nothing was applied. Read the error on the Run step, fix the script or the data it tripped on, then go Back to Pre-flight or press Run again. If the page says the outcome is not known, press Check database first.",
+      fix: "Nothing was applied. Read the error on the Run step. If data was in the way, fix it, then go Back to Pre-flight or press Run again. If the version itself is wrong, retire it and save a fixed copy as a new version. If the page says the outcome is not known, press Check database first.",
+    },
+    {
+      problem: "A version fails every time, and the versions after it wait behind it.",
+      fix: "Retire it. Press Retire on the Run step after it fails, or Retire beside it in the pending list. Deploy then stops offering it on every database, and the next version can run. See Retiring a version below.",
+    },
+    {
+      problem: "A version shows a line that starts with PostgreSQL warned.",
+      fix: "The SQL ran, but PostgreSQL sent a warning about it. It shows under the version on the Run step after a dry run, under What was applied on Verify after a deploy, and in Quick run. The usual one is an owner change the login on the connection may not make. That one change is skipped, the object keeps its owner, the rest runs, and the next comparison shows the owner again. To move it, run the version as a superuser or as a login that may act as the new owner.",
     },
   ],
   sections: [
@@ -115,6 +128,15 @@ export const deployHelp: HelpTopic = {
         "On Pre-flight, press Plan a rollback and pick the version to go back to. Every applied version above it is undone, newest first, in one transaction.",
         "A rollback restores structure, not rows. Deleted rows do not come back, so keep a backup. One rollback undoes at most 50 versions. To go further back, run it and then roll back again.",
         "Dry run the rollback rehearses it without changing anything. A rollback runs as soon as you press its button, unless your role needs an Admin's approval for it.",
+      ],
+    },
+    {
+      title: "Retiring a version",
+      body: [
+        "Deploy runs a group's versions in order, so a version that fails holds back every version after it. If it should never run, retire it: press Retire on the Run step after the failed run, or Retire beside it in the pending list. A reason is optional.",
+        "Retiring adds one small note beside the version in GitHub, named like v1.2.0.retired.md. The SQL and its rollback stay, and the number stays taken, so the next version saved still goes above it.",
+        "Deploy stops offering a retired version to every database, and Quick run no longer waits on it. A database that already ran it keeps it and can still roll it back. The timeline marks it Retired.",
+        "Out of the box only an Admin may retire a version. To bring one back, delete its .retired.md note from the version's folder in GitHub.",
       ],
     },
     {

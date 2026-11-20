@@ -40,15 +40,25 @@ export type InboundForeignKey = {
   referencedColumnsAfterRename: string[];
   /** The ADD that puts it back, with tables and columns under their new names. */
   definition: string;
+  /**
+   * The key's own table drops it and adds the source's version back. It still
+   * comes off before a key it leans on is dropped, as that drop is refused
+   * while it is there, but it is never put back from here.
+   */
+  handledByOwner?: boolean;
 };
 
 /**
  * Every inbound foreign key, keyed by the referenced table's name IN THE TARGET
  * — which is how the alter step finds its own entry before its rename lands.
  *
- * A key the owning table's own diff already drops is left out: that section
- * drops and re-adds it on its own schedule, and a second copy here would be an
- * ADD racing a DROP of the same constraint.
+ * A key the owning table's own diff already drops is that section's to drop
+ * and re-add, so it is never put back from here (a second copy would be an ADD
+ * racing a DROP of the same constraint). When the owning table is altered
+ * first, its own drop has already run and the key is left out. When it comes
+ * later, the key is listed with handledByOwner set: the table it leans on may
+ * drop that key first, which PostgreSQL refuses while the reference is there,
+ * so it has to come off before then.
  */
 export function inboundForeignKeysByTable(
   report: CompareReport,
@@ -58,6 +68,9 @@ export function inboundForeignKeysByTable(
   // What each matched table is called before and after the rename phase.
   const renamedTo = new Map<string, string>();
   for (const match of report.matchedTables) renamedTo.set(match.right.name, match.left.name);
+  // The order the alter step works through the matched tables, by target name.
+  const alterOrder = new Map<string, number>();
+  report.matchedTables.forEach((match, at) => alterOrder.set(match.right.name, at));
   // The same for each matched table's columns, keyed by the table's name in
   // the target. A key put back after a drop has to name the columns as they
   // are called by then, on both its own table and the one it points at.
@@ -91,7 +104,16 @@ export function inboundForeignKeysByTable(
     for (const fk of owner.table.foreignKeys) {
       const referenced = fk.referencedTable;
       if (!referenced || !renamedTo.has(referenced)) continue;
-      if (owner.handled.has(fk.name)) continue;
+      const handledByOwner = owner.handled.has(fk.name);
+      // Its own table is altered first (or is the same table, where foreign
+      // keys come off before anything else), so it is already gone by the time
+      // the table it leans on drops anything.
+      if (
+        handledByOwner &&
+        (alterOrder.get(owner.table.name) ?? Infinity) <= (alterOrder.get(referenced) ?? -1)
+      ) {
+        continue;
+      }
       const referencedColumnsAfterRename = afterRename(referenced, fk.referencedColumns);
       const columnsAfterRename = afterRename(owner.table.name, fk.columns);
       const referencedAfterRename = renamedTo.get(referenced) ?? referenced;
@@ -104,6 +126,7 @@ export function inboundForeignKeysByTable(
         tableName: renamedTo.get(owner.table.name) ?? owner.table.name,
         fk,
         survives: owner.survives,
+        handledByOwner,
         referencedColumnsAfterRename,
         // The tables and columns may be mid-rename, and then the key cannot go
         // back verbatim: it would name a table or column that no longer exists.

@@ -35,6 +35,7 @@ import {
   quickRunLevel,
   quickRunSql,
   quickSqlProblem,
+  quickVersionsAhead,
 } from "@/lib/deploy/quick-run";
 import { column, schema, table } from "./helpers/snapshots";
 
@@ -60,6 +61,29 @@ describe("quick run: the version it saves as", () => {
     expect(quickLevelLabel("breaking")).toBe("Breaking");
     expect(quickLevelLabel("additive")).toBe("Additive");
     expect(quickLevelLabel("patch")).toBe("Patch");
+  });
+});
+
+describe("quick run: GitHub's versions this schema has not run", () => {
+  test("leaves out a retired version, which Deploy offers to no database", () => {
+    // v1.0.1 failed and was retired, so only v1.0.2 is still waiting here.
+    expect(quickVersionsAhead("1.0.0", ["1.0.0", "1.0.1", "1.0.2"], ["1.0.1"])).toEqual(["1.0.2"]);
+    expect(quickVersionsAhead("1.0.0", ["1.0.1"], ["1.0.1"])).toEqual([]);
+  });
+
+  test("matches a retired version however either side spells it", () => {
+    expect(quickVersionsAhead(null, ["v1.0.1", "1.0.2"], ["1.0.1"])).toEqual(["1.0.2"]);
+    expect(quickVersionsAhead(null, ["1.0.1", "1.0.2"], ["v1.0.1"])).toEqual(["1.0.2"]);
+  });
+
+  test("keeps every unretired version above the applied one, oldest first", () => {
+    expect(quickVersionsAhead("1.1.0", ["1.3.0", "1.0.0", "1.2.0", "1.1.0"], [])).toEqual(["1.2.0", "1.3.0"]);
+    expect(quickVersionsAhead(null, ["1.1.0", "1.0.0"], [])).toEqual(["1.0.0", "1.1.0"]);
+  });
+
+  test("still saves above a retired version, since its number stays taken", () => {
+    expect(nextQuickVersion(ADD, ["1.0.0", "1.0.1"]).version).toBe("1.1.0");
+    expect(quickVersionsAhead("1.0.0", ["1.0.0", "1.0.1"], ["1.0.1"])).toEqual([]);
   });
 });
 

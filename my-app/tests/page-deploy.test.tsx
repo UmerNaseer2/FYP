@@ -791,6 +791,100 @@ describe("the run itself", () => {
     expect(screen.queryByRole("button", { name: /^Stop/ })).not.toBeInTheDocument();
     await flushAsync();
   });
+
+  it("shows what PostgreSQL warned under the version that warned", async () => {
+    // A run can commit and still leave something undone, such as an owner
+    // change the login may not make. The warning goes under its own row, and
+    // the message at the end says there is something to read.
+    const warned = 'The owner of table invoices was not changed: must be able to SET ROLE "postgres"';
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: {
+          success: true,
+          results: [
+            {
+              script_name: "invoices",
+              version: "1.0.1",
+              status: "applied",
+              statements: 1,
+              warnings: [warned],
+              moreWarnings: 2,
+            },
+            { script_name: "invoices", version: "1.0.2", status: "applied", statements: 1 },
+          ],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    fireEvent.click(deploy);
+
+    // A deploy moves on to Verify, so the warnings are under What was applied.
+    await screen.findByText(
+      "Deploy complete · up to v1.0.2 · 3 warnings from PostgreSQL, see What was applied",
+      undefined,
+      { timeout: 3000 }
+    );
+    const note = screen.getByText(`PostgreSQL warned: ${warned}`);
+    expect(note).toHaveClass("dp-warn");
+    const row = note.closest(".dp-applied") as HTMLElement;
+    expect(row).toHaveTextContent("v1.0.1");
+    expect(row).toHaveTextContent("PostgreSQL sent 2 more warnings for this version.");
+    // Only the version that warned has a note from PostgreSQL.
+    expect(screen.getAllByText(/^PostgreSQL warned:/)).toHaveLength(1);
+    expect(screen.getByText(/in one transaction · 0 errors · 3 warnings$/)).toBeInTheDocument();
+    // Back on the Run stage, the run row says the same.
+    fireEvent.click(within(screen.getByRole("group", { name: "Deploy steps" })).getByRole("button", { name: /Run/ }));
+    const runRow = (await screen.findByText(`PostgreSQL warned: ${warned}`)).closest(".dp-mig-row") as HTMLElement;
+    expect(runRow).toHaveTextContent("v1.0.1");
+    await flushAsync();
+  });
+
+  it("shows the warnings a dry run raised, before anything is applied", async () => {
+    const warned = 'The owner of table invoices was not changed: must be able to SET ROLE "postgres"';
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: {
+          success: true,
+          dryRun: true,
+          results: [
+            { script_name: "invoices", version: "1.0.1", status: "rehearsed", statements: 1 },
+            { script_name: "invoices", version: "1.0.2", status: "rehearsed", statements: 1, warnings: [warned] },
+          ],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const dryRun = await dryRunButton();
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    fireEvent.click(dryRun);
+
+    await screen.findByText(
+      "Dry run clean · 2 migrations rehearsed · 1 warning from PostgreSQL, see the rows",
+      undefined,
+      { timeout: 3000 }
+    );
+    const row = screen.getByText(`PostgreSQL warned: ${warned}`).closest(".dp-mig-row") as HTMLElement;
+    expect(row).toHaveTextContent("v1.0.2");
+    // The rehearsal card says a real deploy would warn the same way.
+    expect(
+      screen.getByText(
+        "PostgreSQL sent 1 warning during the rehearsal, shown under its version above. " +
+          "Deploy runs the same SQL, so expect it again."
+      )
+    ).toBeInTheDocument();
+    expect(lastApply()).toMatchObject({ dryRun: true });
+    await flushAsync();
+  });
 });
 
 describe("the number beside Requests on the rail", () => {
@@ -1200,5 +1294,218 @@ describe("a Deploy that is not set up yet", () => {
     const list = await checklist();
     expect(list).toHaveTextContent("2 of 3 done");
     expect(within(list).getByRole("link", { name: "Open Script Editor" })).toBeInTheDocument();
+  });
+});
+
+describe("retiring a version that should never run", () => {
+  // A run stops at the first version that fails, and every version after it
+  // waits behind it. Retiring the failed one in GitHub (a .retired.md note
+  // beside it) is the way past: Deploy stops offering it, and the next one
+  // can run. Only a role with scripts:delete (Admin, out of the box) may.
+
+  const FAILED_APPLY: FetchRoute = {
+    match: "/api/scripts/apply",
+    method: "POST",
+    status: 500,
+    body: {
+      success: false,
+      error: 'relation "invoices" does not exist',
+      results: [
+        {
+          script_name: "invoices",
+          version: "1.0.1",
+          status: "failed",
+          error: 'relation "invoices" does not exist',
+        },
+      ],
+    },
+  };
+
+  const RETIRED_NOTE = /^Retired: v1\.0\.1 was retired in GitHub, so Deploy no longer offers it/;
+
+  /** The registry, with v1.0.1 retired once the page has asked for that. */
+  function pullAfterRetire(): FetchRoute {
+    return {
+      match: "/api/github/pull",
+      body: () => ({
+        ok: true,
+        scripts: fetchCalls.some((call) => call.url.includes("/api/github/retire"))
+          ? [{ ...SCRIPTS[0], retired: true }, SCRIPTS[1]]
+          : SCRIPTS,
+        warnings: [],
+      }),
+    };
+  }
+
+  async function runAndFail() {
+    const deploy = await deployButton();
+    await waitFor(() => expect(deploy).toBeEnabled());
+    fireEvent.click(deploy);
+    await screen.findByText("failed · the whole run was rolled back", undefined, { timeout: 3000 });
+  }
+
+  const retireCalls = () => fetchCalls.filter((call) => call.url.includes("/api/github/retire"));
+
+  it("lets an Admin retire the version a run failed on, and then offers the one after it", async () => {
+    setRoutes([
+      FAILED_APPLY,
+      {
+        match: "/api/github/retire",
+        method: "POST",
+        body: {
+          ok: true,
+          already: false,
+          version: "1.0.1",
+          path: "shop/public/invoices/v1.0.1.retired.md",
+          url: null,
+        },
+      },
+      pullAfterRetire(),
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    await runAndFail();
+
+    expect(
+      screen.getByText(
+        "If invoices v1.0.1 should never run, you can retire it. Deploy then stops offering it, " +
+          "and the versions after it can run."
+      )
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retire v1.0.1…" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Retire invoices v1.0.1?" });
+    expect(within(dialog).getByText("v1.0.1.retired.md")).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Reason (optional)"), {
+      target: { value: "  Needs a table this database does not have  " },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retire v1.0.1" }));
+
+    // Back on Pre-flight with the registry read again: v1.0.1 is named as
+    // retired, and v1.0.2 is offered on its own.
+    expect(await screen.findByText("Retired v1.0.1. Deploy no longer offers it.", undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect((await screen.findAllByText(RETIRED_NOTE, undefined, { timeout: 3000 })).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("button", { name: "Run v1.0.2…" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run v1.0.1…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run all (2)…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Retire invoices v1.0.1?" })).not.toBeInTheDocument();
+
+    const calls = retireCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(JSON.parse(calls[0].body ?? "null")).toEqual({
+      database_name: "shop",
+      schema_name: "public",
+      script_name: "invoices",
+      version: "1.0.1",
+      reason: "Needs a table this database does not have",
+    });
+    await flushAsync();
+  });
+
+  it("tells a role that may not retire who can, and offers no button", async () => {
+    setUser("editor");
+    setRoutes([FAILED_APPLY, ...baseRoutes()]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    await runAndFail();
+
+    expect(
+      screen.getByText(
+        "If invoices v1.0.1 should never run, an Admin can retire it. Deploy then stops offering it, " +
+          "and the versions after it can run."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Retire/ })).not.toBeInTheDocument();
+
+    // Nor on the pending list.
+    fireEvent.click(screen.getByRole("button", { name: "Back to Pre-flight" }));
+    expect(await screen.findByRole("button", { name: "Run v1.0.1…" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Retire/ })).not.toBeInTheDocument();
+    expect(retireCalls()).toHaveLength(0);
+    await flushAsync();
+  });
+
+  it("skips a version that is retired already, names it, and marks it in the timeline", async () => {
+    setRoutes([
+      {
+        match: "/api/github/pull",
+        body: { ok: true, scripts: [{ ...SCRIPTS[0], retired: true }, SCRIPTS[1]], warnings: [] },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await pick("Connection", /Dev box/);
+    await pick("Schema", "public");
+    await pick("Script group", "invoices");
+    const check = await screen.findByRole("button", { name: "Check database" });
+    await waitFor(() => expect(check).toBeEnabled());
+    fireEvent.click(check);
+
+    expect(await screen.findByRole("button", { name: "Run v1.0.2…" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run v1.0.1…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Run all/ })).not.toBeInTheDocument();
+    expect(screen.getAllByText(RETIRED_NOTE).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Retired").length).toBeGreaterThan(0);
+    await flushAsync();
+  });
+
+  it("asks first from the pending list, and Cancel sends nothing", async () => {
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    // One per pending row, for that row's version.
+    const buttons = await screen.findAllByRole("button", { name: "Retire…" });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]);
+    const dialog = await screen.findByRole("dialog", { name: "Retire invoices v1.0.2?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Retire invoices v1.0.2?" })).not.toBeInTheDocument()
+    );
+    expect(retireCalls()).toHaveLength(0);
+    await flushAsync();
+  });
+
+  it("keeps the dialog open with the reason it failed, and reads nothing again", async () => {
+    const refused =
+      'GitHub refused to save the note that retires v1.0.1 of "invoices" (status 422). Nothing was changed in GitHub.';
+    setRoutes([
+      { match: "/api/github/retire", method: "POST", status: 502, body: { ok: false, code: "github_error", error: refused } },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+    const pullsBefore = fetchCalls.filter((call) => call.url.includes("/api/github/pull")).length;
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "Retire…" }))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Retire invoices v1.0.1?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retire v1.0.1" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(refused);
+    expect(screen.getByRole("dialog", { name: "Retire invoices v1.0.1?" })).toBeInTheDocument();
+    // No reason typed, so none is sent.
+    expect(JSON.parse(retireCalls()[0].body ?? "null")).not.toHaveProperty("reason");
+    expect(fetchCalls.filter((call) => call.url.includes("/api/github/pull"))).toHaveLength(pullsBefore);
+    // Still offered, since nothing changed.
+    expect(screen.getByRole("button", { name: "Run all (2)…" })).toBeInTheDocument();
+    await flushAsync();
+  });
+
+  it("says when it cannot tell whether the version was retired", async () => {
+    setRoutes([{ match: "/api/github/retire", method: "POST", networkError: true }, ...baseRoutes()]);
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "Retire…" }))[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Retire invoices v1.0.1?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retire v1.0.1" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "The connection dropped, so it is not known whether v1.0.1 was retired. Try again: if it was, you will be told so."
+    );
+    await flushAsync();
   });
 });

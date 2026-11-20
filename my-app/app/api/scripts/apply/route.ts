@@ -28,6 +28,7 @@ import { readApplications } from "@/lib/deploy/application-read";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/github/registry-archive";
 import { randomUUID } from "node:crypto";
 import { isRunId } from "@/lib/deploy/run-id";
+import { warningCollector } from "@/lib/deploy/run-warnings";
 import {
   beginCommit,
   DUPLICATE_RUN_MESSAGE,
@@ -95,6 +96,14 @@ type ScriptOutcome = {
   /** How many statements PostgreSQL ran for it. */
   statements?: number;
   error?: string;
+  /**
+   * What PostgreSQL warned about while it ran, such as an owner change the
+   * login may not make (see lib/deploy/run-warnings.ts). Left out when it
+   * raised none.
+   */
+  warnings?: string[];
+  /** How many warnings came after the ones listed. */
+  moreWarnings?: number;
 };
 
 /**
@@ -1418,9 +1427,21 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       //
       // A failure here throws to the catch block, which rolls the whole run back
       // — including every migration already run in this loop.
-      const execution = (await client.query(job.sqlContent)) as unknown as
-        | PgExecResult
-        | PgExecResult[];
+      //
+      // The warnings PostgreSQL sends meanwhile go on this version's outcome
+      // (see lib/deploy/run-warnings.ts). The listener is on for this one query
+      // only, so nothing the route itself runs is put on a version, and it is
+      // off again before the connection goes back to the pool.
+      const collector = warningCollector();
+      client.on("notice", collector.listener);
+      let execution: PgExecResult | PgExecResult[];
+      try {
+        execution = (await client.query(job.sqlContent)) as unknown as
+          | PgExecResult
+          | PgExecResult[];
+      } finally {
+        client.off("notice", collector.listener);
+      }
       const statements = Array.isArray(execution) ? execution.length : 1;
 
       // The script passed the COMMIT check, but if it still ended the run's
@@ -1438,6 +1459,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
           version: job.version,
           status: "rehearsed",
           statements,
+          ...collector.result(),
         });
         continue;
       }
@@ -1470,6 +1492,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         version: job.version,
         status: "applied",
         statements,
+        ...collector.result(),
       });
     }
 

@@ -7,7 +7,7 @@ import { stripSchemaFromExpr } from "../../postgres";
 import { q } from "./basics";
 import { nonFkConstraints } from "./column-changes";
 import type { SequencePlan } from "./columns";
-import { buildColumnDef, usesSerialShorthand } from "./columns";
+import { buildColumnDef, identitySequenceName, usesSerialShorthand } from "./columns";
 
 /**
  * The CREATE TABLE for a table the target does not have.
@@ -40,7 +40,7 @@ export function buildCreateTable(table: TableSnapshot, plan: SequencePlan): stri
   }
 
   const lines = table.columns
-    .map((col) => `  ${buildColumnDef(col, false, usesSerialShorthand(plan, table.name, col.name))}`)
+    .map((col) => `  ${buildColumnDef(col, false, usesSerialShorthand(plan, table.name, col.name), identitySequenceName(plan, table.name, col.name))}`)
     .concat(constraints);
 
   // INHERITS goes before PARTITION BY; that is the order the grammar wants.

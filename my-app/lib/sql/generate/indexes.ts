@@ -4,7 +4,7 @@ import type { CompareReport } from "../../compare/types";
 import type { IndexSnapshot } from "../../postgres";
 import { q } from "./basics";
 import { nonFkConstraints } from "./column-changes";
-import { objectStatement, onlyIfMissing, tableIndexQuery } from "./statement-helpers";
+import { objectStatement, onlyIfMissing, onlyIfPresent, tableIndexQuery } from "./statement-helpers";
 import type { SqlStatement } from "./types";
 
 // ── Indexes ────────────────────────────────────────────────────────────────
@@ -97,6 +97,24 @@ export function dropIndexStatement(index: IndexSnapshot, tableName: string): Sql
     severity: index.isUnique ? "breaking" : "safe",
     tableName,
   });
+}
+
+/**
+ * The same drop for an index whose name a new key takes (see
+ * keyNamesTheScriptAdds). On a second run of the same script that name already
+ * belongs to the new key's own index, and a plain DROP INDEX IF EXISTS would
+ * hit that one and be refused. So this drops an index of that name only while
+ * it sits on this table and backs no key.
+ */
+export function dropIndexMakingRoomStatement(index: IndexSnapshot, tableName: string): SqlStatement {
+  return {
+    ...dropIndexStatement(index, tableName),
+    sql: onlyIfPresent(
+      `${tableIndexQuery(tableName, index.name)} AND NOT EXISTS ` +
+        `(SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid AND con.contype IN ('p', 'u', 'x'))`,
+      `DROP INDEX ${q(index.name)};`
+    ),
+  };
 }
 
 /**

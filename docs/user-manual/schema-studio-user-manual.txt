@@ -739,6 +739,24 @@ is needed, as a deploy (see WHO MAY APPLY below).
 Below that, "Rollback history" and "Deploy history (all attempts)" list what
 was run on this schema for the group.
 
+RETIRING A VERSION
+------------------
+Deploy runs a script group's versions in order, so a version that fails
+holds back every version after it. If that version should never run, retire
+it. After the failed run, the Run step has a "Retire" button for it, and
+every row under "Pending migrations" has a "Retire…" button too. A reason is
+optional. It is saved in GitHub with the version.
+
+Retiring adds one small note beside the version in GitHub, named like
+v1.2.0.retired.md. The SQL and its rollback stay, and the number stays
+taken. Deploy stops offering the version to every database, so the next
+version can run, and the timeline marks it "Retired". A database that
+already ran it keeps it and can still roll it back.
+
+Retiring needs "Retire a saved version so Deploy stops offering it" (out of
+the box, Admin only). To bring a version back, delete its .retired.md note
+from the version's folder in GitHub.
+
 EXECUTION
 ---------
 When you click the Deploy button:
@@ -752,6 +770,15 @@ When you click the Deploy button:
   • The transaction commits
 
 If any step fails, everything rolls back. You'll see the error message.
+
+A script can also finish with a warning from PostgreSQL. Deploy shows each
+one under the version that raised it: on the Run step after a dry run, under
+"What was applied" on the Verify step after a deploy, and in Quick run. The
+usual one is an owner change the login on the Target connection may not make
+(only a superuser, or a login that may act as the new owner, can give an
+object to another role). That one change is skipped, the object keeps its
+owner, the rest of the script runs, and the next comparison shows the owner
+again.
 
 One exception: a new enum value (ALTER TYPE ... ADD VALUE) is added before the
 transaction opens, because PostgreSQL does not let a new value be used in the
@@ -1243,6 +1270,21 @@ SETTINGS
     version must be above every version already applied for that script. A
     run that failed wrote nothing to the ledger, so it can simply be run
     again.
+
+A version that fails holds back the versions after it
+------------------------------------------------------
+  • Deploy runs versions in order, so a failed version blocks the rest
+  • If data was in the way, fix it and run again
+  • If the version itself is wrong, retire it (section 10, RETIRING A
+    VERSION), then save a fixed copy as a new, higher version
+
+"PostgreSQL warned: The owner of ... was not changed"
+-----------------------------------------------------
+  • The login on the Target connection may not give that object to another
+    role, so the script skipped that one change and ran the rest
+  • The object keeps its owner, and the next comparison shows it again
+  • To move it, run the version as a superuser, or as a login that may act
+    as the new owner
 
 "Drift detected" but I didn't change anything
 ----------------------------------------------

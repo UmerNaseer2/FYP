@@ -301,6 +301,40 @@ describe("findRowDestroyingStatements", () => {
     );
   });
 
+  it("does not count TRUNCATE named as a privilege or a trigger event", () => {
+    // A client tester's first deploy was flagged "deletes rows" because the
+    // generated script granted a table's full privilege list, TRUNCATE
+    // included. None of these empties a table.
+    for (const sql of [
+      "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLE orders TO app_rw;",
+      "GRANT TRUNCATE ON orders TO app_rw;",
+      "REVOKE TRUNCATE ON TABLE orders FROM app_ro;",
+      "REVOKE DELETE, TRUNCATE ON orders FROM app_ro;",
+      "ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT TRUNCATE ON TABLES TO app_rw;",
+      "CREATE TRIGGER orders_guard BEFORE TRUNCATE ON orders FOR EACH STATEMENT EXECUTE FUNCTION guard();",
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_rw') THEN GRANT TRUNCATE ON orders TO app_rw; END IF; END $$;",
+    ]) {
+      expect([sql, findRowDestroyingStatements(sql)]).toEqual([sql, []]);
+    }
+  });
+
+  it("still counts every way of writing a real TRUNCATE", () => {
+    for (const sql of [
+      "TRUNCATE orders;",
+      "truncate table only orders restart identity cascade;",
+      "TRUNCATE TABLE a, b;",
+      "-- empty the table first\nTRUNCATE orders;",
+      "/* reset */ TRUNCATE orders;",
+      "GRANT SELECT ON orders TO app_ro; TRUNCATE orders;",
+      "BEGIN; TRUNCATE orders; COMMIT;",
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM orders) THEN TRUNCATE orders; END IF; END $$;",
+      "DO $$ BEGIN PERFORM 1; TRUNCATE orders; END $$;",
+      "DO $$ BEGIN IF false THEN NULL; ELSE TRUNCATE orders; END IF; END $$;",
+    ]) {
+      expect([sql, findRowDestroyingStatements(sql)]).toEqual([sql, ["TRUNCATE"]]);
+    }
+  });
+
   it("counts a dropped column, which takes its values with it", () => {
     expect(
       findRowDestroyingStatements("ALTER TABLE orders DROP COLUMN legacy_ref;")

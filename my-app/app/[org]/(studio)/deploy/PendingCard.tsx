@@ -12,7 +12,7 @@ import { countOf } from "@/lib/ui/plural";
 import { listVersions, versionRange, vLabel } from "@/lib/deploy/rollback-plan";
 import { HelpHint } from "@/components/ui/HelpHint";
 import type { GitHubScript, PreflightResult } from "./types";
-import { scriptKey, getSqlLineCount } from "./helpers";
+import { scriptKey, getSqlLineCount, retiredNote } from "./helpers";
 import { pendingRowNotes } from "./row-notes";
 import { MigRow } from "./MigRow";
 
@@ -27,6 +27,8 @@ export function PendingCard({
   isDeploying,
   selectRun,
   inRunKeys,
+  retiredVersions,
+  onRetire,
 }: {
   pendingScripts: GitHubScript[];
   scriptsUpToTarget: GitHubScript[];
@@ -37,6 +39,10 @@ export function PendingCard({
   isDeploying: boolean;
   selectRun: (version: string) => void;
   inRunKeys: Set<string>;
+  /** Versions above the target that are retired in GitHub, so not offered. */
+  retiredVersions: string[];
+  /** Opens the Retire dialog for a version; absent when the role may not retire. */
+  onRetire?: (script: GitHubScript) => void;
 }) {
   return (
     <div className="card dp-card">
@@ -87,6 +93,9 @@ export function PendingCard({
                               skippedVersions.length === 1 ? "was" : "were"
                             } skipped: never applied and below ${currentLabel}, the version applied to the target. See Skipped in the version timeline above.`}
           </p>
+        )}
+        {retiredVersions.length > 0 && (
+          <p className="help mt-1">{retiredNote(retiredVersions)}</p>
         )}
       </div>
       {/* Every pending version at once. Each row's own
@@ -164,15 +173,30 @@ export function PendingCard({
             sqlOpen={inRun && reading.countsAsBreaking}
             notes={pendingRowNotes(script, reading, previous, preflightResult.applications)}
             action={
-              <button
-                type="button"
-                className="btn btn-sm btn-secondary"
-                disabled={isDeploying}
-                title="Selects this range for the run below. Nothing runs until you press Deploy or Dry run."
-                onClick={() => selectRun(script.version)}
-              >
-                {runLabel}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  disabled={isDeploying}
+                  title="Selects this range for the run below. Nothing runs until you press Deploy or Dry run."
+                  onClick={() => selectRun(script.version)}
+                >
+                  {runLabel}
+                </button>
+                {/* For a version that should never run: it blocks every
+                    version after it. Asks first, in a dialog. */}
+                {onRetire && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    disabled={isDeploying}
+                    title="Set this version aside in GitHub, so Deploy stops offering it. Asks first."
+                    onClick={() => onRetire(script)}
+                  >
+                    Retire…
+                  </button>
+                )}
+              </>
             }
           />
         );

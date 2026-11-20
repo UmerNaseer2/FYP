@@ -8,7 +8,8 @@ import { fingerprintBody } from "@/lib/deploy/approval-fingerprint";
 import { listVersions, versionRange } from "@/lib/deploy/rollback-plan";
 import type { TimelineStatus } from "@/lib/versions/timeline";
 import { shortUtcDate } from "@/lib/ui/format-date";
-import type { ChangeKind, GitHubScript, RevertedEntry } from "./types";
+import { countOf } from "@/lib/ui/plural";
+import type { ChangeKind, GitHubScript, RevertedEntry, RunCell } from "./types";
 
 // The change_type this page sends with a migration, to the apply route and to
 // the approvals route: its stamp when it has one, its SQL's grade otherwise.
@@ -61,8 +62,9 @@ export function fmtDate(iso: string | null): string {
   return shortUtcDate(iso);
 }
 
-// Applied / Pending / Skipped (the version ledger, lib/versions/script-status) → the
-// "This database" status in the version timeline.
+// Applied / Pending / Skipped / Retired (the version ledger,
+// lib/versions/script-status) → the "This database" status in the version
+// timeline.
 //
 // - `current` is the version applied to the target ("v5.0.2"). A skipped
 //   version's tooltip names it, so the reason it will not run is one hover
@@ -80,6 +82,15 @@ export function ledgerStatus(
   pullWarned: boolean
 ): TimelineStatus {
   if (entry.status === "applied") {
+    if (entry.retired) {
+      return {
+        text: "Applied · retired",
+        tone: "applied",
+        title:
+          "Applied to this database, and retired in GitHub. This database keeps it and can still roll it back. " +
+          "Deploy no longer offers it to databases that have not run it.",
+      };
+    }
     if (entry.inRegistry) return { text: "Applied", tone: "applied" };
     return {
       text: "Applied · no registry file",
@@ -94,6 +105,16 @@ export function ledgerStatus(
   // " · rolled back 3 Sep 2026", or without the date when it is unreadable.
   const undone = rolledBack ? fmtDate(rolledBack.reverted_at) : "";
   const note = rolledBack ? ` · rolled back${undone ? ` ${undone}` : ""}` : "";
+  if (entry.status === "retired") {
+    return {
+      text: `Retired${note}`,
+      tone: "retired",
+      title: rolledBack
+        ? rolledBackTitle(rolledBack, "retired", current)
+        : "Retired in GitHub, so Deploy no longer offers it to any database and the versions after it can run. " +
+          "Its SQL stays in GitHub. To bring it back, delete its .retired.md note there.",
+    };
+  }
   if (entry.status === "pending") {
     return {
       text: `Pending${note}`,
@@ -132,10 +153,22 @@ export function skippedNote(skipped: ReadonlyArray<string>, current: string): st
   );
 }
 
+// The note that names the versions retired in GitHub that this target has not
+// run, so a version Deploy stops offering never disappears without a word.
+export function retiredNote(retired: ReadonlyArray<string>): string {
+  const many = retired.length > 1;
+  return (
+    `Retired: ${listVersions(retired)} ${many ? "were" : "was"} retired in GitHub, so Deploy no longer offers ` +
+    `${many ? "them" : "it"} and the versions after ${many ? "them" : "it"} can run. To bring ${many ? "them" : "it"} ` +
+    `back, delete ${many ? "their" : "its"} .retired.md note${many ? "s" : ""} in GitHub.`
+  );
+}
+
 // Tooltip for "rolled back <date>" on a version that is not applied now: when
 // it ran, when it was undone, and whether a deploy would run it again. A
 // pending version is in the next deploy's list; a skipped one is below the
-// target's version, and deploys only move forward.
+// target's version, and deploys only move forward; a retired one is set aside
+// in GitHub.
 export function rolledBackTitle(row: RevertedEntry, status: LedgerEntry["status"], current: string): string {
   const applied = fmtDate(row.applied_at);
   const undone = fmtDate(row.reverted_at);
@@ -143,6 +176,7 @@ export function rolledBackTitle(row: RevertedEntry, status: LedgerEntry["status"
     (applied ? `Applied ${applied}, then rolled back` : "Rolled back") +
     (undone ? ` ${undone}` : "") +
     ", so it is not applied now.";
+  if (status === "retired") return `${history} It is retired in GitHub, so a deploy will not run it again.`;
   return status === "pending"
     ? `${history} A deploy that includes it runs it again.`
     : `${history} It is below ${current}, the version applied to the target, so a deploy will not run it again.`;
@@ -190,4 +224,25 @@ export function nameTwoRuns(ran: ReadonlyArray<string>, now: ReadonlyArray<strin
   if (a !== b) return [a, b];
   if (ran.length !== now.length) return [`${a} (${ran.length})`, `${b} (${now.length})`];
   return [listVersions(ran), listVersions(now)];
+}
+
+// The notes a run row shows for the warnings PostgreSQL sent while its version
+// ran: one per warning, then a count of any the server did not list. A run
+// with warnings still applied (or rehearsed); these say what it left undone.
+type CellWarnings = Pick<RunCell, "warnings" | "moreWarnings"> | undefined;
+
+export function warningNotes(cell: CellWarnings): { text: string; warn: boolean }[] {
+  const notes = (cell?.warnings ?? []).map((text) => ({ text: `PostgreSQL warned: ${text}`, warn: true }));
+  if ((cell?.moreWarnings ?? 0) > 0) {
+    notes.push({
+      text: `PostgreSQL sent ${countOf(cell?.moreWarnings ?? 0, "more warning")} for this version.`,
+      warn: true,
+    });
+  }
+  return notes;
+}
+
+/** How many warnings PostgreSQL sent for one version, listed or not. */
+export function warningCount(cell: CellWarnings): number {
+  return (cell?.warnings?.length ?? 0) + (cell?.moreWarnings ?? 0);
 }

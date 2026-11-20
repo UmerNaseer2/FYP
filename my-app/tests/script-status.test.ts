@@ -256,6 +256,54 @@ describe("buildVersionLedger", () => {
     expect(ledger[0].appliedAt).toBe("2026-01-01T00:00:00Z");
   });
 
+  // A version retired in GitHub (a v<version>.retired.md note beside it) is
+  // never offered again, so it is neither pending nor skipped.
+  it("marks a retired version, which is never pending or skipped", () => {
+    const ledger = buildVersionLedger(
+      ["1.0.0", "1.1.0", "1.2.0", "1.3.0"],
+      [applied("1.2.0")],
+      ["1.1.0", "1.3.0"]
+    );
+    expect(ledger).toEqual([
+      { version: "1.0.0", status: "skipped", appliedAt: null, appliedVersion: null, inRegistry: true },
+      { version: "1.1.0", status: "retired", appliedAt: null, appliedVersion: null, inRegistry: true, retired: true },
+      { version: "1.2.0", status: "applied", appliedAt: "2026-01-01T00:00:00Z", appliedVersion: "1.2.0", inRegistry: true },
+      { version: "1.3.0", status: "retired", appliedAt: null, appliedVersion: null, inRegistry: true, retired: true },
+    ]);
+    // toEqual ignores a missing key, so check the plain rows have none.
+    expect(ledger[0]).not.toHaveProperty("retired");
+    expect(ledger[2]).not.toHaveProperty("retired");
+  });
+
+  it("keeps a version applied when it is retired after it ran, and marks it", () => {
+    const ledger = buildVersionLedger(["1.0.0", "1.1.0"], [applied("1.0.0")], ["1.0.0"]);
+    expect(ledger[0]).toEqual({
+      version: "1.0.0",
+      status: "applied",
+      appliedAt: "2026-01-01T00:00:00Z",
+      appliedVersion: "1.0.0",
+      inRegistry: true,
+      retired: true,
+    });
+    expect(ledger[1]).toEqual({ version: "1.1.0", status: "pending", appliedAt: null, appliedVersion: null, inRegistry: true });
+    expect(ledger[1]).not.toHaveProperty("retired");
+  });
+
+  it("matches a retired version however either side spells it", () => {
+    const ledger = buildVersionLedger(["1.0.0", "1.1.0"], [], ["1.1"]);
+    expect(ledger.map((e) => [e.version, e.status])).toEqual([
+      ["1.0.0", "pending"],
+      ["1.1.0", "retired"],
+    ]);
+  });
+
+  it("does not mark a version the registry does not hold", () => {
+    // Applied by a Version Sync replay, so no file and no note sit beside it.
+    const ledger = buildVersionLedger(["1.0.0"], [applied("2.0.0")], ["2.0.0"]);
+    expect(ledger[1]).toMatchObject({ version: "2.0.0", status: "applied", inRegistry: false });
+    expect(ledger[1]).not.toHaveProperty("retired");
+  });
+
   // A Version Sync replay lands a version in script_patch without writing any
   // file to the registry for that schema. Dropping it from the ledger hid it
   // completely, which is how a stale older version came to look like the newest

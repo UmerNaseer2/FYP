@@ -28,6 +28,11 @@ export type GitHubScript = {
   down_sql?: string;
   /** How the rollback file read. Optional: an older pull route did not say. */
   rollback_state?: PulledRollbackState;
+  /**
+   * Retired in GitHub (a v<version>.retired.md note beside it): Deploy no
+   * longer offers it. Optional, since an older pull route did not say.
+   */
+  retired?: boolean;
 };
 
 // A saved connection from /api/connections.
@@ -152,7 +157,16 @@ export type RunStatus =
 // `statements` is how many statements PostgreSQL ran for this migration, as the
 // server counted them. There is deliberately no per-migration duration: the run
 // is one request and one transaction, so the only honest timing is the run's.
-export type RunCell = { status: RunStatus; error?: string; statements?: number };
+// `warnings` are the warnings PostgreSQL sent while it ran, such as an owner
+// change the login may not make (lib/deploy/run-warnings.ts), and
+// `moreWarnings` counts any past the ones listed.
+export type RunCell = {
+  status: RunStatus;
+  error?: string;
+  statements?: number;
+  warnings?: string[];
+  moreWarnings?: number;
+};
 
 // What POST /api/scripts/apply reports for one migration in the run.
 export type ApplyOutcome = {
@@ -161,6 +175,8 @@ export type ApplyOutcome = {
   status: "applied" | "rehearsed" | "failed" | "skipped" | "unknown";
   statements?: number;
   error?: string;
+  warnings?: string[];
+  moreWarnings?: number;
 };
 // The parts of the apply response this page reads.
 export type ApplyResponse = {

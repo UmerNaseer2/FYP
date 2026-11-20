@@ -20,9 +20,19 @@ import { countOf } from "@/lib/ui/plural";
 import { vLabel } from "@/lib/deploy/rollback-plan";
 import type { ApprovalRow } from "@/components/studio/ApprovalPanel";
 import type { GitHubScript, Connection, PreflightResult, RunStatus, RunCell } from "./types";
-import { scriptKey, fmtStatements, fmtSecs } from "./helpers";
+import { scriptKey, fmtStatements, fmtSecs, warningNotes } from "./helpers";
 import { MigRow } from "./MigRow";
 import type { SelectionChange } from "./helpers";
+
+// A run row's notes: the louder reading of its SQL, if any, then the warnings
+// PostgreSQL sent while it ran. None at all leaves the row without a notes box.
+function rowNotes(louderNote: string | null | undefined, cell: RunCell) {
+  const notes = [
+    ...(louderNote ? [{ text: louderNote, warn: true }] : []),
+    ...warningNotes(cell),
+  ];
+  return notes.length > 0 ? notes : undefined;
+}
 
 // The head card of the Run stage: what is happening, and the counts.
 export function RunHead({
@@ -199,7 +209,7 @@ export function RunList({
             rightPill={vLabel(script.version)}
             cell={cell}
             sql={script.sql_content}
-            notes={reading.louderNote ? [{ text: reading.louderNote, warn: true }] : undefined}
+            notes={rowNotes(reading.louderNote, cell)}
           />
         );
       })}
@@ -248,6 +258,9 @@ export function RunResults({
   runIsDryRun,
   repeatChange,
   dryRunBlocked,
+  failedScript = null,
+  onRetire,
+  warningTotal = 0,
 }: {
   runComplete: boolean;
   runRegistry: RegistryNote | null;
@@ -272,6 +285,12 @@ export function RunResults({
   runIsDryRun: boolean;
   repeatChange: SelectionChange | null;
   dryRunBlocked: boolean;
+  /** The version the run stopped at, while Deploy still offers it. */
+  failedScript?: GitHubScript | null;
+  /** Opens the Retire dialog; absent when the role may not retire. */
+  onRetire?: (script: GitHubScript) => void;
+  /** Warnings PostgreSQL sent during the run, over all its versions. */
+  warningTotal?: number;
 }) {
   return (
     <>
@@ -323,6 +342,16 @@ export function RunResults({
                 ledgerRereadFailed
               )}
           </p>
+            {/* Accepted is not the same as done: an owner change the login
+                may not make is skipped with a warning, and Deploy runs the
+                same SQL, so it would be skipped then too. */}
+            {warningTotal > 0 && (
+              <div className="dp-warn-text">
+                {`PostgreSQL sent ${countOf(warningTotal, "warning")} during the rehearsal, shown under ` +
+                  `${warningTotal === 1 ? "its version" : "the versions"} above. Deploy runs the same SQL, ` +
+                  `so expect ${warningTotal === 1 ? "it" : "them"} again.`}
+              </div>
+            )}
             {askToRun && !approvedRun && (
               <div className="dp-warn-text">
                 A clean rehearsal is not an approval. Go back to Pre-flight to
@@ -423,6 +452,15 @@ export function RunResults({
                 This deploy needs an Admin&apos;s approval first. Go back to Pre-flight to ask for one.
               </div>
             )}
+            {/* A version that should never run blocks every version after
+                it. Retiring it in GitHub is the way past. */}
+            {failedScript && !runOutcomeUnknown && (
+              <div className="dp-warn-text">
+                {`If ${failedScript.script_name} ${vLabel(failedScript.version)} should never run, ${
+                  onRetire ? "you" : "an Admin"
+                } can retire it. Deploy then stops offering it, and the versions after it can run.`}
+              </div>
+            )}
           <div className="dp-row">
           <button
             type="button"
@@ -436,6 +474,11 @@ export function RunResults({
                 ? "Rehearse again"
                 : "Run again"}
           </button>
+          {failedScript && !runOutcomeUnknown && onRetire && (
+            <button type="button" className="btn btn-secondary" onClick={() => onRetire(failedScript)}>
+              {`Retire ${vLabel(failedScript.version)}…`}
+            </button>
+          )}
           <button type="button" className="btn btn-primary" onClick={() => setStage(1)}>
             Back to Pre-flight
           </button>

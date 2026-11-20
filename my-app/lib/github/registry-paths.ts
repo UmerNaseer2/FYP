@@ -5,12 +5,18 @@
 // A registry folder is <database>/<schema>/<script_name>/ and one version owns
 // up to two files inside it:
 //
-//   v1.2.0.sql        the migration
-//   v1.2.0.down.sql   its rollback, optional
+//   v1.2.0.sql          the migration
+//   v1.2.0.down.sql     its rollback, optional
+//   v1.2.0.retired.md   a note that retires it, optional
 //
-// Both belong to version "1.2.0". Parsing the down file with the migration's
-// rule would read its version as "1.2.0.down" and list it as a release of its
-// own, which is the bug this module exists to prevent.
+// All three belong to version "1.2.0". Parsing the down file with the
+// migration's rule would read its version as "1.2.0.down" and list it as a
+// release of its own, which is the bug this module exists to prevent.
+//
+// A retired version stays published: its number stays taken and its rollback
+// still works. Deploy only stops offering it, so the versions after it can
+// run. The note is Markdown, not SQL, so older copies of the app skip it, and
+// deleting it brings the version back.
 //
 // WHERE THE FOLDERS SIT. Every organization shares one registry repository,
 // and each keeps its scripts under its own root folder:
@@ -90,6 +96,20 @@ export function migrationFileName(version: string): string {
 /** The file name its rollback is stored under, beside it. */
 export function rollbackFileName(version: string): string {
   return `v${version}.down.sql`;
+}
+
+/**
+ * The file name of the note that retires a version, beside its migration and
+ * spelled the same way (v1.0.sql takes v1.0.retired.md).
+ */
+export function retiredMarkerName(version: string): string {
+  return `v${version}.retired.md`;
+}
+
+/** The version a retired note is for, as spelled in its name, or null when `name` is not one. */
+export function parseRetiredMarkerName(name: string): string | null {
+  const match = /^v?(.+)\.retired\.md$/i.exec(name);
+  return match && match[1] ? match[1] : null;
 }
 
 /**

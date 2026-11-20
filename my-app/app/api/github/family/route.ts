@@ -13,7 +13,10 @@
 // screen offer v1.0.0 for a family that already has versions.
 //
 // Responses:
-//   200 { ok: true, versions: string[], highest: string | null }
+//   200 { ok: true, versions: string[], highest: string | null, retired: string[] }
+//       retired: the published versions that a v<version>.retired.md note
+//       retires. They stay in `versions` and count for `highest`: a retired
+//       number stays taken. Quick run reads it so it never offers one.
 //   400 { ok: false, error }            a missing or unusable database, schema or script
 //   500 { ok: false, code: "github_unconfigured", error }   (the same code as push and pull)
 //   503 { ok: false, code: "github_settings_unavailable", error }   the settings could not be read
@@ -69,6 +72,6 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { published } = familyVersions(listing.files);
-  return NextResponse.json({ ok: true, versions: published, highest: highestVersion(published) });
+  const { published, retired } = familyVersions(listing.files);
+  return NextResponse.json({ ok: true, versions: published, highest: highestVersion(published), retired });
 }

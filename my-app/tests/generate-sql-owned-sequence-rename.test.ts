@@ -76,7 +76,7 @@ function at(script: string, fragment: string): number {
 }
 
 const RENAME_TABLE = 'ALTER TABLE IF EXISTS "customer" RENAME TO "customers";';
-const RENAME_SEQUENCE = 'ALTER SEQUENCE IF EXISTS "customer_id_seq" RENAME TO "customers_id_seq";';
+const RENAME_SEQUENCE = 'ALTER SEQUENCE "customer_id_seq" RENAME TO "customers_id_seq";';
 
 describe("the sequence behind a renamed table's key", () => {
   it("is renamed right after the table when the key is serial", () => {
@@ -122,18 +122,42 @@ describe("the sequence behind a renamed table's key", () => {
       })
     );
 
-    expect(script).not.toContain("ALTER SEQUENCE IF EXISTS");
+    expect(script).not.toMatch(/ALTER SEQUENCE .* RENAME TO/);
   });
 
-  it("leaves the sequence alone when the target already uses the new name", () => {
-    // Tables, views and sequences share one set of names: renaming onto a name
-    // that is taken would fail, which is the thing this fix exists to stop.
+  it("first moves aside an unused sequence that already has the new name", () => {
+    // Tables, views and sequences share one set of names, so renaming onto a
+    // taken name would fail. Nothing reads the loose "customers_id_seq" and the
+    // source has no such sequence of its own, so it is renamed out of the way
+    // and dropped at the end, where it would have been dropped anyway.
     const script = sql(
       oneTable("customers", serialId("customers")),
       oneTable("customer", serialId("customer"), [sequence("customers_id_seq", null)])
     );
 
+    const moveAside = at(script, 'ALTER SEQUENCE "customers_id_seq" RENAME TO "customers_id_seq_old";');
+    expect(at(script, RENAME_SEQUENCE)).toBeGreaterThan(moveAside);
+    expect(at(script, 'DROP SEQUENCE IF EXISTS "customers_id_seq_old";')).toBeGreaterThan(
+      at(script, RENAME_SEQUENCE)
+    );
+  });
+
+  it("leaves the sequence alone when another table reads the one that has the new name", () => {
+    // Moving that one would change what "orders" reads, so the rename is skipped.
+    const orders = () =>
+      table("orders", [
+        column("id", { nullable: false }),
+        column("ref", { columnDefault: "nextval('customers_id_seq'::regclass)" }),
+      ]);
+    const source = oneTable("customers", serialId("customers"));
+    const target = oneTable("customer", serialId("customer"), [sequence("customers_id_seq", null)]);
+    const script = sql(
+      schema([...source.tables, orders()], { sequences: source.sequences }),
+      schema([...target.tables, orders()], { sequences: target.sequences })
+    );
+
     expect(script).toContain(RENAME_TABLE);
     expect(script).not.toContain(RENAME_SEQUENCE);
+    expect(script).not.toContain('RENAME TO "customers_id_seq_old"');
   });
 });

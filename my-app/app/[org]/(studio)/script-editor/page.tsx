@@ -95,6 +95,8 @@ type GitHubScript = {
   /** Sent only when rollback_state is "usable". */
   down_sql?: string;
   rollback_state: PulledRollbackState;
+  /** True when a .retired.md note sits beside it: Deploy no longer offers it, but its number stays taken. */
+  retired?: boolean;
 };
 
 /** The registry pull, or why it failed. `code` is the route's error code. */
@@ -210,7 +212,9 @@ function needsRollback(state: PulledRollbackState): boolean {
 function combineRows(pulled: GitHubScript[], own: GitHubScript[]): GitHubScript[] {
   const rows = pulled.map((row): GitHubScript => {
     const mine = own.find((candidate) => sameVersion(candidate, row));
-    return mine && mine.rollback_state === "usable" && needsRollback(row.rollback_state) ? mine : row;
+    if (!mine || mine.rollback_state !== "usable" || !needsRollback(row.rollback_state)) return row;
+    // The rollback saved here, with what GitHub says about retiring.
+    return row.retired ? { ...mine, retired: true } : mine;
   });
   for (const mine of own) {
     if (!pulled.some((row) => sameVersion(row, mine))) rows.push(mine);
@@ -1166,9 +1170,18 @@ export default function ScriptEditorPage() {
               {(ribbonRows.length > 0 || (version !== null && !sameMigration)) && (
                 <ol className="se-rib">
                   {ribbonRows.map((row) => (
-                    <li key={row.version} className={row.rollback_state === "usable" ? undefined : "se-rib-warn"}>
+                    <li
+                      key={row.version}
+                      className={row.rollback_state === "usable" ? undefined : "se-rib-warn"}
+                      title={
+                        row.retired
+                          ? "Retired: Deploy no longer offers this version. Delete its .retired.md note in GitHub to bring it back."
+                          : undefined
+                      }
+                    >
                       <b>{`v${bare(row.version)}`}</b>
                       <small>{ROLLBACK_WORDS[row.rollback_state]}</small>
+                      {row.retired && <small>retired</small>}
                     </li>
                   ))}
                   {version !== null && !sameMigration && (

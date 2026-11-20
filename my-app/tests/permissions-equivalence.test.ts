@@ -120,6 +120,8 @@ const ADDED: Record<string, Gate> = {
   // The Stop button for a run that is going. Who may stop which run is
   // decided inside (tests/scripts-cancel-route.test.ts).
   "POST /api/scripts/cancel": { kind: "permission", keys: ["deploy:read"] },
+  // Retiring a saved version, so Deploy stops offering it to any database.
+  "POST /api/github/retire": { kind: "permission", keys: ["scripts:delete"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

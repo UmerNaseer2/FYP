@@ -6,6 +6,7 @@
 import type { CompareReport, ObjectDiff } from "../../compare/types";
 import type { PrivilegeSnapshot, RoutineSnapshot, ViewSnapshot } from "../../postgres";
 import { extensionUpdateIsForward } from "../../compare/diff";
+import { sequenceOwnerTable } from "../../postgres/snapshot-facts";
 import { findByName, normalizeType, q } from "./basics";
 import { indexTouchesColumn, namesChangingColumn, rebuiltComputedColumns } from "./column-changes";
 import {
@@ -20,7 +21,12 @@ import {
   dropCollationStatement,
   dropExtensionStatement,
 } from "./extensions";
-import { createIndexStatement, dropIndexStatement, keyNamesTheScriptAdds } from "./indexes";
+import {
+  createIndexStatement,
+  dropIndexMakingRoomStatement,
+  dropIndexStatement,
+  keyNamesTheScriptAdds,
+} from "./indexes";
 import type { ObjectPhases } from "./object-phase-types";
 import { findPrivilege, sequencesTiedToColumns } from "./object-phase-types";
 import { privilegeStatements } from "./privileges";
@@ -31,7 +37,7 @@ import {
   routinesNeededByNewTables,
   tableUsesOfRoutine,
 } from "./routines";
-import { alterSequenceStatement, createSequenceStatement } from "./sequences";
+import { alterSequenceStatement, createSequenceStatement, nextvalSequenceName } from "./sequences";
 import { literal, manualNote, objectStatement } from "./statement-helpers";
 import {
   createPolicyStatement,
@@ -50,7 +56,17 @@ import {
   viewsCascadedBy,
 } from "./views";
 
-export function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPhases {
+export function objectPhases(
+  report: CompareReport,
+  appliesToSchema: string,
+  // Sequences the script makes again under a name it freed: see name-clashes.ts.
+  parkedSequences: Set<string> = new Set(),
+  // Sequences of its own the script moved aside first, by name, mapped to the
+  // name their drop has to use. See name-clashes.ts.
+  parkedDrops: Map<string, string> = new Map(),
+  // Sequences of its own that a new column takes over, so they are kept.
+  adoptedSequences: Set<string> = new Set()
+): ObjectPhases {
   const tiedSequences = sequencesTiedToColumns(report);
   const phases: ObjectPhases = {
     extensions: [],
@@ -94,8 +110,11 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
         if (diff.status !== "onlyA") {
           const target = findByName(match.right.indexes, diff.name);
           // An index whose name a new key is about to take goes first of all.
-          const out = newKeyNames.has(diff.name) ? phases.indexDropsFirst : phases.indexes;
-          if (target) out.push(dropIndexStatement(target, tableName));
+          if (target && newKeyNames.has(diff.name)) {
+            phases.indexDropsFirst.push(dropIndexMakingRoomStatement(target, tableName));
+          } else if (target) {
+            phases.indexes.push(dropIndexStatement(target, tableName));
+          }
         }
         if (diff.status !== "onlyB") {
           const source = findByName(match.left.indexes, diff.name);
@@ -335,12 +354,37 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
         if (source) phases.beforeTables.push(createSequenceStatement(source));
       } else if (diff.status === "onlyB") {
         // The table step ties this very sequence to a serial column, so it is
-        // not going anywhere: see sequencesTiedToColumns.
-        if (tiedSequences.has(diff.name)) continue;
+        // not going anywhere: see sequencesTiedToColumns. A new column takes
+        // an adopted one over in the same way.
+        if (tiedSequences.has(diff.name) || adoptedSequences.has(diff.name)) continue;
+        const parked = parkedDrops.get(diff.name);
+        // The source has this name as a serial or identity column's own
+        // sequence, and a column here reads it on both sides. PostgreSQL
+        // refuses to drop a sequence a column default still reads, so it
+        // stays, and whether the two columns should share one counter is
+        // left to a person.
+        const sourceOwned = parked
+          ? undefined
+          : (report.left.sequences ?? []).find(
+              (seq) => seq.name === diff.name && seq.ownedByTable !== null
+            );
+        const keptReaders = sourceOwned ? columnsReadingOnBothSides(report, diff.name) : [];
+        if (sourceOwned && keptReaders.length > 0) {
+          const owner = `"${sequenceOwnerTable(sourceOwned, report.left.schema)}"."${sourceOwned.ownedByColumn}"`;
+          phases.warnings.push(
+            `Sequence "${diff.name}" is kept. In the source it is the sequence behind ${owner}, ` +
+              `but ${keptReaders.join(", ")} still ${keptReaders.length === 1 ? "reads" : "read"} it ` +
+              `here, so it cannot be dropped. If ${owner} should share that counter, point it there by hand.`
+          );
+          continue;
+        }
         phases.afterTables.push(
           objectStatement({
-            sql: `DROP SEQUENCE IF EXISTS ${q(diff.name)};`,
-            description: `Drop sequence "${diff.name}" — WARNING: anything using it for new ids stops working`,
+            sql: `DROP SEQUENCE IF EXISTS ${q(parked ?? diff.name)};`,
+            description:
+              `Drop sequence "${diff.name}"` +
+              (parked ? ` (moved to "${parked}" earlier in the script)` : "") +
+              ` — WARNING: anything using it for new ids stops working`,
             kind: "DROP_SEQUENCE",
             severity: "breaking",
             tableName: diff.name,
@@ -797,8 +841,39 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
     (privilege.objectKind === "VIEW" ||
       privilege.objectKind === "MATERIALIZED VIEW") &&
     rebuiltViews.has(privilege.objectName);
+  // A sequence a serial or identity column owns in the source is owned by that
+  // column in the target too once the script has run (the column creates it,
+  // or the table step ties it), so its owner comes from the table's OWNER TO.
+  // See privilegeStatements for why its own OWNER TO must not be written.
+  const columnOwnedSequences = new Set(
+    (report.left.sequences ?? [])
+      .filter((sequence) => sequence.ownedByTable !== null)
+      .map((sequence) => sequence.name)
+  );
+  const ownerFollowsTable = (privilege: PrivilegeSnapshot) =>
+    privilege.objectKind === "SEQUENCE" &&
+    columnOwnedSequences.has(privilege.objectName);
+  // A sequence made again under a freed name has none of the old one's grants,
+  // so the source's are written in full, as for a new object.
+  const isParkedSequence = (privilege: PrivilegeSnapshot) =>
+    privilege.objectKind === "SEQUENCE" && parkedSequences.has(privilege.objectName);
   const privilegesWritten = new Set<string>();
-  for (const diff of privilegeDiffs) {
+  // The schema's own entry goes first, and its REVOKEs go last of all.
+  //
+  // A login that is not a superuser may give an object to another role only
+  // when that role may create in the object's schema. The entries arrive
+  // sorted by name, so "schema" came after "function", "materialized view" and
+  // "procedure": their OWNER TO ran before the schema's GRANT CREATE to the new
+  // owner and was refused, even for a login that may act as that owner. Taking
+  // a schema privilege away last keeps every role its access until nothing
+  // after it needs it, such as an owner change to a role that is about to lose
+  // CREATE on the schema.
+  const isSchemaEntry = (diff: ObjectDiff) => diff.name.startsWith("schema ");
+  const schemaRevokes: SqlStatement[] = [];
+  for (const diff of [
+    ...privilegeDiffs.filter(isSchemaEntry),
+    ...privilegeDiffs.filter((other) => !isSchemaEntry(other)),
+  ]) {
     // Privilege entries are keyed by kind and name together, and the diff
     // carries them already joined, so look them up by the same joined string
     // the compare engine wrote — see privilegeObjects there.
@@ -809,21 +884,26 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
     if (!source) continue;
     privilegesWritten.add(diff.name);
     const target =
-      diff.status === "onlyA" || isRebuiltView(source)
+      diff.status === "onlyA" || isRebuiltView(source) || isParkedSequence(source)
         ? null
         : findPrivilege(report.right.privileges, diff.name);
-    phases.privileges.push(
-      ...privilegeStatements(
-        source,
-        target,
-        appliesToSchema,
-        // Only a view or a materialized view is ever dropped and put back, so
-        // only those two can be sitting there in the old shape.
-        (source.objectKind === "VIEW" ||
-          source.objectKind === "MATERIALIZED VIEW") &&
-          heldBackViewDrops.has(source.objectName)
-      )
+    const statements = privilegeStatements(
+      source,
+      target,
+      appliesToSchema,
+      // Only a view or a materialized view is ever dropped and put back, so
+      // only those two can be sitting there in the old shape.
+      (source.objectKind === "VIEW" ||
+        source.objectKind === "MATERIALIZED VIEW") &&
+        heldBackViewDrops.has(source.objectName),
+      ownerFollowsTable(source)
     );
+    if (source.objectKind === "SCHEMA") {
+      phases.privileges.push(...statements.filter((statement) => statement.kind !== "REVOKE"));
+      schemaRevokes.push(...statements.filter((statement) => statement.kind === "REVOKE"));
+    } else {
+      phases.privileges.push(...statements);
+    }
   }
   // ...and a rebuilt view whose owner and grants were the same on both sides,
   // which is the usual case, has no diff at all. Without this it came back
@@ -844,6 +924,20 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
       )
     );
   }
+
+  // A parked sequence whose grants are the same on both sides has no diff of
+  // its own, and the new one still needs them.
+  for (const name of parkedSequences) {
+    const key = `sequence ${name}`;
+    if (privilegesWritten.has(key)) continue;
+    const source = findPrivilege(report.left.privileges, key);
+    if (!source) continue;
+    privilegesWritten.add(key);
+    phases.privileges.push(...privilegeStatements(source, null, appliesToSchema, false, ownerFollowsTable(source)));
+  }
+
+  // The schema REVOKEs held back above, after every owner change and grant.
+  phases.privileges.push(...schemaRevokes);
 
   // ...and dropped before it, which is the same order reversed.
   phases.viewDrops.reverse();
@@ -866,4 +960,23 @@ export function objectPhases(report: CompareReport, appliesToSchema: string): Ob
   }
 
   return phases;
+}
+
+/**
+ * Columns, by the source's names, whose default reads sequence `name` in the
+ * target and still reads it in the source, so the script leaves them on it.
+ */
+function columnsReadingOnBothSides(report: CompareReport, name: string): string[] {
+  const readers: string[] = [];
+  for (const match of report.matchedTables) {
+    for (const col of match.columnMatches) {
+      if (
+        nextvalSequenceName(col.right.columnDefault) === name &&
+        nextvalSequenceName(col.left.columnDefault) === name
+      ) {
+        readers.push(`"${match.left.name}"."${col.left.name}"`);
+      }
+    }
+  }
+  return readers;
 }

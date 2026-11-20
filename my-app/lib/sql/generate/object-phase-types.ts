@@ -160,6 +160,16 @@ export function findPrivilege(
   items: PrivilegeSnapshot[] | undefined,
   name: string
 ): PrivilegeSnapshot | null {
+  // The schema entry goes by its kind alone, the way the compare engine keys it
+  // (privilegeObjects in lib/compare/diff.ts): each snapshot has one, and it is
+  // the schema being compared, whatever each side is called. Looking it up by
+  // the source's name found nothing in a target with another name, so copying
+  // shop_v2 into shop_v1 lost the target's owner and grants: no previous owner
+  // in the description, and no REVOKE for a schema grant the source lacks, in
+  // the script or in its rollback.
+  if (name.startsWith("schema ")) {
+    return items?.find((item) => item.objectKind === "SCHEMA") ?? null;
+  }
   return (
     items?.find((item) => {
       const args =

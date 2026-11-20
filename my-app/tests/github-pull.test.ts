@@ -284,6 +284,28 @@ describe("GET /api/github/pull", () => {
     expect((body.scripts as Array<Record<string, unknown>>).map((script) => script.version)).toEqual(["1.9.0", "1.10.0"]);
   });
 
+  it("marks a version with a retired note beside it, and never downloads the note", async () => {
+    registry([
+      file(`${FAMILY}/v1.0.0.sql`),
+      file(`${FAMILY}/v2.0.0.sql`),
+      file(`${FAMILY}/v2.0.0.retired.md`),
+    ]);
+    serve(`${FAMILY}/v1.0.0.sql`, UP1);
+    serve(`${FAMILY}/v2.0.0.sql`, UP2);
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    const where = { database_name: "db", schema_name: "public", script_name: "orders_fix" };
+    // Still listed, so its number stays taken; Deploy reads retired and skips it.
+    expect(body.scripts).toEqual([
+      { ...where, version: "1.0.0", path: `${FAMILY}/v1.0.0.sql`, sql_content: UP1, rollback_state: "none" },
+      { ...where, version: "2.0.0", path: `${FAMILY}/v2.0.0.sql`, sql_content: UP2, rollback_state: "none", retired: true },
+    ]);
+    expect((body.scripts as Array<Record<string, unknown>>)[0]).not.toHaveProperty("retired");
+    // The note is neither a warning nor a download.
+    expect(body.warnings).toEqual([]);
+    expect(calls.some((call) => call.url.endsWith(".retired.md"))).toBe(false);
+  });
+
   it("answers an empty registry once the repository is confirmed", async () => {
     answers[ROOT] = () => json(404, { message: "This repository is empty." });
     answers[REPO] = () => json(200, { full_name: "acme/registry" });

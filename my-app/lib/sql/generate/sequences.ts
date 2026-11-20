@@ -4,7 +4,7 @@
 import type { ColumnSnapshot, SequenceOptions, SequenceSnapshot } from "../../postgres";
 import { sequenceBoundsComparable } from "../../compare/diff";
 import { q } from "./basics";
-import { literal, objectStatement } from "./statement-helpers";
+import { dollarTagFor, literal, objectStatement } from "./statement-helpers";
 import type { SqlStatement } from "./types";
 
 // ── Sequences ──────────────────────────────────────────────────────────────
@@ -70,10 +70,12 @@ function sequenceOptionsInline(options: SequenceOptions): string {
  * the defaults — and also for a snapshot taken before the settings were read,
  * where the field is undefined and there is nothing honest to write.
  */
-export function identityOptionsSuffix(col: ColumnSnapshot): string {
+export function identityOptionsSuffix(col: ColumnSnapshot, sequenceName?: string): string {
   const options = col.sequenceOptions;
-  if (!options || sequenceOptionsAreDefault(options)) return "";
-  return ` (${sequenceOptionsInline(options)})`;
+  const tuned = options && !sequenceOptionsAreDefault(options) ? sequenceOptionsInline(options) : "";
+  // SEQUENCE NAME sits among the other options, separated by spaces.
+  if (sequenceName) return ` (SEQUENCE NAME ${q(sequenceName)}${tuned ? ` ${tuned}` : ""})`;
+  return tuned ? ` (${tuned})` : "";
 }
 
 /**
@@ -258,7 +260,10 @@ export function sequenceOptionSteps(
 export function columnSequenceStatements(
   col: ColumnSnapshot,
   tableName: string,
-  serialOk: boolean
+  serialOk: boolean,
+  // The table's owner in the target, for a table that is there already. See
+  // sequenceOwnerAlignment.
+  tableOwner?: string
 ): { before: SqlStatement[]; after: SqlStatement[] } {
   const tuned = ownedSequenceToBuild(col, serialOk);
   if (tuned === null) return { before: [], after: [] };
@@ -273,6 +278,7 @@ export function columnSequenceStatements(
       }),
     ],
     after: [
+      sequenceOwnerAlignment(tuned.name, tableName, tableOwner),
       {
         sql: `ALTER SEQUENCE ${q(tuned.name)} OWNED BY ${q(tableName)}.${q(col.name)};`,
         description: `Tie sequence "${tuned.name}" to "${col.name}" on "${tableName}"`,
@@ -283,6 +289,53 @@ export function columnSequenceStatements(
       },
     ],
   };
+}
+
+/**
+ * Give a sequence the owner of the table it is about to be tied to.
+ *
+ * OWNED BY is refused when the two have different owners, even for a
+ * superuser: "sequence must have same owner as table it is linked to". It
+ * happens when a column takes over a sequence the target has already, say one
+ * an old table owned (a client tester hit it with a table renamed in a staging
+ * database), or when the column is added to a table another role owns.
+ *
+ * The deploy guard cannot read SQL built from a string, so the block names the
+ * owner it expects: the role running the script, for a table the script has
+ * just made, or the table's owner in the target. It does nothing unless the
+ * table really has that owner and the sequence has another. A sequence still
+ * tied to another column has to be untied before its owner can change, and the
+ * OWNED BY right after it ties it again.
+ */
+function sequenceOwnerAlignment(sequenceName: string, tableName: string, tableOwner?: string): SqlStatement {
+  const sequence = `to_regclass(${literal(q(sequenceName))})`;
+  const table = `to_regclass(${literal(q(tableName))})`;
+  const role = tableOwner === undefined ? "current_user" : literal(tableOwner);
+  const owner = tableOwner === undefined ? "CURRENT_USER" : q(tableOwner);
+  const body = [
+    "BEGIN",
+    `  IF ${sequence} IS NOT NULL`,
+    `     AND (SELECT relowner FROM pg_class WHERE oid = ${table}) = (SELECT oid FROM pg_roles WHERE rolname = ${role})`,
+    `     AND (SELECT relowner FROM pg_class WHERE oid = ${sequence}) <> (SELECT relowner FROM pg_class WHERE oid = ${table})`,
+    // An identity sequence cannot change owner or be tied elsewhere, so it is left to the OWNED BY to report.
+    `     AND NOT EXISTS (SELECT 1 FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = ${sequence} ` +
+      `AND refclassid = 'pg_class'::regclass AND deptype = 'i') THEN`,
+    `    IF EXISTS (SELECT 1 FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = ${sequence} ` +
+      `AND refclassid = 'pg_class'::regclass AND deptype = 'a') THEN`,
+    `      ALTER SEQUENCE ${q(sequenceName)} OWNED BY NONE;`,
+    "    END IF;",
+    `    ALTER SEQUENCE ${q(sequenceName)} OWNER TO ${owner};`,
+    "  END IF;",
+    "END",
+  ].join("\n");
+  const tag = dollarTagFor(body);
+  return objectStatement({
+    sql: `DO ${tag}\n${body}\n${tag};`,
+    description: `Give sequence "${sequenceName}" the owner of "${tableName}" before tying it to the table`,
+    kind: "ALTER_SEQUENCE",
+    severity: "info",
+    tableName,
+  });
 }
 
 /**

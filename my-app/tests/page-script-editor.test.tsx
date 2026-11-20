@@ -838,6 +838,36 @@ describe("the line of saved versions", () => {
     expect(steps).toEqual(["v1.0.0with rollback", "v1.2.0no rollback", "v1.3.0this draft, not saved"]);
   });
 
+  it("marks a retired version, whose number stays taken", async () => {
+    setRoutes([
+      { match: "/api/github/family", body: { ok: true, versions: ["1.0.0", "1.2.0"], retired: ["1.2.0"] } },
+      {
+        match: "/api/github/pull",
+        body: {
+          ok: true,
+          scripts: [savedScript({ version: "1.2.0", rollback_state: "none", retired: true }), savedScript()],
+          warnings: [],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices", true);
+    writeSql("SQL", "ALTER TABLE invoices ADD COLUMN paid_on date;");
+    // Retired, but still counted: the next version goes above it.
+    await saveButton("1.3.0");
+
+    const line = screen.getByRole("region", { name: "Saved versions of this script group" });
+    const items = within(line).getAllByRole("listitem");
+    expect(items.map((item) => item.textContent)).toEqual([
+      "v1.0.0with rollback",
+      "v1.2.0no rollbackretired",
+      "v1.3.0this draft, not saved",
+    ]);
+    expect(items[1]).toHaveAttribute("title", expect.stringMatching(/^Retired: Deploy no longer offers this version/));
+    expect(items[0]).not.toHaveAttribute("title");
+  });
+
   it("is not drawn before a script group is picked", async () => {
     setRoutes(baseRoutes());
     render(<ScriptEditorPage />);

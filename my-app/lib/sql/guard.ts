@@ -421,7 +421,14 @@ export function findRowDestroyingStatements(sql: string): string[] {
   const dropsColumn = found(/\bDROP\s+COLUMN\b/i) || statements.some(dropsColumnWithoutKeyword);
 
   const checks: [boolean, string][] = [
-    [found(/\bTRUNCATE\b/i), "TRUNCATE"],
+    // Only a statement that STARTS with TRUNCATE empties a table. The word
+    // also turns up in statements that delete nothing: a privilege list
+    // (GRANT SELECT, TRUNCATE ON t TO r, REVOKE TRUNCATE, ALTER DEFAULT
+    // PRIVILEGES ... GRANT TRUNCATE) and a trigger (BEFORE TRUNCATE ON t).
+    // Searching the whole script for the word flagged every generated GRANT
+    // of a table's full privileges as "deletes rows", a false alarm a client
+    // tester hit on his first deploy.
+    [statements.some((statement) => /^truncate\b/.test(statement)), "TRUNCATE"],
     // MERGE ... WHEN MATCHED THEN DELETE deletes rows without the word FROM.
     [found(/\bDELETE\s+FROM\b/i) || found(/\bTHEN\s+DELETE\b/i), "DELETE"],
     [found(/\bDROP\s+TABLE\b/i), "DROP TABLE"],

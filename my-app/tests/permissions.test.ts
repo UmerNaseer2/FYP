@@ -59,6 +59,7 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "comparison_sets:delete": "editor",
   "scripts:create": "editor",
   "scripts:read": "viewer",
+  "scripts:delete": "admin",
   "deploy:read": "viewer",
   "deploy:run": "editor",
   "approvals:create": "editor",

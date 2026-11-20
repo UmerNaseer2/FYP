@@ -16,6 +16,9 @@
 // the registry as a whole can't be read (a bad token, a wrong repository
 // name, GitHub down) the answer is a readable 502, never an empty list.
 //
+// A version with a v<version>.retired.md note beside it is sent with
+// retired: true, so Deploy stops offering it (POST /api/github/retire).
+//
 // Each version says how its rollback reads (rollback_state), and down_sql is
 // sent ONLY when the rollback is usable. A rollback that runs nothing, or one
 // that opens or closes its own transaction, is labelled instead of offered,
@@ -42,7 +45,9 @@ import { groupRegistryFiles, isOrganizationFolder, registryRoot } from "@/lib/gi
 import {
   describeGitHubFailure,
   githubErrorCode,
+  isRetiredVersion,
   pulledRollbackState,
+  retiredNoteVersions,
   type PulledRollbackState,
 } from "@/lib/github/registry-push";
 import { compareVersions } from "@/lib/versions/script-status";
@@ -74,6 +79,12 @@ export type GitHubScript = {
    * but could not be downloaded). Only "usable" can be run from Deploy.
    */
   rollback_state: PulledRollbackState;
+  /**
+   * Present when a v<version>.retired.md note sits beside this version: it is
+   * retired, so Deploy no longer offers it to any database. Databases that
+   * already ran it keep it, and can still roll it back.
+   */
+  retired?: true;
 };
 
 // Finishes describeGitHubFailure's "while trying to ..." sentence.
@@ -203,6 +214,8 @@ async function readFamily(
   // v1.2.0.down.sql (its rollback). Group by version first, so the rollback
   // is paired with its migration instead of listed as a version of its own.
   const byVersion = groupRegistryFiles(files.filter((file) => file.type === "file"));
+  // A v1.2.0.retired.md note beside a version retires it (POST /api/github/retire).
+  const retired = retiredNoteVersions(files);
   const found: GitHubScript[] = [];
 
   await Promise.all(
@@ -244,6 +257,7 @@ async function readFamily(
         sql_content: sql,
         ...(rollbackState === "usable" && downText !== null ? { down_sql: downText } : {}),
         rollback_state: rollbackState,
+        ...(isRetiredVersion(retired, version) ? { retired: true as const } : {}),
       });
     }),
   );

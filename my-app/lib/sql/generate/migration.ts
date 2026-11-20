@@ -2,14 +2,16 @@
 // statements out in the order the script runs.
 
 import type { CompareReport } from "../../compare/types";
-import { ownedSequenceRenames, possibleTableRenameNote } from "./alter-helpers";
+import { ownedSequenceRenamePairs, ownedSequenceRenameStatement, possibleTableRenameNote } from "./alter-helpers";
 import { alterStatementsForMatch } from "./alter-table";
 import { q } from "./basics";
 import { retypesBehindKeptComputedColumns } from "./column-changes";
 import { sequencePlanFor, usesSerialShorthand } from "./columns";
 import { inboundForeignKeysByTable } from "./inbound-keys";
 import { dropIndexesFirst } from "./indexes";
+import { freeReusedNames } from "./name-clashes";
 import { objectPhases } from "./object-phases";
+import { findPrivilege } from "./object-phase-types";
 import { holdBackDropsStillInUse } from "./safe-mode";
 import { columnSequenceStatements } from "./sequences";
 import { onlyIfMissing, tableConstraintQuery } from "./statement-helpers";
@@ -26,18 +28,19 @@ import { viewsCascadedBy } from "./views";
  * The returned statements are ordered so they can be run top-to-bottom without
  * manual reordering:
  *
- *    1. Types and standalone sequences — a column may use one
- *    2. Drop views — they read the tables everything below is about to change
- *    3. Rename tables in B to match A's names
- *    4. CREATE TABLE for tables only in A (its FK constraints are queued)
- *    5. Functions and procedures — a trigger or a CHECK may call one
- *    6. ALTER matched tables (renames → adds → type/null → constraints → DROP COLUMN)
- *    7. Drop tables that are only in B
- *    8. Indexes, now that every column exists
- *    9. FK constraints, now that every table and column exists
- *   10. Triggers
- *   11. Create views, last of the additive work: every table they read is final
- *   12. Drop the routines, types and sequences nothing uses any more
+ *    1. Move old keys, indexes and sequences off names the script needs
+ *    2. Types and standalone sequences — a column may use one
+ *    3. Drop views — they read the tables everything below is about to change
+ *    4. Rename tables in B to match A's names
+ *    5. CREATE TABLE for tables only in A (its FK constraints are queued)
+ *    6. Functions and procedures — a trigger or a CHECK may call one
+ *    7. ALTER matched tables (renames → adds → type/null → constraints → DROP COLUMN)
+ *    8. Drop tables that are only in B
+ *    9. Indexes, now that every column exists
+ *   10. FK constraints, now that every table and column exists
+ *   11. Triggers
+ *   12. Create views, last of the additive work: every table they read is final
+ *   13. Drop the routines, types and sequences nothing uses any more
  *
  * The steps are named rather than numbered in the code below, so that inserting
  * one does not silently make every cross-reference wrong.
@@ -70,7 +73,22 @@ export function generateMigration(
   const sourceSchema = report.left.schema;
   const statements: SqlStatement[] = [];
   const warnings: string[] = [];
-  const objects = objectPhases(report, options.appliesToSchema ?? report.right.schema);
+  // Which columns may be written as `serial`, and which identity sequences keep
+  // a name of their own. Built once for the whole source schema: who else reads
+  // a sequence, and whether it belongs to anybody, is not something one column
+  // can answer. See sequencePlanFor.
+  const plan = sequencePlanFor(report.left);
+  // Names the script is about to use that the target still gives to something
+  // else. Worked out before anything is written, as it can take an identity
+  // sequence's name back out of the plan, and has some grants written in full.
+  const clashes = freeReusedNames(report, allowDataLoss, plan);
+  const objects = objectPhases(
+    report,
+    options.appliesToSchema ?? report.right.schema,
+    clashes.parkedSequences,
+    clashes.parkedDrops,
+    clashes.adoptedSequences
+  );
   const rightViews = report.right.views ?? [];
 
   // ── Extensions ────────────────────────────────────────────────────────────
@@ -85,11 +103,25 @@ export function generateMigration(
   // COLLATE "x" exactly the way a column can.
   statements.push(...objects.collations);
 
+  // ── Free names the script is about to use ──
+  // An old key, index or sequence that still has a name something new needs
+  // moves out of the way first. Before everything else, and before the table
+  // renames, so these name tables the way the target does. See name-clashes.ts.
+  statements.push(...clashes.statements);
+
   // ── Types and standalone sequences ────────────────────────────────────────
   // A CREATE TABLE below can name an enum or a domain, and a column
   // default can call nextval on a standalone sequence, so both have to exist
   // before any table is built.
-  statements.push(...objects.beforeTables);
+  //
+  // A new standalone sequence whose name a serial or identity column's own
+  // sequence still has waits until that one is renamed (below), or CREATE
+  // SEQUENCE IF NOT EXISTS would see the old one and skip.
+  const ownedRenames = ownedSequenceRenamePairs(report, clashes.freedNames);
+  const namesOwnedRenamesFree = new Set(ownedRenames.map((pair) => pair.from));
+  const waitsForOwnedRename = (statement: SqlStatement) =>
+    statement.kind === "CREATE_SEQUENCE" && namesOwnedRenamesFree.has(statement.tableName);
+  statements.push(...objects.beforeTables.filter((statement) => !waitsForOwnedRename(statement)));
 
   // ── Functions a new table cannot be built without ─────────────────────────
   // After the types above, because a function's arguments or return type can
@@ -108,12 +140,6 @@ export function generateMigration(
   // Which foreign keys elsewhere in the target hold each table's keys in place.
   // Built once, up here, because a table's own diff cannot see them.
   const inboundFks = inboundForeignKeysByTable(report, report.right.schema);
-
-  // Which columns may be written as `serial`. Also built once, and for the same
-  // reason: the question is about the whole source schema — who else reads this
-  // sequence, and does it belong to anybody — and a single column cannot answer
-  // any of it. See sequencePlanFor.
-  const plan = sequencePlanFor(report.left);
 
   // ── Rename tables ─────────────────────────────────────────────────────────
   // Similarity-matched tables have different names in A and B.
@@ -136,7 +162,8 @@ export function generateMigration(
   // Straight after the table renames, so everything below (the sequence
   // settings in the alters, the owner and grant statements at the end) can use
   // the source's name for a serial or identity column's sequence.
-  statements.push(...ownedSequenceRenames(report));
+  statements.push(...ownedRenames.map(ownedSequenceRenameStatement));
+  statements.push(...objects.beforeTables.filter(waitsForOwnedRename));
 
   // ── Drop indexes whose name a new key takes ───────────────────────────────
   // Before the tables are created or altered: see keyNamesTheScriptAdds.
@@ -209,6 +236,8 @@ export function generateMigration(
       report.right.views,
       inboundFks.get(match.right.name) ?? [],
       plan,
+      clashes.parkedKeys.get(match.left.name),
+      findPrivilege(report.right.privileges, `table ${match.right.name}`)?.owner,
     );
     // Safe mode comments a materialized view's drop out, and the retype it was
     // dropped for has to be held back with it — see ObjectPhases.retypeBlockedBy.
@@ -334,7 +363,7 @@ export function generateMigration(
   // what clear the way.
   statements.push(...objects.extensionDrops);
 
-  warnings.push(...objects.warnings);
+  warnings.push(...clashes.warnings, ...objects.warnings);
 
   // Roles are cluster-wide, and the snapshot records one schema. So the script
   // can name a role the target server has never heard of, and GRANT or OWNER
@@ -351,11 +380,9 @@ export function generateMigration(
   for (const statement of objects.privileges) {
     const into =
       statement.kind === "GRANT" ? grantedTo : statement.kind === "ALTER_OWNER" ? ownedBy : null;
-    if (!into) continue;
-    // The role is always last, so the match is anchored at the end: a quoted
-    // object name earlier in the statement can hold " TO " as well.
-    const match = / TO (?:PUBLIC|"((?:[^"]|"")+)")(?: WITH GRANT OPTION)?;$/.exec(statement.sql);
-    if (match?.[1]) into.add(match[1].replace(/""/g, '"'));
+    // PUBLIC is a keyword meaning everybody, not a role anyone has to create.
+    if (!into || statement.role === undefined || statement.role.toUpperCase() === "PUBLIC") continue;
+    into.add(statement.role);
   }
   const roleList = (roles: Set<string>) =>
     [...roles].sort().map((r) => `"${r}"`).join(", ");
@@ -376,9 +403,11 @@ export function generateMigration(
   if (objects.privileges.some((statement) => statement.kind === "ALTER_OWNER")) {
     warnings.push(
       "Everything this script creates is owned by whoever runs it until the " +
-        "ALTER ... OWNER TO statements near the end move it. Running it as a " +
-        "role that cannot reassign ownership leaves the objects owned by that " +
-        "role, which is a difference the next comparison will report.",
+        "ALTER ... OWNER TO statements near the end move it. A login that may " +
+        "not give an object to another role (a superuser may, and so may a " +
+        "member of that role) skips that owner change with a warning, the rest " +
+        "of the script still runs, and the next comparison shows the owner as " +
+        "a difference.",
     );
   }
 

@@ -9,6 +9,7 @@
 import { compareSchemas } from "@/lib/compare/diff";
 import { generateMigration } from "@/lib/sql/generate";
 import type { PrivilegeGrant, PrivilegeSnapshot, SchemaSnapshot } from "@/lib/postgres";
+import { plainSql } from "./helpers/owner-sql";
 import { column, schema, table } from "./helpers/snapshots";
 
 function ordersWith(owner: string, grants: PrivilegeGrant[]): SchemaSnapshot {
@@ -42,7 +43,7 @@ describe("the warning about roles the target may not have", () => {
   it("calls a new owner an owner, not a grant", () => {
     const result = migrate(ordersWith("app_owner", []), ordersWith("postgres", []));
 
-    expect(result.statements.map((s) => s.sql)).toContain('ALTER TABLE "orders" OWNER TO "app_owner";');
+    expect(result.statements.map(plainSql)).toContain('ALTER TABLE "orders" OWNER TO "app_owner";');
     expect(roleWarning(result.warnings)).toMatch(/^This script sets the owner to "app_owner"\. /);
     expect(result.warnings.join("\n")).not.toMatch(/grants to/);
     expect(ownerNote(result.warnings)).toBeDefined();

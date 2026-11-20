@@ -19,6 +19,8 @@ export type SqlStatementKind =
   | "DROP_CONSTRAINT"
   | "RENAME_TABLE"
   | "RENAME_COLUMN"
+  /** An index, or the key an index backs, moved to another name: see name-clashes.ts. */
+  | "RENAME_INDEX"
   | "CREATE_INDEX"
   | "DROP_INDEX"
   | "CREATE_TRIGGER"
@@ -79,6 +81,13 @@ export type SqlStatement = {
    * it in the destructive tally would over-report what the script deletes.
    */
   needsArmedDrop?: boolean;
+  /**
+   * For GRANT, REVOKE and ALTER_OWNER: the role the statement names, as
+   * written ("PUBLIC" for everybody). The role warning reads it here, because
+   * an owner change sits inside a DO block and is no longer the last thing in
+   * its SQL.
+   */
+  role?: string;
 };
 
 export type MigrationOptions = {

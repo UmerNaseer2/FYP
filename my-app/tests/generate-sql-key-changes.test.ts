@@ -53,10 +53,13 @@ describe("an index whose name a new key takes", () => {
       schema([table("users", columns(), { uniqueConstraints: [unique("users_email_key", ["email"])], indexes: [] })]),
       schema([table("users", columns(), { indexes: [plainIndex] })])
     );
-    const drop = position(sql, 'DROP INDEX IF EXISTS "users_email_key"');
+    const drop = position(sql, 'DROP INDEX "users_email_key";');
     const add = position(sql, 'ADD CONSTRAINT "users_email_key"');
     expect(drop).toBeGreaterThan(-1);
     expect(add).toBeGreaterThan(drop);
+    // On a second run the name belongs to the key's own index, so the drop
+    // only touches an index of that name that backs no key.
+    expect(sql[drop]).toContain("con.contype IN ('p', 'u', 'x')");
   });
 
   it("is dropped before a new table that has the key is created", () => {
@@ -67,7 +70,7 @@ describe("an index whose name a new key takes", () => {
       ]),
       schema([table("users", columns(), { indexes: [plainIndex] })])
     );
-    const drop = position(sql, 'DROP INDEX IF EXISTS "users_email_key"');
+    const drop = position(sql, 'DROP INDEX "users_email_key";');
     const create = position(sql, 'CREATE TABLE IF NOT EXISTS "people"');
     expect(drop).toBeGreaterThan(-1);
     expect(create).toBeGreaterThan(drop);

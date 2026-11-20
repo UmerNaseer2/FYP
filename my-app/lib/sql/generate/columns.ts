@@ -56,11 +56,19 @@ export type SequencePlan = {
    * ahead of every table, so a column reading one has nothing to build.
    */
   standalone: Set<string>;
+  /**
+   * Identity columns whose sequence the source calls something other than
+   * "<table>_<column>_seq", by table and then column. A table renamed after it
+   * was made keeps its first sequence name, and the script gives the column the
+   * same one. freeReusedNames takes a name back out while the target still has
+   * something else under it.
+   */
+  identityNames: Map<string, Map<string, string>>;
 };
 
 /** An empty plan: nothing is a serial, nothing is standalone. */
 export function emptySequencePlan(): SequencePlan {
-  return { shorthand: new Map(), standalone: new Set() };
+  return { shorthand: new Map(), standalone: new Set(), identityNames: new Map() };
 }
 
 export function usesSerialShorthand(
@@ -69,6 +77,15 @@ export function usesSerialShorthand(
   columnName: string
 ): boolean {
   return plan.shorthand.get(tableName)?.has(columnName) ?? false;
+}
+
+/** The name an identity column's sequence has in the source, when it is not the usual one. */
+export function identitySequenceName(
+  plan: SequencePlan,
+  tableName: string,
+  columnName: string
+): string | undefined {
+  return plan.identityNames.get(tableName)?.get(columnName);
 }
 
 /**
@@ -139,6 +156,20 @@ export function sequencePlanFor(source: SchemaSnapshot): SequencePlan {
       else plan.shorthand.set(table.name, new Set([col.name]));
     }
   }
+  // An identity column calls its sequence "<table>_<column>_seq" unless told
+  // otherwise, so any other name has to be written out.
+  for (const table of source.tables) {
+    for (const col of table.columns) {
+      if (!col.identity) continue;
+      const record = (sequences ?? []).find(
+        (entry) => sequenceOwnerTable(entry, source.schema) === table.name && entry.ownedByColumn === col.name
+      );
+      if (!record || record.name === `${table.name}_${col.name}_seq`) continue;
+      const names = plan.identityNames.get(table.name) ?? new Map<string, string>();
+      names.set(col.name, record.name);
+      plan.identityNames.set(table.name, names);
+    }
+  }
   return plan;
 }
 
@@ -148,7 +179,9 @@ export function buildColumnDef(
   // Whether the `serial` shorthand is the truth for this column — see
   // sequencePlanFor. The default is the honest answer for a caller that has not
   // worked it out: write the column in full and let its sequence be built.
-  serialOk = false
+  serialOk = false,
+  // The identity sequence's name, when the source gives it one of its own.
+  sequenceName?: string
 ): string {
   // An IDENTITY column in the source stays an IDENTITY column. Identity is
   // restricted to integer types, which have no collation, so none is written.
@@ -156,7 +189,7 @@ export function buildColumnDef(
     const notNull = col.nullable || omitNotNull ? "" : " NOT NULL";
     return (
       `${q(col.name)} ${col.typeDisplay} ` +
-      `GENERATED ${col.identity} AS IDENTITY${identityOptionsSuffix(col)}${notNull}`
+      `GENERATED ${col.identity} AS IDENTITY${identityOptionsSuffix(col, sequenceName)}${notNull}`
     );
   }
 

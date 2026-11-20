@@ -34,11 +34,12 @@ import { useAiAccess } from "@/components/studio/AiPanel";
 import { apiFetch } from "@/lib/ui/api-fetch";
 import { newRunId } from "@/lib/deploy/run-id";
 import { readApplyFailure } from "@/lib/deploy/apply-failure";
+import { readRunWarnings } from "@/lib/deploy/run-warnings";
+import { countOf } from "@/lib/ui/plural";
 import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
 import { describeChangeType } from "@/lib/versions/change-type";
 import { canExecute, toExecuteRole } from "@/lib/connections/access";
 import { readAppliedVersion, readFamilyVersions } from "@/lib/versions/family-reads";
-import { compareVersions } from "@/lib/versions/script-status";
 import {
   isRollbackWriteAnswer,
   isRollbackWriteChecks,
@@ -61,6 +62,7 @@ import {
   quickLevelLabel,
   quickRunSql,
   quickSqlProblem,
+  quickVersionsAhead,
 } from "@/lib/deploy/quick-run";
 
 export type QuickRunConnection = {
@@ -99,10 +101,12 @@ type Props = {
 
 type VersionRead =
   | { status: "loading" }
-  | { status: "ok"; applied: string | null; github: string[] }
+  | { status: "ok"; applied: string | null; github: string[]; retired: string[] }
   | { status: "error"; message: string };
 
-type RunResult = { name: string; statements: number | null };
+// `warnings` are what PostgreSQL warned about while the version ran, and
+// `moreWarnings` counts any past those (lib/deploy/run-warnings.ts).
+type RunResult = { name: string; statements: number | null; warnings: string[]; moreWarnings: number };
 
 type Phase =
   | { kind: "idle" }
@@ -121,6 +125,8 @@ type Phase =
       connectionName: string;
       withRollback: boolean;
       registry: RegistryNote;
+      warnings: string[];
+      moreWarnings: number;
     };
 
 type AiRollback = { summary: string; cannot: string; checks: RollbackWriteChecks | null };
@@ -281,7 +287,7 @@ export function QuickRun(props: Props) {
       const [applied, github] = await Promise.all([
         readAppliedVersion(Number(connectionId), schema, group),
         githubMissing
-          ? Promise.resolve({ ok: true as const, versions: [] as string[] })
+          ? Promise.resolve({ ok: true as const, versions: [] as string[], retired: [] as string[] })
           : readFamilyVersions(connection.database_name, schema, group),
       ]);
       if (!current) return;
@@ -296,7 +302,7 @@ export function QuickRun(props: Props) {
         setVersions({ status: "error", message: github.error });
         return;
       }
-      setVersions({ status: "ok", applied: applied.version, github: github.versions });
+      setVersions({ status: "ok", applied: applied.version, github: github.versions, retired: github.retired });
     })();
     return () => {
       current = false;
@@ -319,10 +325,11 @@ export function QuickRun(props: Props) {
     versions.status === "ok" && sql.trim() !== ""
       ? nextQuickVersion(sql, [versions.applied, ...versions.github])
       : null;
+  // GitHub's versions this schema has not run, leaving out the retired ones:
+  // Deploy does not offer those, so they hold nothing up. They still count
+  // for the next number above (pickedVersion), since their numbers stay taken.
   const githubAhead =
-    versions.status === "ok"
-      ? versions.github.filter((v) => !versions.applied || compareVersions(v, versions.applied) > 0)
-      : [];
+    versions.status === "ok" ? quickVersionsAhead(versions.applied, versions.github, versions.retired) : [];
 
   const ready =
     !!connection &&
@@ -404,6 +411,7 @@ export function QuickRun(props: Props) {
           results: results.map((r) => ({
             name: typeof r.script_name === "string" ? r.script_name : group,
             statements: typeof r.statements === "number" ? r.statements : null,
+            ...readRunWarnings(r),
           })),
         });
         return;
@@ -418,6 +426,8 @@ export function QuickRun(props: Props) {
 
     const committed = status !== null && status < 300 && data?.success === true;
     if (committed) {
+      const { warnings, moreWarnings } = readRunWarnings(results[0]);
+      const warningTotal = warnings.length + moreWarnings;
       setPhase({
         kind: "done",
         version: version.version,
@@ -428,8 +438,13 @@ export function QuickRun(props: Props) {
         connectionName: connection.name,
         withRollback: rollbackText.trim() !== "",
         registry: describeRegistry(readArchivedVersions(data?.registry)),
+        warnings,
+        moreWarnings,
       });
-      showToast(`Deployed ${group} v${version.version} to ${schema}`);
+      showToast(
+        `Deployed ${group} v${version.version} to ${schema}` +
+          (warningTotal > 0 ? ` · ${countOf(warningTotal, "warning")} from PostgreSQL` : "")
+      );
       onRan({ connectionId, schema, group });
       return;
     }
@@ -1208,6 +1223,8 @@ function DryPassed({
   githubMissing: boolean;
 }) {
   const statements = phase.results.reduce((sum, r) => sum + (r.statements ?? 0), 0);
+  const warnings = phase.results.flatMap((r) => r.warnings);
+  const moreWarnings = phase.results.reduce((sum, r) => sum + r.moreWarnings, 0);
   return (
     <div className={`qr-result qr-result--good${stale ? " qr-result--stale" : ""}`} role="status">
       <span className="qr-result__mark qr-result__mark--good">
@@ -1222,6 +1239,13 @@ function DryPassed({
             {savesAs ?? "this version"}.
           </span>
         )}
+        {(warnings.length > 0 || moreWarnings > 0) && (
+          <div className="qr-note qr-note--warn qr-note--block">
+            <strong>PostgreSQL warned</strong>
+            <WarningLines warnings={warnings} moreWarnings={moreWarnings} />
+            <span>Deploy runs the same SQL, so expect the same warnings then.</span>
+          </div>
+        )}
         {!stale && savesAs && (
           <div className="qr-when">
             <strong>When you press Deploy</strong>
@@ -1233,6 +1257,22 @@ function DryPassed({
         )}
       </div>
     </div>
+  );
+}
+
+// The warnings PostgreSQL sent while a version ran, one line each, then a count
+// of any the server did not list. The run still worked: each line names
+// something it left undone, such as an owner change the login may not make.
+function WarningLines({ warnings, moreWarnings }: { warnings: string[]; moreWarnings: number }) {
+  return (
+    <>
+      {warnings.map((warning, index) => (
+        <span key={index} className="qr-warned">
+          {warning}
+        </span>
+      ))}
+      {moreWarnings > 0 && <span>{countOf(moreWarnings, "more warning")}, not listed here.</span>}
+    </>
   );
 }
 
@@ -1348,6 +1388,15 @@ function DoneView({
                     {phase.withRollback ? ` and v${phase.version}.down.sql` : ""}
                   </span>
                 )}
+              </div>
+            </li>
+          )}
+          {(phase.warnings.length > 0 || phase.moreWarnings > 0) && (
+            <li className="qr-done__warn">
+              <AlertTriangleIcon size={16} />
+              <div>
+                <strong>PostgreSQL warned</strong>
+                <WarningLines warnings={phase.warnings} moreWarnings={phase.moreWarnings} />
               </div>
             </li>
           )}

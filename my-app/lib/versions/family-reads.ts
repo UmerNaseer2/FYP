@@ -11,8 +11,12 @@
 import { looksLikeVersion } from "@/lib/versions/script-status";
 import { apiFetch } from "@/lib/ui/api-fetch";
 
-/** What GitHub holds for one script family, or why it could not be read. */
-export type FamilyVersionsRead = { ok: true; versions: string[] } | { ok: false; error: string };
+/**
+ * What GitHub holds for one script family, or why it could not be read.
+ * `retired` lists the versions retired in GitHub; they stay in `versions`,
+ * because a retired number stays taken.
+ */
+export type FamilyVersionsRead = { ok: true; versions: string[]; retired: string[] } | { ok: false; error: string };
 
 /** What the target has applied for one script family; { ok: false } when it could not be read. */
 export type AppliedVersionRead = { ok: true; version: string | null } | { ok: false };
@@ -33,10 +37,16 @@ export async function readFamilyVersions(
   try {
     const res = await apiFetch(`/api/github/family?${query.toString()}`, { cache: "no-store" });
     const data = (await res.json().catch(() => null)) as
-      | { ok?: unknown; versions?: unknown; error?: unknown }
+      | { ok?: unknown; versions?: unknown; retired?: unknown; error?: unknown }
       | null;
     if (res.ok && data?.ok === true && Array.isArray(data.versions)) {
-      return { ok: true, versions: data.versions.filter((v): v is string => typeof v === "string") };
+      const texts = (list: unknown[]) => list.filter((v): v is string => typeof v === "string");
+      return {
+        ok: true,
+        versions: texts(data.versions),
+        // An older server sends no list: then nothing is retired.
+        retired: Array.isArray(data.retired) ? texts(data.retired) : [],
+      };
     }
     return {
       ok: false,

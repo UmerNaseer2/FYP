@@ -12,7 +12,7 @@ import { constraintChangeSeverity, columnMatchPercent } from "../../compare/diff
 import { sequenceOwnerTable } from "../../postgres/snapshot-facts";
 import { q } from "./basics";
 import { constraintTouchesColumn, nonFkConstraints } from "./column-changes";
-import { manualNote, onlyIfMissing, tableConstraintQuery } from "./statement-helpers";
+import { manualNote, onlyIfMissing, onlyIfPresent, ownedSequenceQuery, tableConstraintQuery } from "./statement-helpers";
 import { buildFkDef } from "./tables";
 import type { SqlStatement } from "./types";
 
@@ -160,10 +160,26 @@ export function dropColumnOnlyInTarget(col: ColumnSnapshot, tName: string): SqlS
  *
  * So the sequence is renamed too, which is also what makes the two schemas
  * level afterwards. The column's default follows the sequence itself, not its
- * name, so nothing else has to change. IF EXISTS so a second run, when the old
- * name is already gone, skips it.
+ * name, so nothing else has to change. See ownedSequenceRenameStatement for
+ * when a run skips one.
  */
-export function ownedSequenceRenames(report: CompareReport): SqlStatement[] {
+export interface OwnedSequenceRename {
+  /** The target's name for the sequence. */
+  from: string;
+  /** The source's name for it. */
+  to: string;
+  /** The table's name once the table renames have run (the source's). */
+  tableName: string;
+  /** The column, by the source's name. */
+  columnName: string;
+}
+
+/** The renames themselves, as data: migration.ts also needs the old names. */
+export function ownedSequenceRenamePairs(
+  report: CompareReport,
+  // Names name-clashes.ts moved out of the way first, so free again by now.
+  freed: Set<string> = new Set()
+): OwnedSequenceRename[] {
   const sourceSequences = report.left.sequences ?? [];
   const targetSequences = report.right.sequences ?? [];
   // Tables, views and sequences share one set of names in a schema, so a new
@@ -173,8 +189,9 @@ export function ownedSequenceRenames(report: CompareReport): SqlStatement[] {
     ...(report.right.views ?? []).map((view) => view.name),
     ...targetSequences.map((sequence) => sequence.name),
   ]);
+  for (const name of freed) taken.delete(name);
 
-  const statements: SqlStatement[] = [];
+  const pairs: OwnedSequenceRename[] = [];
   for (const match of report.matchedTables) {
     for (const col of match.columnMatches) {
       // Read the owner as a name: it comes back quoted when it needs quotes.
@@ -195,17 +212,34 @@ export function ownedSequenceRenames(report: CompareReport): SqlStatement[] {
       const to = source[0].name;
       if (from === to || taken.has(to)) continue;
       taken.add(to);
-      statements.push({
-        sql: `ALTER SEQUENCE IF EXISTS ${q(from)} RENAME TO ${q(to)};`,
-        description:
-          `Rename sequence "${from}" → "${to}" (the sequence behind ` +
-          `"${match.left.name}"."${col.left.name}", to match the source)`,
-        kind: "ALTER_SEQUENCE",
-        severity: "info",
-        tableName: match.left.name,
-        destructive: false,
-      });
+      pairs.push({ from, to, tableName: match.left.name, columnName: col.left.name });
     }
   }
-  return statements;
+  return pairs;
+}
+
+/**
+ * One rename from ownedSequenceRenamePairs.
+ *
+ * It runs only while the old name is still a sequence tied to that table. A
+ * second run finds the old name gone and skips it. So does a database where
+ * the old name is something else by now, such as the loose sequence a
+ * rollback finds when the forward script had to keep one (see the SEQUENCE
+ * drops in object-phases.ts): renaming that one would take the name the
+ * table's own sequence already has and stop the whole run.
+ */
+export function ownedSequenceRenameStatement(pair: OwnedSequenceRename): SqlStatement {
+  return {
+    sql: onlyIfPresent(
+      ownedSequenceQuery(pair.from, pair.tableName, "'a', 'i'"),
+      `ALTER SEQUENCE ${q(pair.from)} RENAME TO ${q(pair.to)};`
+    ),
+    description:
+      `Rename sequence "${pair.from}" → "${pair.to}" (the sequence behind ` +
+      `"${pair.tableName}"."${pair.columnName}", to match the source)`,
+    kind: "ALTER_SEQUENCE",
+    severity: "info",
+    tableName: pair.tableName,
+    destructive: false,
+  };
 }

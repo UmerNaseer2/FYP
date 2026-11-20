@@ -38,6 +38,7 @@ import {
   buildColumnDef,
   collateSuffix,
   emptySequencePlan,
+  identitySequenceName,
   isNextvalDefault,
   restoreNotNullStatement,
   serialTypeFor,
@@ -86,7 +87,13 @@ export function alterStatementsForMatch(
   // Which of the source's columns the `serial` shorthand describes truthfully.
   // An empty plan means "none of them", which is the safe answer: the column is
   // written out in full and its sequence built beside it.
-  plan: SequencePlan = emptySequencePlan()
+  plan: SequencePlan = emptySequencePlan(),
+  // Keys name-clashes.ts moved to a parked name first, by their name in the
+  // target. Their drop further down uses the parked name.
+  parkedKeys: Map<string, string> = new Map(),
+  // The table's owner in the target, so a sequence tied to one of its columns
+  // can be given the same owner first. See sequenceOwnerAlignment.
+  tableOwner?: string
 ): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
   const stmts: SqlStatement[] = [];
   // New FK ADD CONSTRAINTs are collected here and returned separately so the
@@ -151,12 +158,12 @@ export function alterStatementsForMatch(
     // Same sequence-first, ownership-after shape a new table uses for a column
     // the `serial` shorthand cannot describe — see columnSequenceStatements.
     const serialOk = usesSerialShorthand(plan, tName, col.name);
-    const tunedSerial = columnSequenceStatements(col, tName, serialOk);
+    const tunedSerial = columnSequenceStatements(col, tName, serialOk, tableOwner);
     const renameNote = possibleColumnRenameNote(match, col.name, tName);
     if (renameNote) out.push(renameNote);
     out.push(...tunedSerial.before);
     out.push({
-      sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky, serialOk)};`,
+      sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky, serialOk, identitySequenceName(plan, tName, col.name))};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
         (risky ? " — added nullable; the next statement puts NOT NULL back" : ""),
@@ -289,7 +296,7 @@ export function alterStatementsForMatch(
             dropsStoredValues || losesComputedValues
           )
         );
-        if (entry.survives && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
+        if (entry.survives && !entry.handledByOwner && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
           fkStmts.push(restoreInboundKeyStatement(entry));
         }
       }
@@ -326,10 +333,10 @@ export function alterStatementsForMatch(
       // A rebuild that lands on an ordinary column can land on a serial one, so
       // it asks the same question the add-column section does.
       const rebuiltSerialOk = usesSerialShorthand(plan, tName, colMatch.left.name);
-      const rebuiltSequence = columnSequenceStatements(colMatch.left, tName, rebuiltSerialOk);
+      const rebuiltSequence = columnSequenceStatements(colMatch.left, tName, rebuiltSerialOk, tableOwner);
       addTo.push(...rebuiltSequence.before);
       addTo.push({
-        sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left, risky, rebuiltSerialOk)};`,
+        sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left, risky, rebuiltSerialOk, identitySequenceName(plan, tName, colMatch.left.name))};`,
         description:
           (colMatch.left.generated
             ? `Rebuild "${colName}" in "${tName}" as ${leftComputed}`
@@ -862,14 +869,19 @@ export function alterStatementsForMatch(
         // Only worth putting back if there will be something to point at: the
         // source has to keep a key over the same columns. When it does not, the
         // reference is gone for good and the description above is the warning.
-        if (entry.survives && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
+        if (entry.survives && !entry.handledByOwner && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
           fkStmts.push(restoreInboundKeyStatement(entry));
         }
       }
     }
+    // name-clashes.ts may have moved the key to a parked name first, so that a
+    // key on another table could take this one. The drop follows it there.
+    const dropName = parkedKeys.get(constraintName) ?? constraintName;
     stmts.push({
-      sql: `ALTER TABLE ${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
-      description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
+      sql: `ALTER TABLE ${q(tName)} DROP CONSTRAINT IF EXISTS ${q(dropName)};`,
+      description:
+        `Drop ${diff.kind} "${constraintName}" from "${tName}"` +
+        (dropName === constraintName ? "" : ` (now called "${dropName}")`),
       kind: "DROP_CONSTRAINT",
       severity: constraintChangeSeverity(diff.kind, "drop"),
       tableName: tName,

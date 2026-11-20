@@ -4,6 +4,7 @@
 // splits into two, a comment-only rollback saved as if it undid something.
 import {
   CHANGE_LEVELS,
+  MAX_RETIRE_REASON_LENGTH,
   ROLLBACK_AND_NO_ROLLBACK,
   ROLLBACK_COMMENTS_ONLY,
   ROLLBACK_MISSING,
@@ -15,12 +16,19 @@ import {
   describePush,
   familyPathProblem,
   familyVersions,
+  findRetiredNote,
   findVersionFiles,
   githubErrorCode,
+  isRetiredVersion,
   normalizePushVersion,
   pulledRollbackState,
   pushCommitMessage,
   readChangeLevel,
+  readRetireReason,
+  readRetireVersion,
+  retireCommitMessage,
+  retiredMarkerText,
+  retiredNoteVersions,
   rollbackChoiceProblem,
   rollbackCommitMessage,
   rollbackFileState,
@@ -29,6 +37,7 @@ import {
   validateScriptName,
   type RegistryEntry,
 } from "@/lib/github/registry-push";
+import { parseRetiredMarkerName, retiredMarkerName } from "@/lib/github/registry-paths";
 
 describe("validateRegistrySegment", () => {
   it("accepts ordinary database and schema names", () => {
@@ -198,6 +207,172 @@ describe("familyVersions", () => {
     expect(result.published).toEqual(["1.9.0", "1.10.0"]);
     // Keyed by the X.Y.Z spelling, whatever the file name used.
     expect(result.orphanRollbacks).toEqual({ "1.1.0": "c" });
+  });
+});
+
+// A retired version keeps its files and gains a v<version>.retired.md note,
+// so Deploy stops offering it. These rules read the notes.
+describe("retired notes", () => {
+  // v1.0 (an old spelling) and v1.2.0 are retired. v9.0.0's note sits beside
+  // nothing, after its migration was deleted by hand.
+  const folder: RegistryEntry[] = [
+    { name: "v1.0.sql", sha: "a" },
+    { name: "v1.0.0.retired.md", sha: "b" },
+    { name: "v1.1.0.sql", sha: "c" },
+    { name: "v1.2.0.sql", sha: "d" },
+    { name: "v1.2.0.retired.md", sha: "e" },
+    { name: "v9.0.0.retired.md", sha: "f" },
+  ];
+
+  it("keeps a retired version published, so its number stays taken, and lists it as retired", () => {
+    const result = familyVersions(folder);
+    expect(result.published).toEqual(["1.0", "1.1.0", "1.2.0"]);
+    // In the migration's spelling. A note beside no migration retires nothing.
+    expect(result.retired).toEqual(["1.0", "1.2.0"]);
+    // A note is not a rollback either.
+    expect(result.orphanRollbacks).toEqual({});
+  });
+
+  it("reads only file entries named like a note for a version", () => {
+    const entries: RegistryEntry[] = [
+      { name: "v1.0.0.retired.md", sha: "a", type: "file" },
+      { name: "V2.0.0.RETIRED.MD", sha: "b" },
+      { name: "v3.0.0.retired.md", sha: "c", type: "dir" },
+      { name: "v4.0.0.sql", sha: "d", type: "file" },
+      { name: "README.md", sha: "e", type: "file" },
+      { name: "notes.retired.md", sha: "f", type: "file" },
+      { name: "v5.0.0.retired.md.bak", sha: "g", type: "file" },
+    ];
+    expect(retiredNoteVersions(entries)).toEqual(["1.0.0", "2.0.0"]);
+  });
+
+  it("matches a retired version however either side spells it", () => {
+    expect(isRetiredVersion(["1.0", "1.2.0"], "1.0.0")).toBe(true);
+    expect(isRetiredVersion(["1.0", "1.2.0"], "1.2")).toBe(true);
+    expect(isRetiredVersion(["1.0", "1.2.0"], "1.1.0")).toBe(false);
+    expect(isRetiredVersion([], "1.0.0")).toBe(false);
+  });
+
+  it("finds a version's note, with its sha, under another spelling", () => {
+    expect(findRetiredNote(folder, "1.0")).toEqual({ name: "v1.0.0.retired.md", sha: "b" });
+    expect(findRetiredNote(folder, "1.2.0")).toEqual({ name: "v1.2.0.retired.md", sha: "e" });
+    expect(findRetiredNote(folder, "1.1.0")).toBeNull();
+  });
+
+  it("names a note after its migration's spelling, and reads the name back", () => {
+    expect(retiredMarkerName("1.2.0")).toBe("v1.2.0.retired.md");
+    expect(retiredMarkerName("1.0")).toBe("v1.0.retired.md");
+    expect(parseRetiredMarkerName("v1.2.0.retired.md")).toBe("1.2.0");
+    expect(parseRetiredMarkerName("V1.2.0.RETIRED.MD")).toBe("1.2.0");
+    expect(parseRetiredMarkerName("1.2.0.retired.md")).toBe("1.2.0");
+    expect(parseRetiredMarkerName("v1.2.0.sql")).toBeNull();
+    expect(parseRetiredMarkerName("v1.2.0.retired.md.bak")).toBeNull();
+    expect(parseRetiredMarkerName(".retired.md")).toBeNull();
+  });
+});
+
+describe("readRetireVersion", () => {
+  it("drops a leading v and the spaces around it", () => {
+    expect(readRetireVersion("v1.2.0")).toEqual({ version: "1.2.0" });
+    expect(readRetireVersion("V1.2.0")).toEqual({ version: "1.2.0" });
+    expect(readRetireVersion(" 1.2.0 ")).toEqual({ version: "1.2.0" });
+  });
+
+  it("accepts an old spelling or a pre-release, since the route retires only what the folder holds", () => {
+    expect(readRetireVersion("1.0")).toEqual({ version: "1.0" });
+    expect(readRetireVersion("2.0.0-rc1")).toEqual({ version: "2.0.0-rc1" });
+  });
+
+  it("asks for a version when there is none", () => {
+    for (const raw of ["", "   ", undefined, null, 5]) {
+      expect(readRetireVersion(raw)).toEqual({ error: "Say which version to retire." });
+    }
+  });
+
+  it("refuses text that is not a version, including a path", () => {
+    expect(readRetireVersion("abc")).toEqual({ error: '"abc" is not a version number, such as 1.2.0.' });
+    expect(readRetireVersion("1.2.0/../x")).toEqual({ error: '"1.2.0/../x" is not a version number, such as 1.2.0.' });
+    expect(readRetireVersion("v")).toEqual({ error: '"v" is not a version number, such as 1.2.0.' });
+  });
+
+  it("cuts a very long value short in the message", () => {
+    const long = `1.${"0".repeat(49)}`;
+    expect(readRetireVersion(long)).toEqual({
+      error: `"${long.slice(0, 40)}..." is not a version number, such as 1.2.0.`,
+    });
+  });
+});
+
+describe("readRetireReason", () => {
+  it("reads no reason as none", () => {
+    expect(readRetireReason(undefined)).toEqual({ reason: null });
+    expect(readRetireReason(null)).toEqual({ reason: null });
+    expect(readRetireReason("  \n ")).toEqual({ reason: null });
+  });
+
+  it("keeps line breaks and tabs, written the same way whatever sent them", () => {
+    expect(readRetireReason("  a\r\nb\rc\td  ")).toEqual({ reason: "a\nb\nc\td" });
+  });
+
+  it("allows 500 characters and refuses 501", () => {
+    expect(MAX_RETIRE_REASON_LENGTH).toBe(500);
+    expect(readRetireReason("x".repeat(500))).toEqual({ reason: "x".repeat(500) });
+    expect(readRetireReason("x".repeat(501))).toEqual({
+      error: "The reason is 501 characters long. Keep it to 500 characters or fewer.",
+    });
+  });
+
+  it("refuses an invisible character nobody could see to remove", () => {
+    for (const raw of ["bad\u0007one", "bad\u007fone", "bad\u0000one"]) {
+      expect(readRetireReason(raw)).toEqual({
+        error: "The reason contains an invisible character. Retype it and try again.",
+      });
+    }
+  });
+
+  it("refuses a reason that is not text", () => {
+    expect(readRetireReason(5)).toEqual({ error: "The reason was sent, but not as text." });
+    expect(readRetireReason({ text: "x" })).toEqual({ error: "The reason was sent, but not as text." });
+  });
+});
+
+describe("retireCommitMessage and retiredMarkerText", () => {
+  const IDENTITY = { database: "db", schema: "public", scriptName: "orders_fix", version: "1.2.0" };
+
+  it("names the version in the subject and puts the reason in the body", () => {
+    expect(retireCommitMessage(IDENTITY)).toBe("db/public/orders_fix v1.2.0: retire");
+    expect(retireCommitMessage(IDENTITY, null)).toBe("db/public/orders_fix v1.2.0: retire");
+    expect(retireCommitMessage(IDENTITY, "  ")).toBe("db/public/orders_fix v1.2.0: retire");
+    expect(retireCommitMessage(IDENTITY, "Breaks the replica")).toBe(
+      "db/public/orders_fix v1.2.0: retire\n\nBreaks the replica"
+    );
+  });
+
+  it("cuts a very long body short", () => {
+    const body = retireCommitMessage(IDENTITY, "y".repeat(1500)).split("\n\n")[1];
+    expect(body).toHaveLength(1000);
+    expect(body.endsWith("...")).toBe(true);
+  });
+
+  it("writes a note that says what retiring did, what it left alone, and how to undo it", () => {
+    expect(retiredMarkerText(IDENTITY, "Breaks the replica", new Date("2026-11-19T12:00:00Z"))).toBe(
+      "# v1.2.0 of orders_fix is retired\n\n" +
+        "Deploy no longer offers this version to any database, so the versions after it can run.\n\n" +
+        "- Its number stays taken: the next version must be higher.\n" +
+        "- Databases that already ran it keep it, and can still roll it back.\n" +
+        "- Its SQL stays in this folder.\n\n" +
+        "Retired on 2026-11-19 (UTC).\n\n" +
+        "Reason: Breaks the replica\n\n" +
+        "To bring it back, delete this file.\n"
+    );
+  });
+
+  it("says when no reason was given, and dates the note in UTC", () => {
+    // Late evening west of UTC is already the next day in UTC.
+    const note = retiredMarkerText(IDENTITY, null, new Date("2026-11-19T23:30:00-05:00"));
+    expect(note).toContain("Retired on 2026-11-20 (UTC).");
+    expect(note).toContain("\nNo reason given.\n");
+    expect(note).not.toContain("Reason:");
   });
 });
 

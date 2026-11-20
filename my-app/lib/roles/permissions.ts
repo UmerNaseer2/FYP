@@ -175,6 +175,11 @@ export const FEATURES = [
     actions: {
       create: { does: "save scripts to the registry", from: "editor" },
       read: { does: "open the script registry", from: "viewer" },
+      delete: {
+        does: "retire a saved version so Deploy stops offering it",
+        from: "admin",
+        note: "Its SQL stays in GitHub, and databases that already ran it keep it.",
+      },
     },
   },
   {

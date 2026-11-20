@@ -29,8 +29,13 @@ export type FakeStep = {
    * constraint violation, and a route may read them to name what went wrong.
    */
   error?: { code?: string; message: string; constraint?: string; table?: string };
-  /** Emit this NOTICE before answering, the way RAISE NOTICE arrives. */
-  notice?: string;
+  /**
+   * Emit this before answering, the way RAISE NOTICE arrives. A string is a
+   * NOTICE. The object form sets the severity and SQLSTATE too, for a WARNING
+   * (RAISE WARNING sends severity "WARNING" and code "01000"). A list sends
+   * each one in turn, as a script that raises several does.
+   */
+  notice?: string | FakeNotice | (string | FakeNotice)[];
   /**
    * The database ends the session just before this query arrives (its idle
    * limit, an administrator), and pg reports it the way it does for real
@@ -50,7 +55,10 @@ export type RecordedQuery = {
   queryMode: string | undefined;
 };
 
-type NoticeListener = (notice: { message: string }) => void;
+/** What pg hands a "notice" listener: the text, and for a real one its severity and SQLSTATE. */
+export type FakeNotice = { message: string; severity?: string; code?: string };
+
+type NoticeListener = (notice: FakeNotice) => void;
 /** What pg hands an "error" listener: an Error, with a SQLSTATE code when the database sent it. */
 type ErrorListener = (error: Error & { code?: string }) => void;
 
@@ -129,8 +137,9 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
       client.queries.push({ text, values: boundValues, queryMode });
       if (!step) return { rows: [], rowCount: 0 };
 
-      if (step.notice) {
-        for (const listener of [...listeners]) listener({ message: step.notice });
+      for (const sent of step.notice === undefined ? [] : [step.notice].flat()) {
+        const notice = typeof sent === "string" ? { message: sent } : sent;
+        for (const listener of [...listeners]) listener({ ...notice });
       }
       if (step.error) {
         const error = new Error(step.error.message) as Error & {

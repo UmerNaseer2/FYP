@@ -18,7 +18,8 @@ import type {
   DriftResult,
   DriftPhase,
 } from "./types";
-import { scriptKey, fmtStatements, fmtSecs } from "./helpers";
+import { scriptKey, fmtStatements, fmtSecs, warningCount, warningNotes } from "./helpers";
+import { countOf } from "@/lib/ui/plural";
 import { DriftPanel } from "./DriftPanel";
 import type { PatchPrompt } from "@/lib/deploy/init";
 
@@ -60,6 +61,8 @@ export function VerifyCards({
   driftResult: DriftResult | null;
   driftError: string | null;
 }) {
+  // Warnings PostgreSQL sent while the applied versions ran, listed or not.
+  const warningTotal = appliedScripts.reduce((sum, s) => sum + warningCount(runStatus[scriptKey(s)]), 0);
   return (
     <>
       <div className="dp-result dp-good dp-hero">
@@ -100,6 +103,7 @@ export function VerifyCards({
               <span className="dp-chip dp-ok"><b>{runLastVersion ? vLabel(runLastVersion) : "None"}</b></span>
               <span className="dp-quiet text-[12px]">
                 {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
+                {warningTotal > 0 ? ` · ${countOf(warningTotal, "warning")}` : ""}
               </span>
             </div>
             <div className="dp-row">
@@ -157,18 +161,32 @@ export function VerifyCards({
         <div className="card dp-card">
           <h2 className="dp-h-sm">What was applied</h2>
           <div className="mt-2">
-            {appliedScripts.map((s, i) => (
-              <div key={scriptKey(s)} className="dp-applied">
-                <span className="mono">
-                  <span style={{ color: "var(--ink-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
-                  {s.script_name} <span style={{ color: "var(--ink-3)" }}>{vLabel(s.version)}</span>
-                </span>
-                <span className="pill pill-sync">
-                  <span className="dot" />
-                  applied · {fmtStatements(runStatus[scriptKey(s)]?.statements ?? 0)}
-                </span>
-              </div>
-            ))}
+            {appliedScripts.map((s, i) => {
+              // What PostgreSQL warned about while this version ran, such as
+              // an owner change the login may not make. It still applied.
+              const notes = warningNotes(runStatus[scriptKey(s)]);
+              return (
+                <div key={scriptKey(s)} className="dp-applied">
+                  <span className="mono">
+                    <span style={{ color: "var(--ink-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
+                    {s.script_name} <span style={{ color: "var(--ink-3)" }}>{vLabel(s.version)}</span>
+                  </span>
+                  <span className="pill pill-sync">
+                    <span className="dot" />
+                    applied · {fmtStatements(runStatus[scriptKey(s)]?.statements ?? 0)}
+                  </span>
+                  {notes.length > 0 && (
+                    <div className="dp-applied-notes">
+                      {notes.map((note, index) => (
+                        <div key={index} className="dp-mig-note dp-warn">
+                          {note.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

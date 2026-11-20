@@ -92,6 +92,7 @@ const STATUS_PILL: Record<TimelineStatus["tone"], string> = {
   applied: "pill-sync",
   pending: "pill-pending",
   skipped: "pill-drift",
+  retired: "pill-neutral",
   "rolled-back": "pill-neutral",
   failed: "pill-break",
 };

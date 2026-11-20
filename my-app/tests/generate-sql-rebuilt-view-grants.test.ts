@@ -22,10 +22,11 @@ import {
   type MigrationOptions,
 } from "@/lib/sql/generate";
 import type { PrivilegeGrant, PrivilegeSnapshot, SchemaSnapshot, ViewSnapshot } from "@/lib/postgres";
+import { plainSql } from "./helpers/owner-sql";
 import { column, schema, table } from "./helpers/snapshots";
 
 function runs(source: SchemaSnapshot, target: SchemaSnapshot, options: MigrationOptions = {}): string[] {
-  return statementsThatRun(generateMigration(compareSchemas(source, target), options)).map((s) => s.sql);
+  return statementsThatRun(generateMigration(compareSchemas(source, target), options)).map(plainSql);
 }
 
 function viewGrants(grants: PrivilegeGrant[], over: Partial<PrivilegeSnapshot> = {}): PrivilegeSnapshot {
@@ -105,7 +106,7 @@ describe("a view rebuilt for a column type change", () => {
       shop("integer", [viewGrants([reporter])])
     );
     const rollback = generateRollback(report);
-    const sql = rollback.statements.map((s) => s.sql);
+    const sql = rollback.statements.map(plainSql);
 
     expect(sql).toContain('ALTER VIEW "big_orders" OWNER TO "app_owner";');
     expect(sql).toContain('GRANT SELECT ON TABLE "big_orders" TO "reporter";');

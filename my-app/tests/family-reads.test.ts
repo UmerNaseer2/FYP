@@ -44,6 +44,7 @@ describe("readFamilyVersions", () => {
     await expect(readFamilyVersions("shop", "public", "add_invoices")).resolves.toEqual({
       ok: true,
       versions: ["1.0.0", "1.1.0"],
+      retired: [],
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].init?.cache).toBe("no-store");
@@ -51,7 +52,19 @@ describe("readFamilyVersions", () => {
 
   it("encodes the names in the query string", async () => {
     stubFetch("/api/github/family?database=my+db&schema=s%2F1&script=x", { status: 200, body: { ok: true, versions: [] } });
-    await expect(readFamilyVersions("my db", "s/1", "x")).resolves.toEqual({ ok: true, versions: [] });
+    await expect(readFamilyVersions("my db", "s/1", "x")).resolves.toEqual({ ok: true, versions: [], retired: [] });
+  });
+
+  it("passes on the retired versions, skipping anything that is not text", async () => {
+    stubFetch(FAMILY_URL, {
+      status: 200,
+      body: { ok: true, versions: ["1.0.0", "1.1.0", "1.2.0"], highest: "1.2.0", retired: ["1.1.0", null] },
+    });
+    await expect(readFamilyVersions("shop", "public", "add_invoices")).resolves.toEqual({
+      ok: true,
+      versions: ["1.0.0", "1.1.0", "1.2.0"],
+      retired: ["1.1.0"],
+    });
   });
 
   it("passes on the route's own message when GitHub could not be read", async () => {

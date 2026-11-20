@@ -22,6 +22,7 @@ import {
 } from "@/lib/sql/guard";
 import { analyseRunRisk } from "@/lib/deploy/risk";
 import { readApplyFailure, type ApplyFailure } from "@/lib/deploy/apply-failure";
+import { readRunWarnings } from "@/lib/deploy/run-warnings";
 import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/github/registry-report";
 import { describeChangeType } from "@/lib/versions/change-type";
 import { changeNoteSummary, readChangeNote } from "@/lib/versions/change-note";
@@ -81,6 +82,8 @@ import {
   batchBody,
   selectionChange,
   nameTwoRuns,
+  retiredNote,
+  warningCount,
 } from "./helpers";
 import {
   BEFORE_FIRST,
@@ -96,6 +99,7 @@ import { ShipChecklist } from "./ShipChecklist";
 import { RunPanel } from "./RunPanel";
 import { RunHead, RunList, RunResults } from "./RunStage";
 import { VerifyCards } from "./VerifyStage";
+import { RetireVersionDialog } from "./RetireVersionDialog";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5): Pre-flight → Run → Verify stepper.
@@ -308,6 +312,12 @@ function DeployBody() {
   // Quick run: the side panel that runs typed (or AI-written) SQL as the next
   // version of a script group, through the same apply route. See QuickRun.tsx.
   const [quickOpen, setQuickOpen] = useState(false);
+  // Retire: the version the Retire dialog asks about (null while it is
+  // closed) and its request. See RetireVersionDialog.tsx and
+  // app/api/github/retire/route.ts.
+  const [retireScript, setRetireScript] = useState<GitHubScript | null>(null);
+  const [retireBusy, setRetireBusy] = useState(false);
+  const [retireError, setRetireError] = useState<string | null>(null);
   // The exact ordered batch captured at run start, the run/verify lists render
   // from this, so a post-run preflight refresh can't reshuffle them.
   const [runScripts, setRunScripts] = useState<GitHubScript[]>([]);
@@ -533,8 +543,9 @@ function DeployBody() {
     ).sort();
   }, [scopedScripts, schema]);
 
-  // Scripts not yet applied to the target, strictly greater than its version.
-  const aheadOfTarget = useMemo<GitHubScript[]>(() => {
+  // Every version in GitHub strictly greater than the target's version,
+  // oldest first, retired or not.
+  const aboveTarget = useMemo<GitHubScript[]>(() => {
     if (!scriptGroup || !preflightResult) return [];
     const groupVersions = (groupedScripts[scriptGroup] ?? []).filter(
       (s) => s.schema_name === schema
@@ -545,6 +556,16 @@ function DeployBody() {
       (s) => compareVersions(s.version, preflightResult.currentVersion!) > 0
     );
   }, [scriptGroup, preflightResult, groupedScripts, schema]);
+
+  // Scripts not yet applied to the target, strictly greater than its version.
+  // A version retired in GitHub (a .retired.md note beside it) is left out, so
+  // it no longer blocks the versions after it. The retired ones are named on
+  // screen instead, so none of them disappears without a word.
+  const aheadOfTarget = useMemo(() => aboveTarget.filter((s) => !s.retired), [aboveTarget]);
+  const retiredAhead = useMemo(
+    () => aboveTarget.filter((s) => s.retired).map((s) => s.version),
+    [aboveTarget]
+  );
 
   // Of those, the ones addressed to some other application, the target's
   // application table was read, it names applications, and none of them is one
@@ -594,10 +615,14 @@ function DeployBody() {
   // databases sharing a script_name@version can never cross-contaminate.
   const versionLedger = useMemo<LedgerEntry[]>(() => {
     if (!scriptGroup || !preflightResult) return [];
-    const familyVersions = (groupedScripts[scriptGroup] ?? [])
-      .filter((s) => s.schema_name === schema)
-      .map((s) => s.version);
-    return buildVersionLedger(familyVersions, preflightResult.timeline);
+    const familyScripts = (groupedScripts[scriptGroup] ?? []).filter(
+      (s) => s.schema_name === schema
+    );
+    return buildVersionLedger(
+      familyScripts.map((s) => s.version),
+      preflightResult.timeline,
+      familyScripts.filter((s) => s.retired).map((s) => s.version)
+    );
   }, [scriptGroup, preflightResult, groupedScripts, schema]);
 
   const appliedCount = versionLedger.filter((e) => e.status === "applied").length;
@@ -1937,6 +1962,64 @@ function DeployBody() {
     setElapsedMs(0);
   }
 
+  // ── Retiring a version ───────────────────────────────────────────────────
+  // A version that should never run is retired in GitHub, so Deploy stops
+  // offering it to every database and the versions after it can run. Only a
+  // role with scripts:delete (Admin, out of the box) sees the buttons, and the
+  // route checks the same permission. Undo is deleting the note in GitHub.
+  const mayRetire = can("scripts:delete");
+
+  function openRetire(script: GitHubScript) {
+    setRetireError(null);
+    setRetireScript(script);
+  }
+
+  async function handleRetire(reason: string) {
+    const script = retireScript;
+    if (!script || retireBusy) return;
+    const label = vLabel(script.version);
+    // Retrying is always safe: the route answers "already retired" when the
+    // note is there, and never writes a second one.
+    const unknown = `so it is not known whether ${label} was retired. Try again: if it was, you will be told so.`;
+    setRetireBusy(true);
+    setRetireError(null);
+    try {
+      const res = await apiFetch("/api/github/retire", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          database_name: script.database_name,
+          schema_name: script.schema_name,
+          script_name: script.script_name,
+          version: script.version,
+          reason: reason || undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; already?: boolean; error?: unknown }
+        | null;
+      if (!res.ok || !data?.ok) {
+        setRetireError(
+          typeof data?.error === "string" && data.error !== ""
+            ? data.error
+            : `The server answered with status ${res.status}, ${unknown}`
+        );
+        return;
+      }
+      setRetireScript(null);
+      showToast(data.already ? `${label} was already retired.` : `Retired ${label}. Deploy no longer offers it.`);
+      // The pending list, the timeline and the run's default target all come
+      // from the registry and the ledger already read. The database did not
+      // change, so reading the registry again is enough.
+      setStage(1);
+      await handlePull();
+    } catch {
+      setRetireError(`The connection dropped, ${unknown}`);
+    } finally {
+      setRetireBusy(false);
+    }
+  }
+
   // ── Picking the run ──────────────────────────────────────────────────────
   // The pending list's "Run …" buttons select rather than run: the run
   // becomes every pending version up to that row (pendingPrefixThrough), the
@@ -2157,9 +2240,17 @@ function DeployBody() {
       const next: Record<string, RunCell> = {};
       for (const script of batch) {
         const outcome = outcomeOf(script);
-        next[scriptKey(script)] = outcome
-          ? { status: outcome.status, error: outcome.error, statements: outcome.statements }
-          : { status: unreported };
+        if (!outcome) {
+          next[scriptKey(script)] = { status: unreported };
+          continue;
+        }
+        const { warnings, moreWarnings } = readRunWarnings(outcome);
+        next[scriptKey(script)] = {
+          status: outcome.status,
+          error: outcome.error,
+          statements: outcome.statements,
+          ...(warnings.length > 0 ? { warnings, moreWarnings } : {}),
+        };
       }
       return next;
     });
@@ -2193,6 +2284,18 @@ function DeployBody() {
     // than still offering a green light that the server would now refuse.
     setApprovalReloadKey((key) => key + 1);
 
+    // Warnings mean the run worked but PostgreSQL left something undone, such
+    // as an owner change the login may not make. Each version lists its own
+    // (the run rows after a rehearsal, What was applied after a deploy); the
+    // toast only says there are some and where, so nobody reads "clean" and
+    // stops there.
+    const warningTotal = batch.reduce((sum, script) => {
+      const { warnings, moreWarnings } = readRunWarnings(outcomeOf(script));
+      return sum + warnings.length + moreWarnings;
+    }, 0);
+    const warned = (where: string) =>
+      warningTotal > 0 ? ` · ${countOf(warningTotal, "warning")} from PostgreSQL, see ${where}` : "";
+
     if (failure) {
       showToast(
         outcomeUnknown
@@ -2215,11 +2318,11 @@ function DeployBody() {
         "bad"
       );
     } else if (dryRun) {
-      showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed`);
+      showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed${warned("the rows")}`);
     } else {
       setStage(3);
       // The batch's own last version: the selection can move after this.
-      showToast(`Deploy complete · up to ${vLabel(batch[batch.length - 1].version)}`);
+      showToast(`Deploy complete · up to ${vLabel(batch[batch.length - 1].version)}${warned("What was applied")}`);
     }
   }
 
@@ -2236,6 +2339,8 @@ function DeployBody() {
   const allRehearsed =
     runScripts.length > 0 &&
     runScripts.every((s) => runStatus[scriptKey(s)]?.status === "rehearsed");
+  // What PostgreSQL warned about during the last run, counted over its rows.
+  const runWarningTotal = runScripts.reduce((sum, s) => sum + warningCount(runStatus[scriptKey(s)]), 0);
 
   // Spec feature 11: "After initialization, prompt whether to run
   // /scripts_patch." pendingScripts is read AFTER the run, from the re-read
@@ -2259,6 +2364,15 @@ function DeployBody() {
   const runOutcomeUnknown = runScripts.some(
     (s) => runStatus[scriptKey(s)]?.status === "unknown"
   );
+  // The version a failed run stopped at, while the registry still offers it:
+  // the recovery bar offers to retire it.
+  const failedRunScript =
+    runScripts.find((s) => runStatus[scriptKey(s)]?.status === "failed") ?? null;
+  const failedStillOffered =
+    failedRunScript !== null &&
+    (githubScripts ?? []).some(
+      (s) => scriptKey(s) === scriptKey(failedRunScript) && !s.retired
+    );
   const totalStatements = runScripts.reduce(
     (sum, s) => sum + (runStatus[scriptKey(s)]?.statements ?? 0),
     0
@@ -2692,6 +2806,9 @@ function DeployBody() {
                       } never applied and will not run. See Skipped in the version timeline above.`}
                     </p>
                   )}
+                  {retiredAhead.length > 0 && (
+                    <p className="help mt-1">{retiredNote(retiredAhead)}</p>
+                  )}
                 </div>
               ) : (
                 <div className="dp-grid">
@@ -2707,6 +2824,8 @@ function DeployBody() {
                       isDeploying={isDeploying}
                       selectRun={selectRun}
                       inRunKeys={inRunKeys}
+                      retiredVersions={retiredAhead}
+                      onRetire={mayRetire ? openRetire : undefined}
                     />
 
                     {/* Drift pre-check, real lineage compare when the target is tracked */}
@@ -2891,6 +3010,9 @@ function DeployBody() {
             runIsDryRun={runIsDryRun}
             repeatChange={repeatChange}
             dryRunBlocked={dryRunBlocked}
+            failedScript={failedStillOffered ? failedRunScript : null}
+            onRetire={mayRetire ? openRetire : undefined}
+            warningTotal={runWarningTotal}
           />
         </section>
       )}
@@ -2927,6 +3049,14 @@ function DeployBody() {
           />
         </section>
       )}
+
+      <RetireVersionDialog
+        script={retireScript}
+        busy={retireBusy}
+        error={retireError}
+        onClose={() => setRetireScript(null)}
+        onConfirm={handleRetire}
+      />
 
       {/* Toast */}
       {toast && (

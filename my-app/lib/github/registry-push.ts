@@ -11,7 +11,7 @@
 // The GitHub reads that apply these rules live in lib/github/registry.ts,
 // which is server-only.
 import type { ScriptChangeType } from "../versions/change-type";
-import { migrationFileName, parseRegistryFileName, rollbackFileName } from "./registry-paths";
+import { migrationFileName, parseRegistryFileName, parseRetiredMarkerName, rollbackFileName } from "./registry-paths";
 import {
   bumpVersion,
   checkNewVersion,
@@ -228,6 +228,12 @@ export type FamilyVersions = {
    * half-way; such a version is NOT published.
    */
   orphanRollbacks: Record<string, string>;
+  /**
+   * The published versions with a retired note beside them, as written,
+   * lowest first. Still published (the number stays taken, the rollback still
+   * works); Deploy just no longer offers them to any database.
+   */
+  retired: string[];
 };
 
 /**
@@ -238,7 +244,13 @@ export type FamilyVersions = {
 export function familyVersions(files: ReadonlyArray<RegistryEntry>): FamilyVersions {
   const published: string[] = [];
   const rollbacks: { version: string; sha: string }[] = [];
+  const notes: string[] = [];
   for (const entry of files) {
+    const note = retiredNoteVersion(entry);
+    if (note !== null) {
+      notes.push(note);
+      continue;
+    }
     const file = readEntry(entry);
     if (!file) continue;
     if (file.isDown) rollbacks.push({ version: file.version, sha: entry.sha });
@@ -252,7 +264,58 @@ export function familyVersions(files: ReadonlyArray<RegistryEntry>): FamilyVersi
     if (hasMigration) continue;
     orphanRollbacks[normalizeVersion(rollback.version) ?? rollback.version] = rollback.sha;
   }
-  return { published, orphanRollbacks };
+  // A note retires the version it names however either is spelled (v1.0
+  // and v1.0.0 are one version). A note with no migration beside it retires
+  // nothing.
+  const retired = published.filter((version) => notes.some((note) => compareVersions(note, version) === 0));
+  return { published, orphanRollbacks, retired };
+}
+
+// The version a listing entry's retired note is for, or null when the entry
+// is not a retired note.
+function retiredNoteVersion(entry: { name: string; type?: string }): string | null {
+  if (entry.type !== undefined && entry.type !== "file") return null;
+  const version = parseRetiredMarkerName(entry.name);
+  return version !== null && looksLikeVersion(version) ? version : null;
+}
+
+/**
+ * The versions the retired notes in a folder listing name, as written. A note
+ * whose version has no migration beside it is listed too, so check a version
+ * with isRetiredVersion rather than reading this as a list of versions.
+ */
+export function retiredNoteVersions(entries: ReadonlyArray<{ name: string; type?: string }>): string[] {
+  return entries.map(retiredNoteVersion).filter((version): version is string => version !== null);
+}
+
+/** True when `version` is one of the `retired` versions, however either is spelled. */
+export function isRetiredVersion(retired: ReadonlyArray<string>, version: string): boolean {
+  return retired.some((other) => compareVersions(other, version) === 0);
+}
+
+/** The retired note in a family folder listing for `version`, or null when it has none. */
+export function findRetiredNote(entries: ReadonlyArray<RegistryEntry>, version: string): RegistryFileRef | null {
+  for (const entry of entries) {
+    const note = retiredNoteVersion(entry);
+    if (note !== null && compareVersions(note, version) === 0) return { name: entry.name, sha: entry.sha };
+  }
+  return null;
+}
+
+/**
+ * The version a retire request names, or why it can't be one. Wider than
+ * normalizePushVersion, because a version saved before that rule (a
+ * "2.0.0-rc1", say) may need retiring too. The route then retires only a
+ * version the folder really has. A leading "v" is dropped.
+ */
+export function readRetireVersion(raw: unknown): { version: string } | { error: string } {
+  if (typeof raw !== "string" || raw.trim() === "") return { error: "Say which version to retire." };
+  const bare = raw.trim().replace(/^v/i, "");
+  if (bare.length > 40 || !/^\d[0-9A-Za-z.+-]*$/.test(bare)) {
+    const shown = raw.trim().length > 40 ? `${raw.trim().slice(0, 40)}...` : raw.trim();
+    return { error: `"${shown}" is not a version number, such as 1.2.0.` };
+  }
+  return { version: bare };
 }
 
 /** The version guard's answer. Both refusals carry the family's highest version and the number to use. */
@@ -502,6 +565,70 @@ const ROLLBACK_COMMIT_ENDINGS: Record<RollbackCommitKind, string> = {
 /** The commit message for a rollback file, e.g. "db/public/orders_fix v1.2.0: add missing rollback". */
 export function rollbackCommitMessage(kind: RollbackCommitKind, identity: PushIdentity): string {
   return `${identityLine(identity)}: ${ROLLBACK_COMMIT_ENDINGS[kind]}`;
+}
+
+/** The longest reason for retiring a version, in characters. */
+export const MAX_RETIRE_REASON_LENGTH = 500;
+
+/**
+ * The reason a retire request gives, or why it can't be kept. Absent, null or
+ * only spaces mean no reason. Line breaks and tabs are fine in a note; any
+ * other invisible character is refused, since nobody could see it to remove
+ * it.
+ */
+export function readRetireReason(raw: unknown): { reason: string | null } | { error: string } {
+  if (raw === undefined || raw === null) return { reason: null };
+  if (typeof raw !== "string") return { error: "The reason was sent, but not as text." };
+  const reason = raw.replace(/\r\n?/g, "\n").trim();
+  if (reason === "") return { reason: null };
+  if (reason.length > MAX_RETIRE_REASON_LENGTH) {
+    return {
+      error: `The reason is ${reason.length} characters long. Keep it to ${MAX_RETIRE_REASON_LENGTH} characters or fewer.`,
+    };
+  }
+  for (let index = 0; index < reason.length; index += 1) {
+    const code = reason.charCodeAt(index);
+    if ((code < 32 && code !== 9 && code !== 10) || code === 127) {
+      return { error: "The reason contains an invisible character. Retype it and try again." };
+    }
+  }
+  return { reason };
+}
+
+/**
+ * The commit message that retires a version, "db/public/orders_fix v1.2.0:
+ * retire", with the reason, when one was given, as its body.
+ */
+export function retireCommitMessage(identity: PushIdentity, reason?: string | null): string {
+  const subject = `${identityLine(identity)}: retire`;
+  const body = (reason ?? "").trim();
+  if (body === "") return subject;
+  return `${subject}\n\n${body.length > BODY_MAX ? `${body.slice(0, BODY_MAX - 3)}...` : body}`;
+}
+
+/**
+ * The text of the note that retires a version, for whoever opens the folder
+ * in GitHub: what retiring did, what it left alone, and how to undo it.
+ * `date` is the day it was retired, shown in UTC.
+ */
+export function retiredMarkerText(identity: PushIdentity, reason: string | null | undefined, date: Date): string {
+  const why = (reason ?? "").trim();
+  return [
+    `# v${identity.version} of ${identity.scriptName} is retired`,
+    "",
+    "Deploy no longer offers this version to any database, so the versions after it can run.",
+    "",
+    "- Its number stays taken: the next version must be higher.",
+    "- Databases that already ran it keep it, and can still roll it back.",
+    "- Its SQL stays in this folder.",
+    "",
+    `Retired on ${date.toISOString().slice(0, 10)} (UTC).`,
+    "",
+    why === "" ? "No reason given." : `Reason: ${why}`,
+    "",
+    "To bring it back, delete this file.",
+    "",
+  ].join("\n");
 }
 
 // ── GitHub failures in plain words ──────────────────────────────────────────

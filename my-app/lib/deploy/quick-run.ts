@@ -17,7 +17,7 @@
 // This file is safe to import from a client component: everything in it is
 // plain text work.
 import { describeChangeType, stampChangeType, type ScriptChangeType } from "@/lib/versions/change-type";
-import { bumpVersion, highestVersion, levelToBump } from "@/lib/versions/script-status";
+import { bumpVersion, compareVersions, highestVersion, levelToBump, versionKey } from "@/lib/versions/script-status";
 import { validateScriptName } from "@/lib/github/registry-push";
 import { containsTransactionControl, hasExecutableSql } from "@/lib/sql/guard";
 
@@ -56,6 +56,27 @@ export function nextQuickVersion(
   const level = quickRunLevel(sql);
   const floor = highestVersion(known);
   return { version: bumpVersion(floor, levelToBump(level)), level, floor };
+}
+
+/**
+ * GitHub's versions of the group that this schema has not run, oldest first,
+ * leaving out the retired ones.
+ *
+ * A quick run saves above all of them (nextQuickVersion counts every version
+ * in GitHub, retired ones too, since a retired number stays taken), so Deploy
+ * will not offer them on this schema any more and the panel says so. A
+ * retired version is offered to no database anyway, so it needs no warning.
+ */
+export function quickVersionsAhead(
+  applied: string | null,
+  github: ReadonlyArray<string>,
+  retired: ReadonlyArray<string>,
+): string[] {
+  const retiredKeys = new Set(retired.map((version) => versionKey(version)));
+  return github
+    .filter((version) => applied === null || compareVersions(version, applied) > 0)
+    .filter((version) => !retiredKeys.has(versionKey(version)))
+    .sort(compareVersions);
 }
 
 /**

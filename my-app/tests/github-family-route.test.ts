@@ -120,7 +120,7 @@ describe("GET /api/github/family", () => {
       ]);
     const { status, body } = await callRoute(QUERY);
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.9.0", "1.10.0"], highest: "1.10.0" });
+    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.9.0", "1.10.0"], highest: "1.10.0", retired: [] });
 
     // One read, of the encoded folder path, with the token in the header only.
     expect(calls.map((call) => call.url)).toEqual([FOLDER]);
@@ -130,12 +130,24 @@ describe("GET /api/github/family", () => {
     expect(headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
   });
 
+  it("keeps a retired version in the list, since its number stays taken, and names it as retired", async () => {
+    answers[FOLDER] = () =>
+      json(200, [
+        { name: "v1.0.0.sql", sha: "a", type: "file" },
+        { name: "v1.1.0.sql", sha: "b", type: "file" },
+        { name: "v1.1.0.retired.md", sha: "c", type: "file" },
+      ]);
+    const { status, body } = await callRoute(QUERY);
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.1.0"], highest: "1.1.0", retired: ["1.1.0"] });
+  });
+
   it("answers a new family with no versions once the repository is confirmed", async () => {
     answers[FOLDER] = () => json(404, { message: "Not Found" });
     answers[REPO] = () => json(200, { full_name: "acme-test/registry-test" });
     const { status, body } = await callRoute(QUERY);
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, versions: [], highest: null });
+    expect(body).toEqual({ ok: true, versions: [], highest: null, retired: [] });
     expect(calls.map((call) => call.url)).toEqual([FOLDER, REPO]);
   });
 
@@ -203,7 +215,7 @@ describe("GET /api/github/family", () => {
       ]);
     const { status, body } = await callRoute(QUERY);
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.1.0"], highest: "1.1.0" });
+    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.1.0"], highest: "1.1.0", retired: [] });
     expect(calls.map((call) => call.url)).toEqual([orgFolder]);
     // With the organization's own token, never the server's.
     for (const call of calls) {
