@@ -194,7 +194,7 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
           pressedStem = stem;
           window.print();
         }}
-        title="Opens the browser print dialog — choose “Save as PDF” there for a PDF"
+        title="Opens the browser's print dialog. Choose Save as PDF there to get a PDF."
       >
         Print / PDF
       </button>

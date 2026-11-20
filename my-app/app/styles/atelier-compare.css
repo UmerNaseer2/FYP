@@ -105,6 +105,13 @@
 .cp-outcome__count { font-size: 13.5px; color: var(--ink-2); }
 .cp-outcome__path { margin-left: auto; font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
 .cp-outcome__head .btn-sm { min-height: 44px; }
+/* Use (target) as source. The arrows turn like Swap's between the pickers, and
+   a long connection name is cut short, with the whole name in the title. */
+.cp-outcome__swap svg { flex: none; transition: transform var(--dur-3) var(--ease-spring); }
+.cp-outcome__swap:hover svg { transform: rotate(180deg); }
+.cp-outcome__swap:active { transform: scale(0.96); }
+.cp-outcome__swap > span { display: inline-flex; align-items: baseline; gap: 0.3em; min-width: 0; }
+.cp-outcome__swap-name { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
 
 /* --- The bar over a result (components/studio/CompareJumpBar) -------------
    Summary, Map, Tables and Script. It sticks to the top of its result while
@@ -450,7 +457,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .cp-bar, .cp-loading-say i, .cp-form { animation: none; }
-  .cp-tile:hover, .cp-swap:hover svg { transform: none; }
+  .cp-tile:hover, .cp-swap:hover svg, .cp-outcome__swap:hover svg { transform: none; }
+  .cp-outcome__swap:active { transform: none; }
 }
 
 /* --- Paper ---------------------------------------------------------------

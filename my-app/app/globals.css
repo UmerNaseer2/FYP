@@ -47,16 +47,19 @@ body {
   /* The shell is a full-height two-column grid whose column widths and height
      are inline styles on StudioShell, so !important is the only way to unwind
      it for paper. Its <main> scrolls, and an overflow container prints as one
-     clipped page. */
+     clipped page. Both also paint the page colour, which printed as a tinted
+     box that stopped where the content stopped, so paper is plain white. */
   .studio {
     display: block !important;
     height: auto !important;
     min-height: 0 !important;
+    background: #fff !important;
   }
 
   .studio main {
     overflow: visible !important;
     height: auto !important;
+    background: #fff !important;
   }
 
   /* Navigation, controls, and anything that opted out with .no-print. None of
@@ -74,6 +77,17 @@ body {
     display: none !important;
   }
 
+  /* Screen-only helpers: the "?" notes, the fold arrows (every fold is opened
+     for print, so an arrow points at nothing), Expand all and Collapse all, and
+     the line that says a version can be clicked. */
+  .help-hint,
+  .chev,
+  .vtl__chev,
+  .vtl__hint,
+  .ti-seg {
+    display: none !important;
+  }
+
   /* Compare's own print rules (its migration draft is hidden, since a text box
      prints only the lines scrolled into view) live in atelier-compare.css. */
 
@@ -86,10 +100,18 @@ body {
     overflow-x: visible !important;
   }
 
+  /* A report's title stays with the first card under it, never alone at the
+     foot of a page. */
+  .report-head {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
   /* Keep a card whole on one page wherever it fits. */
   .panel,
   .card,
   .table-group,
+  .ti,
   .matrix-wrap,
   .banner,
   .warn-inline,
@@ -107,7 +129,10 @@ body {
   .delta,
   .matrix td,
   .matrix th,
-  .banner {
+  .banner,
+  .vtl__dot,
+  .vtl__mark,
+  .ti-grp__lab i {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }

@@ -1590,8 +1590,9 @@ export function DiffReport({
           database. The title says which way to read the rows and the "?" beside
           it names the signs, which is cheaper than qualifying every row. How
           destructive, breaking and held back relate is in Compare's help
-          (lib/help/compare.ts). */}
-      <div className="flex items-center">
+          (lib/help/compare.ts). report-head keeps the title on the same printed
+          page as the first card under it. */}
+      <div className="report-head flex items-center">
         <span className="section-title">
           {sides === "expected-live" ? "Differences from the baseline" : "Changes to the target"}
         </span>

@@ -70,7 +70,11 @@ export const compareHelp: HelpTopic = {
   problems: [
     {
       problem: "I want to compare two targets with each other.",
-      fix: "Each target is compared with the source only. Targets are not compared with each other. Press Use as source on one target's result to swap it with the source, then press Compare.",
+      fix: "Each target is compared with the source only. Targets are not compared with each other. Press Use (that target's name) as source at the top of its result to swap it with the source, then press Compare.",
+    },
+    {
+      problem: "I compared the wrong way round.",
+      fix: "Press Use (the target's name) as source at the top of the result. The target becomes the source and the source becomes a target, and you press Compare to run it. With one target, Swap between the two pickers does the same and runs it straight away.",
     },
     {
       problem: "A table I renamed shows as one table to create and one to drop.",

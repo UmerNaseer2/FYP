@@ -122,6 +122,24 @@ describeWithDatabase("realistic releases on a real PostgreSQL", () => {
     };
   }
 
+  /**
+   * The statements that put schema public back the way this server's version
+   * ships it. PostgreSQL 15 gave it to pg_database_owner and took CREATE away
+   * from PUBLIC. Before 15 the bootstrap superuser owns it and PUBLIC may
+   * create in it, and before 14 the role pg_database_owner does not exist.
+   */
+  async function pristinePublic(db: Client): Promise<string> {
+    const answer = await db.query<{ num: string; bootstrap: string }>(
+      `SELECT current_setting('server_version_num') AS num,
+              (SELECT rolname FROM pg_roles WHERE oid = 10) AS bootstrap`
+    );
+    const { num, bootstrap } = answer.rows[0];
+    if (Number(num) >= 150000) {
+      return `ALTER SCHEMA public OWNER TO pg_database_owner; GRANT USAGE ON SCHEMA public TO PUBLIC;`;
+    }
+    return `ALTER SCHEMA public OWNER TO ${quoteIdent(bootstrap)}; GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC;`;
+  }
+
   /** Empties the schema in one database and builds it again from `ddl`. */
   async function build(
     db: Client,
@@ -135,9 +153,7 @@ describeWithDatabase("realistic releases on a real PostgreSQL", () => {
     const owner = options.role ? ` AUTHORIZATION ${quoteIdent(options.role)}` : "";
     await db.query(`CREATE SCHEMA ${s}${owner}`);
     if (schema === "public" && (options.publicState ?? "pristine") === "pristine") {
-      await db.query(
-        `ALTER SCHEMA public OWNER TO pg_database_owner; GRANT USAGE ON SCHEMA public TO PUBLIC;`
-      );
+      await db.query(await pristinePublic(db));
     }
     const role = options.role ? `SET LOCAL ROLE ${quoteIdent(options.role)};` : "";
     try {

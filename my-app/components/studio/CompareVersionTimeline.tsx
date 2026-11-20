@@ -313,9 +313,12 @@ export function CompareVersionTimeline({
     );
   }
 
+  // Printing opens every fold and the page is captured at once, so a timeline
+  // nobody opened would print as its loading line. It is left off the paper
+  // until it has been read.
   return (
     <details
-      className="verdet__more"
+      className={`verdet__more${waiting.length > 0 ? " no-print" : ""}`}
       onToggle={(event) => {
         if (event.currentTarget.open) onOpen();
       }}

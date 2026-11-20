@@ -314,7 +314,7 @@ describe("printing", () => {
     const print = button(/Print \/ PDF/);
     expect(print).toHaveAttribute(
       "title",
-      "Opens the browser print dialog — choose “Save as PDF” there for a PDF"
+      "Opens the browser's print dialog. Choose Save as PDF there to get a PDF."
     );
     fireEvent.click(print);
     expect(printed).toBe(1);

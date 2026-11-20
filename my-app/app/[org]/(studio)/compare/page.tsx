@@ -1087,7 +1087,23 @@ function CompareScreenView({ query }: { query: string }) {
                     that could not be reached, or that repeats another, gives a
                     source the next Compare cannot read either. No run=1: the
                     swap only fills the pickers, and the reader decides when to
-                    run it. */}
+                    run it. A tester missed it as plain text, so it is a
+                    bordered button with Swap's turning arrows, and it names
+                    the target it puts on the source side. */}
+                {outcome.report && (
+                  <Link
+                    href={orgPath(
+                      `/compare?${selectionToQuery(swapSourceWithTarget(selection, outcome.index))}`
+                    )}
+                    className="btn btn-secondary btn-sm cp-outcome__swap"
+                    title={`Make ${outcome.displayName}.${outcome.schema} the source and ${source.displayName}.${source.schema} a target. Press Compare to run it.`}
+                  >
+                    <RefreshIcon size={14} />
+                    <span>
+                      Use <span className="cp-outcome__swap-name">{outcome.displayName}</span> as source
+                    </span>
+                  </Link>
+                )}
                 {outcome.report && diffDoc && !outcome.sameAsSource && !outcome.error &&
                   outcome.statementCount > 0 && (
                     <button
@@ -1100,17 +1116,6 @@ function CompareScreenView({ query }: { query: string }) {
                       Open the script
                     </button>
                   )}
-                {outcome.report && (
-                  <Link
-                    href={orgPath(
-                      `/compare?${selectionToQuery(swapSourceWithTarget(selection, outcome.index))}`
-                    )}
-                    className="btn btn-ghost btn-sm"
-                    title="Make this target the source and the current source a target. Press Compare to run it."
-                  >
-                    Use as source
-                  </Link>
-                )}
               </div>
 
               {outcome.sameAsSource ? (
@@ -1232,8 +1237,10 @@ function CompareScreenView({ query }: { query: string }) {
                           <b>
                             {outcome.delta.total} change{outcome.delta.total === 1 ? "" : "s"}
                           </b>
-                          , the number in the header. Press a tile to show only that
-                          kind, in the list and on the map.
+                          , the number in the header.{" "}
+                          <span className="no-print">
+                            Press a tile to show only that kind, in the list and on the map.
+                          </span>
                         </p>
                       )}
                     </div>
