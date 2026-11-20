@@ -13,7 +13,7 @@ export const compareHelp: HelpTopic = {
     { text: "Tick Allow data loss or Compare row data only if you need them. A change to either one takes effect the next time you press Compare.", target: anchor("compare-options", ".cp-opts") },
     { text: "Press Compare. The app reads the schemas and shows one result for each target.", target: anchor("compare-run", ".cp-run") },
     { text: "Read the Summary table and the report under it. Look at anything marked destructive or breaking first.", target: anchor("compare-results", ".cp-results") },
-    "Review the Generated migration under the report. You can edit the Migration tab and the Rollback tab freely.",
+    { text: "Review the Generated migration beside the report, or under it on a narrow screen. Script in the bar above each result jumps to it. You can edit the Migration tab and the Rollback tab freely.", target: anchor("compare-script", ".cp-grid > aside") },
     "Check the migration name, pick a change level and press Push to GitHub. That saves the script to your organization's registry.",
     "Open Deploy to run the saved script. Compare never runs it.",
   ],
@@ -106,7 +106,9 @@ export const compareHelp: HelpTopic = {
       title: "Reading the report",
       body: [
         "The Summary table has one row for every kind of object and four columns: In sync, Only in source, Only in target and Changed.",
+        "The bar above each result jumps to its Summary, its Map, its Tables and its Script, and the part you are reading is lit.",
         "The report lists tables first and schema objects after them. Click a group's header to fold it or open it.",
+        "When more than one table differs, a short list above the cards names them all. Press a name to open its card, or press Collapse all to fold every card at once.",
         "Export this diff copies the report as Markdown, JSON or CSV, or prints it.",
       ],
     },

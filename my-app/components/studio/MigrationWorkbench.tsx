@@ -792,7 +792,7 @@ export function MigrationWorkbench({
   );
 
   return (
-    <aside>
+    <aside data-tour="compare-script">
       <div className="sticky-panel space-y-4">
         <div className="card overflow-hidden">
           {/* Header: name + description */}

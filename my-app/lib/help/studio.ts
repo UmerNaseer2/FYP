@@ -16,7 +16,7 @@ export const studioHelp: HelpTopic = {
     { text: "Press a building to pick it. Its details and buttons appear beside the city. Show as a table lists the same schemas as rows.", target: anchor("city", ".sk-stage") },
     { text: "Press Check drift to compare the picked schema's live database with its baseline. Press Review drift when it says Drifted.", target: anchor("schema-actions", ".sk-acts") },
     "Press Open to see the picked schema's details and its history of versions.",
-    "Press the stop tracking button when you no longer need to watch the picked schema.",
+    { text: "Press Stop tracking, at the foot of the picked schema's card, when you no longer need to watch it. It asks before it removes anything.", target: anchor("stop-tracking", ".sk-stop") },
   ],
   terms: [
     {
@@ -62,7 +62,7 @@ export const studioHelp: HelpTopic = {
   ],
   problems: [
     {
-      problem: "Track a schema, Check drift or the stop tracking button is switched off.",
+      problem: "Track a schema, Check drift or Stop tracking is switched off.",
       fix: "Your role may not do that. The note at the top of the page names the permission. Ask an admin to turn it on for your role.",
     },
     {

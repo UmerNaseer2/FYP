@@ -146,6 +146,30 @@
 /* The menu is a light surface, so its focus ring is the app's usual one. */
 .sk-stage .sk-menu [role="menuitem"]:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
 
+/* Stop tracking: its own quiet row at the foot of the card, under a hairline.
+   Easy to find, away from the main action, and it turns the stage's pink
+   only when pointed at. The confirm dialog still asks first. */
+.sk-ins > .sk-stop { justify-self: stretch; }
+.sk-stop {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px;
+  padding-top: 8px; border-top: 1px solid var(--sk-line);
+}
+.sk-stop-btn {
+  display: inline-flex; align-items: center; gap: 8px; flex: none;
+  min-height: 44px; padding: 0 14px 0 10px; margin-left: -10px;
+  border: 0; border-radius: var(--r-pill); background: transparent; cursor: pointer;
+  font: 600 13.5px/20px var(--sans); color: var(--sky-ink);
+  transition: color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.sk-stop-btn svg { flex: none; color: var(--sky-ink-2); transition: transform var(--dur-3) var(--ease-spring), color var(--dur-2) var(--ease-out); }
+.sk-stop-btn:not([disabled]):hover, .sk-stop-btn:focus-visible {
+  color: var(--sky-drift); background: color-mix(in srgb, var(--sky-drift) 13%, transparent);
+}
+.sk-stop-btn:not([disabled]):hover svg, .sk-stop-btn:focus-visible svg { color: var(--sky-drift); transform: rotate(-10deg) scale(1.1); }
+.sk-stop-btn:not([disabled]):active { transform: scale(.97); }
+.sk-stop-btn[disabled] { cursor: not-allowed; color: var(--sky-ink-2); opacity: .7; }
+.sk-stop-note { flex: 1 1 180px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--sky-ink-2); }
+
 .sk-bot { margin: 10px 0 0; font-size: 12.5px; line-height: 18px; color: var(--sky-ink-2); }
 
 /* The same city as a plain table, for anyone who would rather read rows. */
@@ -237,5 +261,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sk-b, .sk-ins > * { animation: none; }
+  .sk-stop-btn, .sk-stop-btn svg { transition: none; }
+  .sk-stop-btn:not([disabled]):hover svg, .sk-stop-btn:focus-visible svg, .sk-stop-btn:not([disabled]):active { transform: none; }
   .sk-seg button, .sk-nr { transition: none; }
 }

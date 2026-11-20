@@ -14,8 +14,10 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DiffReport } from "@/components/studio/DiffReport";
+import { TABLE_INDEX_SHOWN } from "@/components/studio/TableIndex";
+import { compareSchemas } from "@/lib/compare/diff";
 import type { CompareReport, ObjectDiff } from "@/lib/compare/types";
-import { schema } from "./helpers/snapshots";
+import { column, schema, table } from "./helpers/snapshots";
 
 /**
  * A report whose only content is the object diffs handed in.
@@ -362,5 +364,107 @@ describe("what the signs mean", () => {
     expect(screen.getByRole("note")).toHaveTextContent(
       "+ is in the baseline but missing from the live database, − is live only, and ~ is in both but different."
     );
+  });
+});
+
+describe("the list of tables above the cards", () => {
+  // A tester comparing two schemas had to fold every open card by hand to see
+  // what else had changed. The list names every table that differs, folds or
+  // opens all the cards at once, and takes the reader to one card.
+  afterEach(cleanup);
+
+  const id = column("id", { typeDisplay: "integer", nullable: false });
+  const tables = (...names: string[]) => names.map((name) => table(name, [id]));
+
+  /** Source has `source`, target has `target`, and `orders` differs in both. */
+  function engine(source: string[], target: string[]): CompareReport {
+    const left = schema([...tables(...source), table("orders", [id, column("note", { typeDisplay: "text" })])]);
+    const right = schema([...tables(...target), table("orders", [id])]);
+    return compareSchemas(left, right);
+  }
+
+  const list = () => screen.getByRole("navigation", { name: /Tables with changes|Tables that differ/ });
+
+  it("names each added, changed and removed table on Compare", () => {
+    render(<DiffReport report={engine(["customers", "invoices"], ["legacy_log"])} allowDataLoss={false} />);
+    const nav = list();
+    expect(nav).toHaveTextContent("Tables with changes");
+    expect(within(within(nav).getByRole("list", { name: "Added" })).getAllByRole("button").map((b) => b.textContent)).toEqual(["+customers", "+invoices"]);
+    expect(within(nav).getByRole("list", { name: "Changed" })).toHaveTextContent("orders");
+    expect(within(nav).getByRole("list", { name: "Removed" })).toHaveTextContent("legacy_log");
+  });
+
+  it("uses the Drift words on Drift", () => {
+    render(<DiffReport report={engine(["customers"], ["legacy_log"])} sides="expected-live" />);
+    const nav = list();
+    expect(nav).toHaveTextContent("Tables that differ");
+    expect(within(nav).getByRole("list", { name: "Missing" })).toHaveTextContent("customers");
+    expect(within(nav).getByRole("list", { name: "Live only" })).toHaveTextContent("legacy_log");
+  });
+
+  it("is left out when only one table differs, because there is nothing to find", () => {
+    render(<DiffReport report={engine([], [])} allowDataLoss={false} />);
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  });
+
+  it("follows the count tile the reader picked", () => {
+    render(<DiffReport report={engine(["customers", "invoices"], ["legacy_log"])} allowDataLoss={false} only="add" />);
+    const nav = list();
+    expect(within(nav).getByRole("list", { name: "Added" })).toBeInTheDocument();
+    expect(within(nav).queryByRole("list", { name: "Removed" })).not.toBeInTheDocument();
+  });
+
+  it("folds and opens every card at once, and shows which way they are", () => {
+    const { container } = render(
+      <DiffReport report={engine(["customers", "invoices"], ["legacy_log"])} allowDataLoss={false} />
+    );
+    const cards = [...container.querySelectorAll<HTMLDetailsElement>("details.table-group")];
+    expect(cards.length).toBeGreaterThan(1);
+    expect(cards.every((card) => card.open)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(cards.every((card) => !card.open)).toBe(true);
+    expect(screen.getByRole("group", { name: "Fold the table cards" })).toHaveAttribute("data-fold", "closed");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(cards.every((card) => card.open)).toBe(true);
+    expect(screen.getByRole("group", { name: "Fold the table cards" })).toHaveAttribute("data-fold", "open");
+  });
+
+  it("says the cards are mixed after one is folded by hand", () => {
+    const { container } = render(
+      <DiffReport report={engine(["customers", "invoices"], [])} allowDataLoss={false} />
+    );
+    const card = container.querySelector<HTMLDetailsElement>('[data-table-card="add:customers"]')!;
+    card.open = false;
+    fireEvent(card, new Event("toggle"));
+    const fold = screen.getByRole("group", { name: "Fold the table cards" });
+    expect(fold).toHaveAttribute("data-fold", "mixed");
+    expect(within(fold).getAllByRole("button").some((b) => b.classList.contains("is-on"))).toBe(false);
+  });
+
+  it("opens, flashes and focuses the card a chip names", () => {
+    const { container } = render(
+      <DiffReport report={engine(["customers", "invoices"], ["legacy_log"])} allowDataLoss={false} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    fireEvent.click(within(list()).getByRole("button", { name: "legacy_log" }));
+    const card = container.querySelector<HTMLDetailsElement>('[data-table-card="rem:legacy_log"]')!;
+    expect(card.open).toBe(true);
+    expect(card).toHaveClass("card-flash");
+    expect(card.querySelector(":scope > summary")).toHaveFocus();
+    expect(container.querySelector<HTMLDetailsElement>('[data-table-card="add:customers"]')!.open).toBe(false);
+  });
+
+  it("shows twelve tables to a group, and the rest behind +N more", () => {
+    const many = Array.from({ length: 15 }, (_, i) => `t${String(i + 1).padStart(2, "0")}`);
+    render(<DiffReport report={engine(many, [])} allowDataLoss={false} />);
+    const added = within(list()).getByRole("list", { name: "Added" });
+    expect(within(added).getAllByRole("listitem")).toHaveLength(TABLE_INDEX_SHOWN + 1);
+    const more = within(added).getByRole("button", { name: "+3 more" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(more);
+    expect(within(added).getAllByRole("listitem")).toHaveLength(16);
+    expect(within(added).getByRole("button", { name: "Show fewer" })).toHaveAttribute("aria-expanded", "true");
   });
 });

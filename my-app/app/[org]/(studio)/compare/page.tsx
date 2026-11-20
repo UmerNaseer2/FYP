@@ -35,6 +35,7 @@ import { CompareSummaryPanel } from "@/components/studio/CompareSummaryPanel";
 import { CompareHistory } from "@/components/studio/CompareHistory";
 import { ChangeMap } from "@/components/studio/ChangeMap";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
+import { CompareJumpBar } from "@/components/studio/CompareJumpBar";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
 import { ComparisonSetBar } from "@/components/studio/ComparisonSetBar";
@@ -58,6 +59,7 @@ import {
   CodeIcon,
 } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/ui/api-fetch";
+import { revealCard } from "@/lib/ui/reveal-card";
 import {
   forgetCompare,
   hasMemory,
@@ -449,22 +451,6 @@ function findTableCard(index: number, nodeId: string): HTMLElement | null {
   return null;
 }
 
-/** Scroll to a card, open it, flash it, and put keyboard focus on it. */
-function revealTableCard(card: HTMLElement) {
-  if (card instanceof HTMLDetailsElement) card.open = true;
-  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  card.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "start" });
-  card.classList.remove("cp-flash");
-  // Read the layout so the animation starts again when the class comes back.
-  void card.offsetWidth;
-  card.classList.add("cp-flash");
-  window.setTimeout(() => card.classList.remove("cp-flash"), 1600);
-  const summary = card.querySelector<HTMLElement>(":scope > summary");
-  const target = summary ?? card;
-  if (!summary && !card.hasAttribute("tabindex")) card.setAttribute("tabindex", "-1");
-  target.focus({ preventScroll: true });
-}
-
 function CompareScreenView({ query }: { query: string }) {
   const orgPath = useOrgHref();
   const orgSlug = useOrg()?.slug ?? "";
@@ -529,14 +515,14 @@ function CompareScreenView({ query }: { query: string }) {
   const jumpToTable = useCallback((index: number, nodeId: string) => {
     const card = findTableCard(index, nodeId);
     if (card) {
-      revealTableCard(card);
+      revealCard(card);
       return;
     }
     setFilters((previous) => ({ ...previous, [index]: null }));
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         const again = findTableCard(index, nodeId);
-        if (again) revealTableCard(again);
+        if (again) revealCard(again);
       }),
     );
   }, []);
@@ -1154,6 +1140,21 @@ function CompareScreenView({ query }: { query: string }) {
                 />
               ) : outcome.report && diffDoc ? (
                 <>
+                  {/* Summary, Map, Tables and Script, stuck to the top while
+                      this result scrolls past, so the script is one press away
+                      wherever the reader is. Not for a result with nothing to
+                      change, which is short. */}
+                  {outcome.delta && outcome.delta.total > 0 && (
+                    <CompareJumpBar
+                      label={
+                        outcomes.length === 1
+                          ? "Parts of this result"
+                          : `Parts of target ${outcome.index + 1}`
+                      }
+                      tables={outcome.delta.tablesTouched}
+                      statements={outcome.statementCount}
+                    />
+                  )}
 
                   {/* Before the diff, because it can change what the diff MEANS:
                       if the target declares the higher version, the script on
@@ -1312,11 +1313,14 @@ function CompareScreenView({ query }: { query: string }) {
                         report={outcome.report}
                         allowDataLoss={allowDataLoss}
                       />
-                      <DiffReport
-                        report={outcome.report}
-                        allowDataLoss={allowDataLoss}
-                        only={filter}
-                      />
+                      {/* data-jump: where Tables in the bar above takes the reader. */}
+                      <div data-jump="tables">
+                        <DiffReport
+                          report={outcome.report}
+                          allowDataLoss={allowDataLoss}
+                          only={filter}
+                        />
+                      </div>
                       {outcome.data && (
                         <DataCompare
                           result={outcome.data}

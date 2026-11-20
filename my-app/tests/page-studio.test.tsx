@@ -259,8 +259,7 @@ describe("for a role that may not track, check or stop tracking", () => {
     setRoutes(baseRoutes([TRACKED]));
     render(<StudioPage />);
 
-    await openMore("shop");
-    const untrack = screen.getByRole("menuitem", { name: "Stop tracking shop" });
+    const untrack = await screen.findByRole("button", { name: "Stop tracking shop" });
     const track = screen.getByRole("button", { name: /Track a schema/ });
     const check = screen.getByRole("button", { name: /Check drift/ });
 
@@ -558,7 +557,7 @@ describe("the picked schema's card", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((line) => line.textContent)
-    ).toEqual(["Open", "Compare", "Stop tracking"]);
+    ).toEqual(["Open", "Compare"]);
     // The first line has the focus, so the arrow keys work straight away.
     expect(within(menu).getByRole("menuitem", { name: "Open" })).toHaveFocus();
 
@@ -568,6 +567,23 @@ describe("the picked schema's card", () => {
     fireEvent.keyDown(menu, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(more).toHaveFocus();
+  });
+
+  it("shows Stop tracking on its own row, and asks before it removes anything", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    // In plain sight on the card, not tucked into the More menu.
+    const stop = await screen.findByRole("button", { name: "Stop tracking shop" });
+    expect(stop).toBeEnabled();
+    expect(stop).toHaveAccessibleDescription(
+      "Removes its snapshots and drift history. The database is not touched."
+    );
+    await openMore("shop");
+    expect(within(screen.getByRole("menu")).queryByRole("menuitem", { name: /Stop tracking/ })).toBeNull();
+
+    fireEvent.click(stop);
+    expect(await screen.findByRole("dialog", { name: "Stop tracking this schema?" })).toBeInTheDocument();
   });
 });
 

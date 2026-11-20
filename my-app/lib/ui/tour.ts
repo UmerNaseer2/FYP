@@ -172,6 +172,24 @@ export function tourStops({ audience, can, pages, askAi }: TourInput): TourStop[
     targets: [".cp-form", ".cp-page .page-header"],
   });
 
+  // A tester could not find the script after a Compare: it sits beside a long
+  // report, or far under it on a narrow screen. This stop lights it up.
+  stops.push({
+    id: "migrate",
+    page: "/compare",
+    icon: "script",
+    kicker: "Migration",
+    title: "The script is beside the differences",
+    body:
+      "After Compare runs, the migration that makes the target match is in this panel, ready to edit. On a narrow screen it is under the list. Script in the bar above the results jumps to it.",
+    targets: [".cp-grid > aside", ".cp-quiet", ".cp-page .page-header"],
+    empty: {
+      target: ".cp-quiet",
+      body:
+        "Nothing is compared yet. After you press Compare, the migration that makes the target match appears beside the differences, ready to edit. On a narrow screen it is under the list, and Script in the bar above the results jumps to it.",
+    },
+  });
+
   stops.push({
     id: "script",
     page: "/script-editor",

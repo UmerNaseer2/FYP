@@ -106,6 +106,59 @@
 .cp-outcome__path { margin-left: auto; font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
 .cp-outcome__head .btn-sm { min-height: 44px; }
 
+/* --- The bar over a result (components/studio/CompareJumpBar) -------------
+   Summary, Map, Tables and Script. It sticks to the top of its result while
+   the result scrolls past. The page scrolls inside <main> and the top bar
+   above it never moves, so 10px down is clear of everything. The white pill
+   slides to the part on screen; Script is the bright one and takes the reader
+   to the migration panel. On a phone the bar scrolls sideways inside itself. */
+.cp-jump { position: sticky; top: 10px; z-index: 6; display: flex; align-items: center; gap: 4px; padding: 4px;
+  border-radius: var(--r-pill); background: var(--surface-2); overflow-x: auto; scrollbar-width: none;
+  overscroll-behavior-x: contain; transition: box-shadow var(--dur-2) var(--ease-out); }
+.cp-jump::-webkit-scrollbar { display: none; }
+.cp-jump[data-stuck] { box-shadow: var(--shadow-md); }
+.cp-jump__pill { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 0; width: var(--w, 0px);
+  transform: translateX(var(--x, 0px)); border-radius: var(--r-pill); background: var(--surface);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent), var(--shadow-sm);
+  opacity: 0; pointer-events: none; }
+.cp-jump[data-ready] .cp-jump__pill { opacity: 1; }
+.cp-jump[data-ready] .cp-jump__pill.is-away { opacity: 0; transform: translateX(var(--x, 0px)) scale(.9); }
+.cp-jump__btn { position: relative; z-index: 1; flex: none; display: inline-flex; align-items: center; gap: 7px;
+  min-height: 40px; padding: 0 14px; border: 0; border-radius: var(--r-pill); background: transparent;
+  color: var(--text-2); font: 600 13.5px/1 var(--sans); white-space: nowrap; cursor: pointer; }
+.cp-jump__btn:hover, .cp-jump__btn[aria-current] { color: var(--text); }
+/* Inside the bar's edge, which would cut an outline drawn outside the button. */
+.cp-jump__btn:focus-visible { outline-offset: -3px; }
+.cp-jump__n { font: 500 12px/1 var(--mono); padding: 3px 6px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cp-jump__btn--go { margin-left: auto; background: var(--accent); color: var(--on-accent); font-weight: 700; }
+.cp-jump__btn--go:hover { color: var(--on-accent); background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
+.cp-jump__btn--go:focus-visible { outline-color: var(--on-accent); }
+.cp-jump__btn--go[aria-current] { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--on-accent) 40%, transparent); }
+.cp-jump__btn--go .cp-jump__n { background: color-mix(in srgb, var(--on-accent) 14%, transparent); }
+.cp-jump__btn--go svg { flex: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .cp-jump[data-ready] .cp-jump__pill { transition: transform var(--dur-3) var(--ease-spring),
+    width var(--dur-3) var(--ease-spring), opacity var(--dur-2) var(--ease-out); }
+  .cp-jump__btn { transition: color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-spring); }
+  .cp-jump__btn:active { transform: scale(.97); }
+  .cp-jump__btn--go svg { transition: transform .3s var(--ease-spring); }
+  .cp-jump__btn--go:hover svg { transform: translateX(3px); }
+}
+@media (pointer: coarse) { .cp-jump__btn { min-height: 44px; } }
+/* On a phone all four fit with a little less room each and Script without
+   its arrow, so the bright button is never cut off at the edge. */
+@media (max-width: 420px) {
+  .cp-jump__btn { padding: 0 11px; }
+  .cp-jump__btn--go svg { display: none; }
+}
+/* Where a press of the bar leaves each part: just under the bar. */
+.cp-outcome > .cp-counts, .cp-outcome > .cp-map, .cp-outcome [data-jump], .cp-grid > aside .card { scroll-margin-top: 76px; }
+/* The panel beside the list keeps clear of the bar when it sticks too. */
+.cp-outcome:has(> .cp-jump) .cp-grid > aside .sticky-panel { top: 72px; }
+@media (pointer: coarse) { .cp-outcome:has(> .cp-jump) .cp-grid > aside .sticky-panel { top: 76px; } }
+
 /* The script column is wide enough for a generated line to read without
    scrolling sideways, and the list still gets most of the row. */
 .cp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 520px); gap: 22px; align-items: start; }
@@ -239,13 +292,9 @@
 .viz-canvas .react-flow__edge.cp-mapedge.is-rem .react-flow__edge-path { stroke: var(--remove); stroke-width: 1.5;
   stroke-dasharray: 3 5; opacity: 0.8; }
 
-/* A card the map jumped to: flashes once, and stops under the top bar. */
+/* A card the map or the table list jumped to stops under the top bar and
+   the jump bar. The ring itself is .card-flash in globals.css. */
 .cp-outcome [data-table-card] { scroll-margin-top: 88px; }
-.cp-flash { animation: cp-flash 1.4s var(--ease-out); }
-@keyframes cp-flash {
-  0%, 30% { box-shadow: 0 0 0 3px var(--accent); }
-  100% { box-shadow: 0 0 0 3px transparent; }
-}
 
 /* Full screen: the map over the whole window, with the page held still. */
 .cp-mapfull { position: fixed; inset: 0; z-index: 80; display: grid; padding: 16px;
@@ -402,7 +451,6 @@
 @media (prefers-reduced-motion: reduce) {
   .cp-bar, .cp-loading-say i, .cp-form { animation: none; }
   .cp-tile:hover, .cp-swap:hover svg { transform: none; }
-  .cp-flash { animation: none; outline: 3px solid var(--accent); outline-offset: 2px; }
 }
 
 /* --- Paper ---------------------------------------------------------------
@@ -413,7 +461,7 @@
 
 @media print {
   .cp-page { display: block; padding: 0; }
-  .cp-saved, .cp-save, .cp-form, .cp-quiet, .cp-swap, .cp-loading-say, .cp-map, .cp-mapfull, .cp-scriptfull { display: none !important; }
+  .cp-saved, .cp-save, .cp-form, .cp-quiet, .cp-swap, .cp-loading-say, .cp-map, .cp-mapfull, .cp-jump, .cp-scriptfull { display: none !important; }
   .cp-grid { display: block !important; }
   .cp-grid > aside { display: none !important; }
   .cp-results, .cp-outcome, .cp-col { display: block; }

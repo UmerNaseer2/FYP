@@ -772,6 +772,92 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
 summary.obj-header { cursor:pointer; list-style:none; user-select:none; }
 summary.obj-header::-webkit-details-marker { display:none; }
 
+/* The list of tables above a diff report (components/studio/TableIndex)
+   Every added, changed and removed table as a chip. A chip opens its card and
+   takes the reader to it; the switch folds or opens every card at once. The
+   thumb behind the switch slides to the state the cards are really in, and
+   leaves when some are open and some are not. */
+.ti { display:grid; gap:12px; padding:14px 16px; background:var(--surface); border:1px solid var(--border);
+      border-radius:var(--r-lg); }
+.ti__top { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+.ti__title { display:inline-flex; align-items:center; gap:8px; font:700 15px/20px var(--display); color:var(--text); }
+.ti__total { font:500 12px/1 var(--mono); padding:4px 8px; border-radius:var(--r-pill); background:var(--surface-2);
+             color:var(--text-2); }
+.ti-seg { position:relative; margin-left:auto; display:inline-grid; grid-template-columns:1fr 1fr; padding:3px;
+          border:1px solid var(--border-strong); border-radius:var(--r-pill); }
+.ti-seg__thumb { position:absolute; top:3px; bottom:3px; left:3px; width:calc(50% - 3px); border-radius:var(--r-pill);
+                 background:var(--text); opacity:0; transform:translateX(0) scale(.92); pointer-events:none;
+                 transition: transform var(--dur-3) var(--ease-spring), opacity var(--dur-2) var(--ease-out); }
+.ti-seg[data-fold="open"] .ti-seg__thumb { opacity:1; transform:translateX(0); }
+.ti-seg[data-fold="closed"] .ti-seg__thumb { opacity:1; transform:translateX(100%); }
+.ti-seg__btn { position:relative; z-index:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+               min-height:38px; padding:0 14px; border:0; border-radius:var(--r-pill); background:transparent;
+               color:var(--text-2); font:600 13px/1 var(--sans); white-space:nowrap; cursor:pointer;
+               transition: color var(--dur-2) var(--ease-out); }
+.ti-seg__btn:hover { color:var(--text); }
+.ti-seg__btn.is-on { color:var(--bg); }
+.ti__groups { display:grid; gap:10px; }
+.ti-grp { display:grid; grid-template-columns:112px minmax(0,1fr); gap:6px 12px; align-items:start; }
+.ti-grp__lab { display:inline-flex; align-items:center; gap:7px; padding-top:9px; font:600 12.5px/18px var(--sans); }
+.ti-grp__lab i { width:8px; height:8px; border-radius:3px; background:currentColor; flex:none; }
+.ti-grp__n { font:500 11.5px/1 var(--mono); color:var(--text-3); }
+.ti-grp--add .ti-grp__lab, .ti-grp--add .ti-chip__sg { color:var(--add); }
+.ti-grp--chg .ti-grp__lab, .ti-grp--chg .ti-chip__sg { color:var(--change); }
+.ti-grp--rem .ti-grp__lab, .ti-grp--rem .ti-chip__sg { color:var(--remove); }
+.ti-chips { display:flex; flex-wrap:wrap; gap:6px; min-width:0; margin:0; padding:0; list-style:none; }
+.ti-chips > li { display:flex; min-width:0; max-width:100%;
+                 animation: ti-rise var(--dur-3) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 28ms); }
+.ti-chip { display:inline-flex; align-items:center; gap:6px; max-width:100%; min-height:36px; padding:0 12px;
+           border:1px solid var(--border); border-radius:var(--r-pill); background:var(--surface-2); color:var(--text);
+           font:500 12.5px/1 var(--mono); cursor:pointer;
+           transition: border-color var(--dur-2) var(--ease-out), background-color var(--dur-2) var(--ease-out),
+                       box-shadow var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-spring); }
+.ti-chip__sg { flex:none; font-weight:700; }
+.ti-chip__name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ti-chip:hover { border-color:var(--accent); background:var(--surface); box-shadow:var(--shadow-sm); transform:translateY(-1px); }
+.ti-chip:active { transform:scale(.97); }
+.ti-chip--more { border-style:dashed; color:var(--text-2); font:600 12.5px/1 var(--sans); }
+@keyframes ti-rise { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+@media (pointer: coarse) {
+  .ti-seg__btn, .ti-chip { min-height:44px; }
+}
+@media (max-width: 560px) {
+  .ti { padding:12px; }
+  .ti-seg { margin-left:0; }
+  .ti-grp { grid-template-columns:minmax(0,1fr); gap:6px; }
+  .ti-grp__lab { padding-top:0; }
+}
+
+/* A card the reader was sent to (lib/ui/reveal-card): it stops clear of the
+   top bar and rings once. */
+[data-table-card] { scroll-margin-top:88px; }
+.card-flash { animation: card-flash 1.4s var(--ease-out); }
+@keyframes card-flash {
+  0%, 30% { box-shadow:0 0 0 3px var(--accent); }
+  100% { box-shadow:0 0 0 3px transparent; }
+}
+
+/* Folding a card slides it shut instead of snapping, where the browser can
+   animate to and from "auto". Elsewhere it opens and closes at once, as
+   before. */
+@supports selector(::details-content) {
+  @media (prefers-reduced-motion: no-preference) {
+    details.table-group { interpolate-size: allow-keywords; }
+    details.table-group::details-content {
+      block-size:0; overflow-y:clip;
+      transition: block-size var(--dur-3) var(--ease-out), content-visibility var(--dur-3) allow-discrete;
+    }
+    details.table-group[open]::details-content { block-size:auto; }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ti-chips > li { animation:none; }
+  .ti-seg__thumb, .ti-seg__btn, .ti-chip { transition:none; }
+  .ti-chip:hover, .ti-chip:active { transform:none; }
+  .card-flash { animation:none; outline:3px solid var(--accent); outline-offset:2px; }
+}
+
 /* richer diff-row internals (extends the foundation .diff-row) */
 .diff-row { border-radius:0 6px 6px 0; margin:2px 0; }
 .diff-row .body { flex:1; min-width:0; }

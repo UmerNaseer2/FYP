@@ -25,6 +25,7 @@ import type {
 import { CheckIcon } from "@/components/ui/icons";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { HelpHint } from "@/components/ui/HelpHint";
+import { TableIndex, type TableIndexGroup } from "@/components/studio/TableIndex";
 import { countOf } from "@/lib/ui/plural";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,8 @@ import { countOf } from "@/lib/ui/plural";
 // nothing about being in the bundle costs anything to hydrate. The one thing
 // here with state is the small "?" note (HelpHint), which holds the
 // explanations that used to be grey paragraphs; the rest of what the report
-// means is in the page's help (lib/help).
+// means is in the page's help (lib/help). The list of tables above the cards
+// (TableIndex) is the other: it opens, folds and jumps to the cards.
 // ---------------------------------------------------------------------------
 
 type DiffKind = "add" | "rem" | "chg";
@@ -1550,6 +1552,36 @@ export function DiffReport({
     objectDiffs.length === 0 &&
     !showUnchanged;
 
+  // The short list of tables above the cards, in the order the cards come in.
+  // A drift report reads the other way round, so its words say what the live
+  // database did rather than what a script would do.
+  const drift = sides === "expected-live";
+  const indexGroups: TableIndexGroup[] = [
+    {
+      kind: "add",
+      title: drift ? "Missing" : "Added",
+      items: newTables.map((table) => ({ key: `add:${table.name}`, label: table.name })),
+    },
+    {
+      kind: "chg",
+      title: "Changed",
+      items: changedTables.map((match) => ({
+        key: `chg:${match.left.name}`,
+        label: match.exact
+          ? match.left.name
+          : drift
+            ? `${match.left.name} \u2192 ${match.right.name}`
+            : `${match.right.name} \u2192 ${match.left.name}`,
+      })),
+    },
+    {
+      kind: "rem",
+      title: drift ? "Live only" : "Removed",
+      items: extraTables.map((table) => ({ key: `rem:${table.name}`, label: table.name })),
+    },
+  ];
+  const indexedTables = newTables.length + changedTables.length + extraTables.length;
+
   return (
     <div className="space-y-3">
       {/* The signs are the first thing a reader has to decode, and they mean
@@ -1588,6 +1620,16 @@ export function DiffReport({
             ? "No table is the same on both sides."
             : "Nothing of this kind. Press the tile again to see every change."}
         </p>
+      )}
+
+      {/* Every table card is open, so with more than one the reader had to
+          fold them by hand to see what else changed. The list names them all
+          and folds or opens every card at once. */}
+      {indexedTables > 1 && (
+        <TableIndex
+          title={drift ? "Tables that differ" : "Tables with changes"}
+          groups={indexGroups}
+        />
       )}
 
       {only === null && destructiveCount > 0 && (

@@ -4,6 +4,7 @@ import "@/app/styles/atelier-dashboard.css";
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1423,7 +1424,8 @@ function MoreMenu({ name, items }: { name: string; items: MenuItem[] }) {
 /**
  * The picked building in words: its state as a chip, its name, two numbers,
  * ONE status line (the state, who found it, when, and how often it is
- * checked), one main button, and a More menu for everything else.
+ * checked), one main button, a More menu for the rest, and Stop tracking on
+ * its own row at the foot.
  */
 function Inspector({
   item,
@@ -1486,6 +1488,7 @@ function Inspector({
   // is most useful opened; anything else wants a check.
   const main =
     item.driftStatus === "drifted" ? "review" : item.driftStatus === "in_sync" ? "open" : "check";
+  const stopNoteId = useId();
 
   // The rest goes in the More menu.
   const more: MenuItem[] = [];
@@ -1510,14 +1513,8 @@ function Inspector({
       ),
     });
   }
-  more.push({
-    key: "stop",
-    label: "Stop tracking",
-    ariaLabel: `Stop tracking ${name}`,
-    onSelect: onUntrack,
-    disabled: untrackRefusal !== null,
-    title: untrackRefusal ?? undefined,
-  });
+  // Stop tracking is not in the menu. It has its own row at the foot of the
+  // card (below), so it is easy to find and still away from the main action.
 
   return (
     <div className="sk-ins">
@@ -1611,6 +1608,32 @@ function Inspector({
           </Button>
         )}
         <MoreMenu name={name} items={more} />
+      </div>
+
+      {/* Its own quiet row under a hairline: easy to find, hard to press by
+          mistake, and it still asks before anything is removed. A role that
+          may not use it sees it switched off, with the reason as a tooltip
+          and in the note under the page header. */}
+      <div className="sk-stop" data-tour="stop-tracking">
+        <button
+          type="button"
+          className="sk-stop-btn"
+          onClick={onUntrack}
+          disabled={untrackRefusal !== null}
+          title={untrackRefusal ?? undefined}
+          aria-label={`Stop tracking ${name}`}
+          aria-describedby={stopNoteId}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7c2.1 0 3.9.7 5.4 1.7M22 12s-3.5 7-10 7c-2.1 0-3.9-.7-5.4-1.7" />
+            <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+            <path d="m3 3 18 18" />
+          </svg>
+          Stop tracking
+        </button>
+        <span className="sk-stop-note" id={stopNoteId}>
+          Removes its snapshots and drift history. The database is not touched.
+        </span>
       </div>
     </div>
   );

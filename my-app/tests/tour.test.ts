@@ -112,8 +112,8 @@ test("startTour sends the event AppTour listens for", () => {
 
 describe("the stops", () => {
   test("follow the work", () => {
-    expect(ids(stops("new", ADMIN))).toEqual(["home", "connect", "compare", "script", "ship", "watch", "ask", "help"]);
-    expect(ids(stops("member", VIEWER))).toEqual(["home", "connect", "compare", "script", "ship", "watch", "ask", "help"]);
+    expect(ids(stops("new", ADMIN))).toEqual(["home", "connect", "compare", "migrate", "script", "ship", "watch", "ask", "help"]);
+    expect(ids(stops("member", VIEWER))).toEqual(["home", "connect", "compare", "migrate", "script", "ship", "watch", "ask", "help"]);
   });
 
   test("say something true on an empty Dashboard and Drift page", () => {
@@ -128,7 +128,7 @@ describe("the stops", () => {
 
   test("leave out a page the role cannot open, but keep the top bar", () => {
     const list = stops("member", VIEWER, ["/studio", "/compare", "/drift"]);
-    expect(ids(list)).toEqual(["home", "compare", "watch", "help"]);
+    expect(ids(list)).toEqual(["home", "compare", "migrate", "watch", "help"]);
   });
 
   test("tell a role that may not run so, and one that may how it works", () => {
