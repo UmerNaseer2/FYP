@@ -617,6 +617,14 @@ jobs:
         run: |
           docker compose stop
           sudo service postgresql stop
+          # The service command returns before the cluster has finished
+          # stopping. Wait until it is down, as it is after a real restart.
+          # (setup.sh copes with one still shutting down as well.)
+          for _ in $(seq 30); do
+            pg_lsclusters -h | awk '$1 == 16 { print $4 }' | grep -q online || break
+            sleep 1
+          done
+          ! pg_lsclusters -h | awk '$1 == 16 { print $4 }' | grep -q online
           bash /opt/schema-studio/setup.sh < /dev/null 2>&1 | tee "$RUNNER_TEMP/run4.txt"
           grep -q 'PostgreSQL 16 is stopped. Starting it.' "$RUNNER_TEMP/run4.txt"
           [ "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = 200 ]

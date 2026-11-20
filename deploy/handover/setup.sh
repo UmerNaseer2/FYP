@@ -245,15 +245,26 @@ else
       fail "DATABASE_URL_A in .env uses port $want, and no PostgreSQL here has that port." "pg_lsclusters lists them."
   fi
   read -r PG_VER PG_NAME PG_PORT PG_STATUS _ <<< "$line"
-  if [ "${PG_STATUS%%,*}" != online ]; then
+  pg_started=no
+  start_pg() {
     info "PostgreSQL $PG_VER is stopped. Starting it."
     sudo service postgresql start > /dev/null 2>&1 || true
     if ! pg_isready -q -p "$PG_PORT"; then
       sudo pg_ctlcluster "$PG_VER" "$PG_NAME" start > /dev/null 2>&1 || true
     fi
-  fi
+    pg_started=yes
+  }
+  pg_status() {
+    pg_lsclusters -h 2> /dev/null |
+      awk -v v="$PG_VER" -v n="$PG_NAME" '$1 == v && $2 == n { split($4, s, ","); print s[1] }'
+  }
+  if [ "${PG_STATUS%%,*}" != online ]; then start_pg; fi
   for _ in $(seq 30); do
     if pg_isready -q -p "$PG_PORT"; then break; fi
+    # A cluster that is still shutting down (just after "service postgresql
+    # stop", which returns before the cluster has finished stopping) is listed
+    # as online but answers nothing. Once it is listed as down, start it.
+    if [ "$pg_started" = no ] && [ "$(pg_status)" != online ]; then start_pg; fi
     sleep 1
   done
   pg_isready -q -p "$PG_PORT" ||
